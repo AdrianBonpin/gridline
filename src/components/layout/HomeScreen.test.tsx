@@ -11,6 +11,12 @@ vi.mock("../../lib/commands", () => ({
   getSettings: vi.fn().mockResolvedValue({}),
 }));
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  readTextFile: vi.fn(),
+  writeTextFile: vi.fn(),
+}));
+
 describe("HomeScreen", () => {
   beforeEach(() => {
     useConnectionStore.setState({ connections: [], folders: [], tags: [], loading: false, error: null });

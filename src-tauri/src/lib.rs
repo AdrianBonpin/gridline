@@ -21,6 +21,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(DbState(Mutex::new(store)))
         .invoke_handler(tauri::generate_handler![
             greet,

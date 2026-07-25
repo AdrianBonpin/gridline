@@ -7,6 +7,7 @@ import { ActionRow } from "./ActionRow";
 import { ConnectionGrid } from "../connections/ConnectionGrid";
 import { FolderTree } from "../folders/FolderTree";
 import { CreateFolderDialog } from "../folders/CreateFolderDialog";
+import { handleImport, handleExport } from "../../lib/importExport";
 
 export function HomeScreen() {
   const connections = useFilteredConnections();
@@ -17,6 +18,7 @@ export function HomeScreen() {
   const searchQuery = useUiStore((s) => s.searchQuery);
   const toggleTag = useUiStore((s) => s.toggleTag);
   const createFolder = useConnectionStore((s) => s.createFolder);
+  const loadAll = useConnectionStore((s) => s.loadAll);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
 
   return (
@@ -26,7 +28,11 @@ export function HomeScreen() {
         <SearchBar />
       </div>
       <div className="mb-4">
-        <ActionRow onNewFolder={() => setFolderDialogOpen(true)} />
+        <ActionRow
+          onNewFolder={() => setFolderDialogOpen(true)}
+          onImport={async () => { const r = await handleImport(); if (r) await loadAll(); }}
+          onExport={async () => { await handleExport(); }}
+        />
       </div>
       <div className="flex gap-6">
         <aside className="w-56 shrink-0">
