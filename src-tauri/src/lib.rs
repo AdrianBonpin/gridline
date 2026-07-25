@@ -1,3 +1,11 @@
+mod models;
+mod store;
+
+use store::Store;
+use std::sync::Mutex;
+
+pub struct DbState(pub Mutex<Store>);
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -6,8 +14,11 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let store = Store::open("gridline.db").expect("failed to open db");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(DbState(Mutex::new(store)))
         .invoke_handler(tauri::generate_handler![greet])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
