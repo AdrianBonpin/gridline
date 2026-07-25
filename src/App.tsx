@@ -1,35 +1,28 @@
-import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect } from "react";
+import { useConnectionStore } from "./stores/connectionStore";
+import { useSettingsStore } from "./stores/settingsStore";
+import { useUiStore } from "./stores/uiStore";
+import { HomeScreen } from "./components/layout/HomeScreen";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+export default function App() {
+  const activeView = useUiStore((s) => s.activeView);
+  const loadConnections = useConnectionStore((s) => s.loadAll);
+  const loadSettings = useSettingsStore((s) => s.load);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => {
+    loadConnections();
+    loadSettings();
+  }, [loadConnections, loadSettings]);
 
-  return (
-    <main>
-      <h1>Gridline</h1>
-
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
-  );
+  if (activeView === "settings") return <SettingsPagePlaceholder />;
+  if (activeView === "new-connection") return <NewConnectionPlaceholder />;
+  return <HomeScreen />;
 }
 
-export default App;
+function SettingsPagePlaceholder() {
+  return <div data-testid="settings-page">Settings (coming in Phase 4)</div>;
+}
+
+function NewConnectionPlaceholder() {
+  return <div data-testid="new-connection-page">New Connection (coming in Phase 4)</div>;
+}
