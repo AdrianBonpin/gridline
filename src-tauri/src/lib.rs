@@ -1,10 +1,13 @@
 mod models;
 mod store;
+mod commands;
 
-use store::Store;
 use std::sync::Mutex;
+use store::Store;
 
 pub struct DbState(pub Mutex<Store>);
+
+use commands::{connections, folders};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -19,7 +22,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(DbState(Mutex::new(store)))
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            connections::get_connections,
+            connections::create_connection,
+            connections::delete_connection,
+            folders::get_folders,
+            folders::create_folder,
+            folders::delete_folder
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
