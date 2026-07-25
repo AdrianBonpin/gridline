@@ -7,7 +7,7 @@ use store::Store;
 
 pub struct DbState(pub Mutex<Store>);
 
-use commands::{connections, folders};
+use commands::{connections, folders, tags, settings, import_export};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -29,7 +29,14 @@ pub fn run() {
             connections::delete_connection,
             folders::get_folders,
             folders::create_folder,
-            folders::delete_folder
+            folders::delete_folder,
+            tags::get_tags,
+            tags::create_tag,
+            tags::delete_tag,
+            settings::get_settings,
+            settings::update_setting,
+            import_export::import_connections,
+            import_export::export_connections
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
