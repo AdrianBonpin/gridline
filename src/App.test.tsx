@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import App from "./App";
 import { useConnectionStore } from "./stores/connectionStore";
 import { useSettingsStore } from "./stores/settingsStore";
+import { useUiStore } from "./stores/uiStore";
 
 vi.mock("./lib/commands", () => ({
   getConnections: vi.fn().mockResolvedValue([]),
@@ -26,6 +27,7 @@ beforeEach(() => {
     error: null,
   });
   useSettingsStore.setState({ settings: null, loading: false, error: null });
+  useUiStore.setState({ activeView: "home" });
   vi.clearAllMocks();
 });
 
@@ -44,5 +46,25 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("Gridline");
     expect(useConnectionStore.getState().loading).toBe(false);
+  });
+
+  it("renders settings page when activeView is settings", async () => {
+    useUiStore.setState({ activeView: "settings" });
+    render(<App />);
+    expect(screen.getByText("Settings")).toBeInTheDocument();
+  });
+
+  it("renders new connection form when activeView is new-connection", async () => {
+    useUiStore.setState({ activeView: "new-connection" });
+    render(<App />);
+    expect(screen.getByText("New Connection")).toBeInTheDocument();
+  });
+
+  it("shows error banner when connectionStore has error", async () => {
+    const { getConnections } = await import("./lib/commands");
+    vi.mocked(getConnections).mockRejectedValueOnce(new Error("Storage error"));
+    useConnectionStore.setState({ connections: [], loading: false, error: null });
+    render(<App />);
+    expect(await screen.findByText(/storage error/i)).toBeInTheDocument();
   });
 });
