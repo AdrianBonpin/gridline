@@ -1,0 +1,36 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { HomeScreen } from "./HomeScreen";
+import { useConnectionStore } from "../../stores/connectionStore";
+import { useUiStore } from "../../stores/uiStore";
+
+vi.mock("../../lib/commands", () => ({
+  getConnections: vi.fn().mockResolvedValue([]),
+  getFolders: vi.fn().mockResolvedValue([]),
+  getTags: vi.fn().mockResolvedValue([]),
+  getSettings: vi.fn().mockResolvedValue({}),
+}));
+
+describe("HomeScreen", () => {
+  beforeEach(() => {
+    useConnectionStore.setState({ connections: [], folders: [], tags: [], loading: false, error: null });
+    useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home" });
+  });
+
+  it("renders Gridline branding", () => {
+    render(<HomeScreen />);
+    expect(screen.getByText("Gridline")).toBeInTheDocument();
+  });
+
+  it("renders SearchBar and ActionRow", () => {
+    render(<HomeScreen />);
+    expect(screen.getByPlaceholderText(/search connections/i)).toBeInTheDocument();
+    expect(screen.getByText("Saved Connections")).toBeInTheDocument();
+  });
+
+  it("renders empty state when no connections", () => {
+    useConnectionStore.setState({ connections: [] });
+    render(<HomeScreen />);
+    expect(screen.getByText(/no connections yet/i)).toBeInTheDocument();
+  });
+});
