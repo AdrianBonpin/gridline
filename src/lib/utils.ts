@@ -1,7 +1,6 @@
 import type {
   Connection,
   DbType,
-  FilterState,
   Folder,
   Tag,
   ConnectionInput,
@@ -54,7 +53,7 @@ export function getDescendantFolderIds(folders: Folder[], rootId: string): strin
 export function filterConnections(
   connections: Connection[],
   tags: Tag[],
-  filter: Pick<FilterState, "query" | "activeTagIds" | "activeDbTypes">,
+  filter: { query: string; activeTagIds?: string[]; activeDbTypes?: DbType[] },
 ): Connection[] {
   const q = filter.query.trim().toLowerCase();
   const tagIds = filter.activeTagIds ?? [];

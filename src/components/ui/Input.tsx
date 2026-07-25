@@ -1,6 +1,9 @@
-import type { InputHTMLAttributes } from "react";
-
-interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
+interface InputProps {
+  value?: string;
+  placeholder?: string;
+  className?: string;
+  type?: string;
+  disabled?: boolean;
   onChange?: (value: string) => void;
 }
 

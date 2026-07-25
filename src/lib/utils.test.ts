@@ -61,7 +61,7 @@ describe("validateConnectionInput", () => {
   it("rejects invalid db_type", () => {
     const result = validateConnectionInput({
       name: "X",
-      db_type: "mongodb",
+      db_type: "mongodb" as any,
       host: "h",
       port: 5432,
     });
