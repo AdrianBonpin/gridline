@@ -73,3 +73,9 @@ export interface ValidationResult {
   ok: boolean;
   error: string;
 }
+
+export interface ImportResult {
+  imported: number;
+  skipped: number;
+  skippedRecords: { index: number; reason: string }[];
+}
