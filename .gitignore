@@ -26,6 +26,7 @@ dist-ssr
 # AI
 .pi/
 .superpowers/
+docs/superpowers/
 
 # Env
 .env.*

@@ -1,0 +1,21 @@
+@import "@fontsource/space-mono";
+@import "@fontsource/outfit";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-black text-white font-sans antialiased;
+}
+
+/* Clean glassmorphism utility */
+@layer components {
+  .glass {
+    @apply bg-white/5 backdrop-blur-md border border-white/10;
+  }
+}
