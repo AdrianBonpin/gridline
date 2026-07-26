@@ -76,13 +76,8 @@ export function SettingsPage() {
 
   return (
     <div className="min-h-screen bg-canvas">
-      {/* Mac-style title bar */}
-      <header className="flex items-center gap-4 px-4 py-3 border-b border-border/50">
-        <div className="flex items-center gap-2">
-          <span className="w-3 h-3 rounded-full bg-[#ff5f57]" />
-          <span className="w-3 h-3 rounded-full bg-[#febc2e]" />
-          <span className="w-3 h-3 rounded-full bg-[#28c840]" />
-        </div>
+      {/* App header */}
+      <header className="flex items-center gap-4 px-4 py-3 border-b border-border/50 bg-surface">
         <Button variant="ghost" onClick={() => setActiveView("home")} className="gap-1 px-2">
           <ChevronLeft size={16} /> Back
         </Button>
