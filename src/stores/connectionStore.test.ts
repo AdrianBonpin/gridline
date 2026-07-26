@@ -18,7 +18,7 @@ beforeEach(() => {
 
 describe("connectionStore", () => {
   it("loadAll fetches connections, folders, tags", async () => {
-    const folders: Folder[] = [{ id: "f1", name: "root", parent_id: null, created_at: "", updated_at: "" }];
+    const folders: Folder[] = [{ id: "f1", name: "root", parent_id: null, tag_ids: [], created_at: "", updated_at: "" }];
     const tags: Tag[] = [{ id: "t1", name: "prod", color: "#f00", created_at: "" }];
     const conns: Connection[] = [makeConn()];
     vi.spyOn(commands, "getConnections").mockResolvedValue(conns);
@@ -53,7 +53,7 @@ describe("connectionStore", () => {
   });
 
   it("createFolder adds to folders", async () => {
-    const folder: Folder = { id: "f1", name: "Work", parent_id: null, created_at: "", updated_at: "" };
+    const folder: Folder = { id: "f1", name: "Work", parent_id: null, tag_ids: [], created_at: "", updated_at: "" };
     vi.spyOn(commands, "createFolder").mockResolvedValue(folder);
     await useConnectionStore.getState().createFolder({ name: "Work", parent_id: null });
     expect(useConnectionStore.getState().folders).toContainEqual(folder);

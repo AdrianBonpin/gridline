@@ -11,9 +11,9 @@ const makeConn = (id: string, folder_id: string | null = null): Connection => ({
 });
 
 const folders: Folder[] = [
-  { id: "f1", name: "Work", parent_id: null, created_at: "", updated_at: "" },
-  { id: "f2", name: "Personal", parent_id: null, created_at: "", updated_at: "" },
-  { id: "f3", name: "Client A", parent_id: "f1", created_at: "", updated_at: "" },
+  { id: "f1", name: "Work", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
+  { id: "f2", name: "Personal", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
+  { id: "f3", name: "Client A", parent_id: "f1", tag_ids: [], created_at: "", updated_at: "" },
 ];
 
 describe("ConnectionGrid", () => {

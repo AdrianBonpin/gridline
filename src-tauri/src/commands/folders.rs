@@ -28,6 +28,25 @@ pub fn delete_folder_inner(state: &Mutex<Store>, id: &str) -> Result<(), String>
     store.delete_folder(id)
 }
 
+pub fn add_folder_tags_inner(
+    state: &Mutex<Store>,
+    folder_id: String,
+    tag_ids: Vec<String>,
+) -> Result<(), String> {
+    let store = state.lock().map_err(|e| e.to_string())?;
+    store.add_folder_tags(&folder_id, &tag_ids)
+}
+
+pub fn update_folder_inner(
+    state: &Mutex<Store>,
+    id: String,
+    input: FolderInput,
+) -> Result<Folder, String> {
+    validate(&input)?;
+    let store = state.lock().map_err(|e| e.to_string())?;
+    store.update_folder(&id, input)
+}
+
 #[tauri::command]
 pub fn get_folders(state: tauri::State<crate::DbState>) -> Result<Vec<Folder>, String> {
     get_folders_inner(&state.0)
@@ -46,6 +65,24 @@ pub fn delete_folder(state: tauri::State<crate::DbState>, id: String) -> Result<
     delete_folder_inner(&state.0, &id)
 }
 
+#[tauri::command]
+pub fn add_folder_tags(
+    state: tauri::State<crate::DbState>,
+    folder_id: String,
+    tag_ids: Vec<String>,
+) -> Result<(), String> {
+    add_folder_tags_inner(&state.0, folder_id, tag_ids)
+}
+
+#[tauri::command]
+pub fn update_folder(
+    state: tauri::State<crate::DbState>,
+    id: String,
+    input: FolderInput,
+) -> Result<Folder, String> {
+    update_folder_inner(&state.0, id, input)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,7 +99,7 @@ mod tests {
     fn create_folder_command_works() {
         let st = state();
         let folder =
-            create_folder_inner(&st, FolderInput {
+            create_folder_inner(&st, FolderInput { tag_ids: None,
                 name: "Work".into(),
                 parent_id: None,
             })
@@ -76,7 +113,7 @@ mod tests {
         let st = state();
         let result = create_folder_inner(
             &st,
-            FolderInput {
+            FolderInput { tag_ids: None,
                 name: "".into(),
                 parent_id: None,
             },
@@ -88,7 +125,7 @@ mod tests {
     fn delete_folder_command_works() {
         let st = state();
         let folder =
-            create_folder_inner(&st, FolderInput {
+            create_folder_inner(&st, FolderInput { tag_ids: None,
                 name: "Work".into(),
                 parent_id: None,
             })

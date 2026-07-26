@@ -33,6 +33,11 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
              tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
              PRIMARY KEY (connection_id, tag_id)
          );
+         CREATE TABLE IF NOT EXISTS folder_tags (
+             folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+             tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+             PRIMARY KEY (folder_id, tag_id)
+         );
          CREATE TABLE IF NOT EXISTS settings (
              key TEXT PRIMARY KEY,
              value TEXT NOT NULL

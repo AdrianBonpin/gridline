@@ -7,6 +7,7 @@ export interface Folder {
   id: string;
   name: string;
   parent_id: string | null;
+  tag_ids: string[];
   created_at: string;
   updated_at: string;
 }
@@ -45,6 +46,7 @@ export interface ConnectionInput {
 export interface FolderInput {
   name: string;
   parent_id: string | null;
+  tag_ids?: string[];
 }
 
 export interface TagInput {
@@ -57,7 +59,8 @@ export interface Settings {
   default_folder_id: string | null;
   theme: Theme;
   font_size: FontSize;
-  default_ports: Record<DbType, number | null>;
+  default_ports: Record<string, number | null>;
+  tag_order: string | null;
 }
 
 export type ActiveView = "home" | "settings" | "new-connection";

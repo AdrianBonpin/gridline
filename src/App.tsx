@@ -6,6 +6,7 @@ import { HomeScreen } from "./components/layout/HomeScreen";
 import { SettingsPage } from "./components/settings/SettingsPage";
 import { NewConnectionForm } from "./components/connections/NewConnectionForm";
 import { ErrorBanner } from "./components/ui/ErrorBanner";
+import { ToastContainer } from "./components/ui/Toast";
 
 export default function App() {
     const activeView = useUiStore((s) => s.activeView);
@@ -41,6 +42,7 @@ export default function App() {
                 />
             )}
             {activeView === "home" && <HomeScreen />}
+            <ToastContainer />
         </div>
     );
 }

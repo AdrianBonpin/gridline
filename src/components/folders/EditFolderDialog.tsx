@@ -2,52 +2,46 @@ import { useEffect, useRef, useState } from "react";
 import type { Folder, Tag } from "../../lib/types";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
-import { Folder as FolderIcon } from "lucide-react";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { SearchableTagPicker } from "../tags/SearchableTagPicker";
 
-interface CreateFolderDialogProps {
+interface EditFolderDialogProps {
   open: boolean;
-  parentOptions: Folder[];
-  currentFolderId?: string | null;
+  folder: Folder | null;
   tags: Tag[];
-  onCreate: (input: { name: string; parent_id: string | null; tag_ids: string[] }) => void;
+  onSave: (id: string, input: { name: string; tag_ids: string[] }) => void;
   onClose: () => void;
 }
 
-export function CreateFolderDialog({ open, parentOptions, currentFolderId = null, tags, onCreate, onClose }: CreateFolderDialogProps) {
+export function EditFolderDialog({ open, folder, tags, onSave, onClose }: EditFolderDialogProps) {
   const [name, setName] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const notify = useNotificationStore((s) => s.notify);
 
-  const parentName = currentFolderId
-    ? parentOptions.find((f) => f.id === currentFolderId)?.name ?? null
-    : null;
-
   useEffect(() => {
-    if (open) {
-      setName("");
-      setSelectedTagIds([]);
+    if (open && folder) {
+      setName(folder.name);
+      setSelectedTagIds(folder.tag_ids);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
-  }, [open]);
+  }, [open, folder]);
 
-  if (!open) return null;
+  if (!open || !folder) return null;
 
-  const handleCreate = () => {
+  const handleSave = () => {
     const trimmed = name.trim();
     if (!trimmed) {
       notify("Name must not be empty", "error");
       return;
     }
-    onCreate({ name: trimmed, parent_id: currentFolderId ?? null, tag_ids: selectedTagIds });
+    onSave(folder.id, { name: trimmed, tag_ids: selectedTagIds });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      handleCreate();
+      handleSave();
     } else if (e.key === "Escape") {
       onClose();
     }
@@ -66,13 +60,7 @@ export function CreateFolderDialog({ open, parentOptions, currentFolderId = null
         style={{ background: "linear-gradient(145deg, rgba(24,24,27,0.85), rgba(10,10,11,0.65))" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="font-heading text-text text-lg mb-1">New Folder</h3>
-        {parentName && (
-          <div className="flex items-center gap-1.5 text-xs text-text-muted mb-4">
-            <FolderIcon size={12} />
-            <span>{parentName}</span>
-          </div>
-        )}
+        <h3 className="font-heading text-text text-lg mb-4">Edit Folder</h3>
         <Input
           ref={inputRef}
           placeholder="Folder name"
@@ -88,7 +76,7 @@ export function CreateFolderDialog({ open, parentOptions, currentFolderId = null
         )}
         <div className="flex justify-end gap-2 mt-4">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleCreate}>Create</Button>
+          <Button onClick={handleSave}>Save</Button>
         </div>
       </div>
     </div>

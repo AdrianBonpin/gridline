@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus, Settings as SettingsIcon, Tag, Filter, FolderPlus, Trash2, Check, X, ChevronDown } from "lucide-react";
 import { Button } from "../ui/Button";
 import { useUiStore } from "../../stores/uiStore";
@@ -20,6 +20,18 @@ export function ActionRow({ onImport, onExport, onNewFolder, onFilters, onDelete
   const clearSelection = useUiStore((s) => s.clearSelection);
   const hasSelection = selectedItemIds.length > 0;
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -42,27 +54,27 @@ export function ActionRow({ onImport, onExport, onNewFolder, onFilters, onDelete
           <FolderPlus size={14} /> New Folder
         </Button>
         {hasSelection && (
-          <div className="relative">
+          <div className="relative" ref={menuRef}>
             <Button variant="ghost" className="text-xs border-0" onClick={() => setMenuOpen((o) => !o)}>
               {selectedItemIds.length} selected <ChevronDown size={12} />
             </Button>
             {menuOpen && (
               <div className="absolute left-0 mt-1 rounded-xl bg-surface border border-border py-1 z-10 min-w-[180px] shadow-lg">
                 <button
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-text-muted hover:text-text hover:bg-surface-raised w-full text-left transition-colors"
+                  className="flex items-center gap-2 px-3 py-2 text-sm text-text-muted hover:text-text hover:bg-surface-raised w-full text-left transition-colors cursor-pointer"
                   onClick={() => { selectAllItems(visibleItemIds); setMenuOpen(false); }}
                 >
                   <Check size={14} /> Select All
                 </button>
                 <button
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-text-muted hover:text-text hover:bg-surface-raised w-full text-left transition-colors"
+                  className="flex items-center gap-2 px-3 py-2 text-sm text-text-muted hover:text-text hover:bg-surface-raised w-full text-left transition-colors cursor-pointer"
                   onClick={() => { clearSelection(); setMenuOpen(false); }}
                 >
                   <X size={14} /> Clear Selection
                 </button>
                 <div className="border-t border-border my-1" />
                 <button
-                  className="flex items-center gap-2 px-3 py-2 text-sm !text-red-400 hover:!text-red-300 hover:bg-surface-raised w-full text-left transition-colors"
+                  className="flex items-center gap-2 px-3 py-2 text-sm !text-red-400 hover:!text-red-300 hover:bg-surface-raised w-full text-left transition-colors cursor-pointer"
                   onClick={() => { onDeleteSelected?.(); setMenuOpen(false); }}
                 >
                   <Trash2 size={14} /> Delete ({selectedItemIds.length})

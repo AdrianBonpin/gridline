@@ -1,9 +1,10 @@
 import type { Connection, Folder, Tag } from "../../lib/types";
-import { Folder as FolderIcon, Check } from "lucide-react";
+import { Folder as FolderIcon, Check, Pencil, Trash2 } from "lucide-react";
 import { ConnectionCard } from "./ConnectionCard";
 import { FolderBreadcrumb } from "../folders/FolderBreadcrumb";
 import { getChildFolders } from "../../lib/utils";
 import { useUiStore } from "../../stores/uiStore";
+import { TagBadge } from "../tags/TagBadge";
 
 interface ConnectionGridProps {
     connections: Connection[];
@@ -13,6 +14,8 @@ interface ConnectionGridProps {
     onFolderSelect?: (id: string | null) => void;
     hasSearch?: boolean;
     onTagToggle?: (id: string) => void;
+    onEditFolder?: (folder: Folder) => void;
+    onDeleteFolder?: (folder: Folder) => void;
 }
 
 export function ConnectionGrid({
@@ -23,6 +26,8 @@ export function ConnectionGrid({
     onFolderSelect,
     hasSearch = false,
     onTagToggle,
+    onEditFolder,
+    onDeleteFolder,
 }: ConnectionGridProps) {
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const toggleItemSelection = useUiStore((s) => s.toggleItemSelection);
@@ -38,6 +43,9 @@ export function ConnectionGrid({
     );
     const hasItems = visibleFolders.length > 0 || directConnections.length > 0;
     const isSelecting = selectedItemIds.length > 0;
+    const activeFolder = currentFolderId
+        ? folders.find((f) => f.id === currentFolderId) ?? null
+        : null;
 
     const handleFolderClick = (folderId: string) => {
         if (isSelecting) {
@@ -54,11 +62,29 @@ export function ConnectionGrid({
 
     return (
         <div className="space-y-4">
-            <FolderBreadcrumb
-                folders={folders}
-                activeFolderId={currentFolderId}
-                onNavigate={handleBreadcrumbNavigate}
-            />
+            <div className="flex items-center justify-between">
+                <FolderBreadcrumb
+                    folders={folders}
+                    activeFolderId={currentFolderId}
+                    onNavigate={handleBreadcrumbNavigate}
+                />
+                {activeFolder && (
+                    <div className="flex items-center gap-1">
+                        <button
+                            onClick={() => onEditFolder?.(activeFolder)}
+                            className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-text transition-colors px-2 py-1 rounded-md cursor-pointer"
+                        >
+                            <Pencil size={12} /> Edit
+                        </button>
+                        <button
+                            onClick={() => onDeleteFolder?.(activeFolder)}
+                            className="inline-flex items-center gap-1 text-xs !text-red-400 hover:!text-red-300 transition-colors px-2 py-1 rounded-md cursor-pointer"
+                        >
+                            <Trash2 size={12} /> Delete
+                        </button>
+                    </div>
+                )}
+            </div>
 
             {!hasItems ? (
                 <div className="text-center w-full py-16 text-text-muted">
@@ -85,6 +111,8 @@ export function ConnectionGrid({
                             folders,
                             f.id,
                         ).length;
+                        const tagMap = new Map(tags.map((t) => [t.id, t]));
+                        const folderTags = f.tag_ids.map((id) => tagMap.get(id)).filter(Boolean) as import("../../lib/types").Tag[];
                         return (
                             <div
                                 key={f.id}
@@ -123,13 +151,20 @@ export function ConnectionGrid({
                                             subfolderCount === 0 &&
                                             "Empty folder"}
                                     </div>
+                                    {folderTags.length > 0 && (
+                                        <div className="flex gap-1 flex-wrap mt-2">
+                                            {folderTags.map((t) => (
+                                                <TagBadge key={t.id} tag={t} />
+                                            ))}
+                                        </div>
+                                    )}
                                 </button>
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         toggleItemSelection(f.id);
                                     }}
-                                    className={`absolute -top-1 -left-1 w-4 h-4 rounded border flex items-center justify-center transition-all ${
+                                    className={`absolute -top-1.5 -left-1.5 w-4 h-4 rounded border flex items-center justify-center transition-all ${
                                         isSelected
                                             ? "bg-accent border-accent opacity-100"
                                             : "border-border bg-surface opacity-0 group-hover:opacity-100"

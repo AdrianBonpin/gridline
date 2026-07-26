@@ -8,4 +8,5 @@ pub struct Settings {
     pub theme: String,
     pub font_size: String,
     pub default_ports: HashMap<String, Option<i64>>,
+    pub tag_order: Option<String>,
 }

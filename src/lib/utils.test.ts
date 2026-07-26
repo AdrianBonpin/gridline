@@ -126,10 +126,10 @@ describe("validateTagInput", () => {
 
 describe("getDescendantFolderIds", () => {
   const folders: Folder[] = [
-    { id: "f1", name: "root", parent_id: null, created_at: "", updated_at: "" },
-    { id: "f2", name: "child", parent_id: "f1", created_at: "", updated_at: "" },
-    { id: "f3", name: "grandchild", parent_id: "f2", created_at: "", updated_at: "" },
-    { id: "f4", name: "other", parent_id: null, created_at: "", updated_at: "" },
+    { id: "f1", name: "root", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
+    { id: "f2", name: "child", parent_id: "f1", tag_ids: [], created_at: "", updated_at: "" },
+    { id: "f3", name: "grandchild", parent_id: "f2", tag_ids: [], created_at: "", updated_at: "" },
+    { id: "f4", name: "other", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
   ];
   it("returns all descendant ids including self", () => {
     expect(getDescendantFolderIds(folders, "f1").sort()).toEqual(["f1", "f2", "f3"]);

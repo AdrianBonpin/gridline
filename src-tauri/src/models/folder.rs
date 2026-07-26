@@ -5,6 +5,7 @@ pub struct Folder {
     pub id: String,
     pub name: String,
     pub parent_id: Option<String>,
+    pub tag_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -13,4 +14,5 @@ pub struct Folder {
 pub struct FolderInput {
     pub name: String,
     pub parent_id: Option<String>,
+    pub tag_ids: Option<Vec<String>>,
 }

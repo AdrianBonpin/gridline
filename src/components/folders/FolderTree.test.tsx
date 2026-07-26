@@ -5,8 +5,8 @@ import { FolderTree } from "./FolderTree";
 import type { Folder } from "../../lib/types";
 
 const folders: Folder[] = [
-  { id: "f1", name: "Work", parent_id: null, created_at: "", updated_at: "" },
-  { id: "f2", name: "ClientA", parent_id: "f1", created_at: "", updated_at: "" },
+  { id: "f1", name: "Work", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
+  { id: "f2", name: "ClientA", parent_id: "f1", tag_ids: [], created_at: "", updated_at: "" },
 ];
 
 describe("FolderTree", () => {

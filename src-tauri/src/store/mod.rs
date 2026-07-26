@@ -39,12 +39,24 @@ impl Store {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     parent_id: row.get(2)?,
+                    tag_ids: vec![],
                     created_at: row.get(3)?,
                     updated_at: row.get(4)?,
                 })
             })
             .map_err(|e| e.to_string())?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        let mut folders: Vec<Folder> = rows.filter_map(|r| r.ok()).collect();
+        // Load tags for each folder
+        for f in folders.iter_mut() {
+            let mut tag_stmt = conn
+                .prepare("SELECT tag_id FROM folder_tags WHERE folder_id = ?1")
+                .map_err(|e| e.to_string())?;
+            let tag_rows = tag_stmt
+                .query_map(params![f.id], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            f.tag_ids = tag_rows.filter_map(|r| r.ok()).collect();
+        }
+        Ok(folders)
     }
 
     pub fn create_folder(&self, input: FolderInput) -> Result<Folder, String> {
@@ -56,10 +68,48 @@ impl Store {
             params![id, input.name, input.parent_id, now, now],
         )
         .map_err(|e| e.to_string())?;
+        let tag_ids = input.tag_ids.unwrap_or_default();
+        for tag_id in &tag_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO folder_tags (folder_id, tag_id) VALUES (?1, ?2)",
+                params![id, tag_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         Ok(Folder {
             id,
             name: input.name,
             parent_id: input.parent_id,
+            tag_ids,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn update_folder(&self, id: &str, input: FolderInput) -> Result<Folder, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        conn.execute(
+            "UPDATE folders SET name = ?1, parent_id = ?2, updated_at = ?3 WHERE id = ?4",
+            params![input.name, input.parent_id, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+        // Replace all tags: clear existing, insert new
+        conn.execute("DELETE FROM folder_tags WHERE folder_id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        let tag_ids = input.tag_ids.unwrap_or_default();
+        for tag_id in &tag_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO folder_tags (folder_id, tag_id) VALUES (?1, ?2)",
+                params![id, tag_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(Folder {
+            id: id.to_string(),
+            name: input.name,
+            parent_id: input.parent_id,
+            tag_ids,
             created_at: now.clone(),
             updated_at: now,
         })
@@ -90,6 +140,30 @@ impl Store {
         // Delete the folder
         conn.execute("DELETE FROM folders WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn add_folder_tags(&self, folder_id: &str, tag_ids: &[String]) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        for tag_id in tag_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO folder_tags (folder_id, tag_id) VALUES (?1, ?2)",
+                params![folder_id, tag_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn add_connection_tags(&self, conn_id: &str, tag_ids: &[String]) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        for tag_id in tag_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO connection_tags (connection_id, tag_id) VALUES (?1, ?2)",
+                params![conn_id, tag_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 
@@ -133,6 +207,22 @@ impl Store {
         conn.execute("DELETE FROM tags WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    pub fn update_tag(&self, id: &str, input: TagInput) -> Result<Tag, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        conn.execute(
+            "UPDATE tags SET name = ?1, color = ?2 WHERE id = ?3",
+            params![input.name, input.color, id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(Tag {
+            id: id.to_string(),
+            name: input.name,
+            color: input.color,
+            created_at: now,
+        })
     }
 
     pub fn get_connections(&self) -> Result<Vec<Connection>, String> {
@@ -262,6 +352,7 @@ impl Store {
             theme,
             font_size,
             default_ports,
+            tag_order: map.get("tag_order").cloned(),
         })
     }
 
@@ -291,7 +382,7 @@ mod tests {
     fn create_and_get_folder() {
         let store = fresh_store();
         let folder = store
-            .create_folder(FolderInput {
+            .create_folder(FolderInput { tag_ids: None,
                 name: "Work".into(),
                 parent_id: None,
             })
@@ -307,13 +398,13 @@ mod tests {
     fn create_nested_folders() {
         let store = fresh_store();
         let parent = store
-            .create_folder(FolderInput {
+            .create_folder(FolderInput { tag_ids: None,
                 name: "root".into(),
                 parent_id: None,
             })
             .unwrap();
         let child = store
-            .create_folder(FolderInput {
+            .create_folder(FolderInput { tag_ids: None,
                 name: "child".into(),
                 parent_id: Some(parent.id.clone()),
             })
@@ -395,7 +486,7 @@ mod tests {
     fn delete_folder_sets_connection_folder_null() {
         let store = fresh_store();
         let folder = store
-            .create_folder(FolderInput {
+            .create_folder(FolderInput { tag_ids: None,
                 name: "f".into(),
                 parent_id: None,
             })

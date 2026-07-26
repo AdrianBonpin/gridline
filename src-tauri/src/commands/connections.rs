@@ -54,6 +54,15 @@ pub fn delete_connection_inner(state: &Mutex<Store>, id: &str) -> Result<(), Str
     store.delete_connection(id)
 }
 
+pub fn add_connection_tags_inner(
+    state: &Mutex<Store>,
+    connection_id: String,
+    tag_ids: Vec<String>,
+) -> Result<(), String> {
+    let store = state.lock().map_err(|e| e.to_string())?;
+    store.add_connection_tags(&connection_id, &tag_ids)
+}
+
 #[tauri::command]
 pub fn get_connections(state: tauri::State<crate::DbState>) -> Result<Vec<Connection>, String> {
     get_connections_inner(&state.0)
@@ -70,6 +79,15 @@ pub fn create_connection(
 #[tauri::command]
 pub fn delete_connection(state: tauri::State<crate::DbState>, id: String) -> Result<(), String> {
     delete_connection_inner(&state.0, &id)
+}
+
+#[tauri::command]
+pub fn add_connection_tags(
+    state: tauri::State<crate::DbState>,
+    connection_id: String,
+    tag_ids: Vec<String>,
+) -> Result<(), String> {
+    add_connection_tags_inner(&state.0, connection_id, tag_ids)
 }
 
 #[cfg(test)]

@@ -25,6 +25,16 @@ pub fn delete_tag_inner(state: &Mutex<Store>, id: &str) -> Result<(), String> {
     store.delete_tag(id)
 }
 
+pub fn update_tag_inner(
+    state: &Mutex<Store>,
+    id: String,
+    input: TagInput,
+) -> Result<Tag, String> {
+    validate(&input)?;
+    let store = state.lock().map_err(|e| e.to_string())?;
+    store.update_tag(&id, input)
+}
+
 #[tauri::command]
 pub fn get_tags(state: tauri::State<crate::DbState>) -> Result<Vec<Tag>, String> {
     get_tags_inner(&state.0)
@@ -38,6 +48,15 @@ pub fn create_tag(state: tauri::State<crate::DbState>, input: TagInput) -> Resul
 #[tauri::command]
 pub fn delete_tag(state: tauri::State<crate::DbState>, id: String) -> Result<(), String> {
     delete_tag_inner(&state.0, &id)
+}
+
+#[tauri::command]
+pub fn update_tag(
+    state: tauri::State<crate::DbState>,
+    id: String,
+    input: TagInput,
+) -> Result<Tag, String> {
+    update_tag_inner(&state.0, id, input)
 }
 
 #[cfg(test)]

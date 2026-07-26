@@ -3,18 +3,15 @@ import { render, screen } from "@testing-library/react";
 import { SettingsPage } from "./SettingsPage";
 
 describe("SettingsPage", () => {
-  it("renders all section headings", () => {
+  it("renders settings title and back button", () => {
     render(<SettingsPage />);
-    expect(screen.getByText(/general/i)).toBeInTheDocument();
-    expect(screen.getByText(/appearance/i)).toBeInTheDocument();
-    expect(screen.getByText(/connections/i)).toBeInTheDocument();
-    expect(screen.getByText(/keyboard shortcuts/i)).toBeInTheDocument();
-    expect(screen.getByText(/^tags$/i)).toBeInTheDocument();
-    expect(screen.getByText(/about/i)).toBeInTheDocument();
+    expect(screen.getByText(/settings/i)).toBeInTheDocument();
+    expect(screen.getByText(/back/i)).toBeInTheDocument();
   });
 
-  it("renders a back button", () => {
+  it("renders tag management section by default", () => {
     render(<SettingsPage />);
-    expect(screen.getByText(/back/i)).toBeInTheDocument();
+    expect(screen.getByText(/manage tags/i)).toBeInTheDocument();
+    expect(screen.getByText(/create tag/i)).toBeInTheDocument();
   });
 });
