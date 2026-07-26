@@ -3,7 +3,7 @@ import { Input } from "../ui/Input";
 import { PasswordInput } from "./PasswordInput";
 import type { ConnectionFormData } from "./connectionFormData";
 
-interface DetailedConnectionFormProps {
+export interface DetailedConnectionFormProps {
   form: ConnectionFormData;
   onChange: (updates: Partial<ConnectionFormData>) => void;
 }

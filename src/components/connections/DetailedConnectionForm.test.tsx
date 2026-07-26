@@ -49,5 +49,6 @@ describe("DetailedConnectionForm", () => {
     await user.clear(screen.getByLabelText(/port/i));
     await user.type(screen.getByLabelText(/port/i), "5432");
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ host: "localhost" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ port: 5432 }));
   });
 });
