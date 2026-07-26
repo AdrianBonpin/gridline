@@ -5,7 +5,6 @@ import { useFilteredConnections } from "../../hooks/useConnections";
 import { SearchBar } from "../search/SearchBar";
 import { ActionRow } from "./ActionRow";
 import { ConnectionGrid } from "../connections/ConnectionGrid";
-import { FolderTree } from "../folders/FolderTree";
 import { CreateFolderDialog } from "../folders/CreateFolderDialog";
 import { handleImport, handleExport } from "../../lib/importExport";
 
@@ -34,23 +33,15 @@ export function HomeScreen() {
           onExport={async () => { await handleExport(); }}
         />
       </div>
-      <div className="flex gap-6">
-        <aside className="w-56 shrink-0">
-          <FolderTree
-            folders={folders}
-            activeFolderId={activeFolderId}
-            onSelect={setActiveFolderId}
-          />
-        </aside>
-        <div className="flex-1">
-          <ConnectionGrid
-            connections={connections}
-            tags={tags}
-            hasSearch={searchQuery.length > 0}
-            onTagToggle={toggleTag}
-          />
-        </div>
-      </div>
+      <ConnectionGrid
+        connections={connections}
+        tags={tags}
+        folders={folders}
+        activeFolderId={activeFolderId}
+        onFolderSelect={setActiveFolderId}
+        hasSearch={searchQuery.length > 0}
+        onTagToggle={toggleTag}
+      />
       <CreateFolderDialog
         open={folderDialogOpen}
         parentOptions={folders}

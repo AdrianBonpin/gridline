@@ -14,16 +14,18 @@ export function ActionRow({ onImport, onExport, onNewFolder, onFilters }: Action
   const setActiveView = useUiStore((s) => s.setActiveView);
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <h2 className="font-heading text-lg">Saved Connections</h2>
-      <div className="flex items-center gap-2">
-        <ImportExportMenu onImport={onImport ?? (() => {})} onExport={onExport ?? (() => {})} />
+      <div className="flex items-center justify-between w-full">
+        <h2 className="font-heading text-lg">Saved Connections</h2>
         <Button onClick={() => setActiveView("new-connection")}><Plus size={14} /> New Connection</Button>
-        <Button variant="ghost" onClick={() => setActiveView("settings")}><SettingsIcon size={14} /> Settings</Button>
       </div>
-      <div className="flex items-center gap-2 ml-auto">
+      <div className="flex items-center gap-2">
         <Button variant="ghost" onClick={() => setActiveView("settings")}><Tag size={14} /> Tags</Button>
         <Button variant="ghost" onClick={onFilters ?? (() => {})}><Filter size={14} /> Filters</Button>
         <Button variant="ghost" onClick={onNewFolder ?? (() => {})}><FolderPlus size={14} /> Folder</Button>
+      </div>
+      <div className="flex items-center gap-2 ml-auto">
+        <ImportExportMenu onImport={onImport ?? (() => {})} onExport={onExport ?? (() => {})} />
+        <Button variant="ghost" onClick={() => setActiveView("settings")}><SettingsIcon size={14} /> Settings</Button>
       </div>
     </div>
   );
