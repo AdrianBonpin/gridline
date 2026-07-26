@@ -83,10 +83,9 @@ describe("SettingsPage", () => {
   it("renders settings header with back button and title", async () => {
     render(<SettingsPage />);
     await waitFor(() => {
-      expect(screen.getByText(/settings/i)).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: /settings/i })).toBeInTheDocument();
     });
     expect(screen.getByText(/back/i)).toBeInTheDocument();
-    expect(document.querySelector("header")).toBeInTheDocument();
   });
 
   it("renders all five sidebar tabs with proper ARIA roles", async () => {

@@ -7,6 +7,13 @@ import { SettingsPage } from "./components/settings/SettingsPage";
 import { NewConnectionForm } from "./components/connections/NewConnectionForm";
 import { ErrorBanner } from "./components/ui/ErrorBanner";
 import { ToastContainer } from "./components/ui/Toast";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+const VIEW_TITLES: Record<string, string> = {
+  home: "Home",
+  settings: "Settings",
+  "new-connection": "New Connection",
+};
 
 export default function App() {
     const activeView = useUiStore((s) => s.activeView);
@@ -20,6 +27,17 @@ export default function App() {
         loadConnections();
         loadSettings();
     }, [loadConnections, loadSettings]);
+
+    useEffect(() => {
+        const title = VIEW_TITLES[activeView] ?? "Gridline";
+        try {
+            getCurrentWindow().setTitle(title).catch(() => {
+                // Ignore environments where the Tauri API is unavailable (tests, browser)
+            });
+        } catch {
+            // getCurrentWindow can throw outside of a Tauri runtime
+        }
+    }, [activeView]);
 
     return (
         <div className="min-h-svh select-none">
