@@ -44,7 +44,10 @@ export function parseConnectionString(input: string): ParsedConnectionString | n
   const port = url.port ? Number(url.port) : (DEFAULT_PORTS[db_type] ?? null);
   const username = url.username || null;
   const password = url.password || null;
-  const database = url.pathname.replace(/^\//, "") || null;
+  const pathname = url.pathname;
+  const database = db_type === "sqlite"
+    ? (pathname || null)
+    : (pathname.replace(/^\//, "") || null);
 
   return {
     db_type,

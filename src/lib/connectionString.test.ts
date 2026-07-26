@@ -46,7 +46,7 @@ describe("parseConnectionString", () => {
       port: null,
       username: null,
       password: null,
-      database: "path/to/db.sqlite",
+      database: "/path/to/db.sqlite",
     });
   });
 
@@ -81,11 +81,43 @@ describe("parseConnectionString", () => {
   it("returns null for a non-URL string", () => {
     expect(parseConnectionString("hello world")).toBeNull();
   });
+
+  it("defaults MySQL port to 3306 when omitted", () => {
+    const result = parseConnectionString("mysql://user@host/db");
+    expect(result).toEqual({
+      db_type: "mysql",
+      host: "host",
+      port: 3306,
+      username: "user",
+      password: null,
+      database: "db",
+    });
+  });
+
+  it("defaults Redis port to 6379 when omitted", () => {
+    const result = parseConnectionString("redis://localhost");
+    expect(result).toEqual({
+      db_type: "redis",
+      host: "localhost",
+      port: 6379,
+      username: null,
+      password: null,
+      database: null,
+    });
+  });
 });
 
 describe("looksLikeConnectionString", () => {
   it("returns true for postgres URL", () => {
     expect(looksLikeConnectionString("postgresql://a@b/c")).toBe(true);
+  });
+
+  it("returns true for Redis URL", () => {
+    expect(looksLikeConnectionString("redis://localhost")).toBe(true);
+  });
+
+  it("returns true for SQLite URL", () => {
+    expect(looksLikeConnectionString("sqlite:///path/to/db.sqlite")).toBe(true);
   });
 
   it("returns false for normal search text", () => {
