@@ -4,20 +4,15 @@ interface SettingsRowProps {
   title: string;
   description?: string;
   children: ReactNode;
-  last?: boolean;
 }
 
-export function SettingsRow({ title, description, children, last }: SettingsRowProps) {
+export function SettingsRow({ title, description, children }: SettingsRowProps) {
   return (
-    <div
-      className={`flex items-center justify-between gap-6 py-4 ${
-        last ? "" : "border-b border-border"
-      }`}
-    >
-      <div className="min-w-0">
-        <div className="text-sm font-medium text-text">{title}</div>
+    <div className="flex items-center justify-between gap-6 py-4 border-b border-border last:border-b-0">
+      <div className="min-w-0 overflow-hidden">
+        <div className="text-sm font-medium text-text truncate">{title}</div>
         {description && (
-          <div className="text-xs text-text-muted mt-0.5">{description}</div>
+          <div className="text-xs text-text-muted mt-0.5 truncate">{description}</div>
         )}
       </div>
       <div className="shrink-0">{children}</div>
