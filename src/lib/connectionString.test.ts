@@ -26,6 +26,54 @@ describe("parseConnectionString", () => {
     });
   });
 
+  it("parses a Redis URL", () => {
+    const result = parseConnectionString("redis://user:pass@localhost:6379/0");
+    expect(result).toEqual({
+      db_type: "redis",
+      host: "localhost",
+      port: 6379,
+      username: "user",
+      password: "pass",
+      database: "0",
+    });
+  });
+
+  it("parses a SQLite file URL", () => {
+    const result = parseConnectionString("sqlite:///path/to/db.sqlite");
+    expect(result).toEqual({
+      db_type: "sqlite",
+      host: "localhost",
+      port: null,
+      username: null,
+      password: null,
+      database: "path/to/db.sqlite",
+    });
+  });
+
+  it("defaults PostgreSQL port to 5432 when omitted", () => {
+    const result = parseConnectionString("postgresql://user@host/db");
+    expect(result).toEqual({
+      db_type: "postgresql",
+      host: "host",
+      port: 5432,
+      username: "user",
+      password: null,
+      database: "db",
+    });
+  });
+
+  it("preserves database name when query parameters are present", () => {
+    const result = parseConnectionString("postgresql://user@host/db?sslmode=require");
+    expect(result).toEqual({
+      db_type: "postgresql",
+      host: "host",
+      port: 5432,
+      username: "user",
+      password: null,
+      database: "db",
+    });
+  });
+
   it("returns null for an empty string", () => {
     expect(parseConnectionString("")).toBeNull();
   });
