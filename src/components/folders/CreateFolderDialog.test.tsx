@@ -9,6 +9,11 @@ const folders = [
   { id: "f2", name: "Personal", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
 ];
 
+const sampleTags = [
+  { id: "t1", name: "Production", color: "#ef4444", created_at: "", updated_at: "" },
+  { id: "t2", name: "Staging", color: "#3b82f6", created_at: "", updated_at: "" },
+];
+
 describe("CreateFolderDialog", () => {
   it("calls onCreate with name, parent, and tags", async () => {
     const user = userEvent.setup();
@@ -49,11 +54,32 @@ describe("CreateFolderDialog", () => {
     expect(screen.queryByText("New Folder")).not.toBeInTheDocument();
   });
 
-  it("calls onClose when Escape is pressed", async () => {
+  it("calls onCreate when Escape is pressed", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     render(<CreateFolderDialog open parentOptions={folders} tags={[]} onCreate={vi.fn()} onClose={onClose} />);
     await user.keyboard("{Escape}");
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it("shows tags and includes selected tags in onCreate", async () => {
+    const user = userEvent.setup();
+    const fn = vi.fn();
+    render(<CreateFolderDialog open parentOptions={folders} tags={sampleTags} onCreate={fn} onClose={() => {}} />);
+    expect(screen.getByPlaceholderText(/search tags/i)).toBeInTheDocument();
+    expect(screen.getByText("Production")).toBeInTheDocument();
+    expect(screen.getByText("Staging")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Production"));
+    await user.type(screen.getByPlaceholderText(/folder name/i), "Tagged Folder");
+    await user.click(screen.getByText(/create/i));
+
+    expect(fn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Tagged Folder",
+        parent_id: null,
+        tag_ids: ["t1"],
+      }),
+    );
   });
 });
