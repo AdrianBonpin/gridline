@@ -33,9 +33,9 @@ beforeEach(() => {
 });
 
 describe("App", () => {
-  it("renders Gridline branding on home view", async () => {
+  it("renders home view on mount", async () => {
     render(<App />);
-    expect(await screen.findByText("Gridline")).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText(/search connections/i)).toBeInTheDocument();
   });
 
   it("shows empty state when no connections", async () => {
@@ -45,7 +45,7 @@ describe("App", () => {
 
   it("loads data on mount", async () => {
     render(<App />);
-    await screen.findByText("Gridline");
+    await screen.findByPlaceholderText(/search connections/i);
     expect(useConnectionStore.getState().loading).toBe(false);
   });
 

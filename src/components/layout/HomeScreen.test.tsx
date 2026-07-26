@@ -24,15 +24,10 @@ describe("HomeScreen", () => {
     useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home" });
   });
 
-  it("renders Gridline branding", () => {
-    render(<HomeScreen />);
-    expect(screen.getByText("Gridline")).toBeInTheDocument();
-  });
-
   it("renders SearchBar and ActionRow", () => {
     render(<HomeScreen />);
     expect(screen.getByPlaceholderText(/search connections/i)).toBeInTheDocument();
-    expect(screen.getByText("Saved Connections")).toBeInTheDocument();
+    expect(screen.getByText("New Connection")).toBeInTheDocument();
   });
 
   it("renders empty state when no connections", () => {

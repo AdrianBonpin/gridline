@@ -44,7 +44,7 @@ export function ConnectionGrid({
     const hasItems = visibleFolders.length > 0 || directConnections.length > 0;
     const isSelecting = selectedItemIds.length > 0;
     const activeFolder = currentFolderId
-        ? folders.find((f) => f.id === currentFolderId) ?? null
+        ? (folders.find((f) => f.id === currentFolderId) ?? null)
         : null;
 
     const handleFolderClick = (folderId: string) => {
@@ -112,7 +112,9 @@ export function ConnectionGrid({
                             f.id,
                         ).length;
                         const tagMap = new Map(tags.map((t) => [t.id, t]));
-                        const folderTags = f.tag_ids.map((id) => tagMap.get(id)).filter(Boolean) as import("../../lib/types").Tag[];
+                        const folderTags = f.tag_ids
+                            .map((id) => tagMap.get(id))
+                            .filter(Boolean) as import("../../lib/types").Tag[];
                         return (
                             <div
                                 key={f.id}
@@ -124,7 +126,7 @@ export function ConnectionGrid({
                             >
                                 <button
                                     onClick={() => handleFolderClick(f.id)}
-                                    className="w-full p-3 text-left min-w-0"
+                                    className="w-full p-3 text-left min-w-0 cursor-pointer"
                                 >
                                     <div className="flex items-center gap-2">
                                         <FolderIcon
