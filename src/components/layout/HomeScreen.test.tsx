@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { HomeScreen } from "./HomeScreen";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -38,5 +39,15 @@ describe("HomeScreen", () => {
     useConnectionStore.setState({ connections: [] });
     render(<HomeScreen />);
     expect(screen.getByText(/no connections yet/i)).toBeInTheDocument();
+  });
+
+  it("opens new connection screen when a connection string is typed in search", async () => {
+    const user = userEvent.setup();
+    render(<HomeScreen />);
+    const input = screen.getByPlaceholderText(/search connections/i);
+    await user.type(input, "postgresql://user:pass@localhost:5432/mydb");
+    expect(useUiStore.getState().activeView).toBe("new-connection");
+    expect(useUiStore.getState().prefilledConnectionString).toBe("postgresql://user:pass@localhost:5432/mydb");
+    expect(useUiStore.getState().searchQuery).toBe("");
   });
 });
