@@ -1,15 +1,9 @@
 import { memo } from "react";
 import type { Connection, Tag } from "../../lib/types";
+import { DB_ICONS, DB_LABELS } from "../../lib/dbIcons";
 import { TagBadge } from "../tags/TagBadge";
 import { Check } from "lucide-react";
 import { useUiStore } from "../../stores/uiStore";
-
-const DB_ICONS: Record<string, string> = {
-  postgresql: "🐘", mysql: "🐬", redis: "⚡", sqlite: "🗄️",
-};
-const DB_LABELS: Record<string, string> = {
-  postgresql: "PostgreSQL", mysql: "MySQL", redis: "Redis", sqlite: "SQLite",
-};
 
 interface ConnectionCardProps {
   connection: Connection;
