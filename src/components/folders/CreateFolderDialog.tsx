@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Folder, Tag } from "../../lib/types";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
+import { AnimatedModal } from "../ui/AnimatedModal";
 import { Folder as FolderIcon } from "lucide-react";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { SearchableTagPicker } from "../tags/SearchableTagPicker";
@@ -33,8 +34,6 @@ export function CreateFolderDialog({ open, parentOptions, currentFolderId = null
     }
   }, [open]);
 
-  if (!open) return null;
-
   const handleCreate = () => {
     const trimmed = name.trim();
     if (!trimmed) {
@@ -60,12 +59,8 @@ export function CreateFolderDialog({ open, parentOptions, currentFolderId = null
   };
 
   return (
-    <div className="fixed inset-0 bg-canvas/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose} onKeyDown={handleKeyDown}>
-      <div
-        className="glass rounded-2xl p-6 w-96 shadow-2xl ring-1 ring-white/10"
-        style={{ background: "linear-gradient(145deg, rgba(24,24,27,0.85), rgba(10,10,11,0.65))" }}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <AnimatedModal open={open} onClose={onClose}>
+      <div className="w-96" onKeyDown={handleKeyDown}>
         <h3 className="font-heading text-text text-lg mb-1">New Folder</h3>
         {parentName && (
           <div className="flex items-center gap-1.5 text-xs text-text-muted mb-4">
@@ -91,6 +86,6 @@ export function CreateFolderDialog({ open, parentOptions, currentFolderId = null
           <Button onClick={handleCreate}>Create</Button>
         </div>
       </div>
-    </div>
+    </AnimatedModal>
   );
 }

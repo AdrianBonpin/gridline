@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Folder, Tag } from "../../lib/types";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
+import { AnimatedModal } from "../ui/AnimatedModal";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { SearchableTagPicker } from "../tags/SearchableTagPicker";
 
@@ -54,12 +55,8 @@ export function EditFolderDialog({ open, folder, tags, onSave, onClose }: EditFo
   };
 
   return (
-    <div className="fixed inset-0 bg-canvas/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose} onKeyDown={handleKeyDown}>
-      <div
-        className="glass rounded-2xl p-6 w-96 shadow-2xl ring-1 ring-white/10"
-        style={{ background: "linear-gradient(145deg, rgba(24,24,27,0.85), rgba(10,10,11,0.65))" }}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <AnimatedModal open={open} onClose={onClose}>
+      <div className="w-96" onKeyDown={handleKeyDown}>
         <h3 className="font-heading text-text text-lg mb-4">Edit Folder</h3>
         <Input
           ref={inputRef}
@@ -79,6 +76,6 @@ export function EditFolderDialog({ open, folder, tags, onSave, onClose }: EditFo
           <Button onClick={handleSave}>Save</Button>
         </div>
       </div>
-    </div>
+    </AnimatedModal>
   );
 }
