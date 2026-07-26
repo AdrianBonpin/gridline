@@ -185,4 +185,8 @@ describe("getFolderPathLabel", () => {
   it("returns nested path", () => {
     expect(getFolderPathLabel(folders, "b")).toBe("FolderA → Folder1");
   });
+
+  it("returns root label for non-existent folder", () => {
+    expect(getFolderPathLabel(folders, "missing")).toBe("Root");
+  });
 });
