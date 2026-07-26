@@ -28,7 +28,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function Se
         <Input
           ref={inputRef}
           value={value}
-          placeholder="Search connections, folders, and tags... (or type a database URL to create one)"
+          placeholder="Search connections, folders, tags... or paste a DB URL"
           onChange={(v) => {
             setValue(v);
             if (looksLikeConnectionString(v)) {

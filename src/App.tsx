@@ -34,6 +34,7 @@ export default function App() {
 
     useEffect(() => {
         const title = VIEW_TITLES[activeView] ?? "Gridline";
+        document.title = title;
         try {
             getCurrentWindow().setTitle(title).catch(() => {
                 // Ignore environments where the Tauri API is unavailable (tests, browser)
