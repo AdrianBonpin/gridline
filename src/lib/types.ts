@@ -33,6 +33,8 @@ export interface Connection {
   updated_at: string;
 }
 
+export type NewConnectionMode = "simple" | "detailed";
+
 export interface ConnectionInput {
   name: string;
   db_type: DbType;
@@ -41,6 +43,12 @@ export interface ConnectionInput {
   username?: string | null;
   folder_id?: string | null;
   tag_ids?: string[];
+  // Form-only fields; backend may ignore them until persisted.
+  connection_string?: string | null;
+  environment?: string | null;
+  password?: string | null;
+  database?: string | null;
+  use_keychain?: boolean;
 }
 
 export interface FolderInput {
