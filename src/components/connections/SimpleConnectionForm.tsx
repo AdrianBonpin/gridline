@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { Input } from "../ui/Input";
 import { EnvironmentSelect, type Environment } from "./EnvironmentSelect";
 import { FolderSelect } from "./FolderSelect";
@@ -7,7 +6,7 @@ import { SearchableTagPicker } from "../tags/SearchableTagPicker";
 import type { ConnectionFormData } from "./connectionFormData";
 import type { Folder, Tag } from "../../lib/types";
 
-interface SimpleConnectionFormProps {
+export interface SimpleConnectionFormProps {
   form: ConnectionFormData;
   folders: Folder[];
   tags: Tag[];
@@ -15,12 +14,6 @@ interface SimpleConnectionFormProps {
 }
 
 export function SimpleConnectionForm({ form, folders, tags, onChange }: SimpleConnectionFormProps) {
-  const [connectionString, setConnectionString] = useState(form.connection_string ?? "");
-
-  useEffect(() => {
-    setConnectionString(form.connection_string ?? "");
-  }, [form.connection_string]);
-
   return (
     <div className="space-y-4">
       <div>
@@ -68,11 +61,8 @@ export function SimpleConnectionForm({ form, folders, tags, onChange }: SimpleCo
       <div>
         <label className="block text-sm text-text mb-1.5">Connection String</label>
         <ConnectionStringInput
-          value={connectionString}
-          onChange={(value) => {
-            setConnectionString(value);
-            onChange({ connection_string: value });
-          }}
+          value={form.connection_string}
+          onChange={(value) => onChange({ connection_string: value })}
           placeholder="postgresql://user:password@host:5432/database"
           aria-label="Connection String"
         />
