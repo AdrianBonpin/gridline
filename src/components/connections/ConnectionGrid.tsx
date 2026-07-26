@@ -37,7 +37,9 @@ export function ConnectionGrid({
         activeFolderId !== null && folders.some((f) => f.id === activeFolderId)
             ? activeFolderId
             : null;
-    const visibleFolders = getChildFolders(folders, currentFolderId);
+    const visibleFolders = hasSearch
+        ? []
+        : getChildFolders(folders, currentFolderId);
     const directConnections = connections.filter(
         (c) => c.folder_id === currentFolderId,
     );

@@ -10,7 +10,7 @@ import { ToastContainer } from "./components/ui/Toast";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const VIEW_TITLES: Record<string, string> = {
-  home: "Home",
+  home: "Gridline",
   settings: "Settings",
   "new-connection": "New Connection",
 };
