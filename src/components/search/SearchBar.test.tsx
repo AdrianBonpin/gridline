@@ -20,4 +20,12 @@ describe("SearchBar", () => {
     act(() => vi.advanceTimersByTime(1));
     expect(useUiStore.getState().searchQuery).toBe("prod");
   });
+
+  it("calls onDetectUrl when a connection string is typed", () => {
+    const onDetectUrl = vi.fn();
+    render(<SearchBar onDetectUrl={onDetectUrl} />);
+    const input = screen.getByPlaceholderText(/search/i);
+    fireEvent.change(input, { target: { value: "postgresql://user@host/db" } });
+    expect(onDetectUrl).toHaveBeenCalledWith("postgresql://user@host/db");
+  });
 });
