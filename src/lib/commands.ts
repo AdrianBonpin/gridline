@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Connection, ConnectionInput, Folder, FolderInput, Tag, TagInput, Settings, ImportResult } from "./types";
+import type { ParsedConnectionString } from "./connectionString";
 
 export async function getConnections(): Promise<Connection[]> { return invoke<Connection[]>("get_connections"); }
 export async function createConnection(input: ConnectionInput): Promise<Connection> { return invoke<Connection>("create_connection", { input }); }
@@ -18,3 +19,5 @@ export async function getSettings(): Promise<Settings> { return invoke<Settings>
 export async function updateSetting(key: string, value: string): Promise<void> { return invoke<void>("update_setting", { key, value }); }
 export async function importConnections(json: string): Promise<ImportResult> { return invoke<ImportResult>("import_connections", { json }); }
 export async function exportConnections(): Promise<string> { return invoke<string>("export_connections"); }
+export async function parseConnectionString(input: string): Promise<ParsedConnectionString | null> { return invoke<ParsedConnectionString | null>("parse_connection_string", { input }); }
+export async function testConnection(input: ConnectionInput): Promise<{ ok: boolean; error?: string }> { return invoke<{ ok: boolean; error?: string }>("test_connection", { input }); }
