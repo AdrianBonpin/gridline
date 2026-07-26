@@ -7,7 +7,7 @@ import { DetailedConnectionForm } from "./DetailedConnectionForm";
 import { parseConnectionString } from "../../lib/connectionString";
 import { validateConnectionInput } from "../../lib/utils";
 import { testConnection } from "../../lib/commands";
-import type { DbType, Folder, Tag, NewConnectionMode, ConnectionInput } from "../../lib/types";
+import type { Folder, Tag, NewConnectionMode, ConnectionInput } from "../../lib/types";
 import type { ConnectionFormData } from "./connectionFormData";
 
 interface NewConnectionScreenProps {
@@ -18,13 +18,6 @@ interface NewConnectionScreenProps {
   onSaved?: () => void;
   onCancel?: () => void;
 }
-
-const DEFAULT_PORTS: Record<DbType, number | null> = {
-  postgresql: 5432,
-  mysql: 3306,
-  sqlite: null,
-  redis: 6379,
-};
 
 function createEmptyForm(defaultFolderId: string | null = null): ConnectionFormData {
   return {
@@ -69,7 +62,7 @@ export function NewConnectionScreen({
         connection_string: value,
         db_type: parsed.db_type,
         host: parsed.host,
-        port: parsed.port ?? DEFAULT_PORTS[parsed.db_type],
+        port: parsed.port,
         username: parsed.username,
         password: parsed.password,
         database: parsed.database,
@@ -109,7 +102,7 @@ export function NewConnectionScreen({
     return result.ok ? null : result.error;
   }, [buildPayload]);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     const error = validate();
     if (error) {
       notify(error, "error");
@@ -121,13 +114,14 @@ export function NewConnectionScreen({
       notify("Connection saved", "success");
       onSaved?.();
     } catch (e) {
-      notify(`Failed to save connection: ${e}`, "error");
+      const message = e instanceof Error ? e.message : String(e);
+      notify(`Failed to save connection: ${message}`, "error");
     } finally {
       setSaveLoading(false);
     }
-  };
+  }, [validate, notify, createConnection, buildPayload, onSaved]);
 
-  const handleTest = async () => {
+  const handleTest = useCallback(async () => {
     const error = validate();
     if (error) {
       notify(error, "error");
@@ -142,19 +136,24 @@ export function NewConnectionScreen({
         notify(result.error ?? "Connection failed", "error");
       }
     } catch (e) {
-      notify(`Connection test failed: ${e}`, "error");
+      const message = e instanceof Error ? e.message : String(e);
+      notify(`Connection test failed: ${message}`, "error");
     } finally {
       setTestLoading(false);
     }
-  };
+  }, [validate, notify, testConnection, buildPayload]);
 
-  const onSimpleChange = (updates: Partial<ConnectionFormData>) => {
+  const onSimpleChange = useCallback((updates: Partial<ConnectionFormData>) => {
     if ("connection_string" in updates && updates.connection_string !== undefined) {
       handleConnectionStringChange(updates.connection_string);
     } else {
       updateForm(updates);
     }
-  };
+  }, [handleConnectionStringChange, updateForm]);
+
+  const onToggleMode = useCallback(() => {
+    setMode((m) => (m === "simple" ? "detailed" : "simple"));
+  }, []);
 
   return (
     <ConnectionFormShell
@@ -163,7 +162,7 @@ export function NewConnectionScreen({
       onBack={() => onCancel?.()}
       onTest={handleTest}
       onSave={handleSave}
-      onToggleMode={() => setMode((m) => (m === "simple" ? "detailed" : "simple"))}
+      onToggleMode={onToggleMode}
       testLoading={testLoading}
       saveLoading={saveLoading}
     >
