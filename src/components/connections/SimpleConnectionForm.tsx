@@ -1,5 +1,5 @@
 import { Input } from "../ui/Input";
-import { EnvironmentSelect, type Environment } from "./EnvironmentSelect";
+import { EnvironmentSelect } from "./EnvironmentSelect";
 import { FolderSelect } from "./FolderSelect";
 import { ConnectionStringInput } from "./ConnectionStringInput";
 import { SearchableTagPicker } from "../tags/SearchableTagPicker";
@@ -13,11 +13,18 @@ export interface SimpleConnectionFormProps {
   onChange: (updates: Partial<ConnectionFormData>) => void;
 }
 
-export function SimpleConnectionForm({ form, folders, tags, onChange }: SimpleConnectionFormProps) {
+export function SimpleConnectionForm({
+  form,
+  folders,
+  tags,
+  onChange,
+}: SimpleConnectionFormProps) {
   return (
     <div className="space-y-4">
       <div>
-        <label className="block text-sm text-text mb-1.5">Connection Label</label>
+        <label className="block text-sm text-text mb-1.5">
+          Connection Label
+        </label>
         <Input
           value={form.name}
           onChange={(value) => onChange({ name: value })}
@@ -32,7 +39,7 @@ export function SimpleConnectionForm({ form, folders, tags, onChange }: SimpleCo
       <div>
         <label className="block text-sm text-text mb-1.5">Environment</label>
         <EnvironmentSelect
-          value={form.environment as Environment}
+          value={form.environment}
           onChange={(value) => onChange({ environment: value })}
         />
       </div>
@@ -59,7 +66,9 @@ export function SimpleConnectionForm({ form, folders, tags, onChange }: SimpleCo
       />
 
       <div>
-        <label className="block text-sm text-text mb-1.5">Connection String</label>
+        <label className="block text-sm text-text mb-1.5">
+          Connection String
+        </label>
         <ConnectionStringInput
           value={form.connection_string}
           onChange={(value) => onChange({ connection_string: value })}

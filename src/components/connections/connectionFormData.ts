@@ -1,8 +1,9 @@
 import type { DbType } from "../../lib/types";
+import type { Environment } from "./EnvironmentSelect";
 
 export interface ConnectionFormData {
   name: string;
-  environment: string | null;
+  environment: Environment;
   folder_id: string | null;
   tag_ids: string[];
   connection_string: string;
