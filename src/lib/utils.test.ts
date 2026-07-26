@@ -5,6 +5,7 @@ import {
   validateTagInput,
   filterConnections,
   getDescendantFolderIds,
+  getFolderPathLabel,
 } from "./utils";
 import type { Connection, Folder, Tag } from "./types";
 
@@ -168,5 +169,20 @@ describe("filterConnections", () => {
   });
   it("search matches tag name", () => {
     expect(filterConnections(conns, tags, { query: "cache" })).toEqual([conns[1]]);
+  });
+});
+
+describe("getFolderPathLabel", () => {
+  const folders: Folder[] = [
+    { id: "a", name: "FolderA", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
+    { id: "b", name: "Folder1", parent_id: "a", tag_ids: [], created_at: "", updated_at: "" },
+  ];
+
+  it("returns root label for null", () => {
+    expect(getFolderPathLabel(folders, null)).toBe("Root");
+  });
+
+  it("returns nested path", () => {
+    expect(getFolderPathLabel(folders, "b")).toBe("FolderA → Folder1");
   });
 });

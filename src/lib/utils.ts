@@ -61,6 +61,13 @@ export function getFolderPath(folders: Folder[], folderId: string | null): Folde
   return path;
 }
 
+export function getFolderPathLabel(folders: Folder[], folderId: string | null): string {
+  if (folderId === null) return "Root";
+  const path = getFolderPath(folders, folderId);
+  if (path.length === 0) return "Root";
+  return path.map((f) => f.name).join(" → ");
+}
+
 export function getChildFolders(folders: Folder[], parentId: string | null): Folder[] {
   return folders.filter((f) => f.parent_id === parentId);
 }
