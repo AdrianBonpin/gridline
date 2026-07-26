@@ -1,21 +1,35 @@
+@import "tailwindcss";
 @import "@fontsource/space-mono";
 @import "@fontsource/outfit";
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-canvas: #18122B;
+  --color-surface: #443C68;
+  --color-surface-dark: #393053;
+  --color-border: #393053;
+  --color-accent: #635985;
+  --color-accent-hover: #534b75;
+  --color-accent-muted: #7d75a5;
+  --font-family-heading: "Space Mono", monospace;
+  --font-family-sans: "Outfit", sans-serif;
+}
 
 :root {
   color-scheme: dark;
 }
 
 body {
-  @apply bg-black text-white font-sans antialiased;
+  background-color: var(--color-canvas);
+  color: white;
+  font-family: var(--font-family-sans);
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Clean glassmorphism utility */
-@layer components {
-  .glass {
-    @apply bg-white/5 backdrop-blur-md border border-white/10;
-  }
+@utility glass {
+  background-color: color-mix(in srgb, var(--color-surface) 80%, transparent);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
 }

@@ -46,7 +46,7 @@ export function NewConnectionForm({ onCreate, onCancel }: NewConnectionFormProps
         <select
           value={dbType}
           onChange={(e) => setDbType(e.target.value as DbType)}
-          className="w-full bg-white/5 border border-white/10 rounded-md px-3 py-1.5 text-sm text-white"
+          className="w-full bg-surface border border-border rounded-md px-3 py-1.5 text-sm text-white"
         >
           <option value="postgresql">PostgreSQL</option>
           <option value="mysql">MySQL</option>

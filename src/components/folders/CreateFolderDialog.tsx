@@ -23,12 +23,12 @@ export function CreateFolderDialog({ open, parentOptions, onCreate, onClose }: C
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+    <div className="fixed inset-0 bg-bg/80 flex items-center justify-center z-50" onClick={onClose}>
       <div className="glass rounded-xl p-6 w-80" onClick={(e) => e.stopPropagation()}>
         <h3 className="font-heading mb-3">New Folder</h3>
         <Input placeholder="Folder name" value={name} onChange={setName} />
         <select
-          className="w-full mt-3 bg-white/5 border border-white/10 rounded-md px-3 py-1.5 text-sm text-white"
+          className="w-full mt-3 bg-surface border border-border rounded-md px-3 py-1.5 text-sm text-white"
           value={parentId ?? ""}
           onChange={(e) => setParentId(e.target.value || null)}
         >

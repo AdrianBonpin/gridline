@@ -36,7 +36,7 @@ export function ConnectionGrid({ connections, tags, folders = [], activeFolderId
               className={`rounded-xl p-3 text-left transition-colors border ${
                 activeFolderId === null
                   ? "bg-accent/20 border-accent/50 text-white"
-                  : "bg-white/5 border-white/10 text-white/70 hover:text-white hover:border-white/20"
+                  : "bg-surface border-border text-white/70 hover:text-white hover:border-accent/50"
               }`}
             >
               <div className="font-semibold text-sm">All Connections</div>
@@ -52,7 +52,7 @@ export function ConnectionGrid({ connections, tags, folders = [], activeFolderId
                   className={`rounded-xl p-3 text-left transition-colors border ${
                     isActive
                       ? "bg-accent/20 border-accent/50 text-white"
-                      : "bg-white/5 border-white/10 text-white/70 hover:text-white hover:border-white/20"
+                      : "bg-surface border-border text-white/70 hover:text-white hover:border-accent/50"
                   }`}
                 >
                   <div className="flex items-center gap-2">

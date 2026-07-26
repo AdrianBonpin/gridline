@@ -23,7 +23,7 @@ function ConnectionCardBase({ connection, tags, onTagToggle }: ConnectionCardPro
   return (
     <Card className="hover:border-accent/50">
       <div className="flex items-center gap-3 mb-2">
-        <div className="w-9 h-9 rounded-lg bg-white/5 flex items-center justify-center text-xl">{DB_ICONS[connection.db_type] ?? "❓"}</div>
+        <div className="w-9 h-9 rounded-lg bg-surface flex items-center justify-center text-xl">{DB_ICONS[connection.db_type] ?? "❓"}</div>
         <div className="flex-1 min-w-0">
           <div className="font-semibold truncate">{connection.name}</div>
           <div className="text-xs text-white/50">{DB_LABELS[connection.db_type] ?? connection.db_type}</div>
