@@ -60,17 +60,6 @@ export function NewConnectionScreen({
   const createConnection = useConnectionStore((s) => s.createConnection);
   const notify = useNotificationStore((s) => s.notify);
 
-  useEffect(() => {
-    if (prefilledConnectionString) {
-      handleConnectionStringChange(prefilledConnectionString);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefilledConnectionString]);
-
-  const updateForm = useCallback((updates: Partial<ConnectionFormData>) => {
-    setForm((prev) => ({ ...prev, ...updates }));
-  }, []);
-
   const handleConnectionStringChange = useCallback((value: string) => {
     setForm((prev) => {
       const parsed = parseConnectionString(value);
@@ -86,6 +75,16 @@ export function NewConnectionScreen({
         database: parsed.database,
       };
     });
+  }, []);
+
+  useEffect(() => {
+    if (prefilledConnectionString) {
+      handleConnectionStringChange(prefilledConnectionString);
+    }
+  }, [prefilledConnectionString, handleConnectionStringChange]);
+
+  const updateForm = useCallback((updates: Partial<ConnectionFormData>) => {
+    setForm((prev) => ({ ...prev, ...updates }));
   }, []);
 
   const buildPayload = useCallback((): ConnectionInput => {
