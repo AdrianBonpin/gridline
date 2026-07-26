@@ -1,6 +1,6 @@
 export type DbType = "postgresql" | "mysql" | "sqlite" | "redis";
 
-export type Theme = "dark" | "light";
+export type Theme = "dark" | "light" | "system";
 export type FontSize = "small" | "medium" | "large";
 
 export interface Folder {
