@@ -50,6 +50,21 @@ export function getDescendantFolderIds(folders: Folder[], rootId: string): strin
   return result;
 }
 
+export function getFolderPath(folders: Folder[], folderId: string | null): Folder[] {
+  const folderMap = new Map(folders.map((f) => [f.id, f]));
+  const path: Folder[] = [];
+  let current: Folder | undefined = folderId ? folderMap.get(folderId) : undefined;
+  while (current) {
+    path.unshift(current);
+    current = current.parent_id ? folderMap.get(current.parent_id) : undefined;
+  }
+  return path;
+}
+
+export function getChildFolders(folders: Folder[], parentId: string | null): Folder[] {
+  return folders.filter((f) => f.parent_id === parentId);
+}
+
 export function filterConnections(
   connections: Connection[],
   tags: Tag[],

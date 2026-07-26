@@ -19,6 +19,6 @@ describe("TagBadge", () => {
   });
   it("shows active styling when active", () => {
     render(<TagBadge tag={tag} active={true} onToggle={() => {}} />);
-    expect(screen.getByText("production").className).toContain("brightness");
+    expect(screen.getByText("production").className).toContain("border-border-hover");
   });
 });

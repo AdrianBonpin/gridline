@@ -67,6 +67,27 @@ impl Store {
 
     pub fn delete_folder(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // Get the folder's parent_id to reparent children
+        let parent_id: Option<String> = conn
+            .query_row(
+                "SELECT parent_id FROM folders WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        // Move child folders to the parent
+        conn.execute(
+            "UPDATE folders SET parent_id = ?1 WHERE parent_id = ?2",
+            params![parent_id, id],
+        )
+        .map_err(|e| e.to_string())?;
+        // Move child connections to the parent
+        conn.execute(
+            "UPDATE connections SET folder_id = ?1 WHERE folder_id = ?2",
+            params![parent_id, id],
+        )
+        .map_err(|e| e.to_string())?;
+        // Delete the folder
         conn.execute("DELETE FROM folders WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
         Ok(())

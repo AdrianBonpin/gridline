@@ -13,6 +13,7 @@ const makeConn = (id: string, folder_id: string | null = null): Connection => ({
 const folders: Folder[] = [
   { id: "f1", name: "Work", parent_id: null, created_at: "", updated_at: "" },
   { id: "f2", name: "Personal", parent_id: null, created_at: "", updated_at: "" },
+  { id: "f3", name: "Client A", parent_id: "f1", created_at: "", updated_at: "" },
 ];
 
 describe("ConnectionGrid", () => {
@@ -33,16 +34,17 @@ describe("ConnectionGrid", () => {
     expect(screen.getByText(/no connections match/i)).toBeInTheDocument();
   });
 
-  it("renders folders as cards when provided", () => {
+  it("renders only top-level folders at root", () => {
     render(<ConnectionGrid connections={[]} tags={[]} folders={folders} />);
     expect(screen.getByText("Work")).toBeInTheDocument();
     expect(screen.getByText("Personal")).toBeInTheDocument();
+    expect(screen.queryByText("Client A")).not.toBeInTheDocument();
   });
 
-  it("shows All Connections option and folder counts", () => {
-    render(<ConnectionGrid connections={[makeConn("1", "f1")]} tags={[]} folders={folders} />);
-    expect(screen.getByText(/all connections/i)).toBeInTheDocument();
-    expect(screen.getByText("1 connection")).toBeInTheDocument();
+  it("renders only children of active folder", () => {
+    render(<ConnectionGrid connections={[]} tags={[]} folders={folders} activeFolderId="f1" />);
+    expect(screen.getByText("Client A")).toBeInTheDocument();
+    expect(screen.queryByText("Personal")).not.toBeInTheDocument();
   });
 
   it("calls onFolderSelect with folder id on click", async () => {
@@ -52,10 +54,16 @@ describe("ConnectionGrid", () => {
     expect(fn).toHaveBeenCalledWith("f1");
   });
 
-  it("calls onFolderSelect with null when All Connections clicked", async () => {
+  it("breadcrumb navigates to root", async () => {
     const fn = vi.fn();
     render(<ConnectionGrid connections={[]} tags={[]} folders={folders} activeFolderId="f1" onFolderSelect={fn} />);
     await userEvent.click(screen.getByText(/all connections/i));
     expect(fn).toHaveBeenCalledWith(null);
+  });
+
+  it("shows folder cards", () => {
+    render(<ConnectionGrid connections={[]} tags={[]} folders={folders} />);
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.getByText("Personal")).toBeInTheDocument();
   });
 });

@@ -11,8 +11,7 @@ export function TagBadge({ tag, active = false, onToggle }: TagBadgeProps) {
   return (
     <Comp
       onClick={onToggle ? () => onToggle(tag.id) : undefined}
-      className={`text-xs px-2 py-0.5 rounded ${onToggle ? "cursor-pointer hover:brightness-125" : ""} ${active ? "brightness-150" : ""}`}
-      style={{ backgroundColor: `${tag.color}33`, color: tag.color }}
+      className={`text-xs px-2 py-0.5 rounded-full border border-border bg-surface-raised text-text-muted transition-colors ${onToggle ? "cursor-pointer hover:text-text hover:border-border-hover" : ""} ${active ? "text-text border-border-hover" : ""}`}
     >
       {tag.name}
     </Comp>
