@@ -1,10 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import * as React from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsPage } from "./SettingsPage";
+import { GeneralSettingsTab } from "./GeneralSettingsTab";
+import { TagsSettingsTab } from "./TagsSettingsTab";
+import { AdvancedSettingsTab } from "./AdvancedSettingsTab";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useConnectionStore } from "../../stores/connectionStore";
 import * as commands from "../../lib/commands";
+
+vi.mock("motion/react", () => ({
+  motion: {
+    div: React.forwardRef((props: any, ref: any) => (
+      <div ref={ref} {...props} />
+    )),
+  },
+  AnimatePresence: ({ children }: { children: React.ReactNode }) => (
+    <>{children}</>
+  ),
+}));
 
 vi.mock("../../lib/commands", () => ({
   getSettings: vi.fn().mockResolvedValue({
@@ -38,11 +53,20 @@ const mockFolders = [
   { id: "folder-2", name: "Personal", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
 ];
 
+const baseSettings = {
+  theme: "system" as const,
+  font_size: "medium" as const,
+  default_folder_id: null,
+  confirm_before_delete: true,
+  default_ports: { postgresql: 5432, mysql: 3306, sqlite: null as number | null, redis: 6379 },
+  tag_order: null,
+};
+
 describe("SettingsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useSettingsStore.setState({
-      settings: null,
+      settings: baseSettings,
       loading: false,
       error: null,
     });
@@ -65,53 +89,59 @@ describe("SettingsPage", () => {
     expect(document.querySelectorAll("header span").length).toBeGreaterThanOrEqual(3);
   });
 
-  it("renders all five sidebar tabs", async () => {
+  it("renders all five sidebar tabs with proper ARIA roles", async () => {
     render(<SettingsPage />);
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /general/i })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: /general/i })).toBeInTheDocument();
     });
-    expect(screen.getByRole("button", { name: /editor/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /tags/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /shortcuts/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /advanced/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /editor/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /tags/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /shortcuts/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /advanced/i })).toBeInTheDocument();
+    expect(screen.getByRole("tablist")).toBeInTheDocument();
   });
 
-  it("shows the General tab by default", async () => {
+  it("shows the General tab by default and marks it selected", async () => {
     render(<SettingsPage />);
     await waitFor(() => {
       expect(screen.getByRole("radiogroup", { name: /theme/i })).toBeInTheDocument();
     });
     expect(screen.getByRole("radio", { name: /dark/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /general/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "settings-tab-general");
   });
 
   it("switches to the Editor tab and shows placeholder", async () => {
     const user = userEvent.setup();
     render(<SettingsPage />);
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /editor/i })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: /editor/i })).toBeInTheDocument();
     });
-    await user.click(screen.getByRole("button", { name: /editor/i }));
+    await user.click(screen.getByRole("tab", { name: /editor/i }));
     expect(screen.getByText(/editor settings are coming soon/i)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /editor/i })).toHaveAttribute("aria-selected", "true");
   });
 
-  it("switches to the Tags tab and shows tag management", async () => {
+  it("switches to the Tags tab and shows accessible tag management", async () => {
     const user = userEvent.setup();
     render(<SettingsPage />);
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /tags/i })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: /tags/i })).toBeInTheDocument();
     });
-    await user.click(screen.getByRole("button", { name: /tags/i }));
+    await user.click(screen.getByRole("tab", { name: /tags/i }));
     expect(screen.getByText(/create tag/i)).toBeInTheDocument();
     expect(screen.getByText(/manage tags/i)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /tags/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "settings-tab-tags");
   });
 
   it("switches to the Shortcuts tab and shows placeholder", async () => {
     const user = userEvent.setup();
     render(<SettingsPage />);
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /shortcuts/i })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: /shortcuts/i })).toBeInTheDocument();
     });
-    await user.click(screen.getByRole("button", { name: /shortcuts/i }));
+    await user.click(screen.getByRole("tab", { name: /shortcuts/i }));
     expect(screen.getByText(/shortcut customization is coming soon/i)).toBeInTheDocument();
   });
 
@@ -119,11 +149,13 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     render(<SettingsPage />);
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /advanced/i })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: /advanced/i })).toBeInTheDocument();
     });
-    await user.click(screen.getByRole("button", { name: /advanced/i }));
+    await user.click(screen.getByRole("tab", { name: /advanced/i }));
     expect(screen.getByRole("switch", { name: /confirm before delete/i })).toBeInTheDocument();
     expect(screen.getByText(/default ports/i)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /advanced/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "settings-tab-advanced");
   });
 
   it("calls updateSetting with the correct key and value when a setting changes", async () => {
@@ -136,5 +168,77 @@ describe("SettingsPage", () => {
     await waitFor(() => {
       expect(commands.updateSetting).toHaveBeenCalledWith("theme", "dark");
     });
+  });
+});
+
+describe("GeneralSettingsTab", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      settings: baseSettings,
+      loading: false,
+      error: null,
+    });
+    useConnectionStore.setState({
+      connections: [],
+      folders: mockFolders,
+      tags: [],
+      tagOrder: [],
+      loading: false,
+      error: null,
+    });
+  });
+
+  it("renders appearance, interface, and workspace sections", () => {
+    render(<GeneralSettingsTab />);
+    expect(screen.getByRole("radiogroup", { name: /theme/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/font size/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/default folder/i)).toBeInTheDocument();
+  });
+});
+
+describe("TagsSettingsTab", () => {
+  beforeEach(() => {
+    useConnectionStore.setState({
+      connections: [],
+      folders: [],
+      tags: [
+        { id: "tag-1", name: "Production", color: "#ef4444", created_at: "" },
+        { id: "tag-2", name: "Staging", color: "#3b82f6", created_at: "" },
+      ],
+      tagOrder: ["tag-1", "tag-2"],
+      loading: false,
+      error: null,
+    });
+  });
+
+  it("renders tag creation and management controls with accessible labels", () => {
+    render(<TagsSettingsTab />);
+    expect(screen.getByLabelText(/new tag name/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add/i })).toBeInTheDocument();
+    expect(screen.getByText(/production/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /delete tag production/i })).toBeInTheDocument();
+    const moveUpButtons = screen.getAllByRole("button", { name: /move tag up/i });
+    expect(moveUpButtons.length).toBeGreaterThanOrEqual(2);
+    const moveDownButtons = screen.getAllByRole("button", { name: /move tag down/i });
+    expect(moveDownButtons.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("AdvancedSettingsTab", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      settings: baseSettings,
+      loading: false,
+      error: null,
+    });
+  });
+
+  it("renders safety toggle and labeled default port inputs", () => {
+    render(<AdvancedSettingsTab />);
+    expect(screen.getByRole("switch", { name: /confirm before delete/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/default port for postgresql/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/default port for mysql/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/default port for sqlite/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/default port for redis/i)).toBeInTheDocument();
   });
 });

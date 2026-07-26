@@ -7,6 +7,7 @@ interface InputProps {
   className?: string;
   type?: string;
   disabled?: boolean;
+  "aria-label"?: string;
   onChange?: (value: string) => void;
   onKeyDown?: (e: KeyboardEvent<HTMLInputElement>) => void;
 }
