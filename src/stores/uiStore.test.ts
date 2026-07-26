@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useUiStore } from "./uiStore";
 
-beforeEach(() => useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home" }));
+beforeEach(() => useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home", prefilledConnectionString: null }));
 
 describe("uiStore", () => {
   it("starts on home view", () => expect(useUiStore.getState().activeView).toBe("home"));
@@ -33,5 +33,11 @@ describe("uiStore", () => {
     expect(useUiStore.getState().searchQuery).toBe("");
     expect(useUiStore.getState().activeTagIds).toEqual([]);
     expect(useUiStore.getState().activeView).toBe("settings");
+  });
+  it("sets and clears prefilled connection string", () => {
+    useUiStore.getState().setPrefilledConnectionString("postgresql://a@b/c");
+    expect(useUiStore.getState().prefilledConnectionString).toBe("postgresql://a@b/c");
+    useUiStore.getState().clearPrefilledConnectionString();
+    expect(useUiStore.getState().prefilledConnectionString).toBeNull();
   });
 });

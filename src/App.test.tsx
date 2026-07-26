@@ -16,6 +16,7 @@ vi.mock("./lib/commands", () => ({
     font_size: "medium",
     default_ports: { postgresql: 5432, mysql: 3306, redis: 6379, sqlite: null },
   }),
+  testConnection: vi.fn().mockResolvedValue({ ok: true }),
 }));
 
 beforeEach(() => {
@@ -57,7 +58,7 @@ describe("App", () => {
   it("renders new connection form when activeView is new-connection", async () => {
     useUiStore.setState({ activeView: "new-connection" });
     render(<App />);
-    expect(screen.getByText("New Connection")).toBeInTheDocument();
+    expect(await screen.findByText("Save Connection")).toBeInTheDocument();
   });
 
   it("shows error banner when connectionStore has error", async () => {

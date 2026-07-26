@@ -4,7 +4,7 @@ import { useSettingsStore } from "./stores/settingsStore";
 import { useUiStore } from "./stores/uiStore";
 import { HomeScreen } from "./components/layout/HomeScreen";
 import { SettingsPage } from "./components/settings/SettingsPage";
-import { NewConnectionForm } from "./components/connections/NewConnectionForm";
+import { NewConnectionScreen } from "./components/connections/NewConnectionScreen";
 import { ErrorBanner } from "./components/ui/ErrorBanner";
 import { ToastContainer } from "./components/ui/Toast";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -21,7 +21,11 @@ export default function App() {
     const loadConnections = useConnectionStore((s) => s.loadAll);
     const loadSettings = useSettingsStore((s) => s.load);
     const connectionError = useConnectionStore((s) => s.error);
-    const createConnection = useConnectionStore((s) => s.createConnection);
+    const activeFolderId = useUiStore((s) => s.activeFolderId);
+    const folders = useConnectionStore((s) => s.folders);
+    const tags = useConnectionStore((s) => s.tags);
+    const prefilledConnectionString = useUiStore((s) => s.prefilledConnectionString);
+    const clearPrefilledConnectionString = useUiStore((s) => s.clearPrefilledConnectionString);
 
     useEffect(() => {
         loadConnections();
@@ -51,12 +55,19 @@ export default function App() {
             )}
             {activeView === "settings" && <SettingsPage />}
             {activeView === "new-connection" && (
-                <NewConnectionForm
-                    onCreate={async (input) => {
-                        await createConnection(input);
+                <NewConnectionScreen
+                    defaultFolderId={activeFolderId}
+                    prefilledConnectionString={prefilledConnectionString ?? ""}
+                    folders={folders}
+                    tags={tags}
+                    onSaved={() => {
+                        clearPrefilledConnectionString();
                         setActiveView("home");
                     }}
-                    onCancel={() => setActiveView("home")}
+                    onCancel={() => {
+                        clearPrefilledConnectionString();
+                        setActiveView("home");
+                    }}
                 />
             )}
             {activeView === "home" && <HomeScreen />}
