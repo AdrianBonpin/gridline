@@ -37,7 +37,7 @@ mod tests {
     fn get_settings_returns_defaults() {
         let st = state();
         let s = get_settings_inner(&st).unwrap();
-        assert_eq!(s.theme, "dark");
+        assert_eq!(s.theme, "system");
         assert_eq!(s.font_size, "medium");
     }
 

@@ -321,7 +321,7 @@ impl Store {
         let theme = map
             .get("theme")
             .cloned()
-            .unwrap_or_else(|| "dark".to_string());
+            .unwrap_or_else(|| "system".to_string());
         let font_size = map
             .get("font_size")
             .cloned()
@@ -536,7 +536,7 @@ mod tests {
     fn settings_get_returns_defaults_when_empty() {
         let store = fresh_store();
         let settings = store.get_settings().unwrap();
-        assert_eq!(settings.theme, "dark");
+        assert_eq!(settings.theme, "system");
         assert_eq!(settings.font_size, "medium");
         assert!(settings.confirm_before_delete);
         assert_eq!(
