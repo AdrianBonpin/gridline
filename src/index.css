@@ -23,11 +23,21 @@
   color-scheme: dark;
 }
 
-body {
+html, body {
   background-color: var(--color-canvas);
   color: white;
   font-family: var(--font-family-sans);
   -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+  overflow: hidden;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  min-height: 100%;
 }
 
 @utility glass {
