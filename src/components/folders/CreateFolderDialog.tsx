@@ -47,8 +47,6 @@ export function CreateFolderDialog({ open, parentOptions, currentFolderId = null
     if (e.key === "Enter") {
       e.preventDefault();
       handleCreate();
-    } else if (e.key === "Escape") {
-      onClose();
     }
   };
 
@@ -60,7 +58,7 @@ export function CreateFolderDialog({ open, parentOptions, currentFolderId = null
 
   return (
     <AnimatedModal open={open} onClose={onClose}>
-      <div className="w-96" onKeyDown={handleKeyDown}>
+      <div className="w-96">
         <h3 className="font-heading text-text text-lg mb-1">New Folder</h3>
         {parentName && (
           <div className="flex items-center gap-1.5 text-xs text-text-muted mb-4">
@@ -73,6 +71,7 @@ export function CreateFolderDialog({ open, parentOptions, currentFolderId = null
           placeholder="Folder name"
           value={name}
           onChange={setName}
+          onKeyDown={handleKeyDown}
         />
         {tags.length > 0 && (
           <SearchableTagPicker

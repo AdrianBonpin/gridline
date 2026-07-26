@@ -12,8 +12,6 @@ interface ConfirmDialogProps {
 }
 
 export function ConfirmDialog({ open, title, message, confirmLabel = "Confirm", confirmVariant = "primary", onConfirm, onCancel }: ConfirmDialogProps) {
-  if (!open) return null;
-
   return (
     <AnimatedModal open={open} onClose={onCancel}>
       <div className="w-80">

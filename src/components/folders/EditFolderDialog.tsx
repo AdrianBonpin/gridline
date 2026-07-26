@@ -28,9 +28,8 @@ export function EditFolderDialog({ open, folder, tags, onSave, onClose }: EditFo
     }
   }, [open, folder]);
 
-  if (!open || !folder) return null;
-
   const handleSave = () => {
+    if (!folder) return;
     const trimmed = name.trim();
     if (!trimmed) {
       notify("Name must not be empty", "error");
@@ -43,8 +42,6 @@ export function EditFolderDialog({ open, folder, tags, onSave, onClose }: EditFo
     if (e.key === "Enter") {
       e.preventDefault();
       handleSave();
-    } else if (e.key === "Escape") {
-      onClose();
     }
   };
 
@@ -56,26 +53,29 @@ export function EditFolderDialog({ open, folder, tags, onSave, onClose }: EditFo
 
   return (
     <AnimatedModal open={open} onClose={onClose}>
-      <div className="w-96" onKeyDown={handleKeyDown}>
-        <h3 className="font-heading text-text text-lg mb-4">Edit Folder</h3>
-        <Input
-          ref={inputRef}
-          placeholder="Folder name"
-          value={name}
-          onChange={setName}
-        />
-        {tags.length > 0 && (
-          <SearchableTagPicker
-            tags={tags}
-            selectedTagIds={selectedTagIds}
-            onToggle={toggleTag}
+      {folder ? (
+        <div className="w-96">
+          <h3 className="font-heading text-text text-lg mb-4">Edit Folder</h3>
+          <Input
+            ref={inputRef}
+            placeholder="Folder name"
+            value={name}
+            onChange={setName}
+            onKeyDown={handleKeyDown}
           />
-        )}
-        <div className="flex justify-end gap-2 mt-4">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleSave}>Save</Button>
+          {tags.length > 0 && (
+            <SearchableTagPicker
+              tags={tags}
+              selectedTagIds={selectedTagIds}
+              onToggle={toggleTag}
+            />
+          )}
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button onClick={handleSave}>Save</Button>
+          </div>
         </div>
-      </div>
+      ) : null}
     </AnimatedModal>
   );
 }

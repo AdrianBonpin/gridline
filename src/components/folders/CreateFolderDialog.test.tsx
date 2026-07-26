@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, waitForElementToBeRemoved } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import "@testing-library/jest-dom";
 import { CreateFolderDialog } from "./CreateFolderDialog";
 
 const folders = [
@@ -34,5 +35,25 @@ describe("CreateFolderDialog", () => {
     render(<CreateFolderDialog open parentOptions={folders} tags={[]} onCreate={fn} onClose={() => {}} />);
     await user.click(screen.getByText(/create/i));
     expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("removes content from DOM after exit animation", async () => {
+    const { rerender } = render(
+      <CreateFolderDialog open parentOptions={folders} tags={[]} onCreate={vi.fn()} onClose={() => {}} />,
+    );
+    expect(screen.getByText("New Folder")).toBeInTheDocument();
+    rerender(
+      <CreateFolderDialog open={false} parentOptions={folders} tags={[]} onCreate={vi.fn()} onClose={() => {}} />,
+    );
+    await waitForElementToBeRemoved(() => screen.queryByText("New Folder"));
+    expect(screen.queryByText("New Folder")).not.toBeInTheDocument();
+  });
+
+  it("calls onClose when Escape is pressed", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<CreateFolderDialog open parentOptions={folders} tags={[]} onCreate={vi.fn()} onClose={onClose} />);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 });

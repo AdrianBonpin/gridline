@@ -1,4 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
+import { useEffect } from "react";
 import type { ReactNode } from "react";
 
 interface AnimatedModalProps {
@@ -8,6 +9,19 @@ interface AnimatedModalProps {
 }
 
 export function AnimatedModal({ open, onClose, children }: AnimatedModalProps) {
+  useEffect(() => {
+    if (!open) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [open, onClose]);
+
   return (
     <AnimatePresence>
       {open && (
