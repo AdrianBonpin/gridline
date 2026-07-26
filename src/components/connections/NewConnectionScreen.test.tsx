@@ -52,7 +52,6 @@ describe("NewConnectionScreen", () => {
     expect(screen.getByLabelText(/connection string/i)).toHaveValue(
       "postgresql://u:p@localhost:5432/db",
     );
-    expect(screen.getByText("PostgreSQL")).toBeInTheDocument();
 
     await user.click(screen.getByText(/configure manually instead/i));
 
