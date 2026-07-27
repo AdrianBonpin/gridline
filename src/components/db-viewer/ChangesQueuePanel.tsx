@@ -1,7 +1,11 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { X, Check, ChevronUp, ChevronDown } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useUiStore } from "../../stores/uiStore";
+import { useNotificationStore } from "../../stores/notificationStore";
+import * as cmd from "../../lib/commands";
 import type { QueueItem, QueueStatus } from "../../stores/dbViewerStore";
+import type { ChangeItem } from "../../lib/types";
 
 const statusBg: Record<QueueStatus, string> = {
   pending: "bg-accent/5",
@@ -51,7 +55,49 @@ function StatusIndicator({ status }: { status: QueueStatus }) {
 export function ChangesQueuePanel() {
   const changesQueue = useDbViewerStore((state) => state.changesQueue);
   const cancelChange = useDbViewerStore((state) => state.cancelChange);
+  const markChangeCommitted = useDbViewerStore((state) => state.markChangeCommitted);
+  const markChangeFailed = useDbViewerStore((state) => state.markChangeFailed);
+  const notify = useNotificationStore((state) => state.notify);
   const [expanded, setExpanded] = useState(true);
+
+  const handleCommitAll = useCallback(async () => {
+    const connectionId = useUiStore.getState().activeConnectionId;
+    if (!connectionId) {
+      notify("No active connection", "error");
+      return;
+    }
+
+    const pending = useDbViewerStore.getState().changesQueue.filter(
+      (c) => c.status === "pending",
+    );
+    if (pending.length === 0) return;
+
+    let committedCount = 0;
+
+    for (const change of pending) {
+      try {
+        const payload = {
+          id: change.id,
+          type: change.type,
+          sql: change.sql,
+          status: "pending" as const,
+          description: change.description ?? null,
+        } satisfies ChangeItem;
+        await cmd.executeChange(connectionId, payload);
+        markChangeCommitted(change.id);
+        committedCount++;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        markChangeFailed(change.id, msg);
+        notify(`Change failed: ${msg}`, "error");
+        break;
+      }
+    }
+
+    if (committedCount > 0) {
+      notify(`${committedCount} change(s) committed`, "success");
+    }
+  }, [markChangeCommitted, markChangeFailed, notify]);
 
   if (changesQueue.length === 0) {
     return null;
@@ -90,7 +136,10 @@ export function ChangesQueuePanel() {
         <button
           type="button"
           disabled={pendingCount === 0}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleCommitAll();
+          }}
           className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
         >
           Commit All
