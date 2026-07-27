@@ -199,11 +199,11 @@ describe("QueryResult", () => {
         [1, "Alice"],
         [2, "Bob"],
       ],
-      row_count: 2,
+      total_rows: 2, page: 1, page_size: 50,
       execution_time_ms: 12.5,
     };
     expect(result.columns.length).toBe(3);
-    expect(result.row_count).toBe(2);
+    expect(result.total_rows).toBe(2);
     expect(result.execution_time_ms).toBe(12.5);
   });
 
@@ -211,7 +211,7 @@ describe("QueryResult", () => {
     const result: QueryResult = {
       columns: [],
       rows: [],
-      row_count: 0,
+      total_rows: 0, page: 1, page_size: 50,
       error: "Syntax error near FROM",
     };
     expect(result.error).toBe("Syntax error near FROM");
@@ -221,7 +221,7 @@ describe("QueryResult", () => {
     const result: QueryResult = {
       columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
       rows: [],
-      row_count: 0,
+      total_rows: 0, page: 1, page_size: 50,
       execution_time_ms: null,
     };
     expect(result.execution_time_ms).toBeNull();
@@ -314,13 +314,13 @@ describe("DbViewerTab", () => {
       result: {
         columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null},{name:"name",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
         rows: [],
-        row_count: 0,
+        total_rows: 0, page: 1, page_size: 50,
       },
       created_at: "2024-01-01T00:00:00Z",
       updated_at: "2024-01-01T00:00:00Z",
     };
     expect(tab.query).toBe("SELECT * FROM users");
-    expect(tab.result?.row_count).toBe(0);
+    expect(tab.result?.total_rows).toBe(0);
   });
 
   it("can include changes array", () => {

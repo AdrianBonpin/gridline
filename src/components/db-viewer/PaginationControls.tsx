@@ -11,13 +11,13 @@ export function PaginationControls() {
     return null;
   }
 
-  const { data, page, pageSize } = activeTab;
-  const totalRows = data.row_count;
-  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const { data } = activeTab;
+  const totalRows = data.total_rows;
+  const totalPages = Math.max(1, Math.ceil(totalRows / activeTab.pageSize));
 
-  const clampedPage = Math.max(1, Math.min(page, totalPages));
-  const startRow = (clampedPage - 1) * pageSize + 1;
-  const endRow = Math.min(clampedPage * pageSize, totalRows);
+  const clampedPage = Math.max(1, Math.min(activeTab.page, totalPages));
+  const startRow = (clampedPage - 1) * activeTab.pageSize + 1;
+  const endRow = Math.min(clampedPage * activeTab.pageSize, totalRows);
 
   const canGoPrev = clampedPage > 1;
   const canGoNext = clampedPage < totalPages;

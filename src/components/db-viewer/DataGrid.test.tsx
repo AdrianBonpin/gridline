@@ -10,7 +10,7 @@ const mockData: QueryResult = {
     [1, "Alice", "alice@example.com"],
     [2, "Bob", null],
   ],
-  row_count: 2,
+  total_rows: 2, page: 1, page_size: 50,
 };
 
 describe("DataGrid", () => {

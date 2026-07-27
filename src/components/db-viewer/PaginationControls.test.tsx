@@ -10,7 +10,7 @@ const user = userEvent.setup();
 const mockData: QueryResult = {
   columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
   rows: Array.from({ length: 100 }, (_, i) => [i + 1]),
-  row_count: 100,
+  total_rows: 100, page: 1, page_size: 50,
 };
 
 describe("PaginationControls", () => {

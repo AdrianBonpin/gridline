@@ -136,7 +136,9 @@ export interface ColumnInfo {
 export interface QueryResult {
   columns: ColumnInfo[];
   rows: unknown[][];
-  row_count: number;
+  total_rows: number;
+  page: number;
+  page_size: number;
   execution_time_ms?: number | null;
   error?: string | null;
 }

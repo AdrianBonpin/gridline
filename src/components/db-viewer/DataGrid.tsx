@@ -137,7 +137,7 @@ export function DataGrid() {
           {rows.map((row, rowIndex) => (
             <tr
               key={rowIndex}
-              className="border-b border-border/50 hover:bg-surface/50"
+              className="border-b border-border hover:bg-surface/50"
             >
               {row.map((cell, ci) => {
                 const isNull = cell === null || cell === undefined;
