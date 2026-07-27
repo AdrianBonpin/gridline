@@ -496,6 +496,8 @@ export function TableControls({
   const setPageSize = useDbViewerStore((s) => s.setPageSize);
   const openTab = useDbViewerStore((s) => s.openTab);
   const addChange = useDbViewerStore((s) => s.addChange);
+  const changesQueue = useDbViewerStore((s) => s.changesQueue);
+  const cancelChange = useDbViewerStore((s) => s.cancelChange);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
@@ -504,6 +506,7 @@ export function TableControls({
   const [sortOpen, setSortOpen] = useState(false);
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(0);
   const [autoRefreshOpen, setAutoRefreshOpen] = useState(false);
 
@@ -700,6 +703,65 @@ export function TableControls({
 
       {/* ── right side ─────────────────────────────── */}
       <div className="flex items-center gap-2">
+        {/* Action queue button */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setQueueOpen((v) => !v)}
+            className={`relative flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors ${
+              changesQueue.some((c) => c.status === "pending")
+                ? "text-amber-400 hover:bg-surface-raised"
+                : "text-text-muted hover:text-text hover:bg-surface-raised"
+            }`}
+            aria-label="Action queue"
+            title="Action queue"
+          >
+            <span className="text-xs font-medium">Queue</span>
+            {changesQueue.filter((c) => c.status === "pending").length > 0 && (
+              <span className="inline-flex items-center justify-center min-w-[16px] h-4 rounded-full bg-amber-500 text-[10px] font-bold text-white px-1">
+                {changesQueue.filter((c) => c.status === "pending").length}
+              </span>
+            )}
+          </button>
+          <DropdownMenu open={queueOpen} setOpen={setQueueOpen} align="right">
+            <div className="px-2 py-1 text-[10px] text-text-muted uppercase tracking-wider">
+              Changes Queue ({changesQueue.filter((c) => c.status === "pending").length} pending)
+            </div>
+            <div className="max-h-64 overflow-y-auto">
+              {changesQueue.length === 0 && (
+                <div className="px-3 py-2 text-xs text-text-muted">No changes queued</div>
+              )}
+              {changesQueue.map((item) => (
+                <div
+                  key={item.id}
+                  className={`flex items-center justify-between px-3 py-1.5 text-xs ${
+                    item.status === "pending" ? "text-text" : "text-text-muted/50"
+                  }`}
+                >
+                  <span className="truncate flex-1">
+                    <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${
+                      item.status === "pending" ? "bg-amber-500"
+                      : item.status === "committed" ? "bg-emerald-500"
+                      : "bg-red-500"
+                    }`} />
+                    {item.type.toUpperCase()} {item.table}
+                    {item.description && <span className="ml-1 text-text-muted/50">— {item.description}</span>}
+                  </span>
+                  {item.status === "pending" && (
+                    <button
+                      type="button"
+                      onClick={() => cancelChange(item.id)}
+                      className="text-text-muted hover:text-red-400 ml-2 shrink-0"
+                      title="Cancel"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </DropdownMenu>
+        </div>
         {/* Selected count + bulk actions */}
         {selectedCount > 0 && (
           <>

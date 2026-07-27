@@ -1,21 +1,41 @@
-import { RefreshCw, Plus, Search } from "lucide-react";
-import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { RefreshCw, Plus, Search, Pencil } from "lucide-react";
 import { SelectDropdown } from "../ui/SelectDropdown";
 import { Tooltip } from "../ui/Tooltip";
 
-export function DbViewerToolbar() {
-  const databases = useDbViewerStore((s) => s.databases);
-  const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
-  const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
-  const schemas = useDbViewerStore((s) => s.schemas);
-  const currentSchema = useDbViewerStore((s) => s.currentSchema);
-  const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
+export function DbViewerToolbar({
+  databases,
+  currentDatabase,
+  setCurrentDatabase,
+  schemas,
+  currentSchema,
+  setCurrentSchema,
+  onEdit,
+}: {
+  databases: string[];
+  currentDatabase: string | null;
+  setCurrentDatabase: (db: string | null) => void;
+  schemas: string[];
+  currentSchema: string | null;
+  setCurrentSchema: (schema: string | null) => void;
+  onEdit?: () => void;
+}) {
 
   return (
     <div className="p-3 border-b border-border space-y-2">
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold text-text">Tables</span>
         <div className="flex items-center gap-1">
+          {onEdit && (
+            <Tooltip content="Edit Connection" side="bottom">
+              <button
+                aria-label="Edit Connection"
+                onClick={onEdit}
+                className="w-7 h-7 rounded-md flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised cursor-pointer"
+              >
+                <Pencil size={14} />
+              </button>
+            </Tooltip>
+          )}
           <Tooltip content="Refresh Database" side="bottom">
             <button
               aria-label="Refresh"

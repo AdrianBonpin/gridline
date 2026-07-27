@@ -323,6 +323,54 @@ impl Store {
         Ok(())
     }
 
+    pub fn update_connection(&self, id: &str, input: ConnectionInput) -> Result<Connection, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        conn.execute(
+            "UPDATE connections SET name=?1, db_type=?2, host=?3, port=?4, username=?5, database=?6, folder_id=?7, ssh_host=?8, ssh_port=?9, ssh_user=?10, ssh_auth_method=?11, ssh_private_key_path=?12, ssl_mode=?13, ssl_ca_path=?14, ssl_cert_path=?15, ssl_key_path=?16, environment=?17, updated_at=?18 WHERE id=?19",
+            params![
+                input.name, input.db_type, input.host, input.port, input.username,
+                input.database, input.folder_id, input.ssh_host, input.ssh_port,
+                input.ssh_user, input.ssh_auth_method, input.ssh_private_key_path,
+                input.ssl_mode, input.ssl_ca_path, input.ssl_cert_path, input.ssl_key_path,
+                input.environment, now, id
+            ],
+        ).map_err(|e| e.to_string())?;
+        // Update tags
+        conn.execute("DELETE FROM connection_tags WHERE connection_id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        for tag_id in &input.tag_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO connection_tags (connection_id, tag_id) VALUES (?1, ?2)",
+                params![id, tag_id],
+            ).map_err(|e| e.to_string())?;
+        }
+        Ok(Connection {
+            id: id.to_string(),
+            name: input.name,
+            db_type: input.db_type,
+            host: input.host,
+            port: input.port,
+            username: input.username,
+            database: input.database,
+            folder_id: input.folder_id,
+            keychain_ref: None,
+            environment: input.environment,
+            ssh_host: input.ssh_host,
+            ssh_port: input.ssh_port,
+            ssh_user: input.ssh_user,
+            ssh_auth_method: input.ssh_auth_method,
+            ssh_private_key_path: input.ssh_private_key_path,
+            ssl_mode: input.ssl_mode,
+            ssl_ca_path: input.ssl_ca_path,
+            ssl_cert_path: input.ssl_cert_path,
+            ssl_key_path: input.ssl_key_path,
+            tag_ids: input.tag_ids.clone(),
+            created_at: String::new(), // not updated
+            updated_at: now,
+        })
+    }
+
     pub fn get_settings(&self) -> Result<Settings, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut map: HashMap<String, String> = HashMap::new();

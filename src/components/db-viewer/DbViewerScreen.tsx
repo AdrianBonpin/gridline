@@ -7,8 +7,10 @@ import { TabBar } from "./TabBar";
 import { DataGrid } from "./DataGrid";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
 import { TableControls } from "./TableControls";
+import { EditConnectionModal } from "./EditConnectionModal";
 import { useDbConnection } from "../../hooks/useDbConnection";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useConnectionStore } from "../../stores/connectionStore";
 import { ConnectionDropBanner } from "./ConnectionDropBanner";
 import * as cmd from "../../lib/commands";
 import type { ColumnInfo } from "../../lib/types";
@@ -81,6 +83,9 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
   const [filterRules, setFilterRules] = useState<FilterRule[]>([]);
   const [sortRules, setSortRules] = useState<SortRule[]>([]);
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const connections = useConnectionStore((s) => s.connections);
+  const currentConnection = connections.find((c) => c.id === connectionId) ?? null;
   const panelResizeRef = useRef<{ startX: number; startW: number } | null>(null);
 
   const activeTab = useDbViewerStore((s) => {
@@ -89,6 +94,12 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
   });
   const setTabData = useDbViewerStore((s) => s.setTabData);
   const setTabError = useDbViewerStore((s) => s.setTabError);
+  const databases = useDbViewerStore((s) => s.databases);
+  const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
+  const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
+  const schemas = useDbViewerStore((s) => s.schemas);
+  const currentSchema = useDbViewerStore((s) => s.currentSchema);
+  const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
   const fetchingRef = useRef<Set<string>>(new Set());
 
   const fetchData = useCallback(async (tab: NonNullable<typeof activeTab>) => {
@@ -111,7 +122,22 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
     }
   }, [connectionId, setTabData, setTabError]);
 
-  // Auto-fetch when tab needs data (initial load, page change, refresh)
+  // Cmd+W / Ctrl+W: close current tab, or navigate home if no tabs
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "w") {
+        e.preventDefault();
+        const state = useDbViewerStore.getState();
+        if (state.activeTabId) {
+          state.closeTab(state.activeTabId);
+        } else {
+          onHome();
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onHome]);
   useEffect(() => {
     if (!activeTab) return;
     if (!activeTab.loading) return;
@@ -184,7 +210,15 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
           )}
           <div className="flex flex-1 min-h-0 overflow-hidden">
             <div className="border-r border-border flex flex-col shrink-0" style={{ width: tablePanelWidth }}>
-              <DbViewerToolbar />
+              <DbViewerToolbar
+                databases={databases}
+                currentDatabase={currentDatabase}
+                setCurrentDatabase={setCurrentDatabase}
+                schemas={schemas}
+                currentSchema={currentSchema}
+                setCurrentSchema={setCurrentSchema}
+                onEdit={() => setEditModalOpen(true)}
+              />
               <div className="flex-1 overflow-y-auto" style={{ overscrollBehavior: "none" }}>
                 <TableTree />
               </div>
@@ -229,6 +263,14 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
           </div>
           <ChangesQueuePanel />
         </div>
+        {currentConnection && (
+          <EditConnectionModal
+            connection={currentConnection}
+            open={editModalOpen}
+            onClose={() => setEditModalOpen(false)}
+            onSaved={() => {}}
+          />
+        )}
       </div>
     </TooltipProvider>
   );

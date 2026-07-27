@@ -54,6 +54,7 @@ pub fn run() {
             greet,
             connections::get_connections,
             connections::create_connection,
+            connections::update_connection,
             connections::delete_connection,
             connections::add_connection_tags,
             folders::get_folders,

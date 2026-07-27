@@ -4,6 +4,15 @@ import { DbViewerToolbar } from "./DbViewerToolbar";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { TooltipProvider } from "../ui/Tooltip";
 
+const defaultProps = {
+  databases: [] as string[],
+  currentDatabase: null as string | null,
+  setCurrentDatabase: () => {},
+  schemas: [] as string[],
+  currentSchema: null as string | null,
+  setCurrentSchema: () => {},
+};
+
 describe("DbViewerToolbar", () => {
   beforeEach(() => {
     useDbViewerStore.getState().reset();
@@ -12,22 +21,20 @@ describe("DbViewerToolbar", () => {
   it("renders Tables label", () => {
     render(
       <TooltipProvider>
-        <DbViewerToolbar />
+        <DbViewerToolbar {...defaultProps} />
       </TooltipProvider>,
     );
     expect(screen.getByText("Tables")).toBeInTheDocument();
   });
 
   it("renders database dropdown when multiple databases", () => {
-    useDbViewerStore.setState({
-      databases: ["mydb", "otherdb"],
-      schemas: ["public"],
-      currentDatabase: "mydb",
-      currentSchema: "public",
-    });
     render(
       <TooltipProvider>
-        <DbViewerToolbar />
+        <DbViewerToolbar
+          {...defaultProps}
+          databases={["mydb", "otherdb"]}
+          currentDatabase="mydb"
+        />
       </TooltipProvider>,
     );
     expect(screen.getByText("mydb")).toBeInTheDocument();
@@ -36,7 +43,7 @@ describe("DbViewerToolbar", () => {
   it("renders refresh and create table buttons", () => {
     render(
       <TooltipProvider>
-        <DbViewerToolbar />
+        <DbViewerToolbar {...defaultProps} />
       </TooltipProvider>,
     );
     expect(screen.getByLabelText(/refresh/i)).toBeInTheDocument();

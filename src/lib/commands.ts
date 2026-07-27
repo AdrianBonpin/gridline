@@ -10,6 +10,7 @@ import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderI
 
 export async function getConnections(): Promise<Connection[]> { return invoke<Connection[]>("get_connections"); }
 export async function createConnection(input: ConnectionInput): Promise<Connection> { return invoke<Connection>("create_connection", { input }); }
+export async function updateConnection(id: string, input: ConnectionInput): Promise<Connection> { return invoke<Connection>("update_connection", { id, input }); }
 export async function deleteConnection(id: string): Promise<void> { return invoke<void>("delete_connection", { id }); }
 export async function addConnectionTags(connectionId: string, tagIds: string[]): Promise<void> { return invoke<void>("add_connection_tags", { connectionId, tagIds }); }
 export async function getFolders(): Promise<Folder[]> { return invoke<Folder[]>("get_folders"); }

@@ -49,6 +49,16 @@ pub fn create_connection_inner(
     store.create_connection(input)
 }
 
+pub fn update_connection_inner(
+    state: &Mutex<Store>,
+    id: String,
+    input: ConnectionInput,
+) -> Result<Connection, String> {
+    validate(&input)?;
+    let store = state.lock().map_err(|e| e.to_string())?;
+    store.update_connection(&id, input)
+}
+
 pub fn delete_connection_inner(state: &Mutex<Store>, id: &str) -> Result<(), String> {
     let store = state.lock().map_err(|e| e.to_string())?;
     store.delete_connection(id)
@@ -74,6 +84,15 @@ pub fn create_connection(
     input: ConnectionInput,
 ) -> Result<Connection, String> {
     create_connection_inner(&state.db_store, input)
+}
+
+#[tauri::command]
+pub fn update_connection(
+    state: tauri::State<crate::AppState>,
+    id: String,
+    input: ConnectionInput,
+) -> Result<Connection, String> {
+    update_connection_inner(&state.db_store, id, input)
 }
 
 #[tauri::command]
