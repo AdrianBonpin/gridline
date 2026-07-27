@@ -43,11 +43,11 @@ describe("DataGrid", () => {
     expect(error).toHaveClass("text-red-500");
   });
 
-  it("shows data loading hint when no data", () => {
+  it("shows loading state when first opening a tab", () => {
     useDbViewerStore.getState().openTab("public", "users");
 
     render(<DataGrid rows={[]} />);
-    expect(screen.getByText(/Loading table data/i)).toBeInTheDocument();
+    expect(screen.getByText(/Loading/i)).toBeInTheDocument();
   });
 
   it("renders column headers and row data when loaded", () => {

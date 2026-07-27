@@ -43,7 +43,7 @@ const initialTab = (schema: string, table: string): ViewerTab => ({
   table,
   page: 1,
   pageSize: 50,
-  loading: false,
+  loading: true,
   error: null,
   data: null,
 });
