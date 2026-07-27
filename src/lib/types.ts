@@ -26,11 +26,22 @@ export interface Connection {
   host: string;
   port: number | null;
   username: string | null;
+  database?: string | null;
   folder_id: string | null;
   keychain_ref: string | null;
   tag_ids: string[];
   created_at: string;
   updated_at: string;
+  // SSH/SSL fields (persisted, excluding secrets)
+  ssh_host?: string | null;
+  ssh_port?: number | null;
+  ssh_user?: string | null;
+  ssh_auth_method?: string | null;
+  ssh_private_key_path?: string | null;
+  ssl_mode?: string | null;
+  ssl_ca_path?: string | null;
+  ssl_cert_path?: string | null;
+  ssl_key_path?: string | null;
 }
 
 export type NewConnectionMode = "simple" | "detailed";
@@ -49,6 +60,18 @@ export interface ConnectionInput {
   password?: string | null;
   database?: string | null;
   use_keychain?: boolean;
+  // SSH tunnel fields
+  ssh_host?: string | null;
+  ssh_port?: number | null;
+  ssh_user?: string | null;
+  ssh_auth_method?: "password" | "key" | null;
+  ssh_private_key_path?: string | null;
+  ssh_passphrase?: string | null;
+  // SSL/TLS fields
+  ssl_mode?: "disable" | "require" | "verify-ca" | "verify-full" | null;
+  ssl_ca_path?: string | null;
+  ssl_cert_path?: string | null;
+  ssl_key_path?: string | null;
 }
 
 export interface FolderInput {
@@ -71,7 +94,7 @@ export interface Settings {
   tag_order: string | null;
 }
 
-export type ActiveView = "home" | "settings" | "new-connection";
+export type ActiveView = "home" | "settings" | "new-connection" | "db-viewer";
 
 export interface FilterState {
   query: string;
@@ -89,4 +112,75 @@ export interface ImportResult {
   imported: number;
   skipped: number;
   skippedRecords: { index: number; reason: string }[];
+}
+
+// ─── DB Viewer Types ────────────────────────────────────────────
+
+export interface TableInfo {
+  schema: string;
+  name: string;
+  type: "table" | "view" | "materialized_view" | "foreign_table";
+  owner?: string | null;
+  size?: string | null;
+  rows?: number | null;
+  description?: string | null;
+}
+
+export interface ColumnInfo {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  is_primary_key: boolean;
+  default_value?: string | null;
+  is_unique?: boolean;
+  is_foreign_key?: boolean;
+  references?: { table: string; column: string } | null;
+  comment?: string | null;
+}
+
+export interface QueryResult {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  row_count: number;
+  execution_time_ms?: number | null;
+  error?: string | null;
+}
+
+export type ChangeStatus = "pending" | "applied" | "error";
+
+export type ChangeItemType =
+  | "create_table"
+  | "alter_table"
+  | "drop_table"
+  | "insert"
+  | "update"
+  | "delete"
+  | "create_index"
+  | "drop_index";
+
+export interface ChangeItem {
+  type: ChangeItemType;
+  sql: string;
+  status: ChangeStatus;
+  error?: string | null;
+  id: string;
+  description?: string | null;
+}
+
+export interface DbViewerTab {
+  id: string;
+  connection_id: string;
+  title: string;
+  query?: string | null;
+  result?: QueryResult | null;
+  changes?: ChangeItem[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConnectionTestResult {
+  success: boolean;
+  error?: string | null;
+  server_version?: string | null;
+  latency_ms?: number | null;
 }
