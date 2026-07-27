@@ -6,6 +6,7 @@
 use crate::db::pool::DbConfig;
 use crate::models::db_viewer::{Change, ColumnInfo, QueryResult, TableInfo};
 use tauri::State;
+use tokio_postgres::types::ToSql;
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -94,7 +95,157 @@ pub fn build_insert_sql(schema: &str, table: &str, columns: &[String]) -> String
     )
 }
 
-/// Parse JSON query result rows into `TableInfo` structs.
+// ---------------------------------------------------------------------------
+// Change SQL builders (PostgreSQL `$N` placeholders)
+// ---------------------------------------------------------------------------
+//
+// tokio-postgres uses `$1, $2, ...` positional placeholders (not `?`), so the
+// `?`-based builders above cannot be used directly for PG execution. These
+// helpers emit `$N` placeholders and return the bound values in the order they
+// appear in the statement, so callers can bind them positionally.
+
+/// Build a PostgreSQL UPDATE statement.
+///
+/// Returns `(sql, params)` where `params` is ordered SET values first, then
+/// primary-key (WHERE) values. Placeholders are `$1, $2, ...` in the same
+/// order.
+pub fn build_pg_update_sql(
+    schema: &str,
+    table: &str,
+    primary_key: &[(String, serde_json::Value)],
+    new_data: &[(String, serde_json::Value)],
+) -> (String, Vec<serde_json::Value>) {
+    let mut params: Vec<serde_json::Value> = Vec::new();
+    let set_clause: Vec<String> = new_data
+        .iter()
+        .map(|(col, val)| {
+            params.push(val.clone());
+            format!("\"{}\" = ${}", col, params.len())
+        })
+        .collect();
+    let where_clause: Vec<String> = primary_key
+        .iter()
+        .map(|(col, val)| {
+            params.push(val.clone());
+            format!("\"{}\" = ${}", col, params.len())
+        })
+        .collect();
+    (
+        format!(
+            "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
+            schema,
+            table,
+            set_clause.join(", "),
+            where_clause.join(" AND ")
+        ),
+        params,
+    )
+}
+
+/// Build a PostgreSQL DELETE statement.
+pub fn build_pg_delete_sql(
+    schema: &str,
+    table: &str,
+    primary_key: &[(String, serde_json::Value)],
+) -> (String, Vec<serde_json::Value>) {
+    let mut params: Vec<serde_json::Value> = Vec::new();
+    let where_clause: Vec<String> = primary_key
+        .iter()
+        .map(|(col, val)| {
+            params.push(val.clone());
+            format!("\"{}\" = ${}", col, params.len())
+        })
+        .collect();
+    (
+        format!(
+            "DELETE FROM \"{}\".\"{}\" WHERE {}",
+            schema,
+            table,
+            where_clause.join(" AND ")
+        ),
+        params,
+    )
+}
+
+/// Build a PostgreSQL INSERT statement.
+pub fn build_pg_insert_sql(
+    schema: &str,
+    table: &str,
+    columns: &[(String, serde_json::Value)],
+) -> (String, Vec<serde_json::Value>) {
+    let cols: Vec<String> = columns.iter().map(|(c, _)| format!("\"{}\"", c)).collect();
+    let mut params: Vec<serde_json::Value> = Vec::new();
+    let placeholders: Vec<String> = columns
+        .iter()
+        .map(|(_, val)| {
+            params.push(val.clone());
+            format!("${}", params.len())
+        })
+        .collect();
+    (
+        format!(
+            "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({})",
+            schema,
+            table,
+            cols.join(", "),
+            placeholders.join(", ")
+        ),
+        params,
+    )
+}
+
+/// Convert a JSON value into a boxed PostgreSQL-bindable value.
+///
+/// Maps common JSON types to `tokio_postgres::types::ToSql` implementors.
+/// Unknown/complex types are stringified as a fallback.
+fn pg_box_value(v: &serde_json::Value) -> Box<dyn ToSql + Send + Sync> {
+    match v {
+        serde_json::Value::Null => Box::new(Option::<String>::None),
+        serde_json::Value::Bool(b) => Box::new(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Box::new(i)
+            } else if let Some(f) = n.as_f64() {
+                Box::new(f)
+            } else {
+                Box::new(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => Box::new(s.clone()),
+        other => Box::new(other.to_string()),
+    }
+}
+
+/// Convert a JSON value into a `rusqlite::types::Value` for SQLite binding.
+fn json_to_sqlite_value(v: &serde_json::Value) -> rusqlite::types::Value {
+    use rusqlite::types::Value;
+    match v {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Integer(*b as i64),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Real(f)
+            } else {
+                Value::Text(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => Value::Text(s.clone()),
+        other => Value::Text(other.to_string()),
+    }
+}
+
+/// Parse a JSON object string (e.g. `{"id": 1}`) into ordered (column, value)
+/// pairs. Insertion order of the JSON object is preserved by `serde_json`.
+fn parse_json_pairs(json: &str) -> Result<Vec<(String, serde_json::Value)>, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("invalid change JSON: {}", e))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| "change JSON must be an object".to_string())?;
+    Ok(obj.iter().map(|(k, val)| (k.clone(), val.clone())).collect())
+}
 ///
 /// Each inner `Vec<serde_json::Value>` represents one row, where the values
 /// are expected in the order: `[name, schema, table_type]`.
@@ -234,9 +385,11 @@ pub async fn get_databases(
                 .map_err(|e| e.to_string())?;
             Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
         }
-        _ => Err(
-            "Connection not found or not supported for listing databases".to_string(),
-        ),
+        Some(crate::db::pool::DbHandle::Sqlite(_)) => {
+            // SQLite has a single database per file; expose the catalog name.
+            Ok(vec!["main".to_string()])
+        }
+        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -443,9 +596,124 @@ pub async fn execute_change(
     change: Change,
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    // Stub: execution is not yet implemented
-    let _ = (connection_id, change, state);
-    Err("Not yet implemented".to_string())
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            // Build the parameterized SQL + bound values from the change.
+            let (sql, params): (String, Vec<serde_json::Value>) = match &change {
+                Change::Update {
+                    schema,
+                    table,
+                    primary_key,
+                    new_data,
+                    ..
+                } => {
+                    let pk = parse_json_pairs(primary_key)?;
+                    let data = parse_json_pairs(new_data)?;
+                    build_pg_update_sql(schema, table, &pk, &data)
+                }
+                Change::Insert {
+                    schema,
+                    table,
+                    data,
+                    ..
+                } => {
+                    let pairs = parse_json_pairs(data)?;
+                    build_pg_insert_sql(schema, table, &pairs)
+                }
+                Change::Delete {
+                    schema,
+                    table,
+                    primary_key,
+                    ..
+                } => {
+                    let pk = parse_json_pairs(primary_key)?;
+                    build_pg_delete_sql(schema, table, &pk)
+                }
+                Change::AlterTable { sql, .. } => {
+                    // Execute the raw DDL directly; no bound parameters.
+                    client.execute(sql, &[]).await.map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
+            };
+
+            // Box each value for trait-object binding (`$N` placeholders). The
+            // boxed values must be `Send` so the async command future stays
+            // `Send` across the `.await`.
+            let boxed: Vec<Box<dyn ToSql + Send + Sync>> =
+                params.iter().map(pg_box_value).collect();
+            // Coerce each `&(dyn ToSql + Send + Sync)` reference down to
+            // `&(dyn ToSql + Sync)` (dropping the `Send` auto-trait) to match
+            // `tokio_postgres::Client::execute`'s expected slice type.
+            let refs: Vec<&(dyn ToSql + Sync)> = boxed
+                .iter()
+                .map(|b| {
+                    let r: &(dyn ToSql + Sync) = &**b;
+                    r
+                })
+                .collect();
+            client.execute(&sql, &refs).await.map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            let (sql, params): (String, Vec<serde_json::Value>) = match &change {
+                Change::Update {
+                    schema,
+                    table,
+                    primary_key,
+                    new_data,
+                    ..
+                } => {
+                    let pk = parse_json_pairs(primary_key)?;
+                    let data = parse_json_pairs(new_data)?;
+                    (
+                        build_update_sql(schema, table, &pk, &data),
+                        pk.iter()
+                            .chain(data.iter())
+                            .map(|(_, v)| v.clone())
+                            .collect(),
+                    )
+                }
+                Change::Insert {
+                    schema,
+                    table,
+                    data,
+                    ..
+                } => {
+                    let pairs = parse_json_pairs(data)?;
+                    let columns: Vec<String> =
+                        pairs.iter().map(|(c, _)| c.clone()).collect();
+                    (
+                        build_insert_sql(schema, table, &columns),
+                        pairs.iter().map(|(_, v)| v.clone()).collect(),
+                    )
+                }
+                Change::Delete {
+                    schema,
+                    table,
+                    primary_key,
+                    ..
+                } => {
+                    let pk = parse_json_pairs(primary_key)?;
+                    (
+                        build_delete_sql(schema, table, &pk),
+                        pk.iter().map(|(_, v)| v.clone()).collect(),
+                    )
+                }
+                Change::AlterTable { sql, .. } => {
+                    conn.execute(sql, []).map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
+            };
+
+            let sqlite_params: Vec<rusqlite::types::Value> =
+                params.iter().map(json_to_sqlite_value).collect();
+            conn.execute(&sql, rusqlite::params_from_iter(sqlite_params))
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        None => Err("Connection not found".to_string()),
+    }
 }
 
 #[tauri::command]
@@ -453,10 +721,22 @@ pub async fn refresh_connection(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    // Stub: re-query and return updated databases/schemas/tables metadata.
-    // For now, just acknowledge the request.
-    let _ = (connection_id, state);
-    Ok(())
+    // Verify the connection is still alive by running a trivial query. The
+    // frontend re-issues getDatabases/getSchemas/getTables separately after
+    // this returns, so we only need to confirm reachability here.
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            client.query_one("SELECT 1", &[]).await.map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        None => Err("Connection not found".to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -489,8 +769,8 @@ mod tests {
         };
         let json = serde_json::to_string(&change).unwrap();
         assert!(
-            json.contains(r#""type":"Update""#),
-            "serialized Change::Update should contain type tag 'Update'; got: {}",
+            json.contains(r#""type":"update""#),
+            "serialized Change::Update should use snake_case tag 'update'; got: {}",
             json
         );
     }

@@ -35,7 +35,7 @@ pub struct Pagination {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
     Update {
         id: String,
@@ -156,7 +156,11 @@ mod tests {
             new_data: "{\"name\": \"new\"}".to_string(),
         };
         let json = serde_json::to_string(&update).unwrap();
-        assert!(json.contains(r#""type":"Update""#));
+        assert!(
+            json.contains(r#""type":"update""#),
+            "serialized Change::Update should use snake_case tag 'update'; got: {}",
+            json
+        );
     }
 
     #[test]
