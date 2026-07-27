@@ -82,14 +82,14 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
               onDismiss={() => setDismissedError(connectionError)}
             />
           )}
-          <div className="flex flex-1 min-h-0">
+          <div className="flex flex-1 min-h-0 overflow-hidden">
             <div className="w-72 border-r border-border flex flex-col overflow-hidden">
               <DbViewerToolbar />
               <div className="flex-1 overflow-y-auto">
                 <TableTree />
               </div>
             </div>
-            <div className="flex-1 flex flex-col min-w-0">
+            <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
               <TabBar />
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                 <DataGrid />
