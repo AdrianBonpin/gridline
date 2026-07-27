@@ -80,5 +80,5 @@ export function useDbConnection(connectionId: string) {
     };
   }, [connectionId, connect, reset]);
 
-  return { connectionError };
+  return { connectionError, connect };
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { MoreVertical } from "lucide-react";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 
 interface TableOverflowMenuProps {
   schema: string;
@@ -12,11 +13,11 @@ interface MenuItem {
   label: string;
   stub?: boolean;
   danger?: boolean;
-  action?: () => void;
 }
 
 export function TableOverflowMenu({ schema, table, onOpenTab }: TableOverflowMenuProps) {
   const [open, setOpen] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<"empty" | "delete" | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -39,31 +40,41 @@ export function TableOverflowMenu({ schema, table, onOpenTab }: TableOverflowMen
     };
   }, [open]);
 
-  const items: MenuItem[] = [
-    {
-      id: "open",
-      label: "Open in new tab",
-      action: () => {
+  const handleAction = (id: string) => {
+    switch (id) {
+      case "open":
         onOpenTab(schema, table, true);
         setOpen(false);
-      },
-    },
-    {
-      id: "copy-schema",
-      label: "Copy table schema",
-      action: () => {
+        break;
+      case "copy-schema": {
         const sql = `-- Schema for ${schema}.${table}\n-- TODO: fetch schema DDL`;
         if (navigator.clipboard) {
           void navigator.clipboard.writeText(sql);
         }
         setOpen(false);
-      },
-    },
+        break;
+      }
+      case "empty":
+        setConfirmAction("empty");
+        setOpen(false);
+        break;
+      case "delete":
+        setConfirmAction("delete");
+        setOpen(false);
+        break;
+      default:
+        break;
+    }
+  };
+
+  const items: MenuItem[] = [
+    { id: "open", label: "Open in new tab" },
+    { id: "copy-schema", label: "Copy table schema" },
     { id: "export-csv", label: "Export data (CSV)", stub: true },
     { id: "export-json", label: "Export data (JSON)", stub: true },
     { id: "export-sql", label: "Export data (SQL)", stub: true },
-    { id: "empty", label: "Empty Table", stub: true, danger: true },
-    { id: "delete", label: "Delete Table", stub: true, danger: true },
+    { id: "empty", label: "Empty Table", danger: true },
+    { id: "delete", label: "Delete Table", danger: true },
   ];
 
   return (
@@ -81,7 +92,7 @@ export function TableOverflowMenu({ schema, table, onOpenTab }: TableOverflowMen
             <button
               key={item.id}
               type="button"
-              onClick={item.action}
+              onClick={() => handleAction(item.id)}
               disabled={item.stub}
               className={[
                 "flex items-center justify-between px-3 py-2 text-sm w-full text-left transition-colors cursor-pointer",
@@ -98,6 +109,31 @@ export function TableOverflowMenu({ schema, table, onOpenTab }: TableOverflowMen
             </button>
           ))}
         </div>
+      )}
+
+      {confirmAction === "empty" && (
+        <ConfirmDialog
+          open
+          title={`Empty Table: ${table}`}
+          message={`Are you sure you want to delete ALL rows from "${schema}"."${table}"? This action cannot be undone.`}
+          confirmLabel="Empty Table"
+          onConfirm={() => {
+            setConfirmAction(null);
+          }}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+      {confirmAction === "delete" && (
+        <ConfirmDialog
+          open
+          title={`Delete Table: ${table}`}
+          message={`Are you sure you want to permanently delete "${schema}"."${table}"? All data will be lost.`}
+          confirmLabel="Delete Table"
+          onConfirm={() => {
+            setConfirmAction(null);
+          }}
+          onCancel={() => setConfirmAction(null)}
+        />
       )}
     </div>
   );
