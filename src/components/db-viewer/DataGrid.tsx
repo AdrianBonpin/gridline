@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 
 // TODO: Replace this plain HTML table with @tanstack/react-virtual for large
@@ -10,13 +10,16 @@ type TabColumnWidths = Record<string, ColumnWidths>;
 const DEFAULT_COL_WIDTH = 200;
 const MIN_COL_WIDTH = 60;
 const MAX_COL_WIDTH = 800;
+const CHECKBOX_COL_WIDTH = 40;
 
 interface DataGridProps {
   rows: unknown[][];
   hiddenColumns?: Set<string>;
+  selectedRows: Set<number>;
+  onSelectionChange: (selected: Set<number>) => void;
 }
 
-export function DataGrid({ rows, hiddenColumns }: DataGridProps) {
+export function DataGrid({ rows, hiddenColumns, selectedRows, onSelectionChange }: DataGridProps) {
   const tabs = useDbViewerStore((state) => state.tabs);
   const activeTabId = useDbViewerStore((state) => state.activeTabId);
   const openTab = useDbViewerStore((state) => state.openTab);
@@ -32,6 +35,33 @@ export function DataGrid({ rows, hiddenColumns }: DataGridProps) {
     (colName: string) => widths[colName] ?? DEFAULT_COL_WIDTH,
     [widths],
   );
+
+  // ── selection logic ────────────────────────────────────
+
+  const allSelected = rows.length > 0 && selectedRows.size === rows.length;
+  const someSelected = selectedRows.size > 0 && selectedRows.size < rows.length;
+  const checkboxRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (checkboxRef.current) {
+      checkboxRef.current.indeterminate = someSelected;
+    }
+  }, [someSelected]);
+
+  const toggleAll = () => {
+    if (allSelected) {
+      onSelectionChange(new Set());
+    } else {
+      onSelectionChange(new Set(rows.map((_, i) => i)));
+    }
+  };
+
+  const toggleRow = (rowIndex: number) => {
+    const next = new Set(selectedRows);
+    if (next.has(rowIndex)) next.delete(rowIndex);
+    else next.add(rowIndex);
+    onSelectionChange(next);
+  };
 
   // ── resize handler (ref-based to avoid stale closures) ─
 
@@ -163,12 +193,29 @@ export function DataGrid({ rows, hiddenColumns }: DataGridProps) {
         style={{ tableLayout: "fixed", width: "100%" }}
       >
         <colgroup>
+          {/* Checkbox column */}
+          <col style={{ width: CHECKBOX_COL_WIDTH, minWidth: CHECKBOX_COL_WIDTH }} />
           {visibleColumns.map((col) => (
             <col key={col.name} style={{ width: getWidth(col.name) }} />
           ))}
         </colgroup>
         <thead className="sticky top-0 z-10 bg-surface">
           <tr>
+            {/* Header checkbox */}
+            <th
+              scope="col"
+              className="border-b border-r border-border px-0 py-2 w-[40px]"
+            >
+              <div className="flex items-center justify-center">
+                <input
+                  ref={checkboxRef}
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                  className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
+                />
+              </div>
+            </th>
             {visibleColumns.map((col) => (
               <th
                 key={col.name}
@@ -199,38 +246,52 @@ export function DataGrid({ rows, hiddenColumns }: DataGridProps) {
           </tr>
         </thead>
         <tbody>
-          {filteredRows.map((row, rowIndex) => (
-            <tr
-              key={rowIndex}
-              className="border-b border-border hover:bg-surface/50"
-            >
-              {visibleColumns.map((col) => {
-                const ci = columns.findIndex((c) => c.name === col.name);
-                const cell = ci >= 0 ? row[ci] : undefined;
-                const isNull = cell === null || cell === undefined;
-                const isFk = col.is_fk && col.fk_ref && !isNull;
+          {filteredRows.map((row, rowIndex) => {
+            const isSelected = selectedRows.has(rowIndex);
+            return (
+              <tr
+                key={rowIndex}
+                className={`border-b border-border hover:bg-surface/50 ${isSelected ? "bg-accent/5" : ""}`}
+              >
+                {/* Row checkbox */}
+                <td className="border-r border-border px-0 py-2" style={{ overflow: "hidden" }}>
+                  <div className="flex items-center justify-center">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleRow(rowIndex)}
+                      className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
+                    />
+                  </div>
+                </td>
+                {visibleColumns.map((col) => {
+                  const ci = columns.findIndex((c) => c.name === col.name);
+                  const cell = ci >= 0 ? row[ci] : undefined;
+                  const isNull = cell === null || cell === undefined;
+                  const isFk = col.is_fk && col.fk_ref && !isNull;
 
-                return (
-                  <td key={col.name} className="border-r border-border px-3 py-2 last:border-r-0 font-heading text-xs" style={{ overflow: "hidden" }}>
-                    <div
-                      className={`truncate max-w-full ${isFk ? "cursor-pointer text-accent hover:underline" : ""}`}
-                      title={isNull ? "NULL" : isFk ? `FK → ${col!.fk_ref![0]}.${col!.fk_ref![1]}: ${String(cell)}` : String(cell)}
-                      onClick={isFk ? () => handleFkClick(col!, cell) : undefined}
-                      role={isFk ? "button" : undefined}
-                      tabIndex={isFk ? 0 : undefined}
-                      onKeyDown={isFk ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleFkClick(col!, cell); } } : undefined}
-                    >
-                      {isNull ? (
-                        <span className="italic text-text-muted">NULL</span>
-                      ) : (
-                        String(cell)
-                      )}
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
+                  return (
+                    <td key={col.name} className="border-r border-border px-3 py-2 last:border-r-0 font-heading text-xs" style={{ overflow: "hidden" }}>
+                      <div
+                        className={`truncate max-w-full ${isFk ? "cursor-pointer text-accent hover:underline" : ""}`}
+                        title={isNull ? "NULL" : isFk ? `FK → ${col!.fk_ref![0]}.${col!.fk_ref![1]}: ${String(cell)}` : String(cell)}
+                        onClick={isFk ? () => handleFkClick(col!, cell) : undefined}
+                        role={isFk ? "button" : undefined}
+                        tabIndex={isFk ? 0 : undefined}
+                        onKeyDown={isFk ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleFkClick(col!, cell); } } : undefined}
+                      >
+                        {isNull ? (
+                          <span className="italic text-text-muted">NULL</span>
+                        ) : (
+                          String(cell)
+                        )}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

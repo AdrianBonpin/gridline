@@ -80,6 +80,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
   const [filterRules, setFilterRules] = useState<FilterRule[]>([]);
   const [sortRules, setSortRules] = useState<SortRule[]>([]);
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
   const panelResizeRef = useRef<{ startX: number; startW: number } | null>(null);
 
   const activeTab = useDbViewerStore((s) => {
@@ -219,7 +220,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
                 />
               )}
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                <DataGrid rows={processedRows} hiddenColumns={hiddenColumns} />
+                <DataGrid rows={processedRows} hiddenColumns={hiddenColumns} selectedRows={selectedRows} onSelectionChange={setSelectedRows} />
               </div>
             </div>
           </div>

@@ -19,7 +19,7 @@ describe("DataGrid", () => {
   });
 
   it("shows empty state when no active tab", () => {
-    render(<DataGrid rows={[]} />);
+    render(<DataGrid rows={[]} selectedRows={new Set()} onSelectionChange={() => {}} />);
     expect(screen.getByText(/Select a table to view data/i)).toBeInTheDocument();
   });
 
@@ -28,7 +28,7 @@ describe("DataGrid", () => {
     const tabId = useDbViewerStore.getState().tabs[0].id;
     useDbViewerStore.getState().setTabLoading(tabId, true);
 
-    render(<DataGrid rows={[]} />);
+    render(<DataGrid rows={[]} selectedRows={new Set()} onSelectionChange={() => {}} />);
     expect(screen.getByText(/Loading/i)).toBeInTheDocument();
   });
 
@@ -37,7 +37,7 @@ describe("DataGrid", () => {
     const tabId = useDbViewerStore.getState().tabs[0].id;
     useDbViewerStore.getState().setTabError(tabId, "Connection failed");
 
-    render(<DataGrid rows={[]} />);
+    render(<DataGrid rows={[]} selectedRows={new Set()} onSelectionChange={() => {}} />);
     const error = screen.getByText(/Connection failed/i);
     expect(error).toBeInTheDocument();
     expect(error).toHaveClass("text-red-500");
@@ -46,7 +46,7 @@ describe("DataGrid", () => {
   it("shows loading state when first opening a tab", () => {
     useDbViewerStore.getState().openTab("public", "users");
 
-    render(<DataGrid rows={[]} />);
+    render(<DataGrid rows={[]} selectedRows={new Set()} onSelectionChange={() => {}} />);
     expect(screen.getByText(/Loading/i)).toBeInTheDocument();
   });
 
@@ -55,7 +55,7 @@ describe("DataGrid", () => {
     const tabId = useDbViewerStore.getState().tabs[0].id;
     useDbViewerStore.getState().setTabData(tabId, mockData);
 
-    render(<DataGrid rows={mockData.rows} />);
+    render(<DataGrid rows={mockData.rows} selectedRows={new Set()} onSelectionChange={() => {}} />);
     expect(screen.getByRole("columnheader", { name: /id/ })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: /name/ })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: /email/ })).toBeInTheDocument();
@@ -71,7 +71,7 @@ describe("DataGrid", () => {
     const tabId = useDbViewerStore.getState().tabs[0].id;
     useDbViewerStore.getState().setTabData(tabId, mockData);
 
-    render(<DataGrid rows={mockData.rows} />);
+    render(<DataGrid rows={mockData.rows} selectedRows={new Set()} onSelectionChange={() => {}} />);
     const nullCell = screen.getByText("NULL");
     expect(nullCell).toHaveClass("italic");
     expect(nullCell).toHaveClass("text-text-muted");
