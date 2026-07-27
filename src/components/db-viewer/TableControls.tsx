@@ -337,6 +337,8 @@ interface TableControlsProps {
   onFilterChange: (rules: FilterRule[]) => void;
   sortRules: SortRule[];
   onSortChange: (rules: SortRule[]) => void;
+  selectedCount: number;
+  onClearSelection: () => void;
 }
 
 export function TableControls({
@@ -352,6 +354,8 @@ export function TableControls({
   onFilterChange,
   sortRules,
   onSortChange,
+  selectedCount,
+  onClearSelection,
 }: TableControlsProps) {
   const tabs = useDbViewerStore((s) => s.tabs);
   const activeTabId = useDbViewerStore((s) => s.activeTabId);
@@ -563,6 +567,24 @@ export function TableControls({
 
       {/* ── right side ─────────────────────────────── */}
       <div className="flex items-center gap-2">
+        {/* Selected count */}
+        {selectedCount > 0 && (
+          <>
+            <span className="text-accent font-medium tabular-nums">
+              {selectedCount} selected
+            </span>
+            <button
+              type="button"
+              onClick={onClearSelection}
+              className="text-text-muted hover:text-text transition-colors"
+              aria-label="Clear selection"
+            >
+              <X size={14} />
+            </button>
+            <div className="w-px h-4 bg-border" />
+          </>
+        )}
+
         {/* Columns toggle */}
         <div className="relative">
           <button

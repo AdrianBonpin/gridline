@@ -217,6 +217,8 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
                   onFilterChange={setFilterRules}
                   sortRules={sortRules}
                   onSortChange={setSortRules}
+                  selectedCount={selectedRows.size}
+                  onClearSelection={() => setSelectedRows(new Set())}
                 />
               )}
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
