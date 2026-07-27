@@ -229,7 +229,7 @@ impl Store {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, created_at, updated_at FROM connections ORDER BY name",
+                "SELECT id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, environment, created_at, updated_at FROM connections ORDER BY name",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -253,9 +253,10 @@ impl Store {
                     ssl_ca_path: row.get(15)?,
                     ssl_cert_path: row.get(16)?,
                     ssl_key_path: row.get(17)?,
+                    environment: row.get(18)?,
                     tag_ids: vec![],
-                    created_at: row.get(18)?,
-                    updated_at: row.get(19)?,
+                    created_at: row.get(19)?,
+                    updated_at: row.get(20)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -278,8 +279,8 @@ impl Store {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Self::now();
         conn.execute(
-            "INSERT INTO connections (id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
-            params![id, input.name, input.db_type, input.host, input.port, input.username, input.database, input.folder_id, input.ssh_host, input.ssh_port, input.ssh_user, input.ssh_auth_method, input.ssh_private_key_path, input.ssl_mode, input.ssl_ca_path, input.ssl_cert_path, input.ssl_key_path, now, now],
+            "INSERT INTO connections (id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, environment, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![id, input.name, input.db_type, input.host, input.port, input.username, input.database, input.folder_id, input.ssh_host, input.ssh_port, input.ssh_user, input.ssh_auth_method, input.ssh_private_key_path, input.ssl_mode, input.ssl_ca_path, input.ssl_cert_path, input.ssl_key_path, input.environment, now, now],
         )
         .map_err(|e| e.to_string())?;
         for tag_id in &input.tag_ids {
@@ -299,6 +300,7 @@ impl Store {
             folder_id: input.folder_id,
             database: input.database,
             keychain_ref: None,
+            environment: input.environment,
             ssh_host: input.ssh_host,
             ssh_port: input.ssh_port,
             ssh_user: input.ssh_user,
@@ -471,6 +473,7 @@ mod tests {
                 ssl_ca_path: None,
                 ssl_cert_path: None,
                 ssl_key_path: None,
+                environment: None,
                 tag_ids: vec![],
             })
             .unwrap();
@@ -517,6 +520,7 @@ mod tests {
                 ssl_ca_path: None,
                 ssl_cert_path: None,
                 ssl_key_path: None,
+                environment: None,
                 tag_ids: vec![t1.id.clone(), t2.id.clone()],
             })
             .unwrap();
@@ -555,6 +559,7 @@ mod tests {
                 ssl_ca_path: None,
                 ssl_cert_path: None,
                 ssl_key_path: None,
+                environment: None,
                 tag_ids: vec![],
             })
             .unwrap();
@@ -592,6 +597,7 @@ mod tests {
                 ssl_ca_path: None,
                 ssl_cert_path: None,
                 ssl_key_path: None,
+                environment: None,
                 tag_ids: vec![tag.id.clone()],
             })
             .unwrap();
@@ -644,6 +650,7 @@ mod tests {
                 ssl_ca_path: Some("/etc/ssl/certs/ca.pem".into()),
                 ssl_cert_path: Some("/etc/ssl/certs/client-cert.pem".into()),
                 ssl_key_path: Some("/etc/ssl/private/client-key.pem".into()),
+                environment: None,
                 tag_ids: vec![],
             })
             .unwrap();

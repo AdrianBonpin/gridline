@@ -85,6 +85,7 @@ pub fn import_connections_inner(state: &Mutex<Store>, json: String) -> Result<Im
             ssl_ca_path: None,
             ssl_cert_path: None,
             ssl_key_path: None,
+            environment: None,
             tag_ids: rec.tag_ids.clone().unwrap_or_default(),
         };
         match store.create_connection(input) {
@@ -173,6 +174,7 @@ mod tests {
             ssh_host: None, ssh_port: None, ssh_user: None, ssh_auth_method: None,
             ssh_private_key_path: None, ssh_passphrase: None,
             ssl_mode: None, ssl_ca_path: None, ssl_cert_path: None, ssl_key_path: None,
+            environment: None,
             tag_ids: vec![],
         });
         let json = export_connections_inner(&st).unwrap();

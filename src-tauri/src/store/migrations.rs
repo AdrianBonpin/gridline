@@ -14,6 +14,11 @@ const CONNECTION_COLUMNS_V2: &[(&str, &str)] = &[
     ("ssl_key_path", "TEXT"),
 ];
 
+/// New columns added since version 2.
+const CONNECTION_COLUMNS_V3: &[(&str, &str)] = &[
+    ("environment", "TEXT"),
+];
+
 pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
@@ -43,6 +48,7 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
              ssl_ca_path TEXT,
              ssl_cert_path TEXT,
              ssl_key_path TEXT,
+             environment TEXT,
              created_at TEXT NOT NULL,
              updated_at TEXT NOT NULL
          );
@@ -109,6 +115,34 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
 
+    if current_ver < 3 {
+        let existing: Vec<String> = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(connections)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        for (col_name, col_type) in CONNECTION_COLUMNS_V3 {
+            if !existing.contains(&col_name.to_string()) {
+                let sql = format!(
+                    "ALTER TABLE connections ADD COLUMN {} {}",
+                    col_name, col_type
+                );
+                conn.execute(&sql, []).map_err(|e| e.to_string())?;
+            }
+        }
+
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (3)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -149,6 +183,6 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
     }
 }

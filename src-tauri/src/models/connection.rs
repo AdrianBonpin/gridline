@@ -11,6 +11,7 @@ pub struct Connection {
     pub database: Option<String>,
     pub folder_id: Option<String>,
     pub keychain_ref: Option<String>,
+    pub environment: Option<String>,
     pub ssh_host: Option<String>,
     pub ssh_port: Option<i64>,
     pub ssh_user: Option<String>,
@@ -36,6 +37,7 @@ pub struct ConnectionInput {
     pub tag_ids: Vec<String>,
     pub password: Option<String>,
     pub database: Option<String>,
+    pub environment: Option<String>,
     pub ssh_host: Option<String>,
     pub ssh_port: Option<i64>,
     pub ssh_user: Option<String>,
@@ -74,6 +76,7 @@ mod tests {
             ssl_ca_path: Some("/path/to/ca".to_string()),
             ssl_cert_path: Some("/path/to/cert".to_string()),
             ssl_key_path: Some("/path/to/key".to_string()),
+            environment: Some("production".to_string()),
         };
 
         let json = serde_json::to_string(&input).unwrap();
@@ -111,6 +114,7 @@ mod tests {
             username: Some("user".to_string()),
             folder_id: Some("folder".to_string()),
             keychain_ref: Some("keychain-ref".to_string()),
+            environment: None,
             tag_ids: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),

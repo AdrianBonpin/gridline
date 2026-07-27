@@ -42,6 +42,8 @@ export interface Connection {
   ssl_ca_path?: string | null;
   ssl_cert_path?: string | null;
   ssl_key_path?: string | null;
+  // Environment label (production, staging, development, etc.)
+  environment?: string | null;
 }
 
 export type NewConnectionMode = "simple" | "detailed";

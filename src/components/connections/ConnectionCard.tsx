@@ -1,6 +1,7 @@
 import { memo } from "react";
 import type { Connection, Tag } from "../../lib/types";
 import { DB_ICONS, DB_LABELS } from "../../lib/dbIcons";
+import { ENV_LABELS, ENV_COLORS } from "../../lib/environment";
 import { TagBadge } from "../tags/TagBadge";
 import { Check } from "lucide-react";
 import { useUiStore } from "../../stores/uiStore";
@@ -62,6 +63,13 @@ function ConnectionCardBase({
                                 connection.db_type}
                         </div>
                     </div>
+                    {connection.environment && (
+                        <span
+                            className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none ${ENV_COLORS[connection.environment] ?? "bg-surface-raised border-border text-text-muted"}`}
+                        >
+                            {ENV_LABELS[connection.environment] ?? connection.environment}
+                        </span>
+                    )}
                 </div>
                 <div className="text-xs text-text-muted mb-2 font-mono truncate">
                     {hostLabel}
