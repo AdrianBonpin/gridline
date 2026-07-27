@@ -12,6 +12,70 @@ use tokio_postgres::types::ToSql;
 // Helper functions
 // ---------------------------------------------------------------------------
 
+/// Format a tokio-postgres connection error with full detail (severity,
+/// message, SQLSTATE code) while redacting any embedded connection URL or
+/// credentials so nothing sensitive reaches the frontend.
+///
+/// tokio-postgres's `Display` only prints "db error", so we walk the
+/// `std::error::Error::source()` chain and also use `Debug` to surface the
+/// real message (e.g. "password authentication failed for user \"x\"").
+fn pg_error_message(err: &tokio_postgres::Error) -> String {
+    // Prefer the Debug representation, which includes severity + message + code.
+    let raw = format!("{:?}", err);
+    // Redact postgres URL fragments and password=... sequences.
+    let redacted = redact_secrets(&raw);
+    truncate(&redacted, 400)
+}
+
+/// Redact credential-bearing substrings from an error/debug string so we
+/// never leak usernames/passwords/connection strings to the frontend.
+fn redact_secrets(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    // Replace `postgresql://user:password@host` style URLs with safely redacted text.
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if s[i..].to_lowercase().starts_with("postgres://")
+            || s[i..].to_lowercase().starts_with("postgresql://")
+        {
+            // Skip the scheme.
+            let scheme_end = i
+                + s[i..]
+                    .find("://")
+                    .unwrap_or(0)
+                + 3;
+            out.push_str("[redacted-url://");
+            // Find end of authority (next '/'. '/', or end).
+            let rest = &s[scheme_end..];
+            let end = match rest.find(['/', '?']) {
+                Some(pos) => scheme_end + pos,
+                None => s.len(),
+            };
+            i = end;
+        } else if s[i..].to_lowercase().starts_with("password=") {
+            out.push_str("[redacted]");
+            // Skip to next whitespace or end.
+            let rest = &s[i + "password=".len()..];
+            let skip = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            i += "password=".len() + skip;
+        } else {
+            // Copy one char.
+            let ch = s[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max.saturating_sub(3)])
+    }
+}
+
 /// Calculate the database offset for a given page and page size.
 ///
 /// Uses 1-based page indexing:
@@ -319,9 +383,17 @@ pub async fn db_connect(
         let dbname = config.database.as_deref().unwrap_or("postgres");
         let password = config.password.as_deref().unwrap_or("");
 
+        // Build a postgres URL connection string rather than the fragile
+        // libpq key=value format. tokio-postgres parses URLs reliably and
+        // urlencoding handles special characters in user/password/dbname.
+        use urlencoding::encode as enc;
         let conn_str = format!(
-            "host={} port={} user={} dbname={} password={}",
-            host, port, user, dbname, password
+            "postgresql://{}:{}@{}:{}/{}?connect_timeout=10",
+            enc(user),
+            enc(password),
+            host,
+            port,
+            enc(dbname),
         );
 
         match tokio_postgres::connect(&conn_str, NoTls).await {
@@ -339,7 +411,7 @@ pub async fn db_connect(
                 );
                 Ok(())
             }
-            Err(e) => Err(format!("Connection failed: {}", e)),
+            Err(e) => Err(format!("Connection failed: {}", pg_error_message(&e))),
         }
     } else if config.db_type == "sqlite" {
         match rusqlite::Connection::open(&config.host) {

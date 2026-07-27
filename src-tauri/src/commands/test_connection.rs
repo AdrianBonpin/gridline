@@ -10,29 +10,54 @@ pub struct TestConnectionResult {
     pub error: Option<String>,
 }
 
-/// Strip credentials and sensitive information from error messages.
+/// Strip credentials and sensitive information from error messages while
+/// preserving the useful diagnostic detail (severity, message, SQLSTATE).
 ///
-/// Checks for patterns like `password=`, `user=`, `password`, `user`, `@`,
-/// and `secret`. If any are detected, returns a sanitized safe message.
-/// Otherwise returns the original message truncated to 200 characters.
+/// Redacts `password=...`, `user=...`, `postgresql://user:pwd@host` URLs,
+/// and `@host` credential fragments rather than discarding the whole
+/// message — so the user can still see e.g. "password authentication
+/// failed for user 'foo'" without leaking the password itself.
 pub fn sanitize_error(msg: &str) -> String {
-    let sensitive_patterns = [
-        "password=", "user=", "password ", "user ", "@", "secret",
-    ];
-
-    let has_sensitive = sensitive_patterns
-        .iter()
-        .any(|pat| msg.to_lowercase().contains(&pat.to_lowercase()));
-
-    if has_sensitive {
-        return "connection error (details sanitized)".to_string();
+    let mut out = String::with_capacity(msg.len());
+    let bytes = msg.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let lower = msg[i..].to_lowercase();
+        if lower.starts_with("postgres://") || lower.starts_with("postgresql://") {
+            out.push_str("[redacted-url://");
+            let scheme_end = i + msg[i..].find("://").unwrap_or(0) + 3;
+            let rest = &msg[scheme_end..];
+            let end = match rest.find(['/', '?']) {
+                Some(pos) => scheme_end + pos,
+                None => msg.len(),
+            };
+            i = end;
+        } else if lower.starts_with("password=") {
+            out.push_str("[redacted]");
+            let rest = &msg[i + "password=".len()..];
+            let skip = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            i += "password=".len() + skip;
+        } else if lower.starts_with("user=") {
+            out.push_str("[redacted]");
+            let rest = &msg[i + "user=".len()..];
+            let skip = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            i += "user=".len() + skip;
+        } else if lower.starts_with("secret") {
+            out.push_str("secret=[redacted]");
+            let rest = &msg[i + "secret".len()..];
+            let skip = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            i += "secret".len() + skip;
+        } else {
+            let ch = msg[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
     }
-
-    // Truncate at 200 characters
-    if msg.len() > 200 {
-        format!("{}...", &msg[..197])
+    // Truncate at 300 characters for safety.
+    if out.len() > 300 {
+        format!("{}...", &out[..297])
     } else {
-        msg.to_string()
+        out
     }
 }
 
@@ -121,9 +146,16 @@ async fn test_pg_connection(config: &DbConfig) -> TestConnectionResult {
     let dbname = config.database.as_deref().unwrap_or("postgres");
     let password = config.password.as_deref().unwrap_or("");
 
+    // Use a postgres URL rather than libpq key=value format: tokio-postgres
+    // parses URLs reliably and urlencoding handles special chars safely.
+    use urlencoding::encode as enc;
     let conn_str = format!(
-        "host={} port={} user={} dbname={} password={}",
-        host, port, user, dbname, password
+        "postgresql://{}:{}@{}:{}/{}?connect_timeout=10",
+        enc(user),
+        enc(password),
+        host,
+        port,
+        enc(dbname),
     );
 
     match tokio_postgres::connect(&conn_str, NoTls).await {
