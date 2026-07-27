@@ -368,6 +368,7 @@ export function TableControls({
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(0);
+  const [autoRefreshOpen, setAutoRefreshOpen] = useState(false);
 
   // auto-refresh timer
   useEffect(() => {
@@ -445,7 +446,7 @@ export function TableControls({
         <div className="relative">
           <button
             type="button"
-            onClick={() => setAutoRefresh((v) => (v === 0 ? 5000 : 0))}
+            onClick={() => setAutoRefreshOpen((v) => !v)}
             className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors ${
               autoRefresh > 0 ? "text-accent" : "hover:text-text"
             }`}
@@ -455,12 +456,12 @@ export function TableControls({
             <Clock size={14} />
             {autoRefresh > 0 && <span className="text-[10px] font-medium">{autoRefresh / 1000}s</span>}
           </button>
-          <DropdownMenu open={autoRefresh > 0} setOpen={() => setAutoRefresh(0)}>
+          <DropdownMenu open={autoRefreshOpen} setOpen={setAutoRefreshOpen}>
             {AUTO_REFRESH_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
                 type="button"
-                onClick={() => setAutoRefresh(opt.value)}
+                onClick={() => { setAutoRefresh(opt.value); setAutoRefreshOpen(false); }}
                 className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-surface-raised transition-colors ${
                   autoRefresh === opt.value ? "text-accent" : "text-text"
                 }`}
