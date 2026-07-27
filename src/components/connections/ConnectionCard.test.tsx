@@ -1,8 +1,9 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ConnectionCard } from "./ConnectionCard";
 import type { Connection, Tag } from "../../lib/types";
+import { useUiStore } from "../../stores/uiStore";
 
 const tags: Tag[] = [
   { id: "t1", name: "production", color: "#ef4444", created_at: "" },
@@ -15,6 +16,10 @@ const conn: Connection = {
 };
 
 describe("ConnectionCard", () => {
+  beforeEach(() => {
+    useUiStore.setState({ selectedItemIds: [] });
+  });
+
   it("renders name and host", () => {
     render(<ConnectionCard connection={conn} tags={tags} />);
     expect(screen.getByText("Prod DB")).toBeInTheDocument();
@@ -42,11 +47,22 @@ describe("ConnectionCard", () => {
     await user.click(screen.getByText("production"));
     expect(fn).toHaveBeenCalledWith("t1");
   });
-  it("fires onOpenDbViewer when card is clicked", async () => {
+  it("opens DbViewer on single click when nothing is selected", async () => {
     const user = userEvent.setup();
     const fn = vi.fn();
     render(<ConnectionCard connection={conn} tags={tags} onOpenDbViewer={fn} />);
     await user.click(screen.getByText("Prod DB"));
     expect(fn).toHaveBeenCalledWith(conn.id);
+  });
+
+  it("toggles selection on single click when something is already selected", async () => {
+    const user = userEvent.setup();
+    useUiStore.setState({ selectedItemIds: ["other-id"] });
+    const fn = vi.fn();
+    render(<ConnectionCard connection={conn} tags={tags} onOpenDbViewer={fn} />);
+    await user.click(screen.getByText("Prod DB"));
+    // Should NOT open — should toggle selection instead
+    expect(fn).not.toHaveBeenCalled();
+    expect(useUiStore.getState().selectedItemIds).toContain(conn.id);
   });
 });

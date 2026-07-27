@@ -25,6 +25,7 @@ export function HomeScreen() {
     const createFolder = useConnectionStore((s) => s.createFolder);
     const updateFolder = useConnectionStore((s) => s.updateFolder);
     const deleteFolder = useConnectionStore((s) => s.deleteFolder);
+    const deleteConnection = useConnectionStore((s) => s.deleteConnection);
     const loadAll = useConnectionStore((s) => s.loadAll);
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const clearSelection = useUiStore((s) => s.clearSelection);
@@ -96,11 +97,16 @@ export function HomeScreen() {
     }, [folders, activeFolderId, setActiveFolderId]);
 
     const executeDeleteSelected = async () => {
+        const folderIds = new Set(folders.map((f) => f.id));
         for (const id of selectedItemIds) {
             try {
-                await deleteFolder(id);
+                if (folderIds.has(id)) {
+                    await deleteFolder(id);
+                } else {
+                    await deleteConnection(id);
+                }
             } catch (e) {
-                console.error("Failed to delete folder:", e);
+                console.error("Failed to delete item:", e);
             }
         }
         clearSelection();
@@ -192,7 +198,7 @@ export function HomeScreen() {
                 <ConfirmDialog
                     open
                     title="Delete Items"
-                    message={`Are you sure you want to delete ${selectedItemIds.length} item${selectedItemIds.length !== 1 ? "s" : ""}? Any items inside folders will be moved to the parent folder.`}
+                    message={`Are you sure you want to delete ${selectedItemIds.length} item${selectedItemIds.length !== 1 ? "s" : ""}?`}
                     confirmLabel="Delete"
                     confirmVariant="ghost"
                     onConfirm={executeDeleteSelected}

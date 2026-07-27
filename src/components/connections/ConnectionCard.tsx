@@ -29,9 +29,19 @@ function ConnectionCardBase({
         : connection.host;
     const isSelected = selectedItemIds.includes(connection.id);
 
+    const handleClick = () => {
+        if (selectedItemIds.length > 0) {
+            // Something already selected — toggle this item in the selection
+            toggleItemSelection(connection.id);
+        } else {
+            // Nothing selected — open the connection
+            onOpenDbViewer?.(connection.id);
+        }
+    };
+
     return (
         <div
-            onClick={() => onOpenDbViewer?.(connection.id)}
+            onClick={handleClick}
             className={`relative group rounded-xl border transition-colors cursor-pointer ${
                 isSelected
                     ? "bg-accent/10 border-accent"
