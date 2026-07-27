@@ -49,7 +49,7 @@ export function DbViewerSidebar({ currentView, onNavigate }: DbViewerSidebarProp
   }
 
   return (
-    <div className="w-14 h-screen bg-surface border-r border-border flex flex-col items-center py-3 gap-2 shrink-0">
+    <div className="w-14 h-screen bg-canvas border-r border-border flex flex-col items-center py-3 gap-2 shrink-0">
       <div className="flex flex-col gap-2 flex-1">{topItems.map(renderItem)}</div>
       <div className="flex flex-col gap-2">{bottomItems.map(renderItem)}</div>
     </div>
