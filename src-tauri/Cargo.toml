@@ -27,4 +27,12 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "mysql", "tls-rustls"] }
+redis = { version = "0.27", features = ["tokio-comp"] }
+# async-ssh2 is not available at v0.4; using synchronous ssh2 via tokio::task::spawn_blocking per plan's fallback
+ssh2 = { version = "0.9" }
+deadpool-postgres = { version = "0.14" }
+indexmap = { version = "2", features = ["serde"] }
 
