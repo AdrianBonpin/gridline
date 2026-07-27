@@ -146,7 +146,11 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
 
   setPage: (tabId, page) =>
     set((state) => ({
-      tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, page } : t)),
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? { ...t, page, data: null, loading: false, error: null }
+          : t,
+      ),
     })),
 
   setPageSize: (tabId, pageSize) =>

@@ -12,11 +12,11 @@ const MIN_COL_WIDTH = 60;
 const MAX_COL_WIDTH = 800;
 
 interface DataGridProps {
-  filterText?: string;
+  rows: unknown[][];
   hiddenColumns?: Set<string>;
 }
 
-export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
+export function DataGrid({ rows, hiddenColumns }: DataGridProps) {
   const tabs = useDbViewerStore((state) => state.tabs);
   const activeTabId = useDbViewerStore((state) => state.activeTabId);
   const openTab = useDbViewerStore((state) => state.openTab);
@@ -73,7 +73,6 @@ export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
       const [refTable, refColumn] = col.fk_ref;
       const schema = activeTab?.schema ?? "public";
       openTab(schema, refTable);
-      // Find the newly opened tab and set its column filter
       const newTab = useDbViewerStore.getState().tabs.find(
         (t) => t.schema === schema && t.table === refTable,
       );
@@ -126,20 +125,16 @@ export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
     );
   }
 
-  // Columns from Rust are ColumnInfo objects (name, data_type, …).
-  // Rows are Vec<Vec<serde_json::Value>> indexed positionally.
-  const { columns, rows } = activeTab.data;
+  const { columns } = activeTab.data;
 
   // Filter visible columns
   const visibleColumns = hiddenColumns
     ? columns.filter((c) => !hiddenColumns.has(c.name))
     : columns;
 
-  // Apply column filter and text filter
+  // Apply FK column filter if active
   const filteredRows = (() => {
     let result = rows;
-
-    // Column filter (FK click target)
     if (activeTab.columnFilter) {
       const { column, value } = activeTab.columnFilter;
       const colIdx = columns.findIndex((c) => c.name === column);
@@ -151,23 +146,14 @@ export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
         });
       }
     }
-
-    // Text filter (substring match across any cell)
-    if (filterText) {
-      const needle = filterText.toLowerCase();
-      result = result.filter((row) =>
-        row.some((cell) => cell !== null && cell !== undefined && String(cell).toLowerCase().includes(needle)),
-      );
-    }
-
     return result;
   })();
 
   return (
     <div
-    className="flex-1 overflow-auto min-w-0"
-    style={{ overscrollBehavior: "none", WebkitOverflowScrolling: "auto" }}
-  >
+      className="flex-1 overflow-auto min-w-0"
+      style={{ overscrollBehavior: "none", WebkitOverflowScrolling: "auto" }}
+    >
       <table
         className="border-collapse text-left text-sm"
         style={{ tableLayout: "fixed", width: "100%" }}
@@ -215,7 +201,6 @@ export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
               className="border-b border-border hover:bg-surface/50"
             >
               {visibleColumns.map((col) => {
-                // Find original column index from the full columns array
                 const ci = columns.findIndex((c) => c.name === col.name);
                 const cell = ci >= 0 ? row[ci] : undefined;
                 const isNull = cell === null || cell === undefined;
