@@ -110,10 +110,11 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
     }
   }, [connectionId, setTabData, setTabError]);
 
-  // Auto-fetch when tab needs data
+  // Auto-fetch when tab needs data (initial load, page change, refresh)
   useEffect(() => {
     if (!activeTab) return;
-    if (activeTab.data !== null || activeTab.loading || activeTab.error) return;
+    if (!activeTab.loading) return;
+    if (activeTab.error) return;
     fetchData(activeTab);
   }, [activeTab, fetchData]);
 
@@ -123,7 +124,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
     if (!tabId) return;
     useDbViewerStore.setState((s) => ({
       tabs: s.tabs.map((t) =>
-        t.id === tabId ? { ...t, data: null, loading: false, error: null } : t,
+        t.id === tabId ? { ...t, loading: true, error: null } : t,
       ),
     }));
   }, []);

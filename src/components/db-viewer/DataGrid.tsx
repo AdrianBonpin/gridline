@@ -101,7 +101,7 @@ export function DataGrid({ rows, hiddenColumns }: DataGridProps) {
     );
   }
 
-  if (activeTab.loading) {
+  if (activeTab.loading && !activeTab.data) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-text-muted">
         Loading...
@@ -151,9 +151,13 @@ export function DataGrid({ rows, hiddenColumns }: DataGridProps) {
 
   return (
     <div
-      className="flex-1 overflow-auto min-w-0"
+      className="flex-1 overflow-auto min-w-0 relative"
       style={{ overscrollBehavior: "none", WebkitOverflowScrolling: "auto" }}
     >
+      {/* Loading indicator bar when refreshing with existing data */}
+      {activeTab.loading && (
+        <div className="absolute top-0 left-0 right-0 h-0.5 bg-accent z-20 animate-pulse" />
+      )}
       <table
         className="border-collapse text-left text-sm"
         style={{ tableLayout: "fixed", width: "100%" }}
