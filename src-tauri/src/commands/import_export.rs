@@ -73,6 +73,18 @@ pub fn import_connections_inner(state: &Mutex<Store>, json: String) -> Result<Im
             port: rec.port,
             username: rec.username.clone(),
             folder_id: rec.folder_id.clone(),
+            password: None,
+            database: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_private_key_path: None,
+            ssh_passphrase: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
             tag_ids: rec.tag_ids.clone().unwrap_or_default(),
         };
         match store.create_connection(input) {
@@ -156,7 +168,12 @@ mod tests {
         let st = state();
         let _ = st.lock().unwrap().create_connection(ConnectionInput {
             name: "A".into(), db_type: "postgresql".into(), host: "h".into(),
-            port: Some(5432), username: None, folder_id: None, tag_ids: vec![],
+            port: Some(5432), username: None, folder_id: None,
+            password: None, database: None,
+            ssh_host: None, ssh_port: None, ssh_user: None, ssh_auth_method: None,
+            ssh_private_key_path: None, ssh_passphrase: None,
+            ssl_mode: None, ssl_ca_path: None, ssl_cert_path: None, ssl_key_path: None,
+            tag_ids: vec![],
         });
         let json = export_connections_inner(&st).unwrap();
         assert!(json.contains("\"name\""));
