@@ -24,6 +24,8 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
   const [dismissedError, setDismissedError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState("");
   const [filterEnabled, setFilterEnabled] = useState(false);
+  const [tablePanelWidth, setTablePanelWidth] = useState(280);
+  const panelResizeRef = useRef<{ startX: number; startW: number } | null>(null);
 
   // Issue 1: Auto-fetch table data when a tab becomes active and has no data
   const activeTab = useDbViewerStore((s) => {
@@ -59,6 +61,23 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
     })();
   }, [activeTab, connectionId, setTabData, setTabError]);
 
+  const onPanelResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    panelResizeRef.current = { startX: e.clientX, startW: tablePanelWidth };
+    const onMove = (ev: MouseEvent) => {
+      if (!panelResizeRef.current) return;
+      const w = Math.max(180, Math.min(600, panelResizeRef.current.startW + (ev.clientX - panelResizeRef.current.startX)));
+      setTablePanelWidth(w);
+    };
+    const onUp = () => {
+      panelResizeRef.current = null;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [tablePanelWidth]);
+
   const handleNavigate = useCallback(
     (view: string) => {
       if (view === "home") {
@@ -86,12 +105,17 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
             />
           )}
           <div className="flex flex-1 min-h-0 overflow-hidden">
-            <div className="w-72 border-r border-border flex flex-col">
+            <div className="border-r border-border flex flex-col shrink-0" style={{ width: tablePanelWidth }}>
               <DbViewerToolbar />
               <div className="flex-1 overflow-y-auto" style={{ overscrollBehavior: "none" }}>
                 <TableTree />
               </div>
             </div>
+            {/* panel resize handle */}
+            <div
+              className="w-[5px] cursor-col-resize hover:bg-accent/30 active:bg-accent/50 shrink-0"
+              onMouseDown={onPanelResizeStart}
+            />
             <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
               <TabBar />
               <FilterBar
