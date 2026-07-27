@@ -19,7 +19,7 @@ export async function updateSetting(key: string, value: string): Promise<void> {
 export async function importConnections(json: string): Promise<ImportResult> { return invoke<ImportResult>("import_connections", { json }); }
 export async function exportConnections(): Promise<string> { return invoke<string>("export_connections"); }
 export async function testConnection(input: ConnectionInput): Promise<ConnectionTestResult> {
-  return invoke<ConnectionTestResult>("test_connection", { input });
+  return invoke<ConnectionTestResult>("test_connection", { config: input });
 }
 
 // ─── DB Viewer Lifecycle ────────────────────────────────────────

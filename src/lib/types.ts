@@ -176,7 +176,7 @@ export interface DbViewerTab {
 }
 
 export interface ConnectionTestResult {
-  success: boolean;
+  ok: boolean;
   error?: string | null;
   server_version?: string | null;
   latency_ms?: number | null;

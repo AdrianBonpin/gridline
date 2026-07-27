@@ -340,20 +340,20 @@ describe("DbViewerTab", () => {
 describe("ConnectionTestResult", () => {
   it("can represent a successful test", () => {
     const result: ConnectionTestResult = {
-      success: true,
+      ok: true,
       server_version: "16.2",
       latency_ms: 5,
     };
-    expect(result.success).toBe(true);
+    expect(result.ok).toBe(true);
     expect(result.server_version).toBe("16.2");
   });
 
   it("can represent a failed test with error", () => {
     const result: ConnectionTestResult = {
-      success: false,
+      ok: false,
       error: "Connection refused",
     };
-    expect(result.success).toBe(false);
+    expect(result.ok).toBe(false);
     expect(result.error).toBe("Connection refused");
   });
 });
