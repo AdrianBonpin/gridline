@@ -136,14 +136,14 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "settings-tab-tags");
   });
 
-  it("switches to the Shortcuts tab and shows placeholder", async () => {
+  it("switches to the Shortcuts tab and shows keyboard shortcuts", async () => {
     const user = userEvent.setup();
     render(<SettingsPage />);
     await waitFor(() => {
       expect(screen.getByRole("tab", { name: /shortcuts/i })).toBeInTheDocument();
     });
     await user.click(screen.getByRole("tab", { name: /shortcuts/i }));
-    expect(screen.getByText(/shortcut customization is coming soon/i)).toBeInTheDocument();
+    expect(screen.getByText(/command palette/i)).toBeInTheDocument();
   });
 
   it("switches to the Advanced tab and shows safety and ports settings", async () => {

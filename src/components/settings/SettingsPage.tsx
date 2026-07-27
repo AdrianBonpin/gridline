@@ -6,6 +6,7 @@ import { Button } from "../ui/Button";
 import { SettingsSection } from "../ui/SettingsSection";
 import { GeneralSettingsTab } from "./GeneralSettingsTab";
 import { TagsSettingsTab } from "./TagsSettingsTab";
+import { ShortcutsSettingsTab } from "./ShortcutsSettingsTab";
 import { AdvancedSettingsTab } from "./AdvancedSettingsTab";
 import {
     ChevronLeft,
@@ -51,14 +52,6 @@ export function SettingsPage() {
         </SettingsSection>
     );
 
-    const renderShortcuts = () => (
-        <SettingsSection title="Shortcuts">
-            <div className="py-8 text-center text-sm text-text-muted">
-                Shortcut customization is coming soon.
-            </div>
-        </SettingsSection>
-    );
-
     const renderTabContent = () => {
         switch (activeTab) {
             case "general":
@@ -68,7 +61,7 @@ export function SettingsPage() {
             case "tags":
                 return <TagsSettingsTab />;
             case "shortcuts":
-                return renderShortcuts();
+                return <ShortcutsSettingsTab />;
             case "advanced":
                 return <AdvancedSettingsTab />;
         }
