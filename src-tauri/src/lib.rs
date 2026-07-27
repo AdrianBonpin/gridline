@@ -8,6 +8,7 @@ mod store;
 mod commands;
 
 use std::sync::Mutex as StdMutex;
+use tauri::Manager;
 use store::Store;
 use commands::ssh::SshTunnelManager;
 use db::pool::ConnectionPoolManager;
@@ -18,7 +19,7 @@ pub struct AppState {
     pub ssh_manager: StdMutex<SshTunnelManager>,
 }
 
-use commands::{connections, db_viewer, folders, tags, settings, import_export, keychain};
+use commands::{connections, db_viewer, folders, tags, settings, import_export, keychain, demo};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -38,6 +39,16 @@ pub fn run() {
             db_store: StdMutex::new(store),
             pool_manager: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
             ssh_manager: StdMutex::new(SshTunnelManager::new()),
+        })
+        .setup(|app| {
+            let store = app.state::<StdMutex<Store>>();
+            demo::ensure_demo_db(app.handle(), &store)
+                .map_err(|e| {
+                    eprintln!("Failed to set up demo DB: {e}");
+                    // Don't block app startup — the demo is optional
+                })
+                .ok();
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             greet,
