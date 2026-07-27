@@ -222,7 +222,7 @@ export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
                 const isFk = col.is_fk && col.fk_ref && !isNull;
 
                 return (
-                  <td key={col.name} className="border-r border-border px-3 py-2 last:border-r-0 font-mono text-xs" style={{ overflow: "hidden" }}>
+                  <td key={col.name} className="border-r border-border px-3 py-2 last:border-r-0 font-heading text-xs" style={{ overflow: "hidden" }}>
                     <div
                       className={`truncate max-w-full ${isFk ? "cursor-pointer text-accent hover:underline" : ""}`}
                       title={isNull ? "NULL" : isFk ? `FK → ${col!.fk_ref![0]}.${col!.fk_ref![1]}: ${String(cell)}` : String(cell)}
