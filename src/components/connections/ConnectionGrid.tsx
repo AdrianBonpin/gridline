@@ -16,6 +16,7 @@ interface ConnectionGridProps {
     onTagToggle?: (id: string) => void;
     onEditFolder?: (folder: Folder) => void;
     onDeleteFolder?: (folder: Folder) => void;
+    onOpenDbViewer?: (connectionId: string) => void;
 }
 
 export function ConnectionGrid({
@@ -28,6 +29,7 @@ export function ConnectionGrid({
     onTagToggle,
     onEditFolder,
     onDeleteFolder,
+    onOpenDbViewer,
 }: ConnectionGridProps) {
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const toggleItemSelection = useUiStore((s) => s.toggleItemSelection);
@@ -190,6 +192,7 @@ export function ConnectionGrid({
                             connection={c}
                             tags={tags}
                             onTagToggle={onTagToggle}
+                            onOpenDbViewer={onOpenDbViewer}
                         />
                     ))}
                 </div>

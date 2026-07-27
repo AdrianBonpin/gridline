@@ -40,6 +40,12 @@ export function HomeScreen() {
         (s) => s.setPrefilledConnectionString,
     );
     const setActiveView = useUiStore((s) => s.setActiveView);
+    const setActiveConnectionId = useUiStore((s) => s.setActiveConnectionId);
+
+    const handleOpenDbViewer = (connectionId: string) => {
+        setActiveConnectionId(connectionId);
+        setActiveView("db-viewer");
+    };
 
     const handleSearchUrl = (url: string) => {
         setSearchQuery("");
@@ -142,6 +148,7 @@ export function HomeScreen() {
                 onFolderSelect={setActiveFolderId}
                 hasSearch={searchQuery.length > 0}
                 onTagToggle={toggleTag}
+                onOpenDbViewer={handleOpenDbViewer}
                 onEditFolder={(f) => setEditFolder(f)}
                 onDeleteFolder={(f) =>
                     setConfirmDelete({ type: "folder", folder: f })

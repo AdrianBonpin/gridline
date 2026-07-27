@@ -7,6 +7,7 @@ import { SettingsPage } from "./components/settings/SettingsPage";
 import { NewConnectionScreen } from "./components/connections/NewConnectionScreen";
 import { ErrorBanner } from "./components/ui/ErrorBanner";
 import { ToastContainer } from "./components/ui/Toast";
+import { DbViewerScreen } from "./components/db-viewer/DbViewerScreen";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const VIEW_TITLES: Record<string, string> = {
@@ -80,11 +81,11 @@ export default function App() {
             )}
             {activeView === "home" && <HomeScreen />}
             {activeView === "db-viewer" && (
-                // TODO: Import and render DbViewerScreen once created in Phase 4
-                // import { DbViewerScreen } from "./components/db-viewer/DbViewerScreen";
-                <div className="flex items-center justify-center min-h-screen text-text-muted">
-                    DB Viewer (coming in Phase 4)
-                </div>
+                <DbViewerScreen
+                    connectionId={useUiStore.getState().activeConnectionId ?? ""}
+                    onHome={() => setActiveView("home")}
+                    onSettings={() => setActiveView("settings")}
+                />
             )}
             <ToastContainer />
         </div>
