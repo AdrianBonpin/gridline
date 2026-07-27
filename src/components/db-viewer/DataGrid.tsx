@@ -102,7 +102,7 @@ export function DataGrid() {
   const { columns, rows } = activeTab.data;
 
   return (
-    <div className="h-full overflow-auto">
+    <div className="flex-1 overflow-auto">
       <table className="table-fixed border-collapse text-left text-sm" style={{ minWidth: "100%" }}>
         <colgroup>
           {columns.map((col) => (
