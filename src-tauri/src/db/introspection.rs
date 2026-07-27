@@ -1,0 +1,1 @@
+// Schema introspection — will be implemented in a later task (P2-T2).
