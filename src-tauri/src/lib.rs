@@ -30,22 +30,22 @@ fn greet(name: &str) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let store = Store::open("gridline.db").expect("failed to open db");
+    let store_ref = StdMutex::new(store);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_keyring_store::init())
         .manage(AppState {
-            db_store: StdMutex::new(store),
+            db_store: store_ref,
             pool_manager: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
             ssh_manager: StdMutex::new(SshTunnelManager::new()),
         })
-        .setup(|app| {
-            let store = app.state::<StdMutex<Store>>();
-            demo::ensure_demo_db(app.handle(), &store)
+        .setup(move |app| {
+            let state = app.state::<AppState>();
+            demo::ensure_demo_db(app.handle(), &state.db_store)
                 .map_err(|e| {
                     eprintln!("Failed to set up demo DB: {e}");
-                    // Don't block app startup — the demo is optional
                 })
                 .ok();
             Ok(())
@@ -81,6 +81,7 @@ pub fn run() {
             keychain::save_connection_password,
             keychain::get_connection_password,
             keychain::delete_connection_password,
+            demo::recreate_demo_db,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

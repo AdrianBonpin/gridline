@@ -94,6 +94,8 @@ export interface Settings {
   font_size: FontSize;
   default_ports: Record<string, number | null>;
   tag_order: string | null;
+  table_refresh_rate: number;
+  table_page_size: number;
 }
 
 export type ActiveView = "home" | "settings" | "new-connection" | "db-viewer";

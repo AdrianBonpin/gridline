@@ -60,6 +60,8 @@ const baseSettings = {
   confirm_before_delete: true,
   default_ports: { postgresql: 5432, mysql: 3306, sqlite: null as number | null, redis: 6379 },
   tag_order: null,
+  table_refresh_rate: 0,
+  table_page_size: 50,
 };
 
 describe("SettingsPage", () => {

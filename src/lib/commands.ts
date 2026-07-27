@@ -43,6 +43,10 @@ export async function deleteConnectionPassword(connectionId: string): Promise<vo
   return invoke<void>("delete_connection_password", { connectionId });
 }
 
+export async function recreateDemoDb(): Promise<string> {
+  return invoke<string>("recreate_demo_db");
+}
+
 // ─── DB Viewer Lifecycle ────────────────────────────────────────
 
 export async function dbConnect(connectionId: string, input: ConnectionInput): Promise<void> {

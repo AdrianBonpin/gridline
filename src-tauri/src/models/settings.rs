@@ -9,4 +9,6 @@ pub struct Settings {
     pub font_size: String,
     pub default_ports: HashMap<String, Option<i64>>,
     pub tag_order: Option<String>,
+    pub table_refresh_rate: i64,
+    pub table_page_size: i64,
 }

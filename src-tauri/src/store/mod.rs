@@ -375,6 +375,14 @@ impl Store {
             font_size,
             default_ports,
             tag_order: map.get("tag_order").cloned(),
+            table_refresh_rate: map
+                .get("table_refresh_rate")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            table_page_size: map
+                .get("table_page_size")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50),
         })
     }
 
