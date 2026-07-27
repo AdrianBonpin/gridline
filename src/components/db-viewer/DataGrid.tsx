@@ -102,7 +102,10 @@ export function DataGrid() {
   const { columns, rows } = activeTab.data;
 
   return (
-    <div className="flex-1 overflow-auto overscroll-contain min-w-0">
+    <div
+    className="flex-1 overflow-auto min-w-0"
+    style={{ overscrollBehavior: "none", WebkitOverflowScrolling: "auto" }}
+  >
       <table className="table-fixed border-collapse text-left text-sm" style={{ minWidth: "100%" }}>
         <colgroup>
           {columns.map((col) => (
