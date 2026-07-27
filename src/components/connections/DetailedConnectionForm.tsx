@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { GeneralTab } from "./GeneralTab";
 import { SshSslTab } from "./SshSslTab";
+import { TagsEnvTab } from "./TagsEnvTab";
 import type { ConnectionFormData } from "./connectionFormData";
 
 export interface DetailedConnectionFormProps {
@@ -9,7 +10,7 @@ export interface DetailedConnectionFormProps {
 }
 
 export function DetailedConnectionForm({ form, onChange }: DetailedConnectionFormProps) {
-  const [activeTab, setActiveTab] = useState<"general" | "ssh">("general");
+  const [activeTab, setActiveTab] = useState<"general" | "ssh" | "tags">("general");
 
   return (
     <div>
@@ -32,12 +33,23 @@ export function DetailedConnectionForm({ form, onChange }: DetailedConnectionFor
         >
           SSH / SSL
         </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("tags")}
+          className={`pb-2 text-sm cursor-pointer transition-colors ${
+            activeTab === "tags" ? "text-text border-b-2 border-text" : "text-text-muted hover:text-text"
+          }`}
+        >
+          Tags & Env
+        </button>
       </div>
 
       {activeTab === "general" ? (
         <GeneralTab form={form} onChange={onChange} />
-      ) : (
+      ) : activeTab === "ssh" ? (
         <SshSslTab form={form as unknown as Record<string, unknown>} onChange={onChange as (updates: Record<string, unknown>) => void} />
+      ) : (
+        <TagsEnvTab form={form} onChange={onChange} />
       )}
     </div>
   );
