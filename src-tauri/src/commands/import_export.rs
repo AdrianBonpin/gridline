@@ -103,13 +103,13 @@ pub fn export_connections_inner(state: &Mutex<Store>) -> Result<String, String> 
 }
 
 #[tauri::command]
-pub fn import_connections(state: tauri::State<crate::DbState>, json: String) -> Result<ImportResult, String> {
-    import_connections_inner(&state.0, json)
+pub fn import_connections(state: tauri::State<crate::AppState>, json: String) -> Result<ImportResult, String> {
+    import_connections_inner(&state.db_store, json)
 }
 
 #[tauri::command]
-pub fn export_connections(state: tauri::State<crate::DbState>) -> Result<String, String> {
-    export_connections_inner(&state.0)
+pub fn export_connections(state: tauri::State<crate::AppState>) -> Result<String, String> {
+    export_connections_inner(&state.db_store)
 }
 
 #[cfg(test)]

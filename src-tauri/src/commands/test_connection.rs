@@ -235,6 +235,14 @@ async fn test_redis_connection(config: &DbConfig) -> TestConnectionResult {
     }
 }
 
+/// Tauri command to test a database connection.
+///
+/// Calls `test_database_connection` and returns the result.
+#[tauri::command]
+pub async fn test_connection(config: DbConfig) -> Result<TestConnectionResult, String> {
+    Ok(test_database_connection(&config).await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

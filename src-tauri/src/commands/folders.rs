@@ -48,39 +48,39 @@ pub fn update_folder_inner(
 }
 
 #[tauri::command]
-pub fn get_folders(state: tauri::State<crate::DbState>) -> Result<Vec<Folder>, String> {
-    get_folders_inner(&state.0)
+pub fn get_folders(state: tauri::State<crate::AppState>) -> Result<Vec<Folder>, String> {
+    get_folders_inner(&state.db_store)
 }
 
 #[tauri::command]
 pub fn create_folder(
-    state: tauri::State<crate::DbState>,
+    state: tauri::State<crate::AppState>,
     input: FolderInput,
 ) -> Result<Folder, String> {
-    create_folder_inner(&state.0, input)
+    create_folder_inner(&state.db_store, input)
 }
 
 #[tauri::command]
-pub fn delete_folder(state: tauri::State<crate::DbState>, id: String) -> Result<(), String> {
-    delete_folder_inner(&state.0, &id)
+pub fn delete_folder(state: tauri::State<crate::AppState>, id: String) -> Result<(), String> {
+    delete_folder_inner(&state.db_store, &id)
 }
 
 #[tauri::command]
 pub fn add_folder_tags(
-    state: tauri::State<crate::DbState>,
+    state: tauri::State<crate::AppState>,
     folder_id: String,
     tag_ids: Vec<String>,
 ) -> Result<(), String> {
-    add_folder_tags_inner(&state.0, folder_id, tag_ids)
+    add_folder_tags_inner(&state.db_store, folder_id, tag_ids)
 }
 
 #[tauri::command]
 pub fn update_folder(
-    state: tauri::State<crate::DbState>,
+    state: tauri::State<crate::AppState>,
     id: String,
     input: FolderInput,
 ) -> Result<Folder, String> {
-    update_folder_inner(&state.0, id, input)
+    update_folder_inner(&state.db_store, id, input)
 }
 
 #[cfg(test)]

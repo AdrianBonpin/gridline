@@ -36,27 +36,27 @@ pub fn update_tag_inner(
 }
 
 #[tauri::command]
-pub fn get_tags(state: tauri::State<crate::DbState>) -> Result<Vec<Tag>, String> {
-    get_tags_inner(&state.0)
+pub fn get_tags(state: tauri::State<crate::AppState>) -> Result<Vec<Tag>, String> {
+    get_tags_inner(&state.db_store)
 }
 
 #[tauri::command]
-pub fn create_tag(state: tauri::State<crate::DbState>, input: TagInput) -> Result<Tag, String> {
-    create_tag_inner(&state.0, input)
+pub fn create_tag(state: tauri::State<crate::AppState>, input: TagInput) -> Result<Tag, String> {
+    create_tag_inner(&state.db_store, input)
 }
 
 #[tauri::command]
-pub fn delete_tag(state: tauri::State<crate::DbState>, id: String) -> Result<(), String> {
-    delete_tag_inner(&state.0, &id)
+pub fn delete_tag(state: tauri::State<crate::AppState>, id: String) -> Result<(), String> {
+    delete_tag_inner(&state.db_store, &id)
 }
 
 #[tauri::command]
 pub fn update_tag(
-    state: tauri::State<crate::DbState>,
+    state: tauri::State<crate::AppState>,
     id: String,
     input: TagInput,
 ) -> Result<Tag, String> {
-    update_tag_inner(&state.0, id, input)
+    update_tag_inner(&state.db_store, id, input)
 }
 
 #[cfg(test)]

@@ -64,30 +64,30 @@ pub fn add_connection_tags_inner(
 }
 
 #[tauri::command]
-pub fn get_connections(state: tauri::State<crate::DbState>) -> Result<Vec<Connection>, String> {
-    get_connections_inner(&state.0)
+pub fn get_connections(state: tauri::State<crate::AppState>) -> Result<Vec<Connection>, String> {
+    get_connections_inner(&state.db_store)
 }
 
 #[tauri::command]
 pub fn create_connection(
-    state: tauri::State<crate::DbState>,
+    state: tauri::State<crate::AppState>,
     input: ConnectionInput,
 ) -> Result<Connection, String> {
-    create_connection_inner(&state.0, input)
+    create_connection_inner(&state.db_store, input)
 }
 
 #[tauri::command]
-pub fn delete_connection(state: tauri::State<crate::DbState>, id: String) -> Result<(), String> {
-    delete_connection_inner(&state.0, &id)
+pub fn delete_connection(state: tauri::State<crate::AppState>, id: String) -> Result<(), String> {
+    delete_connection_inner(&state.db_store, &id)
 }
 
 #[tauri::command]
 pub fn add_connection_tags(
-    state: tauri::State<crate::DbState>,
+    state: tauri::State<crate::AppState>,
     connection_id: String,
     tag_ids: Vec<String>,
 ) -> Result<(), String> {
-    add_connection_tags_inner(&state.0, connection_id, tag_ids)
+    add_connection_tags_inner(&state.db_store, connection_id, tag_ids)
 }
 
 #[cfg(test)]

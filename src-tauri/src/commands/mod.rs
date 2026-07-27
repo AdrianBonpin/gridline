@@ -1,4 +1,5 @@
 pub mod connections;
+pub mod db_viewer;
 pub mod folders;
 pub mod tags;
 pub mod settings;

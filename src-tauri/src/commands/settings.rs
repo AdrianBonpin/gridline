@@ -13,13 +13,13 @@ pub fn update_setting_inner(state: &Mutex<Store>, key: &str, value: &str) -> Res
 }
 
 #[tauri::command]
-pub fn get_settings(state: tauri::State<crate::DbState>) -> Result<Settings, String> {
-    get_settings_inner(&state.0)
+pub fn get_settings(state: tauri::State<crate::AppState>) -> Result<Settings, String> {
+    get_settings_inner(&state.db_store)
 }
 
 #[tauri::command]
-pub fn update_setting(state: tauri::State<crate::DbState>, key: String, value: String) -> Result<(), String> {
-    update_setting_inner(&state.0, &key, &value)
+pub fn update_setting(state: tauri::State<crate::AppState>, key: String, value: String) -> Result<(), String> {
+    update_setting_inner(&state.db_store, &key, &value)
 }
 
 #[cfg(test)]

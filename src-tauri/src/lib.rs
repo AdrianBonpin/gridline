@@ -5,8 +5,14 @@ mod commands;
 
 use std::sync::Mutex;
 use store::Store;
+use commands::ssh::SshTunnelManager;
+use db::pool::ConnectionPoolManager;
 
-pub struct DbState(pub Mutex<Store>);
+pub struct AppState {
+    pub db_store: Mutex<Store>,
+    pub pool_manager: Mutex<ConnectionPoolManager>,
+    pub ssh_manager: Mutex<SshTunnelManager>,
+}
 
 use commands::{connections, folders, tags, settings, import_export};
 
@@ -23,7 +29,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
-        .manage(DbState(Mutex::new(store)))
+        .manage(AppState {
+            db_store: Mutex::new(store),
+            pool_manager: Mutex::new(ConnectionPoolManager::new()),
+            ssh_manager: Mutex::new(SshTunnelManager::new()),
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             connections::get_connections,
@@ -42,7 +52,8 @@ pub fn run() {
             settings::get_settings,
             settings::update_setting,
             import_export::import_connections,
-            import_export::export_connections
+            import_export::export_connections,
+            commands::test_connection::test_connection
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
