@@ -1,10 +1,11 @@
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
 /// Configuration for establishing a database connection.
 ///
 /// Fields map to connection parameters. For SQLite, `host` stores the
 /// file path and `port` is always `None`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbConfig {
     pub db_type: String,
     pub host: String,
