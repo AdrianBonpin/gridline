@@ -168,7 +168,10 @@ export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
     className="flex-1 overflow-auto min-w-0"
     style={{ overscrollBehavior: "none", WebkitOverflowScrolling: "auto" }}
   >
-      <table className="table-fixed border-collapse text-left text-sm">
+      <table
+        className="border-collapse text-left text-sm"
+        style={{ tableLayout: "fixed", width: "100%" }}
+      >
         <colgroup>
           {visibleColumns.map((col) => (
             <col key={col.name} style={{ width: getWidth(col.name) }} />
@@ -182,7 +185,7 @@ export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
                 scope="col"
                 role="columnheader"
                 className="group relative border-b border-r border-border px-3 py-2 font-heading text-text-muted last:border-r-0"
-                style={{ width: getWidth(col.name) }}
+                style={{ width: getWidth(col.name), maxWidth: getWidth(col.name) }}
               >
                 <div className="truncate">
                   <span className="text-text text-xs">{col.name}</span>
@@ -192,7 +195,7 @@ export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
                 </div>
                 {/* resize handle */}
                 <div
-                  className="absolute right-0 top-0 h-full w-[6px] cursor-col-resize select-none opacity-0 group-hover:opacity-100 hover:bg-accent/30 active:bg-accent/50 transition-opacity"
+                  className="absolute right-0 top-0 h-full w-[6px] cursor-col-resize select-none bg-transparent hover:bg-accent/30 active:bg-accent/50"
                   onMouseDown={(e) => startResize(col.name, e)}
                   onDoubleClick={() => {
                     setColWidths((prev) => ({
@@ -219,7 +222,7 @@ export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
                 const isFk = col.is_fk && col.fk_ref && !isNull;
 
                 return (
-                  <td key={col.name} className="border-r border-border px-3 py-2 last:border-r-0">
+                  <td key={col.name} className="border-r border-border px-3 py-2 last:border-r-0" style={{ overflow: "hidden" }}>
                     <div
                       className={`truncate max-w-full ${isFk ? "cursor-pointer text-accent hover:underline" : ""}`}
                       title={isNull ? "NULL" : isFk ? `FK → ${col!.fk_ref![0]}.${col!.fk_ref![1]}: ${String(cell)}` : String(cell)}
