@@ -11,6 +11,7 @@ import { EditConnectionModal } from "./EditConnectionModal";
 import { useDbConnection } from "../../hooks/useDbConnection";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useConnectionStore } from "../../stores/connectionStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { ConnectionDropBanner } from "./ConnectionDropBanner";
 import * as cmd from "../../lib/commands";
 import type { ColumnInfo } from "../../lib/types";
@@ -86,6 +87,15 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
   const [editModalOpen, setEditModalOpen] = useState(false);
   const connections = useConnectionStore((s) => s.connections);
   const currentConnection = connections.find((c) => c.id === connectionId) ?? null;
+  const settings = useSettingsStore((s) => s.settings);
+  const setDefaultPageSize = useDbViewerStore((s) => s.setDefaultPageSize);
+
+  // Sync settings defaults to store
+  useEffect(() => {
+    if (settings?.table_page_size) {
+      setDefaultPageSize(settings.table_page_size);
+    }
+  }, [settings?.table_page_size, setDefaultPageSize]);
   const panelResizeRef = useRef<{ startX: number; startW: number } | null>(null);
 
   const activeTab = useDbViewerStore((s) => {
@@ -251,6 +261,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
                   onFilterChange={setFilterRules}
                   sortRules={sortRules}
                   onSortChange={setSortRules}
+                  defaultRefreshRate={settings?.table_refresh_rate ?? 0}
                   selectedCount={selectedRows.size}
                   selectedRows={processedRows.filter((_, i) => selectedRows.has(i))}
                   onClearSelection={() => setSelectedRows(new Set())}

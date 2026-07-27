@@ -471,6 +471,7 @@ interface TableControlsProps {
   selectedCount: number;
   selectedRows: unknown[][];
   onClearSelection: () => void;
+  defaultRefreshRate?: number;
 }
 
 export function TableControls({
@@ -489,6 +490,7 @@ export function TableControls({
   selectedCount,
   selectedRows,
   onClearSelection,
+  defaultRefreshRate = 0,
 }: TableControlsProps) {
   const tabs = useDbViewerStore((s) => s.tabs);
   const activeTabId = useDbViewerStore((s) => s.activeTabId);
@@ -507,7 +509,7 @@ export function TableControls({
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(0);
+  const [autoRefresh, setAutoRefresh] = useState(defaultRefreshRate);
   const [autoRefreshOpen, setAutoRefreshOpen] = useState(false);
 
   // auto-refresh timer
@@ -797,7 +799,6 @@ export function TableControls({
             title="Show/hide columns"
           >
             <Columns size={14} />
-            <span>Columns</span>
           </button>
           <DropdownMenu open={columnMenuOpen} setOpen={setColumnMenuOpen} align="right">
             <div className="px-2 py-1 text-[10px] text-text-muted uppercase tracking-wider">Visible columns</div>

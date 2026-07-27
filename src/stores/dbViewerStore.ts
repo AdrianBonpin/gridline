@@ -37,12 +37,12 @@ export interface ViewerTab {
 let tabCounter = 0;
 let changeCounter = 0;
 
-const initialTab = (schema: string, table: string): ViewerTab => ({
+const initialTab = (schema: string, table: string, defaultPageSize?: number): ViewerTab => ({
   id: `tab-${++tabCounter}`,
   schema,
   table,
   page: 1,
-  pageSize: 50,
+  pageSize: defaultPageSize ?? 50,
   loading: true,
   error: null,
   data: null,
@@ -53,6 +53,7 @@ const initialTab = (schema: string, table: string): ViewerTab => ({
 interface DbViewerState {
   tabs: ViewerTab[];
   activeTabId: string | null;
+  defaultPageSize: number;
   changesQueue: QueueItem[];
   databases: string[];
   schemas: string[];
@@ -62,6 +63,7 @@ interface DbViewerState {
 
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
+  setDefaultPageSize: (size: number) => void;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   setPage: (tabId: string, page: number) => void;
@@ -99,6 +101,7 @@ interface DbViewerState {
 const initialState = {
   tabs: [] as ViewerTab[],
   activeTabId: null as string | null,
+  defaultPageSize: 50,
   changesQueue: [] as QueueItem[],
   databases: [] as string[],
   schemas: [] as string[],
@@ -126,9 +129,11 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       }
     }
 
-    const tab = initialTab(schema, table);
+    const tab = initialTab(schema, table, get().defaultPageSize);
     set({ tabs: [...tabs, tab], activeTabId: tab.id });
   },
+
+  setDefaultPageSize: (size) => set({ defaultPageSize: size }),
 
   closeTab: (tabId) => {
     const { tabs, activeTabId } = get();
