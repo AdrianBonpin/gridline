@@ -431,6 +431,10 @@ impl Store {
                 .get("table_page_size")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(50),
+            shortcuts: map
+                .get("shortcuts")
+                .and_then(|v| serde_json::from_str(v).ok())
+                .unwrap_or_default(),
         })
     }
 

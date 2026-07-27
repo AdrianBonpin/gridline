@@ -12,6 +12,7 @@ import { useDbConnection } from "../../hooks/useDbConnection";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useShortcut } from "../../hooks/useShortcut";
 import { ConnectionDropBanner } from "./ConnectionDropBanner";
 import * as cmd from "../../lib/commands";
 import type { ColumnInfo } from "../../lib/types";
@@ -132,22 +133,15 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
     }
   }, [connectionId, setTabData, setTabError]);
 
-  // Cmd+W / Ctrl+W: close current tab, or navigate home if no tabs
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "w") {
-        e.preventDefault();
-        const state = useDbViewerStore.getState();
-        if (state.activeTabId) {
-          state.closeTab(state.activeTabId);
-        } else {
-          onHome();
-        }
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onHome]);
+  // Cmd+W / Ctrl+W: close current tab, or navigate home if no tabs (configurable in Settings → Shortcuts)
+  useShortcut("close_tab", () => {
+    const state = useDbViewerStore.getState();
+    if (state.activeTabId) {
+      state.closeTab(state.activeTabId);
+    } else {
+      onHome();
+    }
+  });
   useEffect(() => {
     if (!activeTab) return;
     if (!activeTab.loading) return;

@@ -11,4 +11,5 @@ pub struct Settings {
     pub tag_order: Option<String>,
     pub table_refresh_rate: i64,
     pub table_page_size: i64,
+    pub shortcuts: HashMap<String, String>,
 }

@@ -12,6 +12,7 @@ import { EditFolderDialog } from "../folders/EditFolderDialog";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { handleImport, handleExport } from "../../lib/importExport";
 import { getChildFolders } from "../../lib/utils";
+import { useShortcut } from "../../hooks/useShortcut";
 import type { Folder } from "../../lib/types";
 
 export function HomeScreen() {
@@ -54,17 +55,10 @@ export function HomeScreen() {
         setActiveView("new-connection");
     };
 
-    // Cmd+K to focus search
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-                e.preventDefault();
-                searchRef.current?.focus();
-            }
-        };
-        document.addEventListener("keydown", handler);
-        return () => document.removeEventListener("keydown", handler);
-    }, []);
+    // Cmd+K to focus search (configurable in Settings → Shortcuts)
+    useShortcut("command_palette", () => {
+        searchRef.current?.focus();
+    });
 
     const currentFolderId =
         activeFolderId !== null && folders.some((f) => f.id === activeFolderId)

@@ -96,6 +96,7 @@ export interface Settings {
   tag_order: string | null;
   table_refresh_rate: number;
   table_page_size: number;
+  shortcuts: Record<string, string>;
 }
 
 export type ActiveView = "home" | "settings" | "new-connection" | "db-viewer";

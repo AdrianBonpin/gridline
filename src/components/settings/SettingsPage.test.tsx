@@ -62,6 +62,7 @@ const baseSettings = {
   tag_order: null,
   table_refresh_rate: 0,
   table_page_size: 50,
+  shortcuts: {} as Record<string, string>,
 };
 
 describe("SettingsPage", () => {
