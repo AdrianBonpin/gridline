@@ -14,8 +14,8 @@ describe("TableTree", () => {
       schemas: ["public"],
       currentSchema: "public",
       tables: [
-        { schema: "public", name: "users", type: "table" },
-        { schema: "public", name: "orders", type: "table" },
+        { name: "users", schema: "public", table_type: "TABLE" },
+        { name: "orders", schema: "public", table_type: "TABLE" },
       ],
     });
     render(<TableTree />);
@@ -28,7 +28,7 @@ describe("TableTree", () => {
     useDbViewerStore.setState({
       schemas: ["public"],
       currentSchema: "public",
-      tables: [{ schema: "public", name: "users", type: "table" }],
+      tables: [{ name: "users", schema: "public", table_type: "TABLE" }],
     });
     render(<TableTree />);
     await user.click(screen.getByText("users"));

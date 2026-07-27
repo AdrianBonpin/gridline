@@ -147,36 +147,18 @@ describe("ConnectionInput", () => {
 describe("TableInfo", () => {
   it("has the correct shape", () => {
     const table: TableInfo = {
-      schema: "public",
       name: "users",
-      type: "table",
-      owner: "postgres",
-      size: "16 MB",
-      rows: 1000,
-      description: "User accounts table",
-    };
-    expect(table.schema).toBe("public");
-    expect(table.name).toBe("users");
-    expect(table.type).toBe("table");
-  });
-
-  it("accepts all table types", () => {
-    const table1: TableInfo = { schema: "public", name: "v1", type: "view" };
-    const table2: TableInfo = { schema: "public", name: "mv1", type: "materialized_view" };
-    const table3: TableInfo = { schema: "public", name: "ft1", type: "foreign_table" };
-    expect(table1.type).toBe("view");
-    expect(table2.type).toBe("materialized_view");
-    expect(table3.type).toBe("foreign_table");
-  });
-
-  it("allows optional fields to be null", () => {
-    const table: TableInfo = {
       schema: "public",
-      name: "minimal",
-      type: "table",
+      table_type: "TABLE",
     };
-    expect(table.owner).toBeUndefined();
-    expect(table.description).toBeUndefined();
+    expect(table.name).toBe("users");
+    expect(table.schema).toBe("public");
+    expect(table.table_type).toBe("TABLE");
+  });
+
+  it("accepts view type", () => {
+    const table: TableInfo = { name: "v1", schema: "public", table_type: "VIEW" };
+    expect(table.table_type).toBe("VIEW");
   });
 });
 

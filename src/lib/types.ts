@@ -117,13 +117,9 @@ export interface ImportResult {
 // ─── DB Viewer Types ────────────────────────────────────────────
 
 export interface TableInfo {
-  schema: string;
   name: string;
-  type: "table" | "view" | "materialized_view" | "foreign_table";
-  owner?: string | null;
-  size?: string | null;
-  rows?: number | null;
-  description?: string | null;
+  schema: string;
+  table_type: "TABLE" | "VIEW";
   columns?: ColumnInfo[];
 }
 

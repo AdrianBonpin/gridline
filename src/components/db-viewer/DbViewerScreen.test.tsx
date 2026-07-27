@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { DbViewerScreen } from "./DbViewerScreen";
 import { useDbViewerStore } from "../../stores/dbViewerStore";

@@ -151,7 +151,7 @@ describe("dbViewerStore", () => {
     const store = useDbViewerStore.getState();
     store.openTab("public", "users");
     store.addChange({ type: "insert", sql: "INSERT INTO users (id) VALUES (1)" });
-    store.populate(["mydb"], ["public"], [{ schema: "public", name: "users", type: "table" }]);
+    store.populate(["mydb"], ["public"], [{ name: "users", schema: "public", table_type: "TABLE" }]);
 
     store.reset();
 
@@ -168,8 +168,8 @@ describe("dbViewerStore", () => {
 
   it("populate sets databases, schemas, tables", () => {
     const tables: TableInfo[] = [
-      { schema: "public", name: "users", type: "table" },
-      { schema: "public", name: "posts", type: "table" },
+      { name: "users", schema: "public", table_type: "TABLE" },
+      { name: "posts", schema: "public", table_type: "TABLE" },
     ];
     const store = useDbViewerStore.getState();
     store.populate(["mydb", "testdb"], ["public", "private"], tables);
