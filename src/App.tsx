@@ -13,6 +13,7 @@ const VIEW_TITLES: Record<string, string> = {
   home: "Gridline",
   settings: "Settings",
   "new-connection": "New Connection",
+  "db-viewer": "",
 };
 
 export default function App() {
@@ -33,7 +34,13 @@ export default function App() {
     }, [loadConnections, loadSettings]);
 
     useEffect(() => {
-        const title = VIEW_TITLES[activeView] ?? "Gridline";
+        let title = VIEW_TITLES[activeView] ?? "Gridline";
+        if (activeView === "db-viewer") {
+            const conn = useConnectionStore.getState().connections.find(
+                (c) => c.id === useUiStore.getState().activeConnectionId
+            );
+            if (conn) title = conn.name;
+        }
         document.title = title;
         try {
             getCurrentWindow().setTitle(title).catch(() => {
@@ -72,6 +79,13 @@ export default function App() {
                 />
             )}
             {activeView === "home" && <HomeScreen />}
+            {activeView === "db-viewer" && (
+                // TODO: Import and render DbViewerScreen once created in Phase 4
+                // import { DbViewerScreen } from "./components/db-viewer/DbViewerScreen";
+                <div className="flex items-center justify-center min-h-screen text-text-muted">
+                    DB Viewer (coming in Phase 4)
+                </div>
+            )}
             <ToastContainer />
         </div>
     );

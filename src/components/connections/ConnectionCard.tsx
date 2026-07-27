@@ -9,12 +9,14 @@ interface ConnectionCardProps {
     connection: Connection;
     tags: Tag[];
     onTagToggle?: (id: string) => void;
+    onOpenDbViewer?: (connectionId: string) => void;
 }
 
 function ConnectionCardBase({
     connection,
     tags,
     onTagToggle,
+    onOpenDbViewer,
 }: ConnectionCardProps) {
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const toggleItemSelection = useUiStore((s) => s.toggleItemSelection);
@@ -29,6 +31,7 @@ function ConnectionCardBase({
 
     return (
         <div
+            onClick={() => onOpenDbViewer?.(connection.id)}
             className={`relative group rounded-xl border transition-colors cursor-pointer ${
                 isSelected
                     ? "bg-accent/10 border-accent"

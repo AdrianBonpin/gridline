@@ -42,4 +42,11 @@ describe("ConnectionCard", () => {
     await user.click(screen.getByText("production"));
     expect(fn).toHaveBeenCalledWith("t1");
   });
+  it("fires onOpenDbViewer when card is clicked", async () => {
+    const user = userEvent.setup();
+    const fn = vi.fn();
+    render(<ConnectionCard connection={conn} tags={tags} onOpenDbViewer={fn} />);
+    await user.click(screen.getByText("Prod DB"));
+    expect(fn).toHaveBeenCalledWith(conn.id);
+  });
 });
