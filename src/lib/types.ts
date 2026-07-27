@@ -124,6 +124,7 @@ export interface TableInfo {
   size?: string | null;
   rows?: number | null;
   description?: string | null;
+  columns?: ColumnInfo[];
 }
 
 export interface ColumnInfo {
