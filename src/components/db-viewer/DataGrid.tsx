@@ -1,11 +1,61 @@
+import { useCallback, useState } from "react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 
 // TODO: Replace this plain HTML table with @tanstack/react-virtual for large
 // result sets so we can render millions of rows without DOM overhead.
 
+type ColumnWidths = Record<string, number>;
+type TabColumnWidths = Record<string, ColumnWidths>;
+
+const DEFAULT_COL_WIDTH = 200;
+const MIN_COL_WIDTH = 60;
+const MAX_COL_WIDTH = 600;
+
 export function DataGrid() {
   const tabs = useDbViewerStore((state) => state.tabs);
   const activeTabId = useDbViewerStore((state) => state.activeTabId);
+  const [colWidths, setColWidths] = useState<TabColumnWidths>({});
+
+  // ── helpers ────────────────────────────────────────────
+
+  const activeTab = activeTabId ? tabs.find((t) => t.id === activeTabId) : null;
+  const widths = activeTabId ? (colWidths[activeTabId] ?? {}) : {};
+
+  const getWidth = useCallback(
+    (colName: string) => widths[colName] ?? DEFAULT_COL_WIDTH,
+    [widths],
+  );
+
+  // ── resize handler ─────────────────────────────────────
+
+  const startResize = useCallback(
+    (colName: string, e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startWidth = getWidth(colName);
+
+      const onMove = (ev: MouseEvent) => {
+        const delta = ev.clientX - startX;
+        const next = Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, startWidth + delta));
+        setColWidths((prev) => ({
+          ...prev,
+          [activeTabId!]: { ...(prev[activeTabId!] ?? {}), [colName]: next },
+        }));
+      };
+
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [activeTabId, getWidth],
+  );
+
+  // ── empty / loading / error states ─────────────────────
 
   if (!activeTabId) {
     return (
@@ -15,7 +65,6 @@ export function DataGrid() {
     );
   }
 
-  const activeTab = tabs.find((t) => t.id === activeTabId);
   if (!activeTab) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-text-muted">
@@ -54,7 +103,12 @@ export function DataGrid() {
 
   return (
     <div className="h-full overflow-auto">
-      <table className="w-full border-collapse text-left text-sm">
+      <table className="w-full table-fixed border-collapse text-left text-sm">
+        <colgroup>
+          {columns.map((col) => (
+            <col key={col.name} style={{ width: getWidth(col.name) }} />
+          ))}
+        </colgroup>
         <thead className="sticky top-0 z-10 bg-surface">
           <tr>
             {columns.map((col) => (
@@ -62,14 +116,19 @@ export function DataGrid() {
                 key={col.name}
                 scope="col"
                 role="columnheader"
-                className="border-b border-border px-3 py-2 font-heading text-text-muted"
+                className="group relative border-b border-border px-3 py-2 font-heading text-text-muted"
               >
-                <div className="flex flex-col">
-                  <span className="text-text">{col.name}</span>
-                  <span className="text-xs font-sans text-text-muted/70">
+                <div className="truncate">
+                  <span className="text-text text-xs">{col.name}</span>
+                  <span className="ml-1.5 text-[10px] text-text-muted/60">
                     {col.data_type}
                   </span>
                 </div>
+                {/* resize handle */}
+                <div
+                  className="absolute right-0 top-0 h-full w-[6px] cursor-col-resize select-none opacity-0 group-hover:opacity-100 hover:bg-accent/30 active:bg-accent/50 transition-opacity"
+                  onMouseDown={(e) => startResize(col.name, e)}
+                />
               </th>
             ))}
           </tr>
@@ -84,11 +143,13 @@ export function DataGrid() {
                 const isNull = cell === null || cell === undefined;
                 return (
                   <td key={columns[ci]?.name ?? ci} className="px-3 py-2">
-                    {isNull ? (
-                      <span className="italic text-text-muted">NULL</span>
-                    ) : (
-                      String(cell)
-                    )}
+                    <div className="truncate max-w-full" title={isNull ? "NULL" : String(cell)}>
+                      {isNull ? (
+                        <span className="italic text-text-muted">NULL</span>
+                      ) : (
+                        String(cell)
+                      )}
+                    </div>
                   </td>
                 );
               })}

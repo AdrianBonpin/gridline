@@ -17,7 +17,7 @@ export function TabBar() {
 
   return (
     <div
-      className="flex h-10 items-stretch overflow-x-auto border-b border-border"
+      className="flex flex-nowrap h-10 items-stretch overflow-x-auto border-b border-border"
       role="tablist"
     >
       {tabs.map((tab) => {
