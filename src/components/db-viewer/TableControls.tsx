@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import {
   Plus, RefreshCw, Clock, Filter, ArrowUpDown, Download,
   Columns, Check, ChevronLeft, ChevronRight, X, Trash2,
+  ChevronDown, FileJson, FileText, Terminal,
 } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import type { ColumnInfo } from "../../lib/types";
@@ -322,6 +323,136 @@ function SortModal({
   );
 }
 
+// ─── bulk actions dropdown ──────────────────────────────
+
+function BulkActionsDropdown({
+  columns,
+  selectedRows,
+  schema,
+  table,
+  onClearSelection,
+}: {
+  columns: ColumnInfo[];
+  selectedRows: unknown[][];
+  schema: string;
+  table: string;
+  onClearSelection: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const addChange = useDbViewerStore((s) => s.addChange);
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).catch(() => {});
+    setOpen(false);
+  };
+
+  const handleCopyJSON = () => {
+    const json = selectedRows.map((row) => {
+      const obj: Record<string, unknown> = {};
+      columns.forEach((c, i) => { obj[c.name] = row[i] ?? null; });
+      return obj;
+    });
+    copyToClipboard(JSON.stringify(json, null, 2));
+  };
+
+  const handleCopyCSV = () => {
+    const headers = columns.map((c) => c.name);
+    const csvRows = [headers.map((h) => `"${h.replace(/"/g, '""')}"`).join(",")];
+    for (const row of selectedRows) {
+      csvRows.push(
+        row.map((cell) => {
+          const s = cell === null || cell === undefined ? "" : String(cell);
+          return `"${s.replace(/"/g, '""')}"`;
+        }).join(","),
+      );
+    }
+    copyToClipboard(csvRows.join("\n"));
+  };
+
+  const handleCopySQL = () => {
+    const headers = columns.map((c) => c.name);
+    const lines: string[] = [];
+    for (const row of selectedRows) {
+      const vals = row.map((cell) =>
+        cell === null ? "NULL"
+        : typeof cell === "number" ? String(cell)
+        : `'${String(cell).replace(/'/g, "''")}'`,
+      );
+      lines.push(`INSERT INTO ${schema}.${table} (${headers.join(", ")}) VALUES (${vals.join(", ")});`);
+    }
+    copyToClipboard(lines.join("\n"));
+  };
+
+  const handleDeleteSelected = () => {
+    const pkCol = columns.find((c) => c.is_pk);
+    for (const row of selectedRows) {
+      const pk: Record<string, unknown> = {};
+      if (pkCol) {
+        const ci = columns.findIndex((c) => c.name === pkCol.name);
+        if (ci >= 0) pk[pkCol.name] = row[ci] ?? null;
+      }
+      addChange({
+        type: "delete",
+        schema,
+        table,
+        primaryKey: pk,
+        oldData: Object.fromEntries(columns.map((c, i) => [c.name, row[i] ?? null])),
+        description: `Delete row from ${table}`,
+      });
+    }
+    setOpen(false);
+    onClearSelection();
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-accent hover:bg-surface-raised transition-colors"
+      >
+        <span className="text-xs font-medium">Actions</span>
+        <ChevronDown size={12} />
+      </button>
+      <DropdownMenu open={open} setOpen={setOpen} align="right">
+        <button
+          type="button"
+          onClick={handleCopyJSON}
+          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors"
+        >
+          <FileJson size={13} className="text-text-muted" />
+          Copy as JSON
+        </button>
+        <button
+          type="button"
+          onClick={handleCopyCSV}
+          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors"
+        >
+          <FileText size={13} className="text-text-muted" />
+          Copy as CSV
+        </button>
+        <button
+          type="button"
+          onClick={handleCopySQL}
+          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors"
+        >
+          <Terminal size={13} className="text-text-muted" />
+          Copy as SQL INSERT
+        </button>
+        <div className="border-t border-border my-1" />
+        <button
+          type="button"
+          onClick={handleDeleteSelected}
+          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-red-400 hover:bg-surface-raised transition-colors"
+        >
+          <Trash2 size={13} />
+          Delete selected rows
+        </button>
+      </DropdownMenu>
+    </div>
+  );
+}
+
 // ─── main component ─────────────────────────────────────
 
 interface TableControlsProps {
@@ -338,6 +469,7 @@ interface TableControlsProps {
   sortRules: SortRule[];
   onSortChange: (rules: SortRule[]) => void;
   selectedCount: number;
+  selectedRows: unknown[][];
   onClearSelection: () => void;
 }
 
@@ -355,6 +487,7 @@ export function TableControls({
   sortRules,
   onSortChange,
   selectedCount,
+  selectedRows,
   onClearSelection,
 }: TableControlsProps) {
   const tabs = useDbViewerStore((s) => s.tabs);
@@ -567,12 +700,19 @@ export function TableControls({
 
       {/* ── right side ─────────────────────────────── */}
       <div className="flex items-center gap-2">
-        {/* Selected count */}
+        {/* Selected count + bulk actions */}
         {selectedCount > 0 && (
           <>
             <span className="text-accent font-medium tabular-nums">
               {selectedCount} selected
             </span>
+            <BulkActionsDropdown
+              columns={columns}
+              selectedRows={selectedRows}
+              schema={schema}
+              table={table}
+              onClearSelection={onClearSelection}
+            />
             <button
               type="button"
               onClick={onClearSelection}

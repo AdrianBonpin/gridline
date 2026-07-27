@@ -218,6 +218,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
                   sortRules={sortRules}
                   onSortChange={setSortRules}
                   selectedCount={selectedRows.size}
+                  selectedRows={processedRows.filter((_, i) => selectedRows.has(i))}
                   onClearSelection={() => setSelectedRows(new Set())}
                 />
               )}
