@@ -7,18 +7,18 @@ mod models;
 mod store;
 mod commands;
 
-use std::sync::Mutex;
+use std::sync::Mutex as StdMutex;
 use store::Store;
 use commands::ssh::SshTunnelManager;
 use db::pool::ConnectionPoolManager;
 
 pub struct AppState {
-    pub db_store: Mutex<Store>,
-    pub pool_manager: Mutex<ConnectionPoolManager>,
-    pub ssh_manager: Mutex<SshTunnelManager>,
+    pub db_store: StdMutex<Store>,
+    pub pool_manager: tokio::sync::Mutex<ConnectionPoolManager>,
+    pub ssh_manager: StdMutex<SshTunnelManager>,
 }
 
-use commands::{connections, folders, tags, settings, import_export};
+use commands::{connections, db_viewer, folders, tags, settings, import_export};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -34,9 +34,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .manage(AppState {
-            db_store: Mutex::new(store),
-            pool_manager: Mutex::new(ConnectionPoolManager::new()),
-            ssh_manager: Mutex::new(SshTunnelManager::new()),
+            db_store: StdMutex::new(store),
+            pool_manager: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
+            ssh_manager: StdMutex::new(SshTunnelManager::new()),
         })
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -57,7 +57,15 @@ pub fn run() {
             settings::update_setting,
             import_export::import_connections,
             import_export::export_connections,
-            commands::test_connection::test_connection
+            commands::test_connection::test_connection,
+            db_viewer::db_connect,
+            db_viewer::db_disconnect,
+            db_viewer::get_databases,
+            db_viewer::get_schemas,
+            db_viewer::get_tables,
+            db_viewer::get_table_data,
+            db_viewer::execute_change,
+            db_viewer::refresh_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

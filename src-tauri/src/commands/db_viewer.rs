@@ -1,12 +1,11 @@
-//! DB Viewer helper functions.
+//! DB Viewer helper functions and Tauri commands.
 //!
-//! This module provides pure SQL builder functions and pagination helpers
-//! for the database viewer. No actual DB connections are needed.
-//!
-//! **IMPORTANT:** All functions are pure string/value transformers.
-//! They do NOT take `State` or connection pools.
+//! This module provides pure SQL builder functions, pagination helpers,
+//! and Tauri commands for the database viewer.
 
-use crate::models::db_viewer::TableInfo;
+use crate::db::pool::DbConfig;
+use crate::models::db_viewer::{Change, ColumnInfo, QueryResult, TableInfo};
+use tauri::State;
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -124,6 +123,340 @@ pub fn parse_table_info_rows(rows: &[Vec<serde_json::Value>]) -> Vec<TableInfo> 
             }
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands
+// ---------------------------------------------------------------------------
+
+/// Convert a PostgreSQL row value at column index `i` to a JSON value.
+///
+/// Tries common PostgreSQL types (String, i64, f64, bool) in order.
+/// Falls back to `Null` if no type matches.
+///
+/// **Note:** This is a simplified approach. Complex types (arrays, JSON, etc.)
+/// may not be handled correctly. Future iterations should use proper type
+/// mapping via `typeinfo` from `get_table_data`'s column introspection.
+fn pg_value_to_json(row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
+    if let Ok(Some(v)) = row.try_get::<_, Option<String>>(i) {
+        return serde_json::Value::String(v);
+    }
+    if let Ok(Some(v)) = row.try_get::<_, Option<i64>>(i) {
+        return serde_json::json!(v);
+    }
+    if let Ok(Some(v)) = row.try_get::<_, Option<f64>>(i) {
+        return serde_json::json!(v);
+    }
+    if let Ok(Some(v)) = row.try_get::<_, Option<bool>>(i) {
+        return serde_json::json!(v);
+    }
+    serde_json::Value::Null
+}
+
+#[tauri::command]
+pub async fn db_connect(
+    connection_id: String,
+    config: DbConfig,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    if config.db_type == "postgresql" {
+        use tokio_postgres::NoTls;
+
+        let host = &config.host;
+        let port = config.port.unwrap_or(5432) as u16;
+        let user = config.username.as_deref().unwrap_or("postgres");
+        let dbname = config.database.as_deref().unwrap_or("postgres");
+        let password = config.password.as_deref().unwrap_or("");
+
+        let conn_str = format!(
+            "host={} port={} user={} dbname={} password={}",
+            host, port, user, dbname, password
+        );
+
+        match tokio_postgres::connect(&conn_str, NoTls).await {
+            Ok((client, connection)) => {
+                let handle = tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        eprintln!("PostgreSQL connection error: {}", e);
+                    }
+                });
+
+                let mut pm = state.pool_manager.lock().await;
+                pm.register(
+                    &connection_id,
+                    crate::db::pool::DbHandle::Postgresql(client, handle),
+                );
+                Ok(())
+            }
+            Err(e) => Err(format!("Connection failed: {}", e)),
+        }
+    } else if config.db_type == "sqlite" {
+        match rusqlite::Connection::open(&config.host) {
+            Ok(conn) => {
+                let mut pm = state.pool_manager.lock().await;
+                pm.register(&connection_id, crate::db::pool::DbHandle::Sqlite(conn));
+                Ok(())
+            }
+            Err(e) => Err(format!("Connection failed: {}", e)),
+        }
+    } else {
+        Err(format!(
+            "Database type '{}' not yet supported for DB viewer",
+            config.db_type
+        ))
+    }
+}
+
+#[tauri::command]
+pub async fn db_disconnect(
+    connection_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    let mut pm = state.pool_manager.lock().await;
+    pm.remove(&connection_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_databases(
+    connection_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<String>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let rows = client
+                .query(
+                    "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname",
+                    &[],
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
+        }
+        _ => Err(
+            "Connection not found or not supported for listing databases".to_string(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn get_schemas(
+    connection_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<String>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let rows = client
+                .query(
+                    "SELECT nspname FROM pg_namespace WHERE nspname NOT IN ('information_schema', 'pg_catalog') AND nspname NOT LIKE 'pg_toast%' AND nspname NOT LIKE 'pg_temp%' ORDER BY nspname",
+                    &[],
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
+        }
+        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            let mut stmt = conn
+                .prepare("SELECT DISTINCT 'main' AS schema")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
+        }
+        None => Err("Connection not found".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_tables(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<TableInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let schema_filter = schema.unwrap_or_else(|| "public".to_string());
+            let rows = client
+                .query(
+                    "SELECT table_name, table_schema, table_type FROM information_schema.tables WHERE table_schema = $1 AND table_type IN ('BASE TABLE', 'VIEW') ORDER BY table_name",
+                    &[&schema_filter],
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| TableInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    table_type: r.get(2),
+                })
+                .collect())
+        }
+        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name, 'main', type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(TableInfo {
+                        name: row.get::<_, String>(0)?,
+                        schema: row.get::<_, String>(1)?,
+                        table_type: row.get::<_, String>(2)?.to_uppercase(),
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        }
+        None => Err("Connection not found".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_table_data(
+    connection_id: String,
+    schema: String,
+    table: String,
+    page: Option<i64>,
+    page_size: Option<i64>,
+    state: State<'_, crate::AppState>,
+) -> Result<QueryResult, String> {
+    let p = page.unwrap_or(1);
+    let ps = page_size.unwrap_or(50);
+    let off = (p - 1) * ps;
+
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            // Get total count
+            let count_query =
+                format!("SELECT COUNT(*) FROM \"{}\".\"{}\"", schema, table);
+            let count_row = client
+                .query_one(&count_query, &[])
+                .await
+                .map_err(|e| e.to_string())?;
+            let total_rows: i64 = count_row.get(0);
+
+            // Get column info
+            let col_query = "SELECT column_name, data_type, is_nullable, COALESCE((SELECT true FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage ku ON tc.constraint_name = ku.constraint_name WHERE tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_type = 'PRIMARY KEY' AND ku.column_name = c.column_name), false) as is_pk, false as is_fk, column_default FROM information_schema.columns c WHERE c.table_schema = $1 AND c.table_name = $2 ORDER BY c.ordinal_position".to_string();
+            let col_rows = client
+                .query(&col_query, &[&schema, &table])
+                .await
+                .map_err(|e| e.to_string())?;
+            let columns: Vec<ColumnInfo> = col_rows
+                .iter()
+                .map(|r| ColumnInfo {
+                    name: r.get(0),
+                    data_type: r.get(1),
+                    is_nullable: r.get::<_, String>(2) == "YES",
+                    is_pk: r.get(3),
+                    is_fk: r.get(4),
+                    fk_ref: None,
+                    default_value: r.get::<_, Option<String>>(5),
+                })
+                .collect();
+
+            // Get data
+            let data_query = format!(
+                "SELECT * FROM \"{}\".\"{}\" LIMIT {} OFFSET {}",
+                schema, table, ps, off
+            );
+            let data_rows = client
+                .query(&data_query, &[])
+                .await
+                .map_err(|e| e.to_string())?;
+            let rows: Vec<Vec<serde_json::Value>> = data_rows
+                .iter()
+                .map(|row| (0..row.len()).map(|i| pg_value_to_json(row, i)).collect())
+                .collect();
+
+            Ok(QueryResult {
+                columns,
+                rows,
+                total_rows,
+                page: p,
+                page_size: ps,
+            })
+        }
+        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            let count_query =
+                format!("SELECT COUNT(*) FROM \"{}\".\"{}\"", schema, table);
+            let total_rows: i64 = conn
+                .query_row(&count_query, [], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+
+            let data_query = format!(
+                "SELECT * FROM \"{}\".\"{}\" LIMIT {} OFFSET {}",
+                schema, table, ps, off
+            );
+            let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
+            let col_count = stmt.column_count();
+
+            let columns: Vec<ColumnInfo> = (0..col_count)
+                .map(|i| ColumnInfo {
+                    name: stmt.column_name(i).unwrap_or("?").to_string(),
+                    data_type: "TEXT".to_string(),
+                    is_nullable: true,
+                    is_pk: false,
+                    is_fk: false,
+                    fk_ref: None,
+                    default_value: None,
+                })
+                .collect();
+
+            let rows: Vec<Vec<serde_json::Value>> = stmt
+                .query_map([], |row| {
+                    let mut vals = Vec::new();
+                    for i in 0..col_count {
+                        let val: Option<String> = row.get(i).unwrap_or(None);
+                        vals.push(
+                            val.map(serde_json::Value::String)
+                                .unwrap_or(serde_json::Value::Null),
+                        );
+                    }
+                    Ok(vals)
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            Ok(QueryResult {
+                columns,
+                rows,
+                total_rows,
+                page: p,
+                page_size: ps,
+            })
+        }
+        None => Err("Connection not found".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn execute_change(
+    connection_id: String,
+    change: Change,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    // Stub: execution is not yet implemented
+    let _ = (connection_id, change, state);
+    Err("Not yet implemented".to_string())
+}
+
+#[tauri::command]
+pub async fn refresh_connection(
+    connection_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    // Stub: re-query and return updated databases/schemas/tables metadata.
+    // For now, just acknowledge the request.
+    let _ = (connection_id, state);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

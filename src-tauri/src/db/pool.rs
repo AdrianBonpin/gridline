@@ -41,12 +41,16 @@ impl DbConfig {
 
 /// A handle to an active database connection.
 ///
-/// Currently only `Sqlite` is supported. Variants for PostgreSQL, MySQL,
-/// and Redis will be added in later tasks.
+/// Supports `Sqlite` (synchronous via `rusqlite`) and
+/// `Postgresql` (async via `tokio-postgres`). MySQL and Redis
+/// variants will be added in later tasks.
 #[derive(Debug)]
 pub enum DbHandle {
     /// A synchronous SQLite connection via `rusqlite`.
     Sqlite(rusqlite::Connection),
+    /// An asynchronous PostgreSQL connection via `tokio-postgres`.
+    /// Stores the client handle and the background connection task.
+    Postgresql(tokio_postgres::Client, tokio::task::JoinHandle<()>),
 }
 
 /// Internal entry stored in the pool manager.
