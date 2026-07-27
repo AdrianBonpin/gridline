@@ -1,5 +1,19 @@
 use rusqlite::Connection;
 
+/// All new-column additions for the connections table since version 1.
+const CONNECTION_COLUMNS_V2: &[(&str, &str)] = &[
+    ("database", "TEXT"),
+    ("ssh_host", "TEXT"),
+    ("ssh_port", "INTEGER"),
+    ("ssh_user", "TEXT"),
+    ("ssh_auth_method", "TEXT"),
+    ("ssh_private_key_path", "TEXT"),
+    ("ssl_mode", "TEXT"),
+    ("ssl_ca_path", "TEXT"),
+    ("ssl_cert_path", "TEXT"),
+    ("ssl_key_path", "TEXT"),
+];
+
 pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
@@ -17,8 +31,18 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
              host TEXT NOT NULL,
              port INTEGER,
              username TEXT,
+             database TEXT,
              folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL,
              keychain_ref TEXT,
+             ssh_host TEXT,
+             ssh_port INTEGER,
+             ssh_user TEXT,
+             ssh_auth_method TEXT,
+             ssh_private_key_path TEXT,
+             ssl_mode TEXT,
+             ssl_ca_path TEXT,
+             ssl_cert_path TEXT,
+             ssl_key_path TEXT,
              created_at TEXT NOT NULL,
              updated_at TEXT NOT NULL
          );
@@ -44,11 +68,47 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT OR IGNORE INTO schema_version (version) VALUES (1)",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
+
+    // --- Version-specific migrations ----------------------------------------
+
+    let current_ver: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if current_ver < 2 {
+        // Discover which columns the connections table already has.
+        let existing: Vec<String> = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(connections)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        for (col_name, col_type) in CONNECTION_COLUMNS_V2 {
+            if !existing.contains(&col_name.to_string()) {
+                let sql = format!(
+                    "ALTER TABLE connections ADD COLUMN {} {}",
+                    col_name, col_type
+                );
+                conn.execute(&sql, []).map_err(|e| e.to_string())?;
+            }
+        }
+
+        // Record the migration.
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (2)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 

@@ -229,7 +229,7 @@ impl Store {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, db_type, host, port, username, folder_id, keychain_ref, created_at, updated_at FROM connections ORDER BY name",
+                "SELECT id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, created_at, updated_at FROM connections ORDER BY name",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -241,21 +241,21 @@ impl Store {
                     host: row.get(3)?,
                     port: row.get(4)?,
                     username: row.get(5)?,
-                    folder_id: row.get(6)?,
-                    keychain_ref: row.get(7)?,
-                    database: None,
-                    ssh_host: None,
-                    ssh_port: None,
-                    ssh_user: None,
-                    ssh_auth_method: None,
-                    ssh_private_key_path: None,
-                    ssl_mode: None,
-                    ssl_ca_path: None,
-                    ssl_cert_path: None,
-                    ssl_key_path: None,
+                    database: row.get(6)?,
+                    folder_id: row.get(7)?,
+                    keychain_ref: row.get(8)?,
+                    ssh_host: row.get(9)?,
+                    ssh_port: row.get(10)?,
+                    ssh_user: row.get(11)?,
+                    ssh_auth_method: row.get(12)?,
+                    ssh_private_key_path: row.get(13)?,
+                    ssl_mode: row.get(14)?,
+                    ssl_ca_path: row.get(15)?,
+                    ssl_cert_path: row.get(16)?,
+                    ssl_key_path: row.get(17)?,
                     tag_ids: vec![],
-                    created_at: row.get(8)?,
-                    updated_at: row.get(9)?,
+                    created_at: row.get(18)?,
+                    updated_at: row.get(19)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -278,8 +278,8 @@ impl Store {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Self::now();
         conn.execute(
-            "INSERT INTO connections (id, name, db_type, host, port, username, folder_id, keychain_ref, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)",
-            params![id, input.name, input.db_type, input.host, input.port, input.username, input.folder_id, now, now],
+            "INSERT INTO connections (id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            params![id, input.name, input.db_type, input.host, input.port, input.username, input.database, input.folder_id, input.ssh_host, input.ssh_port, input.ssh_user, input.ssh_auth_method, input.ssh_private_key_path, input.ssl_mode, input.ssl_ca_path, input.ssl_cert_path, input.ssl_key_path, now, now],
         )
         .map_err(|e| e.to_string())?;
         for tag_id in &input.tag_ids {
@@ -619,5 +619,57 @@ mod tests {
         store.update_setting("theme", "light").unwrap();
         let settings = store.get_settings().unwrap();
         assert_eq!(settings.theme, "light");
+    }
+
+    #[test]
+    fn ssh_ssl_fields_persist_and_retrieve() {
+        let store = fresh_store();
+        let conn = store
+            .create_connection(ConnectionInput {
+                name: "SSH-Tunnel-DB".into(),
+                db_type: "postgresql".into(),
+                host: "localhost".into(),
+                port: Some(5432),
+                username: Some("dbuser".into()),
+                folder_id: None,
+                password: None,
+                database: Some("analytics".into()),
+                ssh_host: Some("jumphost.example.com".into()),
+                ssh_port: Some(2222),
+                ssh_user: Some("tunneluser".into()),
+                ssh_auth_method: Some("Key".into()),
+                ssh_private_key_path: Some("/home/user/.ssh/id_rsa".into()),
+                ssh_passphrase: None,
+                ssl_mode: Some("verify-full".into()),
+                ssl_ca_path: Some("/etc/ssl/certs/ca.pem".into()),
+                ssl_cert_path: Some("/etc/ssl/certs/client-cert.pem".into()),
+                ssl_key_path: Some("/etc/ssl/private/client-key.pem".into()),
+                tag_ids: vec![],
+            })
+            .unwrap();
+        let got = store.get_connections().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].database.as_deref(), Some("analytics"));
+        assert_eq!(got[0].ssh_host.as_deref(), Some("jumphost.example.com"));
+        assert_eq!(got[0].ssh_port, Some(2222));
+        assert_eq!(got[0].ssh_user.as_deref(), Some("tunneluser"));
+        assert_eq!(got[0].ssh_auth_method.as_deref(), Some("Key"));
+        assert_eq!(
+            got[0].ssh_private_key_path.as_deref(),
+            Some("/home/user/.ssh/id_rsa")
+        );
+        assert_eq!(got[0].ssl_mode.as_deref(), Some("verify-full"));
+        assert_eq!(
+            got[0].ssl_ca_path.as_deref(),
+            Some("/etc/ssl/certs/ca.pem")
+        );
+        assert_eq!(
+            got[0].ssl_cert_path.as_deref(),
+            Some("/etc/ssl/certs/client-cert.pem")
+        );
+        assert_eq!(
+            got[0].ssl_key_path.as_deref(),
+            Some("/etc/ssl/private/client-key.pem")
+        );
     }
 }
