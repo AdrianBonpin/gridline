@@ -115,6 +115,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
             <div
               className="w-[5px] cursor-col-resize hover:bg-accent/30 active:bg-accent/50 shrink-0"
               onMouseDown={onPanelResizeStart}
+              onDoubleClick={() => setTablePanelWidth(280)}
             />
             <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
               <TabBar />
