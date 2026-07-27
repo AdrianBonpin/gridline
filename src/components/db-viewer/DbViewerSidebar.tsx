@@ -29,12 +29,12 @@ export function DbViewerSidebar({ currentView, onNavigate }: DbViewerSidebarProp
   function renderItem(item: NavItem) {
     const isActive = currentView === item.id;
     const baseClass = "w-10 h-10 flex items-center justify-center rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-accent/50";
-    const activeClass = "bg-accent/10 text-accent";
+    const activeClass = "text-accent";
     const inactiveClass = "text-text-muted hover:text-text hover:bg-surface-raised";
     const stubClass = "opacity-40 cursor-not-allowed";
 
     return (
-      <Tooltip key={item.id} content={item.label}>
+      <Tooltip key={item.id} content={item.label} side="right">
         <button
           type="button"
           aria-label={item.label}

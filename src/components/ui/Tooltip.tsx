@@ -31,13 +31,41 @@ export function TooltipProvider({ children }: TooltipProviderProps) {
 interface TooltipProps {
   content: ReactNode;
   children: ReactElement;
+  side?: "top" | "right" | "bottom" | "left";
 }
 
-export function Tooltip({ content, children }: TooltipProps) {
+function tooltipClasses(side: "top" | "right" | "bottom" | "left") {
+  switch (side) {
+    case "right":
+      return {
+        wrapper: "left-full ml-2 top-1/2 -translate-y-1/2",
+        arrow: "right-full top-1/2 -translate-y-1/2 border-r-surface-raised",
+      };
+    case "bottom":
+      return {
+        wrapper: "top-full left-1/2 -translate-x-1/2 mt-2",
+        arrow: "bottom-full left-1/2 -translate-x-1/2 border-b-surface-raised",
+      };
+    case "left":
+      return {
+        wrapper: "right-full mr-2 top-1/2 -translate-y-1/2",
+        arrow: "left-full top-1/2 -translate-y-1/2 border-l-surface-raised",
+      };
+    case "top":
+    default:
+      return {
+        wrapper: "bottom-full left-1/2 -translate-x-1/2 mb-2",
+        arrow: "top-full left-1/2 -translate-x-1/2 border-t-surface-raised",
+      };
+  }
+}
+
+export function Tooltip({ content, children, side = "top" }: TooltipProps) {
   const id = useId();
   const { activeId, setActiveId } = useTooltipContext();
   const showTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isActive = activeId === id;
+  const tc = tooltipClasses(side);
 
   const clearTimer = useCallback(() => {
     if (showTimer.current) {
@@ -60,7 +88,7 @@ export function Tooltip({ content, children }: TooltipProps) {
 
   return (
     <span
-      className="relative inline-flex"
+      className="relative inline-flex cursor-pointer"
       onMouseEnter={show}
       onMouseLeave={hide}
       onFocus={show}
@@ -70,11 +98,11 @@ export function Tooltip({ content, children }: TooltipProps) {
       {isActive && (
         <span
           role="tooltip"
-          className="absolute z-50 px-2 py-1 text-xs rounded-md bg-surface-raised border border-border text-text shadow-lg whitespace-nowrap bottom-full left-1/2 -translate-x-1/2 mb-2"
+          className={`absolute z-50 px-2 py-1 text-xs rounded-md bg-surface-raised border border-border text-text shadow-lg whitespace-nowrap ${tc.wrapper}`}
         >
           {content}
           <span
-            className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-surface-raised"
+            className={`absolute border-4 border-transparent ${tc.arrow}`}
             aria-hidden="true"
           />
         </span>

@@ -29,6 +29,7 @@ export interface ViewerTab {
   loading: boolean;
   error: string | null;
   data: QueryResult | null;
+  columnFilter?: { column: string; value: string };
 }
 
 // ─── Auto-increment counters ───────────────────────────────────
@@ -68,6 +69,8 @@ interface DbViewerState {
   setTabData: (tabId: string, data: QueryResult) => void;
   setTabLoading: (tabId: string, loading: boolean) => void;
   setTabError: (tabId: string, error: string) => void;
+  setColumnFilter: (tabId: string, column: string, value: string) => void;
+  clearColumnFilter: (tabId: string) => void;
   addChange: (input: {
     type: ChangeItemType;
     sql?: string;
@@ -173,6 +176,20 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId ? { ...t, error, loading: false } : t,
+      ),
+    })),
+
+  setColumnFilter: (tabId, column, value) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, columnFilter: { column, value } } : t,
+      ),
+    })),
+
+  clearColumnFilter: (tabId) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, columnFilter: undefined } : t,
       ),
     })),
 

@@ -7,6 +7,7 @@ import { TabBar } from "./TabBar";
 import { DataGrid } from "./DataGrid";
 import { PaginationControls } from "./PaginationControls";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
+import { FilterBar } from "./FilterBar";
 import { useDbConnection } from "../../hooks/useDbConnection";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { ConnectionDropBanner } from "./ConnectionDropBanner";
@@ -21,6 +22,8 @@ export interface DbViewerScreenProps {
 export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScreenProps) {
   const { connectionError, connect } = useDbConnection(connectionId);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  const [filterText, setFilterText] = useState("");
+  const [filterEnabled, setFilterEnabled] = useState(false);
 
   // Issue 1: Auto-fetch table data when a tab becomes active and has no data
   const activeTab = useDbViewerStore((s) => {
@@ -91,8 +94,14 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
             </div>
             <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
               <TabBar />
+              <FilterBar
+                filterText={filterText}
+                onFilterChange={setFilterText}
+                enabled={filterEnabled}
+                onToggle={() => { setFilterEnabled(!filterEnabled); if (filterEnabled) setFilterText(""); }}
+              />
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                <DataGrid />
+                <DataGrid filterText={filterEnabled ? filterText : ""} />
                 <PaginationControls />
               </div>
             </div>

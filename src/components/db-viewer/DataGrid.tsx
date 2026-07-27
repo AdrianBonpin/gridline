@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 
 // TODO: Replace this plain HTML table with @tanstack/react-virtual for large
@@ -11,9 +11,15 @@ const DEFAULT_COL_WIDTH = 200;
 const MIN_COL_WIDTH = 60;
 const MAX_COL_WIDTH = 600;
 
-export function DataGrid() {
+interface DataGridProps {
+  filterText?: string;
+}
+
+export function DataGrid({ filterText = "" }: DataGridProps) {
   const tabs = useDbViewerStore((state) => state.tabs);
   const activeTabId = useDbViewerStore((state) => state.activeTabId);
+  const openTab = useDbViewerStore((state) => state.openTab);
+  const setColumnFilter = useDbViewerStore((state) => state.setColumnFilter);
   const [colWidths, setColWidths] = useState<TabColumnWidths>({});
 
   // ── helpers ────────────────────────────────────────────
@@ -26,25 +32,28 @@ export function DataGrid() {
     [widths],
   );
 
-  // ── resize handler ─────────────────────────────────────
+  // ── resize handler (ref-based to avoid stale closures) ─
+
+  const resizeRef = useRef<{ col: string; startX: number; startWidth: number } | null>(null);
 
   const startResize = useCallback(
     (colName: string, e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      const startX = e.clientX;
-      const startWidth = getWidth(colName);
+      resizeRef.current = { col: colName, startX: e.clientX, startWidth: getWidth(colName) };
 
       const onMove = (ev: MouseEvent) => {
-        const delta = ev.clientX - startX;
-        const next = Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, startWidth + delta));
+        if (!resizeRef.current) return;
+        const delta = ev.clientX - resizeRef.current.startX;
+        const next = Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, resizeRef.current.startWidth + delta));
         setColWidths((prev) => ({
           ...prev,
-          [activeTabId!]: { ...(prev[activeTabId!] ?? {}), [colName]: next },
+          [activeTabId!]: { ...(prev[activeTabId!] ?? {}), [resizeRef.current!.col]: next },
         }));
       };
 
       const onUp = () => {
+        resizeRef.current = null;
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
       };
@@ -53,6 +62,25 @@ export function DataGrid() {
       document.addEventListener("mouseup", onUp);
     },
     [activeTabId, getWidth],
+  );
+
+  // ── FK row-click handler ───────────────────────────────
+
+  const handleFkClick = useCallback(
+    (col: { name: string; is_fk: boolean; fk_ref: [string, string] | null }, cellValue: unknown) => {
+      if (!col.is_fk || !col.fk_ref || cellValue === null || cellValue === undefined) return;
+      const [refTable, refColumn] = col.fk_ref;
+      const schema = activeTab?.schema ?? "public";
+      openTab(schema, refTable);
+      // Find the newly opened tab and set its column filter
+      const newTab = useDbViewerStore.getState().tabs.find(
+        (t) => t.schema === schema && t.table === refTable,
+      );
+      if (newTab) {
+        setColumnFilter(newTab.id, refColumn, String(cellValue));
+      }
+    },
+    [activeTab, openTab, setColumnFilter],
   );
 
   // ── empty / loading / error states ─────────────────────
@@ -101,6 +129,34 @@ export function DataGrid() {
   // Rows are Vec<Vec<serde_json::Value>> indexed positionally.
   const { columns, rows } = activeTab.data;
 
+  // Apply column filter and text filter
+  const filteredRows = (() => {
+    let result = rows;
+
+    // Column filter (FK click target)
+    if (activeTab.columnFilter) {
+      const { column, value } = activeTab.columnFilter;
+      const colIdx = columns.findIndex((c) => c.name === column);
+      if (colIdx >= 0) {
+        const needle = value.toLowerCase();
+        result = result.filter((row) => {
+          const cell = row[colIdx];
+          return cell !== null && cell !== undefined && String(cell).toLowerCase().includes(needle);
+        });
+      }
+    }
+
+    // Text filter (substring match across any cell)
+    if (filterText) {
+      const needle = filterText.toLowerCase();
+      result = result.filter((row) =>
+        row.some((cell) => cell !== null && cell !== undefined && String(cell).toLowerCase().includes(needle)),
+      );
+    }
+
+    return result;
+  })();
+
   return (
     <div
     className="flex-1 overflow-auto min-w-0"
@@ -119,7 +175,7 @@ export function DataGrid() {
                 key={col.name}
                 scope="col"
                 role="columnheader"
-                className="group relative border-b border-border px-3 py-2 font-heading text-text-muted"
+                className="group relative border-b border-r border-border px-3 py-2 font-heading text-text-muted last:border-r-0"
               >
                 <div className="truncate">
                   <span className="text-text text-xs">{col.name}</span>
@@ -137,16 +193,26 @@ export function DataGrid() {
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, rowIndex) => (
+          {filteredRows.map((row, rowIndex) => (
             <tr
               key={rowIndex}
               className="border-b border-border hover:bg-surface/50"
             >
               {row.map((cell, ci) => {
+                const col = columns[ci];
                 const isNull = cell === null || cell === undefined;
+                const isFk = col?.is_fk && col?.fk_ref && !isNull;
+
                 return (
-                  <td key={columns[ci]?.name ?? ci} className="px-3 py-2">
-                    <div className="truncate max-w-full" title={isNull ? "NULL" : String(cell)}>
+                  <td key={col?.name ?? ci} className="border-r border-border px-3 py-2 last:border-r-0">
+                    <div
+                      className={`truncate max-w-full ${isFk ? "cursor-pointer text-accent hover:underline" : ""}`}
+                      title={isNull ? "NULL" : isFk ? `FK → ${col!.fk_ref![0]}.${col!.fk_ref![1]}: ${String(cell)}` : String(cell)}
+                      onClick={isFk ? () => handleFkClick(col!, cell) : undefined}
+                      role={isFk ? "button" : undefined}
+                      tabIndex={isFk ? 0 : undefined}
+                      onKeyDown={isFk ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleFkClick(col!, cell); } } : undefined}
+                    >
                       {isNull ? (
                         <span className="italic text-text-muted">NULL</span>
                       ) : (

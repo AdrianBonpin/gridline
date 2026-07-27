@@ -16,7 +16,7 @@ export function DbViewerToolbar() {
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold text-text">Tables</span>
         <div className="flex items-center gap-1">
-          <Tooltip content="Refresh Database">
+          <Tooltip content="Refresh Database" side="bottom">
             <button
               aria-label="Refresh"
               className="w-7 h-7 rounded-md flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised cursor-pointer"
@@ -24,7 +24,7 @@ export function DbViewerToolbar() {
               <RefreshCw size={14} />
             </button>
           </Tooltip>
-          <Tooltip content="Create Table">
+          <Tooltip content="Create Table" side="bottom">
             <button
               aria-label="Create Table"
               className="w-7 h-7 rounded-md flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised cursor-pointer opacity-50"
@@ -32,7 +32,7 @@ export function DbViewerToolbar() {
               <Plus size={14} />
             </button>
           </Tooltip>
-          <Tooltip content="Search Tables">
+          <Tooltip content="Search Tables" side="bottom">
             <button
               aria-label="Search Tables"
               className="w-7 h-7 rounded-md flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised cursor-pointer opacity-50"
