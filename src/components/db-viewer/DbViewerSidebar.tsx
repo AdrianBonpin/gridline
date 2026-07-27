@@ -15,7 +15,7 @@ interface NavItem {
 
 export function DbViewerSidebar({ currentView, onNavigate }: DbViewerSidebarProps) {
   const topItems: NavItem[] = [
-    { id: "db-viewer", label: "DB Viewer", icon: <Database size={20} /> },
+    { id: "db-viewer", label: "Explorer", icon: <Database size={20} /> },
     { id: "schema-visualizer", label: "Schema Visualizer coming soon", icon: <Grid2x2 size={20} />, stub: true },
     { id: "functions", label: "Functions coming soon", icon: <FunctionSquare size={20} />, stub: true },
     { id: "triggers", label: "Triggers coming soon", icon: <GitBranch size={20} />, stub: true },
