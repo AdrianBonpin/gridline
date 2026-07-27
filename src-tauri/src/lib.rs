@@ -1,3 +1,7 @@
+// Infrastructure modules: types, introspection, and DB viewer commands are built ahead
+// of runtime usage, producing expected dead_code/unused warnings during development.
+#![allow(dead_code)]
+
 mod db;
 mod models;
 mod store;

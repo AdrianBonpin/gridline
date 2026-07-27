@@ -5,6 +5,7 @@ pub mod tag;
 pub mod settings;
 
 pub use connection::{Connection, ConnectionInput};
+#[allow(unused_imports)]
 pub use db_viewer::{Change, ColumnInfo, Pagination, QueryResult, TableInfo};
 pub use folder::{Folder, FolderInput};
 pub use settings::Settings;
