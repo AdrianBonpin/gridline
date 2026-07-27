@@ -9,6 +9,7 @@ interface UiState {
   activeView: ActiveView;
   selectedItemIds: string[];
   prefilledConnectionString: string | null;
+  activeConnectionId: string | null;
   setActiveView: (view: ActiveView) => void;
   setSearchQuery: (q: string) => void;
   setActiveFolderId: (id: string | null) => void;
@@ -20,10 +21,11 @@ interface UiState {
   clearSelection: () => void;
   setPrefilledConnectionString: (value: string) => void;
   clearPrefilledConnectionString: () => void;
+  setActiveConnectionId: (id: string | null) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home", selectedItemIds: [], prefilledConnectionString: null,
+  searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home", selectedItemIds: [], prefilledConnectionString: null, activeConnectionId: null,
   setActiveView: (view) => set({ activeView: view }),
   setSearchQuery: (q) => set({ searchQuery: q }),
   setActiveFolderId: (id) => set({ activeFolderId: id, selectedItemIds: [] }),
@@ -39,4 +41,5 @@ export const useUiStore = create<UiState>((set) => ({
   clearSelection: () => set({ selectedItemIds: [] }),
   setPrefilledConnectionString: (value) => set({ prefilledConnectionString: value }),
   clearPrefilledConnectionString: () => set({ prefilledConnectionString: null }),
+  setActiveConnectionId: (id) => set({ activeConnectionId: id }),
 }));
