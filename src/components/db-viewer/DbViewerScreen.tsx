@@ -25,6 +25,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
   const [filterText, setFilterText] = useState("");
   const [filterEnabled, setFilterEnabled] = useState(false);
   const [tablePanelWidth, setTablePanelWidth] = useState(280);
+  const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
   const panelResizeRef = useRef<{ startX: number; startW: number } | null>(null);
 
   // Issue 1: Auto-fetch table data when a tab becomes active and has no data
@@ -124,9 +125,12 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
                 onFilterChange={setFilterText}
                 enabled={filterEnabled}
                 onToggle={() => { setFilterEnabled(!filterEnabled); if (filterEnabled) setFilterText(""); }}
+                columns={activeTab?.data?.columns ?? []}
+                hiddenColumns={hiddenColumns}
+                onToggleColumn={(col) => setHiddenColumns(prev => { const next = new Set(prev); if (next.has(col)) next.delete(col); else next.add(col); return next; })}
               />
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                <DataGrid filterText={filterEnabled ? filterText : ""} />
+                <DataGrid filterText={filterEnabled ? filterText : ""} hiddenColumns={hiddenColumns} />
                 <PaginationControls />
               </div>
             </div>

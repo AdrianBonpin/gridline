@@ -9,13 +9,14 @@ type TabColumnWidths = Record<string, ColumnWidths>;
 
 const DEFAULT_COL_WIDTH = 200;
 const MIN_COL_WIDTH = 60;
-const MAX_COL_WIDTH = 600;
+const MAX_COL_WIDTH = 800;
 
 interface DataGridProps {
   filterText?: string;
+  hiddenColumns?: Set<string>;
 }
 
-export function DataGrid({ filterText = "" }: DataGridProps) {
+export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
   const tabs = useDbViewerStore((state) => state.tabs);
   const activeTabId = useDbViewerStore((state) => state.activeTabId);
   const openTab = useDbViewerStore((state) => state.openTab);
@@ -129,6 +130,11 @@ export function DataGrid({ filterText = "" }: DataGridProps) {
   // Rows are Vec<Vec<serde_json::Value>> indexed positionally.
   const { columns, rows } = activeTab.data;
 
+  // Filter visible columns
+  const visibleColumns = hiddenColumns
+    ? columns.filter((c) => !hiddenColumns.has(c.name))
+    : columns;
+
   // Apply column filter and text filter
   const filteredRows = (() => {
     let result = rows;
@@ -164,13 +170,13 @@ export function DataGrid({ filterText = "" }: DataGridProps) {
   >
       <table className="table-fixed border-collapse text-left text-sm" style={{ minWidth: "100%" }}>
         <colgroup>
-          {columns.map((col) => (
+          {visibleColumns.map((col) => (
             <col key={col.name} style={{ width: getWidth(col.name) }} />
           ))}
         </colgroup>
         <thead className="sticky top-0 z-10 bg-surface">
           <tr>
-            {columns.map((col) => (
+            {visibleColumns.map((col) => (
               <th
                 key={col.name}
                 scope="col"
@@ -187,6 +193,12 @@ export function DataGrid({ filterText = "" }: DataGridProps) {
                 <div
                   className="absolute right-0 top-0 h-full w-[6px] cursor-col-resize select-none opacity-0 group-hover:opacity-100 hover:bg-accent/30 active:bg-accent/50 transition-opacity"
                   onMouseDown={(e) => startResize(col.name, e)}
+                  onDoubleClick={() => {
+                    setColWidths((prev) => ({
+                      ...prev,
+                      [activeTabId!]: { ...(prev[activeTabId!] ?? {}), [col.name]: DEFAULT_COL_WIDTH },
+                    }));
+                  }}
                 />
               </th>
             ))}
@@ -198,13 +210,15 @@ export function DataGrid({ filterText = "" }: DataGridProps) {
               key={rowIndex}
               className="border-b border-border hover:bg-surface/50"
             >
-              {row.map((cell, ci) => {
-                const col = columns[ci];
+              {visibleColumns.map((col) => {
+                // Find original column index from the full columns array
+                const ci = columns.findIndex((c) => c.name === col.name);
+                const cell = ci >= 0 ? row[ci] : undefined;
                 const isNull = cell === null || cell === undefined;
-                const isFk = col?.is_fk && col?.fk_ref && !isNull;
+                const isFk = col.is_fk && col.fk_ref && !isNull;
 
                 return (
-                  <td key={col?.name ?? ci} className="border-r border-border px-3 py-2 last:border-r-0">
+                  <td key={col.name} className="border-r border-border px-3 py-2 last:border-r-0">
                     <div
                       className={`truncate max-w-full ${isFk ? "cursor-pointer text-accent hover:underline" : ""}`}
                       title={isNull ? "NULL" : isFk ? `FK → ${col!.fk_ref![0]}.${col!.fk_ref![1]}: ${String(cell)}` : String(cell)}
