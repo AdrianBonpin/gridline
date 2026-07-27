@@ -18,7 +18,7 @@ pub struct AppState {
     pub ssh_manager: StdMutex<SshTunnelManager>,
 }
 
-use commands::{connections, db_viewer, folders, tags, settings, import_export};
+use commands::{connections, db_viewer, folders, tags, settings, import_export, keychain};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -33,6 +33,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_keyring_store::init())
         .manage(AppState {
             db_store: StdMutex::new(store),
             pool_manager: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
@@ -66,6 +67,9 @@ pub fn run() {
             db_viewer::get_table_data,
             db_viewer::execute_change,
             db_viewer::refresh_connection,
+            keychain::save_connection_password,
+            keychain::get_connection_password,
+            keychain::delete_connection_password,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

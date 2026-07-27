@@ -25,7 +25,7 @@ export function useDbConnection(connectionId: string) {
       return;
     }
     try {
-      const password = useConnectionStore.getState().connectionPasswords[conn.id] ?? undefined;
+      const password = await useConnectionStore.getState().getConnectionPassword(conn.id).catch(() => null);
       const input: ConnectionInput = {
         name: conn.name,
         db_type: conn.db_type,

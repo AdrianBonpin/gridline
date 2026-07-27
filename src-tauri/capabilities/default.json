@@ -8,6 +8,7 @@
     "core:window:allow-set-title",
     "opener:default",
     "dialog:default",
-    "fs:default"
+    "fs:default",
+    "keyring-store:default"
   ]
 }

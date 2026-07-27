@@ -29,6 +29,20 @@ export async function testConnection(input: ConnectionInput): Promise<Connection
   return invoke<ConnectionTestResult>("test_connection", { config: input });
 }
 
+// ─── Keychain ──────────────────────────────────────────────────
+
+export async function saveConnectionPassword(connectionId: string, password: string): Promise<void> {
+  return invoke<void>("save_connection_password", { connectionId, password });
+}
+
+export async function getConnectionPassword(connectionId: string): Promise<string | null> {
+  return invoke<string | null>("get_connection_password", { connectionId });
+}
+
+export async function deleteConnectionPassword(connectionId: string): Promise<void> {
+  return invoke<void>("delete_connection_password", { connectionId });
+}
+
 // ─── DB Viewer Lifecycle ────────────────────────────────────────
 
 export async function dbConnect(connectionId: string, input: ConnectionInput): Promise<void> {
