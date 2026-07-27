@@ -168,7 +168,7 @@ export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
     className="flex-1 overflow-auto min-w-0"
     style={{ overscrollBehavior: "none", WebkitOverflowScrolling: "auto" }}
   >
-      <table className="table-fixed border-collapse text-left text-sm" style={{ minWidth: "100%" }}>
+      <table className="table-fixed border-collapse text-left text-sm">
         <colgroup>
           {visibleColumns.map((col) => (
             <col key={col.name} style={{ width: getWidth(col.name) }} />
@@ -182,6 +182,7 @@ export function DataGrid({ filterText = "", hiddenColumns }: DataGridProps) {
                 scope="col"
                 role="columnheader"
                 className="group relative border-b border-r border-border px-3 py-2 font-heading text-text-muted last:border-r-0"
+                style={{ width: getWidth(col.name) }}
               >
                 <div className="truncate">
                   <span className="text-text text-xs">{col.name}</span>
