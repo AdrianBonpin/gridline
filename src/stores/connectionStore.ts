@@ -6,6 +6,9 @@ interface ConnectionState {
   connections: Connection[]; folders: Folder[]; tags: Tag[];
   tagOrder: string[];
   loading: boolean; error: string | null;
+  // Session-only password cache (passwords are never persisted to disk).
+  // Cleared on page reload; populated when a connection is saved or tested.
+  connectionPasswords: Record<string, string>;
   loadAll: () => Promise<void>;
   loadTagOrder: () => Promise<void>;
   setTagOrder: (order: string[]) => Promise<void>;
@@ -18,10 +21,11 @@ interface ConnectionState {
   updateTag: (id: string, input: TagInput) => Promise<void>;
   deleteTag: (id: string) => Promise<void>;
   addTagToItems: (tagId: string, folderIds: string[], connectionIds: string[]) => Promise<void>;
+  cachePassword: (connectionId: string, password: string) => void;
 }
 
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
-  connections: [], folders: [], tags: [], tagOrder: [], loading: false, error: null,
+  connections: [], folders: [], tags: [], tagOrder: [], loading: false, error: null, connectionPasswords: {},
   loadAll: async () => {
     set({ loading: true, error: null });
     try {
@@ -50,7 +54,12 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   },
   createConnection: async (input) => {
     const conn = await cmd.createConnection(input);
-    set((s) => ({ connections: [...s.connections, conn] }));
+    set((s) => ({
+      connections: [...s.connections, conn],
+      connectionPasswords: input.password
+        ? { ...s.connectionPasswords, [conn.id]: input.password }
+        : s.connectionPasswords,
+    }));
   },
   deleteConnection: async (id) => {
     await cmd.deleteConnection(id);
@@ -84,6 +93,10 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       folders: s.folders.map((f) => f.tag_ids.includes(id) ? { ...f, tag_ids: f.tag_ids.filter((t) => t !== id) } : f),
     }));
   },
+  cachePassword: (connectionId, password) => {
+    set((s) => ({ connectionPasswords: { ...s.connectionPasswords, [connectionId]: password } }));
+  },
+
   addTagToItems: async (tagId, folderIds, connectionIds) => {
     await Promise.all([
       ...folderIds.map((fid) => cmd.addFolderTags(fid, [tagId])),

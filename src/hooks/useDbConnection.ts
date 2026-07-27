@@ -22,12 +22,14 @@ export function useDbConnection(connectionId: string) {
       return;
     }
     try {
+      const password = useConnectionStore.getState().connectionPasswords[conn.id] ?? undefined;
       const input: ConnectionInput = {
         name: conn.name,
         db_type: conn.db_type,
         host: conn.host,
         port: conn.port,
         username: conn.username,
+        password,
         database: conn.database,
         folder_id: conn.folder_id,
         ssh_host: conn.ssh_host,
