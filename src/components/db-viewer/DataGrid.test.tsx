@@ -5,10 +5,10 @@ import { useDbViewerStore } from "../../stores/dbViewerStore";
 import type { QueryResult } from "../../lib/types";
 
 const mockData: QueryResult = {
-  columns: ["id", "name", "email"],
+  columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null},{name:"name",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null},{name:"email",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
   rows: [
-    { id: 1, name: "Alice", email: "alice@example.com" },
-    { id: 2, name: "Bob", email: null },
+    [1, "Alice", "alice@example.com"],
+    [2, "Bob", null],
   ],
   row_count: 2,
 };
@@ -56,9 +56,9 @@ describe("DataGrid", () => {
     useDbViewerStore.getState().setTabData(tabId, mockData);
 
     render(<DataGrid />);
-    expect(screen.getByRole("columnheader", { name: "id" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "name" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "email" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /id/ })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /name/ })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /email/ })).toBeInTheDocument();
     expect(screen.getByText("1")).toBeInTheDocument();
     expect(screen.getByText("Alice")).toBeInTheDocument();
     expect(screen.getByText("alice@example.com")).toBeInTheDocument();

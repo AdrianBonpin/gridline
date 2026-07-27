@@ -6,7 +6,6 @@ import { useDbViewerStore } from "../../stores/dbViewerStore";
 export function DataGrid() {
   const tabs = useDbViewerStore((state) => state.tabs);
   const activeTabId = useDbViewerStore((state) => state.activeTabId);
-  const tables = useDbViewerStore((state) => state.tables);
 
   if (!activeTabId) {
     return (
@@ -49,40 +48,30 @@ export function DataGrid() {
     );
   }
 
+  // Columns from Rust are ColumnInfo objects (name, data_type, …).
+  // Rows are Vec<Vec<serde_json::Value>> indexed positionally.
   const { columns, rows } = activeTab.data;
-
-  const tableInfo = tables.find(
-    (t) => t.name === activeTab.table && t.schema === activeTab.schema,
-  );
-  const columnTypes = new Map(
-    tableInfo?.columns?.map((c) => [c.name, c.data_type]) ?? [],
-  );
 
   return (
     <div className="h-full overflow-auto">
       <table className="w-full border-collapse text-left text-sm">
         <thead className="sticky top-0 z-10 bg-surface">
           <tr>
-            {columns.map((col) => {
-              const type = columnTypes.get(col);
-              return (
-                <th
-                  key={col}
-                  scope="col"
-                  role="columnheader"
-                  className="border-b border-border px-3 py-2 font-heading text-text-muted"
-                >
-                  <div className="flex flex-col">
-                    <span className="text-text">{col}</span>
-                    {type && (
-                      <span className="text-xs font-sans text-text-muted/70">
-                        {type}
-                      </span>
-                    )}
-                  </div>
-                </th>
-              );
-            })}
+            {columns.map((col) => (
+              <th
+                key={col.name}
+                scope="col"
+                role="columnheader"
+                className="border-b border-border px-3 py-2 font-heading text-text-muted"
+              >
+                <div className="flex flex-col">
+                  <span className="text-text">{col.name}</span>
+                  <span className="text-xs font-sans text-text-muted/70">
+                    {col.data_type}
+                  </span>
+                </div>
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -91,15 +80,14 @@ export function DataGrid() {
               key={rowIndex}
               className="border-b border-border/50 hover:bg-surface/50"
             >
-              {columns.map((col) => {
-                const value = row[col];
-                const isNull = value === null || value === undefined;
+              {row.map((cell, ci) => {
+                const isNull = cell === null || cell === undefined;
                 return (
-                  <td key={col} className="px-3 py-2">
+                  <td key={columns[ci]?.name ?? ci} className="px-3 py-2">
                     {isNull ? (
                       <span className="italic text-text-muted">NULL</span>
                     ) : (
-                      String(value)
+                      String(cell)
                     )}
                   </td>
                 );

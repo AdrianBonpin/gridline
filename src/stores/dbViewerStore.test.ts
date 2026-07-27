@@ -82,8 +82,8 @@ describe("dbViewerStore", () => {
     store.setTabLoading(tabId, true);
 
     const mockData: QueryResult = {
-      columns: ["id", "name"],
-      rows: [{ id: 1, name: "Alice" }],
+      columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null},{name:"name",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
+      rows: [[1, "Alice"]],
       row_count: 1,
     };
     store.setTabData(tabId, mockData);

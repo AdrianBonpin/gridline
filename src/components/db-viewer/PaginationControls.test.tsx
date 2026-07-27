@@ -8,8 +8,8 @@ import type { QueryResult } from "../../lib/types";
 const user = userEvent.setup();
 
 const mockData: QueryResult = {
-  columns: ["id"],
-  rows: Array.from({ length: 100 }, (_, i) => ({ id: i + 1 })),
+  columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
+  rows: Array.from({ length: 100 }, (_, i) => [i + 1]),
   row_count: 100,
 };
 

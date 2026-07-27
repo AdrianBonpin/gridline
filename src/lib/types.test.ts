@@ -167,35 +167,37 @@ describe("ColumnInfo", () => {
     const col: ColumnInfo = {
       name: "id",
       data_type: "integer",
-      nullable: false,
-      is_primary_key: true,
-      default_value: "nextval('users_id_seq'::regclass)",
-      is_unique: true,
-      comment: "Primary key",
+      is_nullable: false,
+      is_pk: true,
+      is_fk: false,
+      fk_ref: null,
+      default_value: null,
     };
     expect(col.name).toBe("id");
-    expect(col.is_primary_key).toBe(true);
+    expect(col.is_pk).toBe(true);
   });
 
   it("supports foreign key references", () => {
     const col: ColumnInfo = {
       name: "user_id",
       data_type: "integer",
-      nullable: true,
-      is_primary_key: false,
-      references: { table: "users", column: "id" },
+      is_nullable: true,
+      is_pk: false,
+      is_fk: true,
+      fk_ref: ["users", "id"],
+      default_value: null,
     };
-    expect(col.references?.table).toBe("users");
+    expect(col.fk_ref?.[0]).toBe("users");
   });
 });
 
 describe("QueryResult", () => {
   it("is well-typed with columns and rows", () => {
     const result: QueryResult = {
-      columns: ["id", "name", "email"],
+      columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null},{name:"name",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null},{name:"email",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
       rows: [
-        { id: 1, name: "Alice", email: "alice@example.com" },
-        { id: 2, name: "Bob", email: "bob@example.com" },
+        [1, "Alice"],
+        [2, "Bob"],
       ],
       row_count: 2,
       execution_time_ms: 12.5,
@@ -217,7 +219,7 @@ describe("QueryResult", () => {
 
   it("can have null execution_time", () => {
     const result: QueryResult = {
-      columns: ["id"],
+      columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
       rows: [],
       row_count: 0,
       execution_time_ms: null,
@@ -310,7 +312,7 @@ describe("DbViewerTab", () => {
       title: "SELECT * FROM users",
       query: "SELECT * FROM users",
       result: {
-        columns: ["id", "name"],
+        columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null},{name:"name",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
         rows: [],
         row_count: 0,
       },

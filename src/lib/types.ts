@@ -126,18 +126,16 @@ export interface TableInfo {
 export interface ColumnInfo {
   name: string;
   data_type: string;
-  nullable: boolean;
-  is_primary_key: boolean;
-  default_value?: string | null;
-  is_unique?: boolean;
-  is_foreign_key?: boolean;
-  references?: { table: string; column: string } | null;
-  comment?: string | null;
+  is_nullable: boolean;
+  is_pk: boolean;
+  is_fk: boolean;
+  fk_ref: [string, string] | null;
+  default_value: string | null;
 }
 
 export interface QueryResult {
-  columns: string[];
-  rows: Record<string, unknown>[];
+  columns: ColumnInfo[];
+  rows: unknown[][];
   row_count: number;
   execution_time_ms?: number | null;
   error?: string | null;

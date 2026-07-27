@@ -3,15 +3,16 @@ import { ChevronRight, ChevronDown, Table2, Key, Diamond, Type } from "lucide-re
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { TableOverflowMenu } from "./TableOverflowMenu";
+import type { ColumnInfo } from "../../lib/types";
 import * as cmd from "../../lib/commands";
 
 export function TableTree() {
   const tables = useDbViewerStore((s) => s.tables);
   const currentSchema = useDbViewerStore((s) => s.currentSchema);
   const openTab = useDbViewerStore((s) => s.openTab);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [columnCache, setColumnCache] = useState<Record<string, string[]>>({});
   const connectionId = useUiStore((s) => s.activeConnectionId);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [columnCache, setColumnCache] = useState<Record<string, ColumnInfo[]>>({});
 
   const filteredTables = currentSchema
     ? tables.filter((t) => t.schema === currentSchema)
@@ -21,20 +22,16 @@ export function TableTree() {
     const isExpanded = expanded.has(key);
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
+      if (isExpanded) next.delete(key);
+      else next.add(key);
       return next;
     });
+    // Fetch columns if not cached
     if (!isExpanded && !columnCache[key] && connectionId) {
       try {
         const result = await cmd.getTableData(connectionId, schema, tableName, 1, 0);
         setColumnCache((prev) => ({ ...prev, [key]: result.columns }));
-      } catch {
-        /* ignore, columns can't be loaded */
-      }
+      } catch { /* ignore, columns will remain unknowns */ }
     }
   };
 
@@ -51,6 +48,7 @@ export function TableTree() {
       {filteredTables.map((table) => {
         const key = `${table.schema}.${table.name}`;
         const isExpanded = expanded.has(key);
+        const cols = columnCache[key] ?? table.columns ?? [];
         return (
           <div key={key}>
             <div
@@ -81,31 +79,26 @@ export function TableTree() {
             </div>
             {isExpanded && (
               <div className="pl-10 pr-3 py-1 space-y-1">
-                {(columnCache[key] ?? []).length === 0 && (
+                {cols.length === 0 && (
                   <div className="text-xs text-text-muted">No columns</div>
                 )}
-                {(columnCache[key] ?? table.columns?.map((c) => c.name) ?? []).map((colName) => {
-                  const colInfo = table.columns?.find((c) => c.name === colName);
-                  return (
-                    <div
-                      key={colName}
-                      className="flex items-center gap-2 text-xs text-text-muted"
-                      title={colInfo?.data_type ?? colName}
-                    >
-                      {colInfo?.is_primary_key ? (
-                        <Key size={12} className="text-accent" />
-                      ) : colInfo?.is_foreign_key ? (
-                        <Diamond size={12} className="text-warning" />
-                      ) : (
-                        <Type size={12} />
-                      )}
-                      <span className="truncate">{colName}</span>
-                      {colInfo?.data_type && (
-                        <span className="text-text-subtle truncate">{colInfo.data_type}</span>
-                      )}
-                    </div>
-                  );
-                })}
+                {cols.map((col) => (
+                  <div
+                    key={col.name}
+                    className="flex items-center gap-2 text-xs text-text-muted"
+                    title={col.data_type}
+                  >
+                    {col.is_pk ? (
+                      <Key size={12} className="text-accent" />
+                    ) : col.is_fk ? (
+                      <Diamond size={12} className="text-warning" />
+                    ) : (
+                      <Type size={12} />
+                    )}
+                    <span className="truncate">{col.name}</span>
+                    <span className="text-text-subtle truncate">{col.data_type}</span>
+                  </div>
+                ))}
               </div>
             )}
           </div>
