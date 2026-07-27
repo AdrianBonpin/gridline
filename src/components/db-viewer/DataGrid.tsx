@@ -103,7 +103,7 @@ export function DataGrid() {
 
   return (
     <div className="h-full overflow-auto">
-      <table className="w-full table-fixed border-collapse text-left text-sm">
+      <table className="table-fixed border-collapse text-left text-sm" style={{ minWidth: "100%" }}>
         <colgroup>
           {columns.map((col) => (
             <col key={col.name} style={{ width: getWidth(col.name) }} />

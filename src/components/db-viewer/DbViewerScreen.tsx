@@ -69,7 +69,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-canvas flex">
+      <div className="h-screen bg-canvas flex">
         <DbViewerSidebar currentView="db-viewer" onNavigate={handleNavigate} />
         <div className="flex-1 flex flex-col min-h-0">
           {connectionError && connectionError !== dismissedError && (
@@ -89,7 +89,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
             </div>
             <div className="flex-1 flex flex-col min-w-0">
               <TabBar />
-              <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              <div className="flex-1 flex flex-col min-h-0">
                 <DataGrid />
                 <PaginationControls />
               </div>
