@@ -64,6 +64,7 @@ interface DbViewerState {
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   setPage: (tabId: string, page: number) => void;
+  setPageSize: (tabId: string, pageSize: number) => void;
   setTabData: (tabId: string, data: QueryResult) => void;
   setTabLoading: (tabId: string, loading: boolean) => void;
   setTabError: (tabId: string, error: string) => void;
@@ -143,6 +144,15 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setPage: (tabId, page) =>
     set((state) => ({
       tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, page } : t)),
+    })),
+
+  setPageSize: (tabId, pageSize) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? { ...t, pageSize, page: 1, data: null, loading: false, error: null }
+          : t,
+      ),
     })),
 
   setTabData: (tabId, data) =>
