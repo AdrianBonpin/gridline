@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from "react";
+import { useCallback } from "react";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
@@ -7,7 +7,7 @@ import { TabBar } from "./TabBar";
 import { DataGrid } from "./DataGrid";
 import { PaginationControls } from "./PaginationControls";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
-import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useDbConnection } from "../../hooks/useDbConnection";
 
 export interface DbViewerScreenProps {
   connectionId: string;
@@ -16,7 +16,7 @@ export interface DbViewerScreenProps {
 }
 
 export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScreenProps) {
-  const reset = useDbViewerStore((state) => state.reset);
+  useDbConnection(connectionId);
 
   const handleNavigate = useCallback(
     (view: string) => {
@@ -28,15 +28,6 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
     },
     [onHome, onSettings],
   );
-
-  useEffect(() => {
-    return () => {
-      const hasPending = useDbViewerStore
-        .getState()
-        .changesQueue.some((c) => c.status === "pending");
-      if (!hasPending) reset();
-    };
-  }, [connectionId, reset]);
 
   return (
     <TooltipProvider>
