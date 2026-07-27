@@ -169,6 +169,7 @@ cargo test               # Rust tests
 - **Do NOT** render large query results in raw DOM — always use the virtualized grid component
 - **Do NOT** log credentials, connection strings, or query data
 - **Do NOT** introduce Electron, Node.js server processes, or Docker dependencies
+- **Do NOT** execute data-modifying SQL (INSERT, UPDATE, DELETE, DROP, ALTER) directly — always push to the changes queue first and require explicit user confirmation via "Commit All"
 - **DO** keep Tauri commands thin — business logic lives in `db/` and `store/` modules
 - **DO** type all IPC boundaries explicitly
 - **DO** validate and sanitize all user-provided SQL and connection parameters before execution
