@@ -99,6 +99,119 @@ describe("validateConnectionInput", () => {
     });
     expect(result.ok).toBe(false);
   });
+
+  describe("SSH/SSL validation", () => {
+    it("rejects SSH host longer than 255 chars", () => {
+      const result = validateConnectionInput({
+        name: "Test",
+        db_type: "postgresql",
+        host: "localhost",
+        port: 5432,
+        ssh_host: "x".repeat(256),
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("SSH host");
+    });
+
+    it("rejects SSH port below 1", () => {
+      const result = validateConnectionInput({
+        name: "Test",
+        db_type: "postgresql",
+        host: "localhost",
+        port: 5432,
+        ssh_host: "bastion.example.com",
+        ssh_port: 0,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("SSH port");
+    });
+
+    it("rejects SSH port above 65535", () => {
+      const result = validateConnectionInput({
+        name: "Test",
+        db_type: "postgresql",
+        host: "localhost",
+        port: 5432,
+        ssh_host: "bastion.example.com",
+        ssh_port: 70000,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("SSH port");
+    });
+
+    it("accepts valid SSH port", () => {
+      const result = validateConnectionInput({
+        name: "Test",
+        db_type: "postgresql",
+        host: "localhost",
+        port: 5432,
+        ssh_host: "bastion.example.com",
+        ssh_port: 2222,
+      });
+      expect(result.ok).toBe(true);
+    });
+
+    it("accepts null SSH port", () => {
+      const result = validateConnectionInput({
+        name: "Test",
+        db_type: "postgresql",
+        host: "localhost",
+        port: 5432,
+        ssh_host: "bastion.example.com",
+        ssh_port: null,
+      });
+      expect(result.ok).toBe(true);
+    });
+
+    it("rejects SSH user longer than 100 chars", () => {
+      const result = validateConnectionInput({
+        name: "Test",
+        db_type: "postgresql",
+        host: "localhost",
+        port: 5432,
+        ssh_host: "bastion.example.com",
+        ssh_user: "u".repeat(101),
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("SSH user");
+    });
+
+    it("rejects invalid ssl_mode", () => {
+      const result = validateConnectionInput({
+        name: "Test",
+        db_type: "postgresql",
+        host: "localhost",
+        port: 5432,
+        ssl_mode: "invalid" as any,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("SSL mode");
+    });
+
+    it("accepts valid ssl_mode values", () => {
+      const validModes = ["disable", "require", "verify-ca", "verify-full"];
+      for (const mode of validModes) {
+        const result = validateConnectionInput({
+          name: "Test",
+          db_type: "postgresql",
+          host: "localhost",
+          port: 5432,
+          ssl_mode: mode as any,
+        });
+        expect(result.ok).toBe(true);
+      }
+    });
+
+    it("accepts input without SSH fields", () => {
+      const result = validateConnectionInput({
+        name: "Test",
+        db_type: "postgresql",
+        host: "localhost",
+        port: 5432,
+      });
+      expect(result.ok).toBe(true);
+    });
+  });
 });
 
 describe("validateFolderInput", () => {

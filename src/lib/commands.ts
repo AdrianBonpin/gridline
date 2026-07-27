@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, Folder, FolderInput, Tag, TagInput, Settings, ImportResult } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, ChangeItem } from "./types";
 
 export async function getConnections(): Promise<Connection[]> { return invoke<Connection[]>("get_connections"); }
 export async function createConnection(input: ConnectionInput): Promise<Connection> { return invoke<Connection>("create_connection", { input }); }
@@ -18,9 +18,48 @@ export async function getSettings(): Promise<Settings> { return invoke<Settings>
 export async function updateSetting(key: string, value: string): Promise<void> { return invoke<void>("update_setting", { key, value }); }
 export async function importConnections(json: string): Promise<ImportResult> { return invoke<ImportResult>("import_connections", { json }); }
 export async function exportConnections(): Promise<string> { return invoke<string>("export_connections"); }
-export type ConnectionTestResult = { ok: boolean; error?: string };
+export async function testConnection(input: ConnectionInput): Promise<ConnectionTestResult> {
+  return invoke<ConnectionTestResult>("test_connection", { input });
+}
 
-export async function testConnection(_input: ConnectionInput): Promise<ConnectionTestResult> {
-  // Stub: real backend connection test is out of scope for this redesign.
-  return Promise.resolve({ ok: false, error: "Connection testing is not yet implemented" });
+// ─── DB Viewer Lifecycle ────────────────────────────────────────
+
+export async function dbConnect(connectionId: string, input: ConnectionInput): Promise<void> {
+  return invoke<void>("db_connect", { connectionId, input });
+}
+
+export async function dbDisconnect(connectionId: string): Promise<void> {
+  return invoke<void>("db_disconnect", { connectionId });
+}
+
+export async function getDatabases(connectionId: string): Promise<string[]> {
+  return invoke<string[]>("get_databases", { connectionId });
+}
+
+export async function getSchemas(connectionId: string): Promise<string[]> {
+  return invoke<string[]>("get_schemas", { connectionId });
+}
+
+export async function getTables(connectionId: string, schema?: string): Promise<TableInfo[]> {
+  return invoke<TableInfo[]>("get_tables", { connectionId, schema });
+}
+
+export async function getTableData(
+  connectionId: string,
+  schema: string,
+  table: string,
+  page?: number,
+  pageSize?: number,
+): Promise<QueryResult> {
+  return invoke<QueryResult>("get_table_data", { connectionId, schema, table, page, pageSize });
+}
+
+export async function executeChange(connectionId: string, change: ChangeItem): Promise<void> {
+  return invoke<void>("execute_change", { connectionId, change });
+}
+
+export async function refreshConnection(
+  connectionId: string,
+): Promise<{ databases: string[]; schemas: string[]; tables: TableInfo[] }> {
+  return invoke<{ databases: string[]; schemas: string[]; tables: TableInfo[] }>("refresh_connection", { connectionId });
 }

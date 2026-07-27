@@ -26,6 +26,21 @@ export function validateConnectionInput(input: ConnectionInput): ValidationResul
   }
   if (input.username && input.username.length > 100)
     return { ok: false, error: "username must be 100 chars or fewer" };
+
+  // SSH tunnel validation
+  if (input.ssh_host && input.ssh_host.length > 255)
+    return { ok: false, error: "SSH host must be 255 chars or fewer" };
+  if (input.ssh_port !== undefined && input.ssh_port !== null) {
+    if (!Number.isInteger(input.ssh_port) || input.ssh_port < 1 || input.ssh_port > 65535)
+      return { ok: false, error: "SSH port must be between 1 and 65535" };
+  }
+  if (input.ssh_user && input.ssh_user.length > 100)
+    return { ok: false, error: "SSH user must be 100 chars or fewer" };
+
+  // SSL/TLS validation
+  if (input.ssl_mode && !["disable", "require", "verify-ca", "verify-full"].includes(input.ssl_mode))
+    return { ok: false, error: "SSL mode must be one of: disable, require, verify-ca, verify-full" };
+
   return { ok: true, error: "" };
 }
 
