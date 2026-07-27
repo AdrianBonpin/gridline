@@ -9,6 +9,11 @@ export interface QueueItem {
   id: string;
   type: ChangeItemType;
   sql: string;
+  schema?: string;
+  table?: string;
+  primaryKey?: Record<string, unknown>;
+  oldData?: Record<string, unknown> | null;
+  newData?: Record<string, unknown> | null;
   status: QueueStatus;
   error?: string | null;
   description?: string | null;
@@ -64,7 +69,12 @@ interface DbViewerState {
   setTabError: (tabId: string, error: string) => void;
   addChange: (input: {
     type: ChangeItemType;
-    sql: string;
+    sql?: string;
+    schema?: string;
+    table?: string;
+    primaryKey?: Record<string, unknown>;
+    oldData?: Record<string, unknown> | null;
+    newData?: Record<string, unknown> | null;
     description?: string | null;
   }) => void;
   cancelChange: (changeId: string) => void;
@@ -160,7 +170,12 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     const item: QueueItem = {
       id: `ch-${++changeCounter}`,
       type: input.type,
-      sql: input.sql,
+      sql: input.sql ?? "",
+      schema: input.schema,
+      table: input.table,
+      primaryKey: input.primaryKey,
+      oldData: input.oldData ?? null,
+      newData: input.newData ?? null,
       status: "pending",
       description: input.description ?? null,
       createdAt: Date.now(),
