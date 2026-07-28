@@ -1111,7 +1111,7 @@ export function ObjectExplorerPage({
             />
 
             {/* Right panel: detail view */}
-            <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
+            <div className="flex-1 w-0 flex flex-col min-w-0 overflow-y-auto overflow-x-hidden">
                 {selectedItem ? (
                     <>
                         {/* Header */}
@@ -1128,7 +1128,7 @@ export function ObjectExplorerPage({
                         </div>
 
                         {/* Detail content */}
-                        <div className="w-full max-w-full overflow-x-auto">
+                        <div style={{ overflowX: "auto", width: "100%" }}>
                             {renderDetail(type, selectedItem)}
                         </div>
                     </>
