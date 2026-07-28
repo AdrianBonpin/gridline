@@ -282,7 +282,7 @@ export function SchemaVisualizerPage({
         </div>
 
         {/* Powered by React Flow */}
-        <div className="absolute top-0 left-0 z-10 text-[10px] text-text-muted/50 px-2 py-0.5 rounded-none pointer-events-none">
+        <div className="absolute top-0 left-0 z-10 text-[10px] text-text-muted/50 bg-surface/80 px-2 py-0.5 rounded-none pointer-events-none">
           Powered by React Flow
         </div>
       </div>
