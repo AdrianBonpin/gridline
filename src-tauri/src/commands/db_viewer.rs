@@ -734,7 +734,7 @@ pub async fn get_table_data(
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             // Build filter clause (shared by COUNT and data queries)
             let mut pg_param_idx: usize = 0;
-            let (filter_clause, mut filter_params) =
+            let (filter_clause, filter_params) =
                 build_pg_filter_clause(&filters, &mut pg_param_idx);
             let order_clause = build_order_clause(&sorts);
 
