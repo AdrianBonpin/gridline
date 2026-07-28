@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, ChangeItem } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, ChangeItem, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo } from "./types";
+import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 
 // NOTE on argument key naming:
 // Tauri v2's #[tauri::command] macro converts Rust snake_case parameter names
@@ -76,8 +77,10 @@ export async function getTableData(
   table: string,
   page?: number,
   pageSize?: number,
+  filters?: FilterRule[],
+  sorts?: SortRule[],
 ): Promise<QueryResult> {
-  return invoke<QueryResult>("get_table_data", { connectionId, schema, table, page, pageSize });
+  return invoke<QueryResult>("get_table_data", { connectionId, schema, table, page, pageSize, filters, sorts });
 }
 
 export async function executeChange(connectionId: string, change: ChangeItem): Promise<void> {
@@ -96,4 +99,44 @@ export async function getFkPreview(
 
 export async function refreshConnection(connectionId: string): Promise<void> {
   return invoke<void>("refresh_connection", { connectionId });
+}
+
+// ─── Backup / Restore / Sync ──────────────────────────────────
+
+export async function detectPgTools(): Promise<PgToolStatus> {
+  return invoke<PgToolStatus>("detect_pg_tools");
+}
+
+export async function pgDump(connectionId: string, options: BackupOptions): Promise<string> {
+  return invoke<string>("pg_dump", { connectionId, options });
+}
+
+export async function pgRestore(connectionId: string, options: RestoreOptions): Promise<string> {
+  return invoke<string>("pg_restore", { connectionId, options });
+}
+
+export async function dbSync(options: SyncOptions): Promise<string> {
+  return invoke<string>("db_sync", { options });
+}
+
+// ─── Object Explorer (Functions, Triggers, Sequences, Enums, Extensions) ────
+
+export async function getFunctions(connectionId: string, schema?: string): Promise<FunctionInfo[]> {
+  return invoke<FunctionInfo[]>("get_functions", { connectionId, schema });
+}
+
+export async function getTriggers(connectionId: string, schema?: string): Promise<TriggerInfo[]> {
+  return invoke<TriggerInfo[]>("get_triggers", { connectionId, schema });
+}
+
+export async function getSequences(connectionId: string, schema?: string): Promise<SequenceInfo[]> {
+  return invoke<SequenceInfo[]>("get_sequences", { connectionId, schema });
+}
+
+export async function getEnums(connectionId: string, schema?: string): Promise<EnumInfo[]> {
+  return invoke<EnumInfo[]>("get_enums", { connectionId, schema });
+}
+
+export async function getExtensions(connectionId: string): Promise<ExtensionInfo[]> {
+  return invoke<ExtensionInfo[]>("get_extensions", { connectionId });
 }

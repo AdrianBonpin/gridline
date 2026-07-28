@@ -59,7 +59,7 @@ pub fn pg_columns_query(schema: &str, table: &str) -> String {
     format!(
         r#"SELECT
     c.column_name,
-    c.data_type,
+    CASE WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name ELSE c.data_type END AS data_type,
     c.is_nullable,
     c.character_maximum_length,
     c.numeric_precision,
@@ -196,6 +196,93 @@ pub fn build_select_query(
 /// Build a `COUNT(*)` query.
 pub fn build_count_query(schema: &str, table: &str) -> String {
     format!("SELECT COUNT(*) FROM \"{}\".\"{}\"", schema, table)
+}
+
+// ---------------------------------------------------------------------------
+// Object introspection (functions, triggers, sequences, enums, extensions)
+// ---------------------------------------------------------------------------
+
+/// Query functions and procedures in a schema.
+pub fn pg_functions_query(_schema: &str) -> String {
+    format!(
+        "SELECT p.proname, n.nspname, \
+         pg_catalog.format_type(p.prorettype, NULL) AS return_type, \
+         ARRAY(SELECT unnest(p.proargtypes::regtype[]::text[])) AS arg_types, \
+         ARRAY(SELECT unnest(p.proargnames::text[])) AS arg_names, \
+         ARRAY(SELECT unnest(p.proargmodes::text[])) AS arg_modes, \
+         l.lanname, pg_get_functiondef(p.oid) AS source, \
+         p.prokind::text \
+         FROM pg_proc p \
+         JOIN pg_namespace n ON p.pronamespace = n.oid \
+         JOIN pg_language l ON p.prolang = l.oid \
+         WHERE n.nspname = $1 \
+           AND p.prokind IN ('f', 'p') \
+         ORDER BY p.proname"
+    )
+}
+
+/// Query triggers in a schema.
+pub fn pg_triggers_query(_schema: &str) -> String {
+    format!(
+        "SELECT t.tgname, tn.nspname AS trigger_schema, \
+         cn.nspname AS table_schema, c.relname AS table_name, \
+         CASE \
+           WHEN t.tgtype::int2 & 4 = 4 THEN 'INSERT' \
+           WHEN t.tgtype::int2 & 8 = 8 THEN 'DELETE' \
+           WHEN t.tgtype::int2 & 16 = 16 THEN 'UPDATE' \
+           WHEN t.tgtype::int2 & 32 = 32 THEN 'TRUNCATE' \
+           ELSE 'UNKNOWN' END AS event, \
+         CASE WHEN t.tgtype::int2 & 2 = 2 THEN 'BEFORE' ELSE 'AFTER' END AS timing, \
+         CASE WHEN t.tgtype::int2 & 1 = 1 THEN 'ROW' ELSE 'STATEMENT' END AS orientation, \
+         pg_get_triggerdef(t.oid) AS definition, \
+         t.tgenabled::text \
+         FROM pg_trigger t \
+         JOIN pg_class c ON t.tgrelid = c.oid \
+         JOIN pg_namespace cn ON c.relnamespace = cn.oid \
+         CROSS JOIN LATERAL (SELECT nspname FROM pg_namespace WHERE oid = (SELECT pronamespace FROM pg_proc WHERE oid = t.tgfoid)) tn \
+         WHERE cn.nspname = $1 AND NOT t.tgisinternal \
+         ORDER BY t.tgname"
+    )
+}
+
+/// Query sequences in a schema via information_schema.
+pub fn pg_sequences_query(schema: &str) -> String {
+    format!(
+        "SELECT sequence_name, '{}' AS schema, \
+         COALESCE(start_value::text, '1'), \
+         COALESCE(minimum_value::text, '1'), \
+         COALESCE(maximum_value::text, '9223372036854775807'), \
+         COALESCE(increment::text, '1'), \
+         COALESCE(pg_catalog.pg_sequence_last_value(sequence_name::regclass)::text, '0'), \
+         COALESCE(cycle_option::text, 'NO') \
+         FROM information_schema.sequences \
+         WHERE sequence_schema = $1 \
+         ORDER BY sequence_name",
+        schema
+    )
+}
+
+/// Query enums in a schema.
+pub fn pg_enums_query(_schema: &str) -> String {
+    format!(
+        "SELECT t.typname, n.nspname, \
+         ARRAY(SELECT e.enumlabel FROM pg_enum e \
+               WHERE e.enumtypid = t.oid ORDER BY e.enumsortorder) AS labels \
+         FROM pg_type t \
+         JOIN pg_namespace n ON t.typnamespace = n.oid \
+         WHERE t.typtype = 'e' AND n.nspname = $1 \
+         ORDER BY t.typname"
+    )
+}
+
+/// Query installed extensions.
+pub fn pg_extensions_query() -> String {
+    "SELECT e.extname, n.nspname, e.extversion::text, \
+     pg_catalog.obj_description(e.oid, 'pg_extension') AS comment \
+     FROM pg_extension e \
+     JOIN pg_namespace n ON e.extnamespace = n.oid \
+     ORDER BY e.extname"
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -381,5 +468,41 @@ mod tests {
         );
         assert!(sql.contains("public"), "should contain schema name");
         assert!(sql.contains("orders"), "should contain table name");
+    }
+
+    // ---------------------------------------------------------------
+    // Object introspection
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn pg_functions_query_has_expected_columns() {
+        let sql = pg_functions_query("public");
+        assert!(sql.contains("pg_proc"));
+        assert!(sql.contains("proname"));
+    }
+
+    #[test]
+    fn pg_triggers_query_has_expected_columns() {
+        let sql = pg_triggers_query("public");
+        assert!(sql.contains("pg_trigger"));
+        assert!(sql.contains("tgname"));
+    }
+
+    #[test]
+    fn pg_sequences_query_filters_by_schema() {
+        let sql = pg_sequences_query("myschema");
+        assert!(sql.contains("myschema"));
+    }
+
+    #[test]
+    fn pg_enums_query_has_typtype_e() {
+        let sql = pg_enums_query("public");
+        assert!(sql.contains("typtype = 'e'"));
+    }
+
+    #[test]
+    fn pg_extensions_query_selects_from_pg_extension() {
+        let sql = pg_extensions_query();
+        assert!(sql.contains("pg_extension"));
     }
 }

@@ -217,14 +217,14 @@ cargo test               # Rust tests
 | Schema/database selector | ✅ | Ghost-style dropdowns, single-row layout |
 | Refresh database (spin + success/error feedback) | ✅ | Re-fetches databases, schemas, and tables |
 | Search tables filter | ✅ | Animated input, real-time filter by name, auto-hide on blur |
-| Column metadata (PK, FK, type, nullable, default) | ✅ | Expand table row to see columns with icons |
+| Column metadata (PK, FK, type, nullable, default) | ✅ | Expand table row to see columns with icons. ENUM/custom types resolved via udt_name, cast ::text for data retrieval. |
 | FK detection | ✅ | `information_schema.constraint_column_usage` + `PRAGMA foreign_key_list` |
 | FK preview popover | ✅ | Click FK cell → popover with referenced row → "Open" button creates filtered tab |
 | JSON/JSONB cell popover | ✅ | Formatted/Raw tabs with copy button |
 | Smart default sort | ✅ | 12-tier priority: updated_at → created_at → *_at → *_id → seq/rank/version |
 | Data grid pagination | ✅ | Page nav, page size selector persisted in settings |
-| Column filtering (client-side) | ✅ | eq, neq, contains, starts, ends, gt, lt, null, notnull |
-| Column sorting (client-side) | ✅ | Multi-column asc/desc |
+| Column filtering (server-side) | ✅ | eq, neq, contains, starts, ends, gt, lt, null, notnull pushed to SQL WHERE |
+| Column sorting (server-side) | ✅ | Multi-column asc/desc pushed to SQL ORDER BY |
 | Column show/hide | ✅ | Toggle visibility per column |
 | Column resize (drag handle) | ✅ | Double-click to auto-fit |
 | Row selection (checkboxes + select all) | ✅ | Bulk copy (JSON/CSV/SQL) and delete |
@@ -234,7 +234,7 @@ cargo test               # Rust tests
 | Edit connection modal (from DB viewer) | ✅ | AnimatedModal with keychain password fetch on test |
 | Connection drop banner | ✅ | Auto-detects broken connections with reconnect prompt |
 | Inline cell editing | ❌ | Cells are read-only; changes via queue Insert button only |
-| Virtualized data grid | ❌ | Plain HTML `<table>`; TODO: @tanstack/react-virtual for 100k+ rows |
+| Virtualized data grid | ✅ | Row-level virtualization via @tanstack/react-virtual `useVirtualizer`; handles 100k+ rows |
 | Row detail / expandable row view | ❌ | |
 | Keyboard cell navigation (arrow keys, Tab) | ❌ | |
 | Cell-level copy (right-click or Ctrl+C) | ❌ | Only bulk copy via toolbar |
@@ -242,15 +242,15 @@ cargo test               # Rust tests
 ### Object Explorer (non-table objects)
 | Feature | Status | Details |
 | :--- | :---: | :--- |
-| Functions | ❌ | Stub button in sidebar; not queried from `pg_proc` |
-| Triggers | ❌ | Stub button in sidebar |
-| Sequences | ❌ | Not listed anywhere |
-| Enums / user-defined types | ❌ | `udt_name` returned in column metadata but no enum viewer |
-| Extensions | ❌ | Not queried from `pg_extension` |
+| Functions | ✅ | Full detail view: signature, arguments with mode/type, syntax-highlighted line-numbered source. Overloads disambiguated by argument signature. Schema-filtered via pg_proc query. |
+| Triggers | ✅ | Full detail view: table, event, timing, orientation, status (color-coded), definition. tgtype bitmask corrected. Schema-filtered. |
+| Sequences | ✅ | Full detail view: current value, increment, start, min/max, cycle flag. Schema-filtered via information_schema.sequences. |
+| Enums | ✅ | Full detail view: numbered bordered list matching Arguments style. Schema-filtered via pg_type WHERE typtype='e'. |
+| Extensions | ✅ | Full detail view: version, schema, comment. Queried from pg_extension (no schema filter — extensions are DB-scoped). |
 | Indexes (per table) | ❌ | |
 | Constraints (CHECK, UNIQUE beyond PK/FK) | ❌ | |
 | Materialized views | ❌ | Not distinguished from regular views |
-| Stored procedures | ❌ | |
+| Stored procedures | 🟡 | Included in Functions via p.prokind IN ('f','p'); no separate view yet |
 | Schema visualizer (ER diagram) | ❌ | Stub button in sidebar |
 
 ### Query Editor
@@ -268,10 +268,11 @@ cargo test               # Rust tests
 ### Backup & Restore
 | Feature | Status | Details |
 | :--- | :---: | :--- |
-| pg_dump wrapper | ❌ | No Rust command; shell out to system binary per design decision #3 |
-| pg_restore wrapper | ❌ | |
-| Backup UI | ❌ | |
-| DB-to-DB sync | ❌ | |
+| pg_dump wrapper | ✅ | Rust command spawns pg_dump with real-time progress events (backup-progress) |
+| pg_restore wrapper | ✅ | Rust command spawns pg_restore with progress events |
+| Backup UI | ✅ | In-page view: format selector, file browse (Tauri dialog), schema dropdown, no-owner toggle, progress bar with event-driven status |
+| Restore UI | ✅ | In-page view: file browse, format, clean toggle, destructive confirmation checkbox, progress bar |
+| DB-to-DB sync | ✅ | In-page view: source/target connection pickers, schema dropdown, pipe-based pg_dump → pg_restore |
 | SQLite .dump | ❌ | |
 | Table structure export (DDL) | ❌ | |
 

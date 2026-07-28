@@ -18,6 +18,7 @@ interface ConnectionState {
   updateTag: (id: string, input: TagInput) => Promise<void>;
   deleteTag: (id: string) => Promise<void>;
   addTagToItems: (tagId: string, folderIds: string[], connectionIds: string[]) => Promise<void>;
+  moveConnection: (connectionId: string, newFolderId: string | null) => Promise<void>;
   cachePassword: (connectionId: string, password: string) => Promise<void>;
   getConnectionPassword: (connectionId: string) => Promise<string | null>;
 }
@@ -115,5 +116,48 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
           : c,
       ),
     }));
+  },
+  moveConnection: async (connectionId, newFolderId) => {
+    const state = get();
+    const conn = state.connections.find((c) => c.id === connectionId);
+    if (!conn) return;
+    if (conn.folder_id === newFolderId) return;
+
+    const previousConnections = [...state.connections];
+
+    // Optimistic update
+    set((s) => ({
+      connections: s.connections.map((c) =>
+        c.id === connectionId ? { ...c, folder_id: newFolderId } : c,
+      ),
+    }));
+
+    try {
+      // Build a minimal ConnectionInput with only folder_id changed
+      const input: any = {
+        name: conn.name,
+        db_type: conn.db_type,
+        host: conn.host,
+        port: conn.port,
+        username: conn.username,
+        database: conn.database,
+        folder_id: newFolderId,
+        environment: conn.environment,
+        ssh_host: conn.ssh_host,
+        ssh_port: conn.ssh_port,
+        ssh_user: conn.ssh_user,
+        ssh_auth_method: conn.ssh_auth_method,
+        ssh_private_key_path: conn.ssh_private_key_path,
+        ssl_mode: conn.ssl_mode,
+        ssl_ca_path: conn.ssl_ca_path,
+        ssl_cert_path: conn.ssl_cert_path,
+        ssl_key_path: conn.ssl_key_path,
+        tag_ids: conn.tag_ids ?? [],
+      };
+      await cmd.updateConnection(connectionId, input);
+    } catch (e) {
+      set({ connections: previousConnections });
+      throw e;
+    }
   },
 }));

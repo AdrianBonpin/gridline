@@ -17,7 +17,7 @@ const AUTO_REFRESH_OPTIONS = [
   { label: "5m", value: 300_000 },
 ] as const;
 
-const PAGE_SIZES = [50, 100, 200] as const;
+const PAGE_SIZES = [50, 100, 200, 500] as const;
 
 const EXPORT_FORMATS = [
   { label: "JSON", ext: "json" },
@@ -560,7 +560,7 @@ export function TableControls({
   };
 
   return (
-    <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 bg-surface/50 text-xs text-text-muted">
+    <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted">
       {/* ── left side ──────────────────────────────── */}
       <div className="flex items-center gap-1">
         {/* Insert Row */}

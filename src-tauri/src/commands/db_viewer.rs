@@ -3,8 +3,11 @@
 //! This module provides pure SQL builder functions, pagination helpers,
 //! and Tauri commands for the database viewer.
 
-use crate::db::pool::DbConfig;
-use crate::models::db_viewer::{Change, ColumnInfo, QueryResult, TableInfo};
+use crate::db::pool::{DbConfig, DbHandle};
+use crate::models::db_viewer::{
+    Change, ColumnInfo, EnumInfo, ExtensionInfo, FunctionInfo, QueryResult,
+    SequenceInfo, TableInfo, TriggerInfo,
+};
 use std::collections::HashMap;
 use tauri::State;
 use tokio_postgres::types::ToSql;
@@ -85,6 +88,122 @@ fn truncate(s: &str, max: usize) -> String {
 /// - page 5, page_size 25 => offset 100
 pub fn offset(page: i64, page_size: i64) -> i64 {
     (page - 1) * page_size
+}
+
+// ---------------------------------------------------------------------------
+// Filter / Sort → SQL helpers
+// ---------------------------------------------------------------------------
+
+/// Returns true when the column name contains only safe identifier characters.
+fn is_safe_identifier(col: &str) -> bool {
+    !col.is_empty() && col.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Build a WHERE clause from filter rules for PostgreSQL (parameterized $n).
+/// Returns `(where_clause, param_values)` where `where_clause` starts with
+/// " AND " (suitable for appending after WHERE 1=1).
+fn build_pg_filter_clause(
+    filters: &[crate::models::db_viewer::FilterRule],
+    param_start: &mut usize,
+) -> (String, Vec<String>) {
+    let mut clauses = String::new();
+    let mut params: Vec<String> = Vec::new();
+
+    for rule in filters {
+        let col = &rule.column;
+        if !is_safe_identifier(col) {
+            continue; // skip unsafe column names
+        }
+
+        let clause = match rule.operator.as_str() {
+            "null" => {
+                format!(" AND \"{}\" IS NULL", col)
+            }
+            "notnull" => {
+                format!(" AND \"{}\" IS NOT NULL", col)
+            }
+            op @ ("eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt") => {
+                *param_start += 1;
+                let p = *param_start;
+                params.push(rule.value.clone());
+                match op {
+                    "eq" => format!(" AND \"{}\"::text = ${}", col, p),
+                    "neq" => format!(" AND \"{}\"::text != ${}", col, p),
+                    "contains" => format!(" AND \"{}\"::text ILIKE '%' || ${} || '%'", col, p),
+                    "starts" => format!(" AND \"{}\"::text ILIKE ${} || '%'", col, p),
+                    "ends" => format!(" AND \"{}\"::text ILIKE '%' || ${}", col, p),
+                    "gt" => format!(" AND \"{}\"::numeric > ${}::numeric", col, p),
+                    "lt" => format!(" AND \"{}\"::numeric < ${}::numeric", col, p),
+                    _ => unreachable!(),
+                }
+            }
+            _ => continue, // unknown operator → skip
+        };
+        clauses.push_str(&clause);
+    }
+
+    (clauses, params)
+}
+
+/// Build a WHERE clause from filter rules for SQLite (positional ? params).
+fn build_sqlite_filter_clause(filters: &[crate::models::db_viewer::FilterRule]) -> (String, Vec<String>) {
+    let mut clauses = String::new();
+    let mut params: Vec<String> = Vec::new();
+
+    for rule in filters {
+        let col = &rule.column;
+        if !is_safe_identifier(col) {
+            continue;
+        }
+
+        let clause = match rule.operator.as_str() {
+            "null" => {
+                format!(" AND \"{}\" IS NULL", col)
+            }
+            "notnull" => {
+                format!(" AND \"{}\" IS NOT NULL", col)
+            }
+            op @ ("eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt") => {
+                params.push(rule.value.clone());
+                match op {
+                    "eq" => format!(" AND \"{}\" = ?", col),
+                    "neq" => format!(" AND \"{}\" != ?", col),
+                    "contains" => format!(" AND \"{}\" LIKE '%' || ? || '%'", col),
+                    "starts" => format!(" AND \"{}\" LIKE ? || '%'", col),
+                    "ends" => format!(" AND \"{}\" LIKE '%' || ?", col),
+                    "gt" => format!(" AND CAST(\"{}\" AS REAL) > CAST(? AS REAL)", col),
+                    "lt" => format!(" AND CAST(\"{}\" AS REAL) < CAST(? AS REAL)", col),
+                    _ => unreachable!(),
+                }
+            }
+            _ => continue,
+        };
+        clauses.push_str(&clause);
+    }
+
+    (clauses, params)
+}
+
+/// Build an ORDER BY clause from sort rules.
+/// Returns an empty string when there are no valid sort rules.
+fn build_order_clause(sorts: &[crate::models::db_viewer::SortRule]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for rule in sorts {
+        if !is_safe_identifier(&rule.column) {
+            continue;
+        }
+        let dir = match rule.order.as_str() {
+            "asc" | "ASC" => "ASC",
+            "desc" | "DESC" => "DESC",
+            _ => continue,
+        };
+        parts.push(format!("\"{}\" {}", rule.column, dir));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ORDER BY {}", parts.join(", "))
+    }
 }
 
 /// Build a parameterized UPDATE SQL statement.
@@ -350,6 +469,23 @@ pub fn parse_table_info_rows(rows: &[Vec<serde_json::Value>]) -> Vec<TableInfo> 
 /// Tries numeric/boolean types first (which need exact Rust type matching),
 /// then UUID (with-uuid-1 feature), then chrono types (with-chrono-0_4),
 /// then JSON/JSONB, then falls back to String.
+fn sqlite_value_to_json(row: &rusqlite::Row, i: usize) -> serde_json::Value {
+    use rusqlite::types::ValueRef;
+    match row.get_ref(i) {
+        Ok(ValueRef::Null) => serde_json::Value::Null,
+        Ok(ValueRef::Integer(v)) => serde_json::json!(v),
+        Ok(ValueRef::Real(v)) => serde_json::json!(v),
+        Ok(ValueRef::Text(v)) => serde_json::Value::String(
+            String::from_utf8_lossy(v).to_string(),
+        ),
+        Ok(ValueRef::Blob(v)) => serde_json::Value::String(format!(
+            "[{}B blob]",
+            v.len()
+        )),
+        Err(_) => serde_json::Value::Null,
+    }
+}
+
 fn pg_value_to_json(row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
     // Integer types
     if let Ok(Some(v)) = row.try_get::<_, Option<i32>>(i) {
@@ -393,7 +529,9 @@ fn pg_value_to_json(row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
     if let Ok(Some(v)) = row.try_get::<_, Option<serde_json::Value>>(i) {
         return v;
     }
-    // Text fallback
+    // Text fallback: catches varchar, text, char, and USER-DEFINED enum
+    // types. Under the simple query protocol, all values arrive as text
+    // and FromSql<String> converts them regardless of column type OID.
     if let Ok(Some(v)) = row.try_get::<_, Option<String>>(i) {
         return serde_json::Value::String(v);
     }
@@ -581,22 +719,41 @@ pub async fn get_table_data(
     table: String,
     page: Option<i64>,
     page_size: Option<i64>,
+    filters: Option<Vec<crate::models::db_viewer::FilterRule>>,
+    sorts: Option<Vec<crate::models::db_viewer::SortRule>>,
     state: State<'_, crate::AppState>,
 ) -> Result<QueryResult, String> {
     let p = page.unwrap_or(1);
     let ps = page_size.unwrap_or(50);
     let off = (p - 1) * ps;
+    let filters = filters.unwrap_or_default();
+    let sorts = sorts.unwrap_or_default();
 
     let mut pm = state.pool_manager.lock().await;
     match pm.get(&connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
-            // Get total count
+            // Build filter clause (shared by COUNT and data queries)
+            let mut pg_param_idx: usize = 0;
+            let (filter_clause, filter_params) =
+                build_pg_filter_clause(&filters, &mut pg_param_idx);
+            let order_clause = build_order_clause(&sorts);
+
+            // Get total count (with filters applied)
             let count_query =
-                format!("SELECT COUNT(*) FROM \"{}\".\"{}\"", schema, table);
-            let count_row = client
-                .query_one(&count_query, &[])
-                .await
-                .map_err(|e| e.to_string())?;
+                format!("SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}", schema, table, filter_clause);
+            let count_row = if filter_params.is_empty() {
+                client
+                    .query_one(&count_query, &[])
+                    .await
+                    .map_err(|e| e.to_string())?
+            } else {
+                let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                    filter_params.iter().map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                client
+                    .query_one(&count_query, &param_refs)
+                    .await
+                    .map_err(|e| e.to_string())?
+            };
             let total_rows: i64 = count_row.get(0);
 
             // Get column info with FK detection and enum type names
@@ -668,15 +825,50 @@ ORDER BY c.ordinal_position"#;
                 })
                 .collect();
 
-            // Get data
+            // Get data (with filters and sorts applied).
+            // Custom/enum types need explicit ::text cast because tokio-postgres
+            // FromSql<String> rejects custom type OIDs even in simple query mode.
+            let standard_pg_types: &[&str] = &[
+                "uuid", "text", "varchar", "char", "bpchar", "name",
+                "int2", "int4", "int8", "smallint", "integer", "bigint",
+                "float4", "float8", "real", "double precision",
+                "numeric", "decimal", "money",
+                "bool", "boolean",
+                "date", "time", "timetz", "timestamp", "timestamptz",
+                "interval", "json", "jsonb", "bytea", "oid",
+                "timestamp without time zone", "timestamp with time zone",
+                "time without time zone", "time with time zone",
+            ];
+            let select_cols: Vec<String> = columns
+                .iter()
+                .map(|c| {
+                    let lower = c.data_type.to_lowercase();
+                    if standard_pg_types.contains(&lower.as_str()) {
+                        format!("\"{}\"", c.name)
+                    } else {
+                        // Custom type (enum, composite, domain) — cast to text
+                        format!("\"{}\"::text", c.name)
+                    }
+                })
+                .collect();
             let data_query = format!(
-                "SELECT * FROM \"{}\".\"{}\" LIMIT {} OFFSET {}",
-                schema, table, ps, off
+                "SELECT {} FROM \"{}\".\"{}\" WHERE 1=1{} {} LIMIT {} OFFSET {}",
+                select_cols.join(", "),
+                schema, table, filter_clause, order_clause, ps, off
             );
-            let data_rows = client
-                .query(&data_query, &[])
-                .await
-                .map_err(|e| e.to_string())?;
+            let data_rows = if filter_params.is_empty() {
+                client
+                    .query(&data_query, &[])
+                    .await
+                    .map_err(|e| e.to_string())?
+            } else {
+                let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                    filter_params.iter().map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                client
+                    .query(&data_query, &param_refs)
+                    .await
+                    .map_err(|e| e.to_string())?
+            };
             let rows: Vec<Vec<serde_json::Value>> = data_rows
                 .iter()
                 .map(|row| (0..row.len()).map(|i| pg_value_to_json(row, i)).collect())
@@ -691,11 +883,20 @@ ORDER BY c.ordinal_position"#;
             })
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            // Build filter clause (shared by COUNT and data queries)
+            let (filter_clause, filter_vals) = build_sqlite_filter_clause(&filters);
+            let order_clause = build_order_clause(&sorts);
+
             let count_query =
-                format!("SELECT COUNT(*) FROM \"{}\".\"{}\"", schema, table);
-            let total_rows: i64 = conn
-                .query_row(&count_query, [], |r| r.get(0))
-                .map_err(|e| e.to_string())?;
+                format!("SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}", schema, table, filter_clause);
+            let total_rows: i64 = if filter_vals.is_empty() {
+                conn.query_row(&count_query, [], |r| r.get(0))
+                    .map_err(|e| e.to_string())?
+            } else {
+                let refs: Vec<&dyn rusqlite::types::ToSql> = filter_vals.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                conn.query_row(&count_query, rusqlite::params_from_iter(&refs), |r| r.get(0))
+                    .map_err(|e| e.to_string())?
+            };
 
             // Get column metadata via PRAGMA table_info
             let pragma_query = format!("PRAGMA table_info('{}')", table);
@@ -750,29 +951,38 @@ ORDER BY c.ordinal_position"#;
                 })
                 .collect();
 
-            // Get data
+            // Get data (with filters and sorts applied)
             let data_query = format!(
-                "SELECT * FROM \"{}\".\"{}\" LIMIT {} OFFSET {}",
-                schema, table, ps, off
+                "SELECT * FROM \"{}\".\"{}\" WHERE 1=1{} {} LIMIT {} OFFSET {}",
+                schema, table, filter_clause, order_clause, ps, off
             );
             let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
             let col_count = stmt.column_count();
 
-            let rows: Vec<Vec<serde_json::Value>> = stmt
-                .query_map([], |row| {
+            let rows: Vec<Vec<serde_json::Value>> = if filter_vals.is_empty() {
+                stmt.query_map([], |row| {
                     let mut vals = Vec::new();
                     for i in 0..col_count {
-                        let val: Option<String> = row.get(i).unwrap_or(None);
-                        vals.push(
-                            val.map(serde_json::Value::String)
-                                .unwrap_or(serde_json::Value::Null),
-                        );
+                        vals.push(sqlite_value_to_json(row, i));
                     }
                     Ok(vals)
                 })
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
-                .collect();
+                .collect()
+            } else {
+                let refs: Vec<&dyn rusqlite::types::ToSql> = filter_vals.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                stmt.query_map(rusqlite::params_from_iter(&refs), |row| {
+                    let mut vals = Vec::new();
+                    for i in 0..col_count {
+                        vals.push(sqlite_value_to_json(row, i));
+                    }
+                    Ok(vals)
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect()
+            };
 
             Ok(QueryResult {
                 columns,
@@ -844,7 +1054,7 @@ ORDER BY c.ordinal_position"#;
             let col_rows = client
                 .query(col_query, &[&schema, &table])
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| pg_error_message(&e))?;
             let columns: Vec<ColumnInfo> = col_rows
                 .iter()
                 .map(|r| {
@@ -875,7 +1085,7 @@ ORDER BY c.ordinal_position"#;
             let data_rows = client
                 .query(&data_query, &[&value])
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| pg_error_message(&e))?;
             let rows: Vec<Vec<serde_json::Value>> = data_rows
                 .iter()
                 .map(|row| (0..row.len()).map(|i| pg_value_to_json(row, i)).collect())
@@ -954,11 +1164,7 @@ ORDER BY c.ordinal_position"#;
                 .query_map([&value], |row| {
                     let mut vals = Vec::new();
                     for i in 0..col_count {
-                        let val: Option<String> = row.get(i).unwrap_or(None);
-                        vals.push(
-                            val.map(serde_json::Value::String)
-                                .unwrap_or(serde_json::Value::Null),
-                        );
+                        vals.push(sqlite_value_to_json(row, i));
                     }
                     Ok(vals)
                 })
@@ -1124,6 +1330,169 @@ pub async fn refresh_connection(
             Ok(())
         }
         None => Err("Connection not found".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_functions(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<FunctionInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_functions_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| FunctionInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    return_type: r.get::<_, Option<String>>(2).unwrap_or_default(),
+                    argument_types: r.get::<_, Option<Vec<String>>>(3).unwrap_or_default(),
+                    argument_names: r.get::<_, Option<Vec<String>>>(4).unwrap_or_default(),
+                    argument_modes: r.get::<_, Option<Vec<String>>>(5).unwrap_or_default(),
+                    language: r.get(6),
+                    source: r.get(7),
+                    kind: r.get(8),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_triggers(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<TriggerInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_triggers_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| TriggerInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    table_schema: r.get(2),
+                    table_name: r.get(3),
+                    event_manipulation: r.get(4),
+                    action_timing: r.get(5),
+                    action_orientation: r.get(6),
+                    action_statement: r.get(7),
+                    enabled: r.get(8),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_sequences(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<SequenceInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_sequences_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| SequenceInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    start_value: r.get::<_, Option<String>>(2).unwrap_or_default(),
+                    min_value: r.get::<_, Option<String>>(3).unwrap_or_default(),
+                    max_value: r.get::<_, Option<String>>(4).unwrap_or_default(),
+                    increment: r.get::<_, Option<String>>(5).unwrap_or_default(),
+                    current_value: r.get::<_, Option<String>>(6).unwrap_or_default(),
+                    cycle: r.get::<_, Option<String>>(7)
+                        .map(|s| s == "YES")
+                        .unwrap_or(false),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_enums(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<EnumInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_enums_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| EnumInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    labels: r.get::<_, Option<Vec<String>>>(2).unwrap_or_default(),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_extensions(
+    connection_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<ExtensionInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let query = crate::db::introspection::pg_extensions_query();
+            let rows = client
+                .query(&query, &[])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| ExtensionInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    version: r.get::<_, Option<String>>(2).unwrap_or_default(),
+                    comment: r.get(3),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
     }
 }
 

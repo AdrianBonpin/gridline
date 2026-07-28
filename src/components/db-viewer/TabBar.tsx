@@ -27,20 +27,17 @@ export function TabBar() {
             key={tab.id}
             role="tab"
             aria-selected={isActive}
+            onClick={() => setActiveTab(tab.id)}
             className={[
-              "group flex shrink-0 items-center gap-2 border-r border-border px-3 text-sm transition-colors",
+              "group flex shrink-0 items-center gap-2 border-r border-border px-3 text-sm transition-colors cursor-pointer",
               isActive
                 ? "bg-canvas text-text"
                 : "text-text-muted hover:text-text",
             ].join(" ")}
           >
-            <button
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className="flex-1 text-left outline-none cursor-pointer"
-            >
+            <span className="flex-1 text-left select-none">
               {tab.table}
-            </button>
+            </span>
             <button
               type="button"
               onClick={(e) => {

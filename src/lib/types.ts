@@ -180,9 +180,102 @@ export interface DbViewerTab {
   updated_at: string;
 }
 
+export interface FunctionInfo {
+  name: string;
+  schema: string;
+  return_type: string;
+  argument_types: string[];
+  argument_names: string[];
+  argument_modes: string[];
+  language: string;
+  source: string | null;
+  kind: string;
+}
+
+export interface TriggerInfo {
+  name: string;
+  schema: string;
+  table_schema: string;
+  table_name: string;
+  event_manipulation: string;
+  action_timing: string;
+  action_orientation: string;
+  action_statement: string;
+  enabled: string;
+}
+
+export interface SequenceInfo {
+  name: string;
+  schema: string;
+  start_value: string;
+  min_value: string;
+  max_value: string;
+  increment: string;
+  current_value: string;
+  cycle: boolean;
+}
+
+export interface EnumInfo {
+  name: string;
+  schema: string;
+  labels: string[];
+}
+
+export interface ExtensionInfo {
+  name: string;
+  schema: string;
+  version: string;
+  comment: string | null;
+}
+
 export interface ConnectionTestResult {
   ok: boolean;
   error?: string | null;
   server_version?: string | null;
   latency_ms?: number | null;
+}
+
+// ─── Backup Types ────────────────────────────────────────────────
+
+export interface BackupOptions {
+  format: "plain" | "custom" | "tar" | "directory";
+  filePath: string;
+  schema?: string;
+  tables?: string[];
+  noOwner: boolean;
+}
+
+export interface RestoreOptions {
+  format: string;
+  filePath: string;
+  clean: boolean;
+  schema?: string;
+}
+
+export interface SyncOptions {
+  sourceConnectionId: string;
+  targetConnectionId: string;
+  schema?: string;
+  tables?: string[];
+}
+
+export interface PgToolStatus {
+  pg_dump_found: boolean;
+  pg_restore_found: boolean;
+  pg_dump_version: string | null;
+  pg_restore_version: string | null;
+}
+
+export interface BackupJob {
+  id: string;
+  connection_id: string;
+  type: "dump" | "restore" | "sync";
+  format: string | null;
+  file_path: string | null;
+  source_connection_id: string | null;
+  status: "running" | "completed" | "failed" | "cancelled";
+  error_message: string | null;
+  size_bytes: number | null;
+  started_at: string;
+  completed_at: string | null;
 }

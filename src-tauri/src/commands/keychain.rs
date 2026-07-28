@@ -27,6 +27,18 @@ pub fn get_connection_password(
         .map_err(|e| e.to_string())
 }
 
+/// Retrieve a connection password from the OS keychain (internal helper).
+/// Returns None if no password was stored for this connection.
+pub fn get_connection_password_internal(
+    app: &tauri::AppHandle,
+    connection_id: &str,
+) -> Result<Option<String>, String> {
+    app.keyring()
+        .store
+        .get_password(connection_id)
+        .map_err(|e| e.to_string())
+}
+
 /// Delete a connection password from the OS keychain.
 #[tauri::command]
 pub fn delete_connection_password(

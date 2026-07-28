@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useConnectionStore } from "./stores/connectionStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import { useUiStore } from "./stores/uiStore";
+import { useBackupStore } from "./stores/backupStore";
 import { HomeScreen } from "./components/layout/HomeScreen";
 import { SettingsPage } from "./components/settings/SettingsPage";
 import { NewConnectionScreen } from "./components/connections/NewConnectionScreen";
@@ -32,6 +33,8 @@ export default function App() {
     useEffect(() => {
         loadConnections();
         loadSettings();
+        // Init backup event listener (noop outside Tauri)
+        useBackupStore.getState().initListener().catch(() => {});
     }, [loadConnections, loadSettings]);
 
     useEffect(() => {

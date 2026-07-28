@@ -59,3 +59,92 @@ describe("connectionStore", () => {
     expect(useConnectionStore.getState().folders).toContainEqual(folder);
   });
 });
+
+describe("moveConnection", () => {
+  const baseConn: Connection = {
+    id: "c1",
+    name: "My DB",
+    db_type: "postgresql",
+    host: "localhost",
+    port: null,
+    username: null,
+    database: "mydb",
+    folder_id: null,
+    keychain_ref: null,
+    environment: null,
+    ssh_host: null,
+    ssh_port: null,
+    ssh_user: null,
+    ssh_auth_method: null,
+    ssh_private_key_path: null,
+    ssl_mode: null,
+    ssl_ca_path: null,
+    ssl_cert_path: null,
+    ssl_key_path: null,
+    tag_ids: [],
+    created_at: "2024-01-01",
+    updated_at: "2024-01-01",
+  };
+
+  beforeEach(() => {
+    useConnectionStore.setState({
+      connections: [
+        baseConn,
+        { ...baseConn, id: "c2", name: "Other", folder_id: "folder-1" },
+      ],
+    });
+  });
+
+  it("optimistically moves connection to a folder", async () => {
+    vi.spyOn(commands, "updateConnection").mockResolvedValueOnce({
+      ...baseConn,
+      folder_id: "folder-2",
+    } as Connection);
+
+    await useConnectionStore.getState().moveConnection("c1", "folder-2");
+
+    const conn = useConnectionStore
+      .getState()
+      .connections.find((c) => c.id === "c1");
+    expect(conn?.folder_id).toBe("folder-2");
+  });
+
+  it("moves connection to root when folderId is null", async () => {
+    vi.spyOn(commands, "updateConnection").mockResolvedValueOnce({
+      ...baseConn,
+      id: "c2",
+      folder_id: null,
+    } as Connection);
+
+    await useConnectionStore.getState().moveConnection("c2", null);
+
+    const conn = useConnectionStore
+      .getState()
+      .connections.find((c) => c.id === "c2");
+    expect(conn?.folder_id).toBeNull();
+  });
+
+  it("rolls back on API failure", async () => {
+    vi.spyOn(commands, "updateConnection").mockRejectedValueOnce(
+      new Error("Network error"),
+    );
+    const original = useConnectionStore
+      .getState()
+      .connections.find((c) => c.id === "c1")!;
+
+    await expect(
+      useConnectionStore.getState().moveConnection("c1", "folder-3"),
+    ).rejects.toThrow("Network error");
+
+    const conn = useConnectionStore
+      .getState()
+      .connections.find((c) => c.id === "c1");
+    expect(conn?.folder_id).toBe(original.folder_id);
+  });
+
+  it("no-ops when moving to same folder", async () => {
+    const spy = vi.spyOn(commands, "updateConnection");
+    await useConnectionStore.getState().moveConnection("c1", null); // c1 is already null
+    expect(spy).not.toHaveBeenCalled();
+  });
+});

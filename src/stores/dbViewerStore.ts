@@ -1,9 +1,24 @@
 import { create } from "zustand";
-import type { QueryResult, TableInfo, ChangeItemType } from "../lib/types";
+import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo } from "../lib/types";
 
 // ─── Local types ────────────────────────────────────────────────
 
 export type QueueStatus = "pending" | "cancelled" | "committed" | "failed";
+
+export type FilterOperator = "eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt" | "null" | "notnull";
+
+export interface FilterRule {
+  id: string;
+  column: string;
+  operator: FilterOperator;
+  value: string;
+}
+
+export interface SortRule {
+  id: string;
+  column: string;
+  order: "asc" | "desc";
+}
 
 export interface QueueItem {
   id: string;
@@ -30,6 +45,10 @@ export interface ViewerTab {
   error: string | null;
   data: QueryResult | null;
   columnFilter?: { column: string; value: string };
+  filterRules: FilterRule[];
+  sortRules: SortRule[];
+  hiddenColumns: string[];
+  smartSortApplied: boolean;
 }
 
 // ─── Auto-increment counters ───────────────────────────────────
@@ -46,6 +65,10 @@ const initialTab = (schema: string, table: string, defaultPageSize?: number): Vi
   loading: true,
   error: null,
   data: null,
+  filterRules: [],
+  sortRules: [],
+  hiddenColumns: [],
+  smartSortApplied: false,
 });
 
 // ─── State interface ────────────────────────────────────────────
@@ -60,6 +83,11 @@ interface DbViewerState {
   tables: TableInfo[];
   currentDatabase: string | null;
   currentSchema: string | null;
+  functions: FunctionInfo[] | null;
+  triggers: TriggerInfo[] | null;
+  sequences: SequenceInfo[] | null;
+  enums: EnumInfo[] | null;
+  extensions: ExtensionInfo[] | null;
 
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
@@ -73,6 +101,11 @@ interface DbViewerState {
   setTabError: (tabId: string, error: string) => void;
   setColumnFilter: (tabId: string, column: string, value: string) => void;
   clearColumnFilter: (tabId: string) => void;
+  setFilterRules: (tabId: string, rules: FilterRule[]) => void;
+  setSortRules: (tabId: string, rules: SortRule[]) => void;
+  setHiddenColumns: (tabId: string, columns: string[]) => void;
+  toggleHiddenColumn: (tabId: string, column: string) => void;
+  setSmartSortApplied: (tabId: string) => void;
   addChange: (input: {
     type: ChangeItemType;
     sql?: string;
@@ -88,6 +121,11 @@ interface DbViewerState {
   markChangeFailed: (changeId: string, error: string) => void;
   setCurrentDatabase: (db: string | null) => void;
   setCurrentSchema: (schema: string | null) => void;
+  setFunctions: (functions: FunctionInfo[]) => void;
+  setTriggers: (triggers: TriggerInfo[]) => void;
+  setSequences: (sequences: SequenceInfo[]) => void;
+  setEnums: (enums: EnumInfo[]) => void;
+  setExtensions: (extensions: ExtensionInfo[]) => void;
   populate: (
     databases: string[],
     schemas: string[],
@@ -108,6 +146,11 @@ const initialState = {
   tables: [] as TableInfo[],
   currentDatabase: null as string | null,
   currentSchema: null as string | null,
+  functions: null as FunctionInfo[] | null,
+  triggers: null as TriggerInfo[] | null,
+  sequences: null as SequenceInfo[] | null,
+  enums: null as EnumInfo[] | null,
+  extensions: null as ExtensionInfo[] | null,
 };
 
 // ─── Store ──────────────────────────────────────────────────────
@@ -202,6 +245,48 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       ),
     })),
 
+  setFilterRules: (tabId, rules) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, filterRules: rules, page: 1, loading: true, error: null } : t,
+      ),
+    })),
+
+  setSortRules: (tabId, rules) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, sortRules: rules, page: 1, loading: true, error: null } : t,
+      ),
+    })),
+
+  setHiddenColumns: (tabId, columns) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, hiddenColumns: columns } : t,
+      ),
+    })),
+
+  toggleHiddenColumn: (tabId, column) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) => {
+        if (t.id !== tabId) return t;
+        const exists = t.hiddenColumns.includes(column);
+        return {
+          ...t,
+          hiddenColumns: exists
+            ? t.hiddenColumns.filter((c) => c !== column)
+            : [...t.hiddenColumns, column],
+        };
+      }),
+    })),
+
+  setSmartSortApplied: (tabId) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, smartSortApplied: true } : t,
+      ),
+    })),
+
   addChange: (input) => {
     const item: QueueItem = {
       id: `ch-${++changeCounter}`,
@@ -244,6 +329,11 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
 
   setCurrentDatabase: (db) => set({ currentDatabase: db }),
   setCurrentSchema: (schema) => set({ currentSchema: schema }),
+  setFunctions: (functions) => set({ functions }),
+  setTriggers: (triggers) => set({ triggers }),
+  setSequences: (sequences) => set({ sequences }),
+  setEnums: (enums) => set({ enums }),
+  setExtensions: (extensions) => set({ extensions }),
 
   populate: (databases, schemas, tables) =>
     set({ databases, schemas, tables }),

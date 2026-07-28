@@ -1,10 +1,101 @@
 import type { Connection, Folder, Tag } from "../../lib/types";
 import { Folder as FolderIcon, Check, Pencil, Trash2 } from "lucide-react";
+import { useDroppable } from "@dnd-kit/core";
 import { ConnectionCard } from "./ConnectionCard";
 import { FolderBreadcrumb } from "../folders/FolderBreadcrumb";
 import { getChildFolders } from "../../lib/utils";
 import { useUiStore } from "../../stores/uiStore";
 import { TagBadge } from "../tags/TagBadge";
+
+interface DroppableFolderCardProps {
+    folder: Folder;
+    isSelected: boolean;
+    count: number;
+    subfolderCount: number;
+    folderTags: Tag[];
+    onFolderClick: (id: string) => void;
+    onToggleSelection: (id: string) => void;
+}
+
+function DroppableFolderCard({
+    folder,
+    isSelected,
+    count,
+    subfolderCount,
+    folderTags,
+    onFolderClick,
+    onToggleSelection,
+}: DroppableFolderCardProps) {
+    const { setNodeRef, isOver } = useDroppable({
+        id: `folder-${folder.id}`,
+        data: { type: "folder", folder },
+    });
+
+    return (
+        <div
+            ref={setNodeRef}
+            className={`relative group rounded-xl border transition-colors ${
+                isSelected
+                    ? "bg-accent/10 border-accent"
+                    : "bg-surface border-border hover:border-border-hover"
+            } ${isOver ? "ring-1 ring-accent bg-accent/10" : ""}`}
+        >
+            <button
+                onClick={() => onFolderClick(folder.id)}
+                className="w-full p-3 text-left min-w-0 cursor-pointer"
+            >
+                <div className="flex items-center gap-2">
+                    <FolderIcon
+                        size={18}
+                        className={
+                            isSelected
+                                ? "text-accent"
+                                : "text-text-muted"
+                        }
+                    />
+                    <span className="font-semibold text-sm truncate text-text">
+                        {folder.name}
+                    </span>
+                </div>
+                <div className="text-xs text-text-muted mt-1">
+                    {count > 0 &&
+                        `${count} item${count !== 1 ? "s" : ""}`}
+                    {count > 0 && subfolderCount > 0 && " · "}
+                    {subfolderCount > 0 &&
+                        `${subfolderCount} subfolder${subfolderCount !== 1 ? "s" : ""}`}
+                    {count === 0 &&
+                        subfolderCount === 0 &&
+                        "Empty folder"}
+                </div>
+                {folderTags.length > 0 && (
+                    <div className="flex gap-1 flex-wrap mt-2">
+                        {folderTags.map((t) => (
+                            <TagBadge key={t.id} tag={t} />
+                        ))}
+                    </div>
+                )}
+            </button>
+            <button
+                onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleSelection(folder.id);
+                }}
+                className={`absolute -top-1.5 -left-1.5 w-4 h-4 rounded border flex items-center justify-center transition-all ${
+                    isSelected
+                        ? "bg-accent border-accent opacity-100"
+                        : "border-border bg-surface opacity-0 group-hover:opacity-100"
+                }`}
+            >
+                {isSelected && (
+                    <Check
+                        size={12}
+                        className="text-white"
+                    />
+                )}
+            </button>
+        </div>
+    );
+}
 
 interface ConnectionGridProps {
     connections: Connection[];
@@ -118,72 +209,18 @@ export function ConnectionGrid({
                         const tagMap = new Map(tags.map((t) => [t.id, t]));
                         const folderTags = f.tag_ids
                             .map((id) => tagMap.get(id))
-                            .filter(Boolean) as import("../../lib/types").Tag[];
+                            .filter(Boolean) as Tag[];
                         return (
-                            <div
+                            <DroppableFolderCard
                                 key={f.id}
-                                className={`relative group rounded-xl border transition-colors ${
-                                    isSelected
-                                        ? "bg-accent/10 border-accent"
-                                        : "bg-surface border-border hover:border-border-hover"
-                                }`}
-                            >
-                                <button
-                                    onClick={() => handleFolderClick(f.id)}
-                                    className="w-full p-3 text-left min-w-0 cursor-pointer"
-                                >
-                                    <div className="flex items-center gap-2">
-                                        <FolderIcon
-                                            size={18}
-                                            className={
-                                                isSelected
-                                                    ? "text-accent"
-                                                    : "text-text-muted"
-                                            }
-                                        />
-                                        <span className="font-semibold text-sm truncate text-text">
-                                            {f.name}
-                                        </span>
-                                    </div>
-                                    <div className="text-xs text-text-muted mt-1">
-                                        {count > 0 &&
-                                            `${count} item${count !== 1 ? "s" : ""}`}
-                                        {count > 0 &&
-                                            subfolderCount > 0 &&
-                                            " · "}
-                                        {subfolderCount > 0 &&
-                                            `${subfolderCount} subfolder${subfolderCount !== 1 ? "s" : ""}`}
-                                        {count === 0 &&
-                                            subfolderCount === 0 &&
-                                            "Empty folder"}
-                                    </div>
-                                    {folderTags.length > 0 && (
-                                        <div className="flex gap-1 flex-wrap mt-2">
-                                            {folderTags.map((t) => (
-                                                <TagBadge key={t.id} tag={t} />
-                                            ))}
-                                        </div>
-                                    )}
-                                </button>
-                                <button
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        toggleItemSelection(f.id);
-                                    }}
-                                    className={`absolute -top-1.5 -left-1.5 w-4 h-4 rounded border flex items-center justify-center transition-all ${
-                                        isSelected
-                                            ? "bg-accent border-accent opacity-100"
-                                            : "border-border bg-surface opacity-0 group-hover:opacity-100"
-                                    }`}
-                                >
-                                    {isSelected && (
-                                        <Check
-                                            size={12}
-                                            className="text-white"
-                                        />
-                                    )}
-                                </button>
-                            </div>
+                                folder={f}
+                                isSelected={isSelected}
+                                count={count}
+                                subfolderCount={subfolderCount}
+                                folderTags={folderTags}
+                                onFolderClick={handleFolderClick}
+                                onToggleSelection={toggleItemSelection}
+                            />
                         );
                     })}
                     {directConnections.map((c) => (

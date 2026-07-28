@@ -1,5 +1,22 @@
 use serde::{Deserialize, Serialize};
 
+/// A single filter rule sent from the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilterRule {
+    pub id: String,
+    pub column: String,
+    pub operator: String,  // "eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt" | "null" | "notnull"
+    pub value: String,
+}
+
+/// A single sort rule sent from the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SortRule {
+    pub id: String,
+    pub column: String,
+    pub order: String,  // "asc" | "desc"
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableInfo {
     pub name: String,
@@ -32,6 +49,59 @@ pub struct Pagination {
     pub page: i64,
     pub page_size: i64,
     pub total_rows: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionInfo {
+    pub name: String,
+    pub schema: String,
+    pub return_type: String,
+    pub argument_types: Vec<String>,
+    pub argument_names: Vec<String>,
+    pub argument_modes: Vec<String>,
+    pub language: String,
+    pub source: Option<String>,
+    pub kind: String, // 'f' = function, 'p' = procedure
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerInfo {
+    pub name: String,
+    pub schema: String,
+    pub table_schema: String,
+    pub table_name: String,
+    pub event_manipulation: String,
+    pub action_timing: String,
+    pub action_orientation: String,
+    pub action_statement: String,
+    pub enabled: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceInfo {
+    pub name: String,
+    pub schema: String,
+    pub start_value: String,
+    pub min_value: String,
+    pub max_value: String,
+    pub increment: String,
+    pub current_value: String,
+    pub cycle: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnumInfo {
+    pub name: String,
+    pub schema: String,
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtensionInfo {
+    pub name: String,
+    pub schema: String,
+    pub version: String,
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,5 +260,79 @@ mod tests {
         assert!(json.contains(r#""page":2"#));
         assert!(json.contains(r#""page_size":50"#));
         assert!(json.contains(r#""total_rows":250"#));
+    }
+
+    #[test]
+    fn function_info_serialization() {
+        let info = FunctionInfo {
+            name: "get_user".into(),
+            schema: "public".into(),
+            return_type: "TABLE(id integer, name text)".into(),
+            argument_types: vec!["integer".into()],
+            argument_names: vec!["p_id".into()],
+            argument_modes: vec!["IN".into()],
+            language: "plpgsql".into(),
+            source: Some("BEGIN RETURN; END;".into()),
+            kind: "f".into(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("get_user"));
+        assert!(json.contains("plpgsql"));
+    }
+
+    #[test]
+    fn trigger_info_serialization() {
+        let info = TriggerInfo {
+            name: "trg_audit".into(),
+            schema: "public".into(),
+            table_schema: "public".into(),
+            table_name: "users".into(),
+            event_manipulation: "INSERT".into(),
+            action_timing: "AFTER".into(),
+            action_orientation: "ROW".into(),
+            action_statement: "EXECUTE FUNCTION audit_log()".into(),
+            enabled: "O".into(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("trg_audit"));
+    }
+
+    #[test]
+    fn sequence_info_serialization() {
+        let info = SequenceInfo {
+            name: "users_id_seq".into(),
+            schema: "public".into(),
+            start_value: "1".into(),
+            min_value: "1".into(),
+            max_value: "9223372036854775807".into(),
+            increment: "1".into(),
+            current_value: "42".into(),
+            cycle: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("users_id_seq"));
+    }
+
+    #[test]
+    fn enum_info_serialization() {
+        let info = EnumInfo {
+            name: "user_role".into(),
+            schema: "public".into(),
+            labels: vec!["admin".into(), "editor".into(), "viewer".into()],
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("admin"));
+    }
+
+    #[test]
+    fn extension_info_serialization() {
+        let info = ExtensionInfo {
+            name: "pg_stat_statements".into(),
+            schema: "public".into(),
+            version: "1.10".into(),
+            comment: Some("track SQL statistics".into()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("pg_stat_statements"));
     }
 }

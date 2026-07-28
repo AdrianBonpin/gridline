@@ -143,6 +143,32 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
 
+    // v4: backup_history
+    if current_ver < 4 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS backup_history (
+                id TEXT PRIMARY KEY,
+                connection_id TEXT NOT NULL,
+                type TEXT NOT NULL CHECK(type IN ('dump', 'restore', 'sync')),
+                format TEXT,
+                file_path TEXT,
+                source_connection_id TEXT,
+                status TEXT NOT NULL DEFAULT 'running'
+                    CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
+                error_message TEXT,
+                size_bytes INTEGER,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );"
+        ).map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (4)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -176,6 +202,16 @@ mod tests {
     }
 
     #[test]
+    fn v4_creates_backup_history_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM backup_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
     fn migrations_are_idempotent() {
         let conn = fresh_db();
         // Running again must not error
@@ -183,6 +219,6 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 2);
+        assert_eq!(count, 3);
     }
 }
