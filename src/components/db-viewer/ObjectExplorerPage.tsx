@@ -90,13 +90,13 @@ function itemLabel(item: AnyObject): string {
 
 function SourceCode({ source }: { source: string }) {
     const [expanded, setExpanded] = useState(false);
-    const maxLen = 500;
+    const maxLen = 800;
     const truncated = source.length > maxLen && !expanded;
     const display = truncated ? source.slice(0, maxLen) : source;
 
     return (
-        <div className="mt-1">
-            <pre className="text-xs text-text-muted bg-surface-raised rounded p-2 overflow-x-auto whitespace-pre-wrap font-mono">
+        <div>
+            <pre className="text-xs text-text leading-relaxed bg-surface-raised rounded-lg p-4 overflow-x-auto whitespace-pre font-mono border border-border">
                 {display}
                 {truncated && (
                     <span className="text-text-subtle">...</span>
@@ -106,9 +106,9 @@ function SourceCode({ source }: { source: string }) {
                 <button
                     type="button"
                     onClick={() => setExpanded((v) => !v)}
-                    className="text-xs text-accent hover:underline mt-1"
+                    className="text-xs text-accent hover:underline mt-2"
                 >
-                    {expanded ? "Show less" : "Show more"}
+                    {expanded ? "Show less" : "Show full source"}
                 </button>
             )}
         </div>
@@ -120,38 +120,74 @@ function renderDetail(type: ObjectType, item: AnyObject) {
         case "functions": {
             const f = item as FunctionInfo;
             return (
-                <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                        <DetailRow label="Returns" value={f.return_type} />
-                        <DetailRow label="Language" value={f.language} />
-                        <DetailRow label="Kind" value={f.kind === "f" ? "Function" : "Procedure"} />
-                        <DetailRow label="Schema" value={f.schema} />
-                    </div>
-                    {f.argument_names.length > 0 && (
-                        <div className="space-y-1">
-                            <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-                                Arguments
+                <div className="space-y-4">
+                    {/* Metadata card */}
+                    <div className="rounded-lg border border-border bg-surface overflow-hidden">
+                        <div className="px-4 py-2 border-b border-border">
+                            <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                                Signature
                             </h4>
-                            <div className="space-y-1">
-                                {f.argument_names.map((a, i) => (
+                        </div>
+                        <div className="divide-y divide-border">
+                            <div className="flex items-center px-4 py-2.5">
+                                <span className="text-xs text-text-muted w-24 shrink-0">Returns</span>
+                                <span className="text-sm text-accent font-mono">{f.return_type || "void"}</span>
+                            </div>
+                            <div className="flex items-center px-4 py-2.5">
+                                <span className="text-xs text-text-muted w-24 shrink-0">Language</span>
+                                <span className="text-sm text-text">{f.language}</span>
+                            </div>
+                            <div className="flex items-center px-4 py-2.5">
+                                <span className="text-xs text-text-muted w-24 shrink-0">Kind</span>
+                                <span className="text-sm text-text">{f.kind === "f" ? "Function" : "Procedure"}</span>
+                            </div>
+                            <div className="flex items-center px-4 py-2.5">
+                                <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
+                                <span className="text-sm text-text font-mono">{f.schema}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Arguments */}
+                    {f.argument_names.length > 0 && (
+                        <div className="rounded-lg border border-border bg-surface overflow-hidden">
+                            <div className="px-4 py-2 border-b border-border flex items-center justify-between">
+                                <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                                    Arguments
+                                </h4>
+                                <span className="text-[10px] text-text-subtle">
+                                    {f.argument_names.length} total
+                                </span>
+                            </div>
+                            <div className="divide-y divide-border">
+                                {f.argument_names.map((name, i) => (
                                     <div
                                         key={i}
-                                        className="text-sm text-text bg-surface rounded px-3 py-1.5 flex items-center justify-between"
+                                        className="flex items-center px-4 py-2.5"
                                     >
-                                        <span className="font-mono text-accent">
-                                            {a}
+                                        <div className="w-24 shrink-0">
+                                            <span className="text-xs text-text-muted">
+                                                {f.argument_modes?.[i] &&
+                                                    f.argument_modes[i] !==
+                                                        "IN" && (
+                                                        <span className="text-amber-400 font-medium mr-1">
+                                                            {
+                                                                f.argument_modes[
+                                                                    i
+                                                                ]
+                                                            }
+                                                        </span>
+                                                    )}
+                                                #{i + 1}
+                                            </span>
+                                        </div>
+                                        <span className="text-sm text-accent font-mono">
+                                            {name}
                                         </span>
-                                        <span className="text-xs text-text-muted">
-                                            {f.argument_modes?.[i] &&
-                                                f.argument_modes[i] !== "IN" && (
-                                                    <span className="text-amber-400 mr-1">
-                                                        {
-                                                            f.argument_modes[
-                                                                i
-                                                            ]
-                                                        }
-                                                    </span>
-                                                )}
+                                        <span className="mx-2 text-border">
+                                            :
+                                        </span>
+                                        <span className="text-sm text-text-muted font-mono">
                                             {f.argument_types?.[i] ||
                                                 "unknown"}
                                         </span>
@@ -160,12 +196,21 @@ function renderDetail(type: ObjectType, item: AnyObject) {
                             </div>
                         </div>
                     )}
+
+                    {/* Source */}
                     {f.source && (
-                        <div className="space-y-1">
-                            <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-                                Source
-                            </h4>
-                            <SourceCode source={f.source} />
+                        <div className="rounded-lg border border-border bg-surface overflow-hidden">
+                            <div className="px-4 py-2 border-b border-border flex items-center justify-between">
+                                <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                                    Source
+                                </h4>
+                                <span className="text-[10px] text-text-subtle">
+                                    {f.language}
+                                </span>
+                            </div>
+                            <div className="p-4">
+                                <SourceCode source={f.source} />
+                            </div>
                         </div>
                     )}
                 </div>
@@ -174,27 +219,52 @@ function renderDetail(type: ObjectType, item: AnyObject) {
         case "triggers": {
             const t = item as TriggerInfo;
             return (
-                <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                        <DetailRow
-                            label="Table"
-                            value={`${t.table_schema}.${t.table_name}`}
-                        />
-                        <DetailRow label="Event" value={t.event_manipulation} />
-                        <DetailRow label="Timing" value={t.action_timing} />
-                        <DetailRow
-                            label="Orientation"
-                            value={t.action_orientation}
-                        />
-                        <DetailRow label="Enabled" value={t.enabled} />
-                        <DetailRow label="Schema" value={t.schema} />
-                    </div>
-                    {t.action_statement && (
-                        <div className="space-y-1">
-                            <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-                                Definition
+                <div className="space-y-4">
+                    {/* Metadata */}
+                    <div className="rounded-lg border border-border bg-surface overflow-hidden">
+                        <div className="px-4 py-2 border-b border-border">
+                            <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                                Details
                             </h4>
-                            <SourceCode source={t.action_statement} />
+                        </div>
+                        <div className="divide-y divide-border">
+                            <div className="flex items-center px-4 py-2.5">
+                                <span className="text-xs text-text-muted w-24 shrink-0">Table</span>
+                                <span className="text-sm text-text font-mono">{t.table_schema}.{t.table_name}</span>
+                            </div>
+                            <div className="flex items-center px-4 py-2.5">
+                                <span className="text-xs text-text-muted w-24 shrink-0">Event</span>
+                                <span className="text-sm text-text">{t.event_manipulation}</span>
+                            </div>
+                            <div className="flex items-center px-4 py-2.5">
+                                <span className="text-xs text-text-muted w-24 shrink-0">Timing</span>
+                                <span className="text-sm text-text">{t.action_timing} {t.action_orientation}</span>
+                            </div>
+                            <div className="flex items-center px-4 py-2.5">
+                                <span className="text-xs text-text-muted w-24 shrink-0">Status</span>
+                                <span className={`text-sm ${t.enabled === "O" ? "text-emerald-400" : "text-red-400"}`}>
+                                    {t.enabled === "O" ? "Enabled" : t.enabled === "D" ? "Disabled" : t.enabled}
+                                </span>
+                            </div>
+                            <div className="flex items-center px-4 py-2.5">
+                                <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
+                                <span className="text-sm text-text font-mono">{t.schema}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Definition */}
+                    {t.action_statement && (
+                        <div className="rounded-lg border border-border bg-surface overflow-hidden">
+                            <div className="px-4 py-2 border-b border-border flex items-center justify-between">
+                                <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                                    Definition
+                                </h4>
+                                <span className="text-[10px] text-text-subtle">SQL</span>
+                            </div>
+                            <div className="p-4">
+                                <SourceCode source={t.action_statement} />
+                            </div>
                         </div>
                     )}
                 </div>
@@ -203,17 +273,35 @@ function renderDetail(type: ObjectType, item: AnyObject) {
         case "sequences": {
             const s = item as SequenceInfo;
             return (
-                <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                        <DetailRow label="Current Value" value={s.current_value} />
-                        <DetailRow label="Increment" value={s.increment} />
-                        <DetailRow label="Start" value={s.start_value} />
-                        <DetailRow label="Min" value={s.min_value} />
-                        <DetailRow label="Max" value={s.max_value} />
-                        <DetailRow
-                            label="Cycle"
-                            value={s.cycle ? "Yes" : "No"}
-                        />
+                <div className="rounded-lg border border-border bg-surface overflow-hidden">
+                    <div className="px-4 py-2 border-b border-border">
+                        <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                            Sequence Values
+                        </h4>
+                    </div>
+                    <div className="divide-y divide-border">
+                        <div className="flex items-center px-4 py-2.5">
+                            <span className="text-xs text-text-muted w-28 shrink-0">Current Value</span>
+                            <span className="text-sm text-accent font-mono">{s.current_value}</span>
+                        </div>
+                        <div className="flex items-center px-4 py-2.5">
+                            <span className="text-xs text-text-muted w-28 shrink-0">Increment</span>
+                            <span className="text-sm text-text font-mono">{s.increment}</span>
+                        </div>
+                        <div className="flex items-center px-4 py-2.5">
+                            <span className="text-xs text-text-muted w-28 shrink-0">Start</span>
+                            <span className="text-sm text-text font-mono">{s.start_value}</span>
+                        </div>
+                        <div className="flex items-center px-4 py-2.5">
+                            <span className="text-xs text-text-muted w-28 shrink-0">Min / Max</span>
+                            <span className="text-sm text-text font-mono">{s.min_value} / {s.max_value}</span>
+                        </div>
+                        <div className="flex items-center px-4 py-2.5">
+                            <span className="text-xs text-text-muted w-28 shrink-0">Cycle</span>
+                            <span className={`text-sm ${s.cycle ? "text-amber-400" : "text-text-muted"}`}>
+                                {s.cycle ? "Yes" : "No"}
+                            </span>
+                        </div>
                     </div>
                 </div>
             );
@@ -221,21 +309,37 @@ function renderDetail(type: ObjectType, item: AnyObject) {
         case "enums": {
             const e = item as EnumInfo;
             return (
-                <div className="space-y-3">
-                    <DetailRow label="Schema" value={e.schema} />
-                    <div className="space-y-1">
-                        <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-                            Values
-                        </h4>
-                        <div className="flex flex-wrap gap-1.5">
-                            {e.labels.map((label) => (
-                                <span
-                                    key={label}
-                                    className="inline-block px-2.5 py-1 text-xs rounded-full bg-accent/10 text-accent border border-accent/20"
-                                >
-                                    {label}
-                                </span>
-                            ))}
+                <div className="space-y-4">
+                    <div className="rounded-lg border border-border bg-surface overflow-hidden">
+                        <div className="px-4 py-2 border-b border-border">
+                            <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                                Details
+                            </h4>
+                        </div>
+                        <div className="flex items-center px-4 py-2.5">
+                            <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
+                            <span className="text-sm text-text font-mono">{e.schema}</span>
+                        </div>
+                    </div>
+
+                    <div className="rounded-lg border border-border bg-surface overflow-hidden">
+                        <div className="px-4 py-2 border-b border-border flex items-center justify-between">
+                            <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                                Values
+                            </h4>
+                            <span className="text-[10px] text-text-subtle">{e.labels.length} labels</span>
+                        </div>
+                        <div className="p-4">
+                            <div className="flex flex-wrap gap-2">
+                                {e.labels.map((label) => (
+                                    <span
+                                        key={label}
+                                        className="inline-flex items-center px-3 py-1.5 text-xs rounded-md bg-accent/10 text-accent border border-accent/20 font-mono"
+                                    >
+                                        {label}
+                                    </span>
+                                ))}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -244,36 +348,32 @@ function renderDetail(type: ObjectType, item: AnyObject) {
         case "extensions": {
             const e = item as ExtensionInfo;
             return (
-                <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                        <DetailRow label="Version" value={e.version} />
-                        <DetailRow label="Schema" value={e.schema} />
+                <div className="rounded-lg border border-border bg-surface overflow-hidden">
+                    <div className="px-4 py-2 border-b border-border">
+                        <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                            Extension
+                        </h4>
                     </div>
-                    {e.comment && (
-                        <div className="space-y-1">
-                            <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-                                Comment
-                            </h4>
-                            <p className="text-sm text-text-muted leading-relaxed">
-                                {e.comment}
-                            </p>
+                    <div className="divide-y divide-border">
+                        <div className="flex items-center px-4 py-2.5">
+                            <span className="text-xs text-text-muted w-24 shrink-0">Version</span>
+                            <span className="text-sm text-text font-mono">{e.version}</span>
                         </div>
-                    )}
+                        <div className="flex items-center px-4 py-2.5">
+                            <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
+                            <span className="text-sm text-text font-mono">{e.schema}</span>
+                        </div>
+                        {e.comment && (
+                            <div className="px-4 py-2.5">
+                                <span className="text-xs text-text-muted block mb-1">Comment</span>
+                                <p className="text-sm text-text leading-relaxed">{e.comment}</p>
+                            </div>
+                        )}
+                    </div>
                 </div>
             );
         }
     }
-}
-
-function DetailRow({ label, value }: { label: string; value: string }) {
-    return (
-        <div>
-            <div className="text-[10px] uppercase tracking-wider text-text-subtle mb-0.5">
-                {label}
-            </div>
-            <div className="text-sm text-text font-mono">{value}</div>
-        </div>
-    );
 }
 
 export function ObjectExplorerPage({
