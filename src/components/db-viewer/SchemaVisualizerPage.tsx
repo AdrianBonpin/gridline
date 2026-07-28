@@ -309,31 +309,34 @@ export function SchemaVisualizerPage({
             Relationships
           </button>
           {legendOpen && (
-            <div className="mt-1.5 space-y-1">
+            <div className="mt-2 space-y-1.5">
               {LEGEND_ITEMS.map((item) => (
-                <div key={item.cardinality} className="flex items-center gap-2 py-0.5">
-                  <span className="text-text-muted font-mono text-[10px] w-12">{item.cardinality}</span>
-                  <svg width="24" height="14" className="shrink-0">
+                <div key={item.cardinality} className="flex items-center gap-2.5">
+                  {/* Edge representation: horizontal line with endpoint symbols */}
+                  <svg width="36" height="12" className="shrink-0">
+                    <line x1={6} y1={6} x2={30} y2={6} stroke={item.color} strokeWidth={1.5} />
+                    {/* Start marker */}
                     {item.markerStart === "one" ? (
-                      <line x1={4} y1={2} x2={4} y2={12} stroke={item.color} strokeWidth={2} strokeLinecap="round" />
+                      <line x1={6} y1={2} x2={6} y2={10} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
                     ) : (
                       <>
-                        <line x1={4} y1={3} x2={12} y2={7} stroke={item.color} strokeWidth={2} strokeLinecap="round" />
-                        <line x1={4} y1={7} x2={12} y2={7} stroke={item.color} strokeWidth={2} strokeLinecap="round" />
-                        <line x1={4} y1={11} x2={12} y2={7} stroke={item.color} strokeWidth={2} strokeLinecap="round" />
+                        <line x1={6} y1={3} x2={12} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
+                        <line x1={6} y1={6} x2={12} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
+                        <line x1={6} y1={9} x2={12} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
                       </>
                     )}
+                    {/* End marker */}
                     {item.markerEnd === "one" ? (
-                      <line x1={20} y1={2} x2={20} y2={12} stroke={item.color} strokeWidth={2} strokeLinecap="round" />
+                      <line x1={30} y1={2} x2={30} y2={10} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
                     ) : (
                       <>
-                        <line x1={20} y1={3} x2={12} y2={7} stroke={item.color} strokeWidth={2} strokeLinecap="round" />
-                        <line x1={20} y1={7} x2={12} y2={7} stroke={item.color} strokeWidth={2} strokeLinecap="round" />
-                        <line x1={20} y1={11} x2={12} y2={7} stroke={item.color} strokeWidth={2} strokeLinecap="round" />
+                        <line x1={30} y1={3} x2={24} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
+                        <line x1={30} y1={6} x2={24} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
+                        <line x1={30} y1={9} x2={24} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
                       </>
                     )}
                   </svg>
-                  <span className="text-text-muted">{item.label}</span>
+                  <span className="text-text-muted text-[11px]">{item.label}</span>
                 </div>
               ))}
             </div>
