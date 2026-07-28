@@ -4,7 +4,7 @@ import { DbViewerSidebar } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { TableTree } from "./TableTree";
 import { TabBar } from "./TabBar";
-import { DataGrid } from "./DataGrid";
+import { VirtualDataGrid } from "../grid/VirtualDataGrid";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
 import { TableControls } from "./TableControls";
 import { EditConnectionModal } from "./EditConnectionModal";
@@ -388,7 +388,29 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
                 />
               )}
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                <DataGrid connectionId={connectionId} rows={processedRows} hiddenColumns={hiddenColumns} selectedRows={selectedRows} onSelectionChange={setSelectedRows} />
+                <VirtualDataGrid
+                  connectionId={connectionId}
+                  rows={processedRows}
+                  columns={columns}
+                  hiddenColumns={hiddenColumns}
+                  selectedRows={selectedRows}
+                  onToggleRow={(rowIndex) => {
+                    setSelectedRows((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(rowIndex)) next.delete(rowIndex);
+                      else next.add(rowIndex);
+                      return next;
+                    });
+                  }}
+                  onToggleAll={() => {
+                    setSelectedRows((prev) => {
+                      if (prev.size === processedRows.length && processedRows.length > 0) {
+                        return new Set();
+                      }
+                      return new Set(processedRows.map((_, i) => i));
+                    });
+                  }}
+                />
               </div>
             </div>
           </div>

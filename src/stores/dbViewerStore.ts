@@ -42,7 +42,7 @@ const initialTab = (schema: string, table: string, defaultPageSize?: number): Vi
   schema,
   table,
   page: 1,
-  pageSize: defaultPageSize ?? 50,
+  pageSize: defaultPageSize ?? 500,
   loading: true,
   error: null,
   data: null,
@@ -101,7 +101,7 @@ interface DbViewerState {
 const initialState = {
   tabs: [] as ViewerTab[],
   activeTabId: null as string | null,
-  defaultPageSize: 50,
+  defaultPageSize: 500,
   changesQueue: [] as QueueItem[],
   databases: [] as string[],
   schemas: [] as string[],
