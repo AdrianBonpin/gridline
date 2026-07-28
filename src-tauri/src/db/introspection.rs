@@ -227,13 +227,13 @@ pub fn pg_triggers_query(_schema: &str) -> String {
         "SELECT t.tgname, tn.nspname AS trigger_schema, \
          cn.nspname AS table_schema, c.relname AS table_name, \
          CASE \
-           WHEN t.tgtype::int2 & 2 = 2 THEN 'INSERT' \
-           WHEN t.tgtype::int2 & 4 = 4 THEN 'DELETE' \
-           WHEN t.tgtype::int2 & 8 = 8 THEN 'UPDATE' \
-           WHEN t.tgtype::int2 & 16 = 16 THEN 'TRUNCATE' \
+           WHEN t.tgtype::int2 & 4 = 4 THEN 'INSERT' \
+           WHEN t.tgtype::int2 & 8 = 8 THEN 'DELETE' \
+           WHEN t.tgtype::int2 & 16 = 16 THEN 'UPDATE' \
+           WHEN t.tgtype::int2 & 32 = 32 THEN 'TRUNCATE' \
            ELSE 'UNKNOWN' END AS event, \
-         CASE WHEN t.tgtype::int2 & 1 = 1 THEN 'BEFORE' ELSE 'AFTER' END AS timing, \
-         CASE WHEN t.tgtype::int2 & 1 = 1 THEN 'STATEMENT' ELSE 'ROW' END AS orientation, \
+         CASE WHEN t.tgtype::int2 & 2 = 2 THEN 'BEFORE' ELSE 'AFTER' END AS timing, \
+         CASE WHEN t.tgtype::int2 & 1 = 1 THEN 'ROW' ELSE 'STATEMENT' END AS orientation, \
          pg_get_triggerdef(t.oid) AS definition, \
          t.tgenabled::text \
          FROM pg_trigger t \
