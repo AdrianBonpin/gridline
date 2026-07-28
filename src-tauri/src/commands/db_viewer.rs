@@ -529,7 +529,9 @@ fn pg_value_to_json(row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
     if let Ok(Some(v)) = row.try_get::<_, Option<serde_json::Value>>(i) {
         return v;
     }
-    // Text fallback
+    // Text fallback: catches varchar, text, char, and USER-DEFINED enum
+    // types. Under the simple query protocol, all values arrive as text
+    // and FromSql<String> converts them regardless of column type OID.
     if let Ok(Some(v)) = row.try_get::<_, Option<String>>(i) {
         return serde_json::Value::String(v);
     }
