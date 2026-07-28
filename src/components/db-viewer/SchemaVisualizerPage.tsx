@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   MiniMap,
@@ -12,7 +12,6 @@ import {
 import "@xyflow/react/dist/style.css";
 import dagre from "dagre";
 import { RotateCcw, ChevronUp, ChevronDown } from "lucide-react";
-import { CrowsFootEdge } from "./CrowsFootEdge";
 import { SchemaVisualizerNode } from "./SchemaVisualizerNode";
 import { LEGEND_ITEMS } from "./legendHelpers";
 import { SelectDropdown } from "../ui/SelectDropdown";
@@ -21,7 +20,6 @@ import { useDbViewerStore } from "../../stores/dbViewerStore";
 import type { SchemaGraph, TableNode as TableNodeType } from "../../lib/types";
 
 const nodeTypes = { tableNode: SchemaVisualizerNode };
-const edgeTypes = { crowsfoot: CrowsFootEdge };
 
 const CARD_WIDTH = 240;
 const ROW_HEIGHT = 28;
@@ -39,7 +37,6 @@ function layoutGraph(
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({ rankdir: "LR", nodesep: 60, ranksep: 120, marginx: 40, marginy: 40 });
 
-  // Build a lookup: key = "sourceTable.sourceCol->targetTable.targetCol" → cardinality
   const cardinalityMap = new Map<string, string>();
   for (const rel of relationships) {
     cardinalityMap.set(
@@ -79,15 +76,16 @@ function layoutGraph(
             target: refTable,
             sourceHandle: `fk-${col.name}`,
             targetHandle: `pk-${refColumn}`,
-            type: "crowsfoot",
+            type: "smoothstep",
             label: cardinality,
-            markerStart: markers.markerStart || undefined,
-            markerEnd: markers.markerEnd || undefined,
+            markerStart: undefined,
+            markerEnd: undefined,
             style: { stroke: "#3b82f6", strokeWidth: 1.5 },
             labelStyle: { fill: "#9ca3af", fontSize: 9 },
             labelBgStyle: { fill: "#1f2937", fillOpacity: 0.85 },
             labelBgPadding: [3, 1],
             labelBorderRadius: 0,
+            data: { cardinality, markers },
           });
         }
       }
@@ -110,7 +108,6 @@ function layoutGraph(
 }
 
 function getEdgeMarkers(cardinality: string): { markerStart: string; markerEnd: string } {
-  // markerStart = FK/child side, markerEnd = PK/parent side
   switch (cardinality) {
     case "1:1":
       return { markerStart: "one", markerEnd: "one" };
@@ -149,6 +146,7 @@ export function SchemaVisualizerPage({
   const [error, setError] = useState<string | null>(null);
   const [tableCount, setTableCount] = useState(0);
   const [legendOpen, setLegendOpen] = useState(true);
+  const canvasRef = useRef<HTMLDivElement>(null);
 
   const fetchGraph = useCallback(async () => {
     if (!currentSchema) return;
@@ -246,7 +244,7 @@ export function SchemaVisualizerPage({
       </div>
 
       {/* Canvas */}
-      <div className="flex-1 min-h-0 relative">
+      <div className="flex-1 min-h-0 relative" ref={canvasRef}>
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center z-10 bg-canvas/80">
             <p className="text-text-muted text-sm">Loading schema...</p>
@@ -280,7 +278,6 @@ export function SchemaVisualizerPage({
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
           fitView
           minZoom={0.1}
           maxZoom={2}
