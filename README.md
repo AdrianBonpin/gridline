@@ -172,17 +172,18 @@ gridline/
    - [ ] OS Keychain credential storage
 
 3. **Phase 3 — Schema Explorer**
-   - [ ] PostgreSQL `pg_catalog` / `information_schema` introspection
-   - [ ] Full object tree (Tables, Views, Functions, Triggers, Enums, Sequences)
+   - [x] PostgreSQL `pg_catalog` / `information_schema` introspection
+   - [x] Full object tree (Tables, Views, Functions, Triggers, Enums, Sequences, Extensions)
+   - [x] Per-type detail views with source code, arguments, metadata
 
 4. **Phase 4 — Query Workbench**
    - [ ] Monaco Editor integration with SQL autocomplete
-   - [ ] Virtualized data grid for query results
+   - [x] Virtualized data grid for query results
    - [ ] Query history & saved snippets
 
 5. **Phase 5 — Admin Tools**
-   - [ ] `pg_dump` / `pg_restore` UI wrappers
-   - [ ] DB-to-DB schema & data sync
+   - [x] `pg_dump` / `pg_restore` UI wrappers
+   - [x] DB-to-DB schema & data sync
 
 6. **Phase 6 — Multi-Database Support**
    - [ ] MySQL driver
