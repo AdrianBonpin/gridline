@@ -147,6 +147,49 @@ impl Change {
     }
 }
 
+/// Complete schema graph for the ER diagram visualizer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaGraph {
+    pub tables: Vec<TableNode>,
+    pub relationships: Vec<Relationship>,
+}
+
+/// A table node in the schema graph, including all columns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableNode {
+    pub name: String,
+    pub schema: String,
+    pub table_type: String,
+    pub columns: Vec<GraphColumn>,
+}
+
+/// Column metadata for schema graph visualization.
+///
+/// Includes PK/FK/UNIQUE flags and an optional foreign-key reference
+/// (referenced_schema, referenced_table, referenced_column).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphColumn {
+    pub name: String,
+    pub data_type: String,
+    pub is_pk: bool,
+    pub is_fk: bool,
+    pub is_unique: bool,
+    pub fk_ref: Option<(String, String, String)>,
+}
+
+/// A foreign-key relationship between two tables.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Relationship {
+    pub source_schema: String,
+    pub source_table: String,
+    pub source_column: String,
+    pub target_schema: String,
+    pub target_table: String,
+    pub target_column: String,
+    /// Inferred cardinality: "1:1", "1:N", or "N:M"
+    pub cardinality: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,5 +377,99 @@ mod tests {
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("pg_stat_statements"));
+    }
+
+    #[test]
+    fn schema_graph_serialization() {
+        let graph = SchemaGraph {
+            tables: vec![TableNode {
+                name: "users".into(),
+                schema: "public".into(),
+                table_type: "TABLE".into(),
+                columns: vec![
+                    GraphColumn {
+                        name: "id".into(),
+                        data_type: "integer".into(),
+                        is_pk: true,
+                        is_fk: false,
+                        is_unique: true,
+                        fk_ref: None,
+                    },
+                    GraphColumn {
+                        name: "email".into(),
+                        data_type: "text".into(),
+                        is_pk: false,
+                        is_fk: false,
+                        is_unique: true,
+                        fk_ref: None,
+                    },
+                ],
+            }],
+            relationships: vec![Relationship {
+                source_schema: "public".into(),
+                source_table: "orders".into(),
+                source_column: "user_id".into(),
+                target_schema: "public".into(),
+                target_table: "users".into(),
+                target_column: "id".into(),
+                cardinality: "1:N".into(),
+            }],
+        };
+
+        let json = serde_json::to_string(&graph).unwrap();
+        assert!(json.contains("users"), "should contain table name");
+        assert!(json.contains("orders"), "should contain relationship source table");
+        assert!(json.contains("1:N"), "should contain cardinality");
+        assert!(json.contains("is_pk"), "should contain is_pk field");
+        assert!(json.contains("is_fk"), "should contain is_fk field");
+        assert!(json.contains("is_unique"), "should contain is_unique field");
+
+        // Round-trip deserialization
+        let parsed: SchemaGraph = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tables.len(), 1);
+        assert_eq!(parsed.tables[0].columns.len(), 2);
+        assert_eq!(parsed.relationships.len(), 1);
+        assert_eq!(parsed.relationships[0].cardinality, "1:N");
+    }
+
+    #[test]
+    fn schema_graph_empty_is_valid() {
+        let graph = SchemaGraph {
+            tables: vec![],
+            relationships: vec![],
+        };
+        let json = serde_json::to_string(&graph).unwrap();
+        let parsed: SchemaGraph = serde_json::from_str(&json).unwrap();
+        assert!(parsed.tables.is_empty());
+        assert!(parsed.relationships.is_empty());
+    }
+
+    #[test]
+    fn graph_column_fk_ref_serialization() {
+        // fk_ref = None
+        let col_none = GraphColumn {
+            name: "name".into(),
+            data_type: "text".into(),
+            is_pk: false,
+            is_fk: false,
+            is_unique: false,
+            fk_ref: None,
+        };
+        let json = serde_json::to_string(&col_none).unwrap();
+        assert!(json.contains("null"), "fk_ref=None should serialize as null");
+
+        // fk_ref = Some(...)
+        let col_some = GraphColumn {
+            name: "user_id".into(),
+            data_type: "integer".into(),
+            is_pk: false,
+            is_fk: true,
+            is_unique: false,
+            fk_ref: Some(("public".into(), "users".into(), "id".into())),
+        };
+        let json = serde_json::to_string(&col_some).unwrap();
+        assert!(json.contains("public"), "should contain referenced schema");
+        assert!(json.contains("users"), "should contain referenced table");
+        assert!(json.contains("id"), "should contain referenced column");
     }
 }
