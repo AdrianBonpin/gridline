@@ -579,6 +579,13 @@ export function DbViewerScreen({
                         <RestorePage connectionId={connectionId} />
                     ) : currentView === "sync" ? (
                         <SyncPage />
+                    ) : currentView === "schema-visualizer" ? (
+                        <div
+                            data-testid="schema-visualizer-placeholder"
+                            className="flex-1 flex items-center justify-center bg-canvas"
+                        >
+                            <p className="text-text-muted">Schema Visualizer loading...</p>
+                        </div>
                     ) : null}
                     {currentView === "db-viewer" && <ChangesQueuePanel />}
                 </div>

@@ -34,9 +34,8 @@ export function DbViewerSidebar({
         { id: "db-viewer", label: "Explorer", icon: <Database size={20} /> },
         {
             id: "schema-visualizer",
-            label: "Schema Visualizer coming soon",
+            label: "Schema Visualizer",
             icon: <Grid2x2 size={20} />,
-            stub: true,
         },
         {
             id: "functions",
