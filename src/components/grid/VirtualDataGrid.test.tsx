@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { VirtualDataGrid } from "./VirtualDataGrid";
 import type { ColumnInfo } from "../../lib/types";
 
@@ -136,5 +136,61 @@ describe("VirtualDataGrid", () => {
     );
 
     expect(screen.getByText(/no rows/i)).toBeInTheDocument();
+  });
+
+  it("calls onToggleRow when checkbox clicked", () => {
+    let toggled = -1;
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+
+    render(<VirtualDataGrid connectionId="conn-1" rows={mockRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()}
+      onToggleRow={(i) => { toggled = i; }} onToggleAll={() => {}} />);
+
+    const checkboxes = screen.getAllByRole("checkbox");
+    fireEvent.click(checkboxes[1]); // first row checkbox
+    expect(toggled).toBe(0);
+  });
+
+  it("renders FK cells with clickable underline styling", () => {
+    const fkCols: ColumnInfo[] = [
+      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["users", "id"], default_value: null },
+    ];
+    mockGetTotalSize.mockReturnValue(36);
+    mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
+
+    render(<VirtualDataGrid connectionId="conn-1" rows={[[42]]} columns={fkCols}
+      hiddenColumns={new Set()} selectedRows={new Set()}
+      onToggleRow={() => {}} onToggleAll={() => {}} />);
+
+    const fkCell = screen.getByText("42");
+    expect(fkCell.className).toContain("cursor-pointer");
+    expect(fkCell.className).toContain("underline");
+  });
+
+  it("renders JSON cells with preview label", () => {
+    const jsonCols: ColumnInfo[] = [
+      { name: "metadata", data_type: "jsonb", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null },
+    ];
+    mockGetTotalSize.mockReturnValue(36);
+    mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
+
+    render(<VirtualDataGrid connectionId="conn-1" rows={[[JSON.stringify({ key: "val", count: 3 })]]} columns={jsonCols}
+      hiddenColumns={new Set()} selectedRows={new Set()}
+      onToggleRow={() => {}} onToggleAll={() => {}} />);
+
+    expect(screen.getByText(/2 keys/)).toBeInTheDocument();
+  });
+
+  it("has resize handles on column headers", () => {
+    mockGetTotalSize.mockReturnValue(0);
+    mockGetVirtualItems.mockReturnValue([]);
+
+    render(<VirtualDataGrid connectionId="conn-1" rows={[]} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()}
+      onToggleRow={() => {}} onToggleAll={() => {}} />);
+
+    const handles = document.querySelectorAll('[class*="cursor-col-resize"]');
+    expect(handles.length).toBe(2); // one per visible column
   });
 });
