@@ -419,7 +419,7 @@ function SyntaxCode({
     return (
         <div>
             <div className="overflow-x-auto">
-                <pre className="text-xs leading-6 font-mono whitespace-pre">
+                <pre className="text-xs leading-6 font-mono whitespace-pre w-max min-w-full">
                     {displayLines.map(
                         (entry: { tokens: Token[] }, i: number) => {
                             const { tokens } = entry;
@@ -1111,7 +1111,7 @@ export function ObjectExplorerPage({
             />
 
             {/* Right panel: detail view */}
-            <div className="flex-1 flex flex-col min-w-0 overflow-y-auto overflow-x-hidden">
+            <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
                 {selectedItem ? (
                     <>
                         {/* Header */}
@@ -1128,7 +1128,7 @@ export function ObjectExplorerPage({
                         </div>
 
                         {/* Detail content */}
-                        <div className="w-full">
+                        <div className="w-full max-w-full overflow-x-auto">
                             {renderDetail(type, selectedItem)}
                         </div>
                     </>
