@@ -1,14 +1,12 @@
 import { BaseEdge, getSmoothStepPath, type EdgeProps } from "@xyflow/react";
 
 const C = "#3b82f6";
-const S = 9;
+const S = 8;
 
 export function CrowsFootEdge({
   id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
+  sourceX, sourceY,
+  targetX, targetY,
   sourcePosition,
   targetPosition,
   data,
@@ -23,50 +21,86 @@ export function CrowsFootEdge({
   const sm = (data as any)?.startMarker as string;
   const em = (data as any)?.endMarker as string;
 
-  // Straight-line direction (simple, correct for ER diagrams)
+  // Direction unit vector (source → target)
   const dx = targetX - sourceX;
   const dy = targetY - sourceY;
-  const sa = Math.atan2(dy, dx); // source angle = edge direction
-  const ta = sa + Math.PI;        // target angle = opposite direction
-  const d = (r: number) => r * 180 / Math.PI;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len; // unit toward target
+  const uy = dy / len;
+  // Perpendicular unit vector (rotate 90° CCW)
+  const px = -uy;
+  const py = ux;
 
   return (
     <g>
-      {/* Shorten the edge slightly so symbols sit flush against the card */}
       <BaseEdge id={id} path={edgePath} style={{ stroke: C, strokeWidth: 1.5, ...style }} />
-      {/* Source marker at exact source coordinates */}
-      <g transform={`translate(${sourceX},${sourceY}) rotate(${d(sa)})`}>
-        <Sym type={sm} />
-      </g>
-      {/* Target marker at exact target coordinates */}
-      <g transform={`translate(${targetX},${targetY}) rotate(${d(ta)})`}>
-        <Sym type={em} />
-      </g>
+      {/* Source marker */}
+      {sm && (
+        <Mark 
+          type={sm} 
+          cx={sourceX} cy={sourceY} 
+          ex={ux} ey={uy}   // edge direction (outward from source)
+          px={px} py={py}   // perpendicular
+        />
+      )}
+      {/* Target marker */}
+      {em && (
+        <Mark 
+          type={em} 
+          cx={targetX} cy={targetY} 
+          ex={-ux} ey={-uy}  // edge direction reversed (outward from target)
+          px={px} py={py}
+        />
+      )}
     </g>
   );
 }
 
-function Sym({ type }: { type: string }) {
+/**
+ * Draws crow's foot symbol at (cx, cy).
+ * - (ex, ey) = unit vector pointing OUTWARD from the node along the edge
+ * - (px, py) = unit vector perpendicular to the edge
+ */
+function Mark({ type, cx, cy, ex, ey, px, py }: {
+  type: string; cx: number; cy: number; ex: number; ey: number; px: number; py: number;
+}) {
+  const G = 6; // gap from handle
+  const ox = cx + ex * G; // offset outward from handle
+  const oy = cy + ey * G;
+
   if (type === "one") {
-    // Vertical line perpendicular to edge direction
+    // Short line perpendicular to edge, at the offset point
     return (
       <line
-        x1={0} y1={-S}
-        x2={0} y2={S}
-        stroke={C} strokeWidth={2}
-        strokeLinecap="round"
+        x1={ox + px * S} y1={oy + py * S}
+        x2={ox - px * S} y2={oy - py * S}
+        stroke={C} strokeWidth={2} strokeLinecap="round"
       />
     );
   }
+
   if (type === "many") {
-    // Crow's foot: three lines fanning away from the edge
+    // Three lines fanning INWARD (back toward the node)
+    const a0 = Math.atan2(ey, ex); // base angle pointing outward
+    const spread = 0.35; // radians (~20°)
+    const len = S + 2;
     return (
       <g>
-        <line x1={0} y1={0} x2={-S} y2={-S * 0.6} stroke={C} strokeWidth={2} strokeLinecap="round" />
-        <line x1={0} y1={0} x2={-S} y2={0} stroke={C} strokeWidth={2} strokeLinecap="round" />
-        <line x1={0} y1={0} x2={-S} y2={S * 0.6} stroke={C} strokeWidth={2} strokeLinecap="round" />
+        {[-spread, 0, spread].map((off, i) => {
+          const ang = a0 + off;
+          const lx = ox + Math.cos(ang) * len;
+          const ly = oy + Math.sin(ang) * len;
+          return (
+            <line key={i}
+              x1={ox} y1={oy}
+              x2={lx} y2={ly}
+              stroke={C} strokeWidth={2} strokeLinecap="round"
+            />
+          );
+        })}
       </g>
     );
   }
+
   return null;
 }
