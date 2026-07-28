@@ -34,31 +34,32 @@ Most database GUI clients either lock essential productivity features behind pay
 
 ### PostgreSQL Object Explorer
 Full tree-view navigation of all native PostgreSQL schema objects:
-- **Tables & Views** — columns, types, defaults, nullability, primary/foreign keys, indexes
-- **Functions & Procedures** — source code with syntax highlighting, argument signatures, return types
-- **Triggers & Rules** — event bindings (`BEFORE/AFTER INSERT/UPDATE/DELETE`) with inline definition inspection
-- **Sequences & Enums** — current values, increments, custom enum options
-- **Indexes & Constraints** — usage stats, composite keys, `UNIQUE` / `CHECK` definitions
-- **Extensions** — installed extensions view (`pgvector`, `uuid-ossp`, `postgis`) with enable/disable toggling
+- **Tables & Views** — columns, types, defaults, nullability, primary/foreign keys with popover preview
+- **Functions & Procedures** — source code with syntax highlighting and line numbers, argument signatures, return types, overload support
+- **Triggers & Rules** — event bindings with inline definition inspection, color-coded enabled/disabled status
+- **Sequences & Enums** — current values, increments, cycle flags; enum labels in bordered list view
+- **Extensions** — installed extensions with version, schema, and comment
 
 ### SQL Editor & Query Workbench
-- **Monaco Editor** — full SQL syntax highlighting, auto-indentation, error markers
-- **Context-aware Autocomplete** — real-time schema introspection suggests tables, columns, and function signatures as you type
-- **Query Formatter** — clean, styled display with keyword highlighting and code folding
-- **History & Snippets** — automatic query logging with timestamps and execution duration; unlimited saved snippets organized by folder
-- **Multi-Tab Workspace** — unlimited named tabs, drag-and-drop reorder, session persistence across restarts
+- **Multi-Tab Workspace** — unlimited named tabs, close with Cmd/Ctrl+W, session persistence across restarts
+- **Changes Queue** — queue INSERT/UPDATE/DELETE changes; preview before committing all
+- **Smart Default Sort** — auto-detects `updated_at`, `created_at`, `_id` columns for logical initial sorting
+- *(Monaco Editor with SQL autocomplete, query history, and saved snippets coming soon)*
 
 ### Data Grid & Schema Browser
-- **Virtualized Grid** — canvas/DOM-virtualized rendering handles 100k+ rows at 60fps (Glide Data Grid / TanStack Virtual)
-- **Inline Editing** — double-click cells to edit, delete rows, or insert records directly
-- **Visual Filter Builder** — multi-column filters without writing raw SQL
-- **Export** — CSV, JSON, NDJSON, Excel, raw `INSERT` statements
-- **Import** — load CSV/JSON files into tables with visual column mapping
+- **Virtualized Grid** — row-level virtualization via `@tanstack/react-virtual` handles 100k+ rows
+- **Column Management** — resize with drag handles (double-click to auto-fit), show/hide per column, multi-column sort
+- **Server-Side Filtering & Sorting** — filters and sorts pushed to SQL WHERE/ORDER BY
+- **Export** — JSON, CSV, SQL, Markdown via toolbar
+- **FK Preview** — click a foreign key cell to preview the referenced row
+- **JSON/JSONB Viewer** — popover with formatted/raw tabs and copy button
+- **Auto-Refresh** — configurable interval timer
+- *(Inline cell editing, visual filter builder, and data import coming soon)*
 
 ### PostgreSQL Administrative Tools
-- **Visual Backup** — one-click `pg_dump` wrapper: Plain SQL, Custom, or Tar format; scope by full DB, schema-only, data-only, or specific tables
-- **Visual Restore** — drag-and-drop `pg_restore` with dry-run mode and detailed error reporting
-- **DB-to-DB Sync** — migrate data between environments with a table diff viewer showing inserted, modified, and missing rows before committing
+- **Visual Backup** — `pg_dump` wrapper with format selector (Plain SQL, Custom, Tar, Directory), file browser, schema filter, no-owner toggle, real-time progress bar
+- **Visual Restore** — `pg_restore` wrapper with file browser, format, clean toggle, destructive confirmation checkbox
+- **DB-to-DB Sync** — pipe `pg_dump` → `pg_restore` between two connections with source/target pickers, schema filter, flow indicator
 
 ### App Portability
 - **Export** — save all workspaces, folders, saved queries, tags, and non-sensitive metadata to a single JSON archive
@@ -77,8 +78,8 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 | **Frontend** | [React 19](https://react.dev) + [TypeScript](https://www.typescriptlang.org) | Component-based UI |
 | **Styling** | [Tailwind CSS](https://tailwindcss.com) | Utility-first, dark mode, glassmorphic design |
 | **State** | [Zustand](https://zustand.docs.pmnd.rs) / [Jotai](https://jotai.org) | Lightweight client-state for tabs, connections, queries |
-| **Code Editor** | [Monaco Editor](https://microsoft.github.io/monaco-editor/) | IDE-grade SQL editing with autocomplete |
-| **Data Grid** | [Glide Data Grid](https://grid.glideapps.com) / [TanStack Virtual](https://tanstack.com/virtual) | Virtualized 60fps table rendering |
+| **Code Editor** | *(planned)* [Monaco Editor](https://microsoft.github.io/monaco-editor/) | IDE-grade SQL editing with autocomplete (coming soon) |
+| **Data Grid** | [TanStack Virtual](https://tanstack.com/virtual) | Virtualized row rendering for 100k+ rows |
 | **Local DB** | SQLite via [rusqlite](https://github.com/rusqlite/rusqlite) | User settings, saved queries, workspace state |
 
 ---
