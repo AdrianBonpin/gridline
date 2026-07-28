@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   MiniMap,
@@ -142,6 +142,31 @@ export function SchemaVisualizerPage({
   const [error, setError] = useState<string | null>(null);
   const [tableCount, setTableCount] = useState(0);
   const [legendOpen, setLegendOpen] = useState(true);
+  const canvasRef = useRef<HTMLDivElement>(null);
+
+  // Inject SVG marker defs into ReactFlow's internal SVG for crow's foot notation
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const svg = el.querySelector("svg");
+    if (!svg) return;
+    // Avoid duplicates
+    if (svg.querySelector("#rf-cf-defs")) return;
+
+    const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+    defs.id = "rf-cf-defs";
+    defs.innerHTML = `
+      <marker id="rf-cf-one" viewBox="0 0 12 12" refX="12" refY="6" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+        <line x1="2" y1="0" x2="2" y2="12" stroke="#3b82f6" stroke-width="1.5" />
+      </marker>
+      <marker id="rf-cf-many" viewBox="0 0 14 12" refX="14" refY="6" markerWidth="10" markerHeight="8" orient="auto-start-reverse">
+        <line x1="0" y1="0" x2="10" y2="3" stroke="#3b82f6" stroke-width="1.5" />
+        <line x1="0" y1="12" x2="10" y2="9" stroke="#3b82f6" stroke-width="1.5" />
+        <line x1="0" y1="6" x2="10" y2="6" stroke="#3b82f6" stroke-width="1.5" />
+      </marker>
+    `;
+    svg.insertBefore(defs, svg.firstChild);
+  }, [nodes.length > 0]); // re-run when nodes change (canvas rendered)
 
   const fetchGraph = useCallback(async () => {
     if (!currentSchema) return;
@@ -239,7 +264,7 @@ export function SchemaVisualizerPage({
       </div>
 
       {/* Canvas */}
-      <div className="flex-1 min-h-0 relative">
+      <div className="flex-1 min-h-0 relative" ref={canvasRef}>
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center z-10 bg-canvas/80">
             <p className="text-text-muted text-sm">Loading schema...</p>
@@ -279,16 +304,6 @@ export function SchemaVisualizerPage({
           className="bg-canvas"
           proOptions={{ hideAttribution: true }}
         >
-          <defs>
-            <marker id="rf-cf-one" viewBox="0 0 12 12" refX="12" refY="6" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-              <line x1="2" y1="0" x2="2" y2="12" stroke="#3b82f6" strokeWidth="1.5" />
-            </marker>
-            <marker id="rf-cf-many" viewBox="0 0 14 12" refX="14" refY="6" markerWidth="10" markerHeight="8" orient="auto-start-reverse">
-              <line x1="0" y1="0" x2="10" y2="3" stroke="#3b82f6" strokeWidth="1.5" />
-              <line x1="0" y1="12" x2="10" y2="9" stroke="#3b82f6" strokeWidth="1.5" />
-              <line x1="0" y1="6" x2="10" y2="6" stroke="#3b82f6" strokeWidth="1.5" />
-            </marker>
-          </defs>
           <Background variant="dots" gap={20} color="var(--color-border)" />
           <MiniMap
             position="bottom-right"
