@@ -11,6 +11,7 @@ import {
     RefreshCw,
 } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { SelectDropdown } from "../ui/SelectDropdown";
 import * as cmd from "../../lib/commands";
 import type {
     FunctionInfo,
@@ -435,40 +436,39 @@ export function ObjectExplorerPage({
 
                     {/* Database/Schema dropdowns */}
                     {(databases.length > 1 || schemas.length > 1) && (
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-3">
                             {databases.length > 1 && (
-                                <select
+                                <SelectDropdown
                                     value={currentDatabase ?? ""}
-                                    onChange={(e) =>
-                                        setCurrentDatabase(
-                                            e.target.value || null,
-                                        )
+                                    onChange={(v) =>
+                                        setCurrentDatabase(v || null)
                                     }
-                                    className="flex-1 bg-transparent text-[11px] text-text-muted border border-border rounded px-2 py-1 cursor-pointer focus:outline-none focus:border-accent/50"
-                                >
-                                    {databases.map((db) => (
-                                        <option key={db} value={db}>
-                                            {db}
-                                        </option>
-                                    ))}
-                                </select>
+                                    options={databases.map((d) => ({
+                                        value: d,
+                                        label: d,
+                                    }))}
+                                    placeholder="Select database"
+                                    aria-label="Select database"
+                                    variant="ghost"
+                                />
+                            )}
+                            {databases.length > 1 && schemas.length > 1 && (
+                                <span className="text-border text-sm">|</span>
                             )}
                             {schemas.length > 1 && (
-                                <select
+                                <SelectDropdown
                                     value={currentSchema ?? ""}
-                                    onChange={(e) =>
-                                        setCurrentSchema(
-                                            e.target.value || null,
-                                        )
+                                    onChange={(v) =>
+                                        setCurrentSchema(v || null)
                                     }
-                                    className="flex-1 bg-transparent text-[11px] text-text-muted border border-border rounded px-2 py-1 cursor-pointer focus:outline-none focus:border-accent/50"
-                                >
-                                    {schemas.map((s) => (
-                                        <option key={s} value={s}>
-                                            {s}
-                                        </option>
-                                    ))}
-                                </select>
+                                    options={schemas.map((s) => ({
+                                        value: s,
+                                        label: s,
+                                    }))}
+                                    placeholder="Select schema"
+                                    aria-label="Select schema"
+                                    variant="ghost"
+                                />
                             )}
                         </div>
                     )}

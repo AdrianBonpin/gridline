@@ -549,23 +549,27 @@ export function DbViewerScreen({
                         </div>
                     ) : currentView === "functions" ? (
                         <ObjectExplorerPage
+                            key="functions"
                             type="functions"
                             connectionId={connectionId}
                         />
                     ) : currentView === "triggers" ? (
                         <ObjectExplorerPage
+                            key="triggers"
                             type="triggers"
                             connectionId={connectionId}
                         />
                     ) : currentView === "sequences" ? (
                         <ObjectExplorerPage
+                            key="sequences"
                             type="sequences"
                             connectionId={connectionId}
                         />
                     ) : currentView === "enums" ? (
-                        <ObjectExplorerPage type="enums" connectionId={connectionId} />
+                        <ObjectExplorerPage key="enums" type="enums" connectionId={connectionId} />
                     ) : currentView === "extensions" ? (
                         <ObjectExplorerPage
+                            key="extensions"
                             type="extensions"
                             connectionId={connectionId}
                         />
