@@ -200,13 +200,19 @@ function tokenizeLine(line: string): Token[] {
         }
         let word = "";
         while (i < line.length && /[a-zA-Z_]/.test(line[i])) { word += line[i]; i++; }
-        const upper = word.toUpperCase();
-        if (SQL_KEYWORDS.has(upper)) {
-            tokens.push({ text: word, kind: "keyword" });
-        } else if (SQL_TYPES.has(upper)) {
-            tokens.push({ text: word, kind: "type" });
+        if (word) {
+            const upper = word.toUpperCase();
+            if (SQL_KEYWORDS.has(upper)) {
+                tokens.push({ text: word, kind: "keyword" });
+            } else if (SQL_TYPES.has(upper)) {
+                tokens.push({ text: word, kind: "type" });
+            } else {
+                tokens.push({ text: word, kind: "plain" });
+            }
         } else {
-            tokens.push({ text: word, kind: "plain" });
+            // Catch-all for any character not matched above (non-ASCII, symbols, etc.)
+            tokens.push({ text: line[i], kind: "plain" });
+            i++;
         }
     }
     return tokens;
@@ -215,10 +221,24 @@ function tokenizeLine(line: string): Token[] {
 function SyntaxCode({ source, language: _language }: { source: string; language?: string }) {
     const [expanded, setExpanded] = useState(false);
     const maxLines = 60;
-    const lines = source.split("\n");
-    const truncated = !expanded && lines.length > maxLines;
-    const displayLines = truncated ? lines.slice(0, maxLines) : lines;
-    const maxLineNum = String(displayLines.length).length;
+
+    // Memoize the tokenized output — source doesn't change while viewing
+    const { displayLines, maxLineNum, truncated, totalLines } = useMemo(() => {
+        const lines: string[] = source.split("\n");
+        const total: number = lines.length;
+        const isTruncated: boolean = !expanded && total > maxLines;
+        const display: string[] = isTruncated ? lines.slice(0, maxLines) : lines;
+        const maxNum: number = String(display.length).length;
+        const tokenized = display.map((line: string) => ({
+            tokens: tokenizeLine(line),
+        }));
+        return {
+            displayLines: tokenized,
+            maxLineNum: maxNum,
+            truncated: isTruncated,
+            totalLines: total,
+        };
+    }, [source, expanded]);
 
     const TOKEN_COLORS: Record<string, string> = {
         keyword: "text-blue-400",
@@ -234,8 +254,8 @@ function SyntaxCode({ source, language: _language }: { source: string; language?
         <div>
             <div className="overflow-x-auto">
                 <pre className="text-xs leading-6 font-mono bg-canvas">
-                    {displayLines.map((line, i) => {
-                        const tokens = tokenizeLine(line);
+                    {displayLines.map((entry: { tokens: Token[] }, i: number) => {
+                        const { tokens } = entry;
                         const num = String(i + 1).padStart(maxLineNum, " ");
                         return (
                             <div
@@ -248,7 +268,7 @@ function SyntaxCode({ source, language: _language }: { source: string; language?
                                     {num}
                                 </span>
                                 <span className="flex-1 whitespace-pre">
-                                    {tokens.length === 1 && tokens[0].text === "" && line.trim() === ""
+                                    {tokens.length === 1 && tokens[0].text.trim() === ""
                                         ? "\u00A0"
                                         : tokens.map((t, j) => (
                                             <span key={j} className={TOKEN_COLORS[t.kind]}>
@@ -268,11 +288,11 @@ function SyntaxCode({ source, language: _language }: { source: string; language?
                         onClick={() => setExpanded(true)}
                         className="text-xs text-accent hover:underline"
                     >
-                        Show all {lines.length} lines…
+                        Show all {totalLines} lines…
                     </button>
                 </div>
             )}
-            {expanded && lines.length > maxLines && (
+            {expanded && totalLines > maxLines && (
                 <div className="flex items-center justify-center py-1.5 border-t border-border">
                     <button
                         type="button"
