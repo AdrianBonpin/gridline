@@ -2,7 +2,7 @@ import { BaseEdge, getSmoothStepPath, type EdgeProps } from "@xyflow/react";
 
 const C = "#3b82f6";
 const S = 10;
-const G = 6;
+const G = 12;
 
 export function CrowsFootEdge({
   id,
