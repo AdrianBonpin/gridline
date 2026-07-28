@@ -787,6 +787,198 @@ ORDER BY c.ordinal_position"#;
 }
 
 #[tauri::command]
+pub async fn get_fk_preview(
+    connection_id: String,
+    schema: String,
+    table: String,
+    column: String,
+    value: String,
+    state: State<'_, crate::AppState>,
+) -> Result<QueryResult, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            // Get column info with FK detection
+            let col_query = r#"SELECT
+    c.column_name,
+    CASE WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name ELSE c.data_type END AS data_type,
+    c.is_nullable,
+    COALESCE(pk.is_pk, false) AS is_pk,
+    COALESCE(fk.is_fk, false) AS is_fk,
+    fk.foreign_table_name,
+    fk.foreign_column_name,
+    c.column_default
+FROM information_schema.columns c
+LEFT JOIN (
+    SELECT ku.column_name, true AS is_pk
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage ku
+        ON tc.constraint_catalog = ku.constraint_catalog
+        AND tc.constraint_schema = ku.constraint_schema
+        AND tc.constraint_name = ku.constraint_name
+    WHERE tc.constraint_type = 'PRIMARY KEY'
+        AND tc.table_schema = $1
+        AND tc.table_name = $2
+) pk ON c.column_name = pk.column_name
+LEFT JOIN (
+    SELECT
+        ku.column_name,
+        true AS is_fk,
+        ccu.table_name AS foreign_table_name,
+        ccu.column_name AS foreign_column_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage ku
+        ON tc.constraint_catalog = ku.constraint_catalog
+        AND tc.constraint_schema = ku.constraint_schema
+        AND tc.constraint_name = ku.constraint_name
+    JOIN information_schema.constraint_column_usage ccu
+        ON tc.constraint_catalog = ccu.constraint_catalog
+        AND tc.constraint_schema = ccu.constraint_schema
+        AND tc.constraint_name = ccu.constraint_name
+    WHERE tc.constraint_type = 'FOREIGN KEY'
+        AND tc.table_schema = $1
+        AND tc.table_name = $2
+) fk ON c.column_name = fk.column_name
+WHERE c.table_schema = $1 AND c.table_name = $2
+ORDER BY c.ordinal_position"#;
+            let col_rows = client
+                .query(col_query, &[&schema, &table])
+                .await
+                .map_err(|e| e.to_string())?;
+            let columns: Vec<ColumnInfo> = col_rows
+                .iter()
+                .map(|r| {
+                    let is_fk: bool = r.get(4);
+                    let fk_table: Option<String> = r.get(5);
+                    let fk_column: Option<String> = r.get(6);
+                    ColumnInfo {
+                        name: r.get(0),
+                        data_type: r.get(1),
+                        is_nullable: r.get::<_, String>(2) == "YES",
+                        is_pk: r.get(3),
+                        is_fk,
+                        fk_ref: if is_fk {
+                            Some((fk_table.unwrap_or_default(), fk_column.unwrap_or_default()))
+                        } else {
+                            None
+                        },
+                        default_value: r.get::<_, Option<String>>(7),
+                    }
+                })
+                .collect();
+
+            // Fetch the referenced row
+            let data_query = format!(
+                "SELECT * FROM \"{}\".\"{}\" WHERE \"{}\"::text = $1 LIMIT 1",
+                schema, table, column
+            );
+            let data_rows = client
+                .query(&data_query, &[&value])
+                .await
+                .map_err(|e| e.to_string())?;
+            let rows: Vec<Vec<serde_json::Value>> = data_rows
+                .iter()
+                .map(|row| (0..row.len()).map(|i| pg_value_to_json(row, i)).collect())
+                .collect();
+
+            Ok(QueryResult {
+                columns,
+                rows,
+                total_rows: 1,
+                page: 1,
+                page_size: 1,
+            })
+        }
+        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            // Get column metadata via PRAGMA table_info
+            let pragma_query = format!("PRAGMA table_info('{}')", table);
+            let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
+            let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, bool>(3)?,
+                        row.get::<_, bool>(5)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            // Get FK metadata
+            let fk_query = format!("PRAGMA foreign_key_list('{}')", table);
+            let fk_map: HashMap<String, (String, String)> =
+                if let Ok(mut fk_stmt) = conn.prepare(&fk_query) {
+                    fk_stmt
+                        .query_map([], |row| {
+                            Ok((
+                                row.get::<_, String>(3)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(4)?,
+                            ))
+                        })
+                        .map_err(|e| e.to_string())?
+                        .filter_map(|r| r.ok())
+                        .map(|(from, ref_table, ref_col)| (from, (ref_table, ref_col)))
+                        .collect()
+                } else {
+                    HashMap::new()
+                };
+
+            let columns: Vec<ColumnInfo> = col_meta
+                .iter()
+                .map(|(name, dtype, notnull, is_pk, default_val)| {
+                    let fk = fk_map.get(name);
+                    ColumnInfo {
+                        name: name.clone(),
+                        data_type: if dtype.is_empty() { "TEXT".to_string() } else { dtype.clone() },
+                        is_nullable: !notnull,
+                        is_pk: *is_pk,
+                        is_fk: fk.is_some(),
+                        fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
+                        default_value: default_val.clone(),
+                    }
+                })
+                .collect();
+
+            // Fetch the referenced row
+            let data_query = format!(
+                "SELECT * FROM \"{}\".\"{}\" WHERE \"{}\" = ?1 LIMIT 1",
+                schema, table, column
+            );
+            let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
+            let col_count = stmt.column_count();
+            let rows: Vec<Vec<serde_json::Value>> = stmt
+                .query_map([&value], |row| {
+                    let mut vals = Vec::new();
+                    for i in 0..col_count {
+                        let val: Option<String> = row.get(i).unwrap_or(None);
+                        vals.push(
+                            val.map(serde_json::Value::String)
+                                .unwrap_or(serde_json::Value::Null),
+                        );
+                    }
+                    Ok(vals)
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            Ok(QueryResult {
+                columns,
+                rows,
+                total_rows: 1,
+                page: 1,
+                page_size: 1,
+            })
+        }
+        None => Err("Connection not found".to_string()),
+    }
+}
+
+#[tauri::command]
 pub async fn execute_change(
     connection_id: String,
     change: Change,

@@ -90,6 +90,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
   const currentConnection = connections.find((c) => c.id === connectionId) ?? null;
   const settings = useSettingsStore((s) => s.settings);
   const setDefaultPageSize = useDbViewerStore((s) => s.setDefaultPageSize);
+  const clearColumnFilter = useDbViewerStore((s) => s.clearColumnFilter);
 
   // Sync settings defaults to store
   useEffect(() => {
@@ -148,6 +149,27 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
     if (activeTab.error) return;
     fetchData(activeTab);
   }, [activeTab, fetchData]);
+
+  // Sync tab columnFilter (set by FK popover) into the toolbar filterRules
+  useEffect(() => {
+    if (!activeTab?.columnFilter) return;
+    const { column, value } = activeTab.columnFilter;
+    setFilterRules((prev) => {
+      const exists = prev.some((r) => r.column === column && r.value === value);
+      if (exists) return prev;
+      return [...prev, { id: crypto.randomUUID(), column, operator: "contains" as const, value }];
+    });
+  }, [activeTab?.columnFilter]);
+
+  // When the FK filter rule is removed from the toolbar, clear the tab's columnFilter
+  useEffect(() => {
+    if (!activeTab?.columnFilter) return;
+    const { column, value } = activeTab.columnFilter;
+    const stillExists = filterRules.some((r) => r.column === column && r.value === value);
+    if (!stillExists) {
+      clearColumnFilter(activeTab.id);
+    }
+  }, [filterRules, activeTab, clearColumnFilter]);
 
   // Refresh: clear data so auto-fetch effect re-fetches
   const handleRefresh = useCallback(() => {
@@ -263,7 +285,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
                 />
               )}
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                <DataGrid rows={processedRows} hiddenColumns={hiddenColumns} selectedRows={selectedRows} onSelectionChange={setSelectedRows} />
+                <DataGrid connectionId={connectionId} rows={processedRows} hiddenColumns={hiddenColumns} selectedRows={selectedRows} onSelectionChange={setSelectedRows} />
               </div>
             </div>
           </div>

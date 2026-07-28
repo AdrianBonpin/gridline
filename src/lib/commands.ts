@@ -84,6 +84,16 @@ export async function executeChange(connectionId: string, change: ChangeItem): P
   return invoke<void>("execute_change", { connectionId, change });
 }
 
+export async function getFkPreview(
+  connectionId: string,
+  schema: string,
+  table: string,
+  column: string,
+  value: string,
+): Promise<QueryResult> {
+  return invoke<QueryResult>("get_fk_preview", { connectionId, schema, table, column, value });
+}
+
 export async function refreshConnection(connectionId: string): Promise<void> {
   return invoke<void>("refresh_connection", { connectionId });
 }

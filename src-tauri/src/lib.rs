@@ -77,6 +77,7 @@ pub fn run() {
             db_viewer::get_schemas,
             db_viewer::get_tables,
             db_viewer::get_table_data,
+            db_viewer::get_fk_preview,
             db_viewer::execute_change,
             db_viewer::refresh_connection,
             keychain::save_connection_password,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Key } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { abbreviateType } from "../../lib/utils";
+import { FkPreviewPopover } from "./FkPreviewPopover";
 
 // TODO: Replace this plain HTML table with @tanstack/react-virtual for large
 // result sets so we can render millions of rows without DOM overhead.
@@ -15,18 +16,27 @@ const MAX_COL_WIDTH = 800;
 const CHECKBOX_COL_WIDTH = 40;
 
 interface DataGridProps {
+  connectionId: string;
   rows: unknown[][];
   hiddenColumns?: Set<string>;
   selectedRows: Set<number>;
   onSelectionChange: (selected: Set<number>) => void;
 }
 
-export function DataGrid({ rows, hiddenColumns, selectedRows, onSelectionChange }: DataGridProps) {
+export function DataGrid({ connectionId, rows, hiddenColumns, selectedRows, onSelectionChange }: DataGridProps) {
   const tabs = useDbViewerStore((state) => state.tabs);
   const activeTabId = useDbViewerStore((state) => state.activeTabId);
-  const openTab = useDbViewerStore((state) => state.openTab);
-  const setColumnFilter = useDbViewerStore((state) => state.setColumnFilter);
   const [colWidths, setColWidths] = useState<TabColumnWidths>({});
+
+  // FK preview popover state
+  const [fkPreview, setFkPreview] = useState<{
+    connectionId: string;
+    schema: string;
+    table: string;
+    column: string;
+    value: string;
+    anchorRect: DOMRect | null;
+  } | null>(null);
 
   // ── helpers ────────────────────────────────────────────
 
@@ -100,19 +110,21 @@ export function DataGrid({ rows, hiddenColumns, selectedRows, onSelectionChange 
   // ── FK row-click handler ───────────────────────────────
 
   const handleFkClick = useCallback(
-    (col: { name: string; is_fk: boolean; fk_ref: [string, string] | null }, cellValue: unknown) => {
+    (col: { name: string; is_fk: boolean; fk_ref: [string, string] | null }, cellValue: unknown, e: React.MouseEvent) => {
       if (!col.is_fk || !col.fk_ref || cellValue === null || cellValue === undefined) return;
-      const [refTable, refColumn] = col.fk_ref;
+      const [refTable] = col.fk_ref;
       const schema = activeTab?.schema ?? "public";
-      openTab(schema, refTable);
-      const newTab = useDbViewerStore.getState().tabs.find(
-        (t) => t.schema === schema && t.table === refTable,
-      );
-      if (newTab) {
-        setColumnFilter(newTab.id, refColumn, String(cellValue));
-      }
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      setFkPreview({
+        connectionId,
+        schema,
+        table: refTable,
+        column: col.fk_ref[1],
+        value: String(cellValue),
+        anchorRect: rect,
+      });
     },
-    [activeTab, openTab, setColumnFilter],
+    [activeTab],
   );
 
   // ── empty / loading / error states ─────────────────────
@@ -163,23 +175,6 @@ export function DataGrid({ rows, hiddenColumns, selectedRows, onSelectionChange 
   const visibleColumns = hiddenColumns
     ? columns.filter((c) => !hiddenColumns.has(c.name))
     : columns;
-
-  // Apply FK column filter if active
-  const filteredRows = (() => {
-    let result = rows;
-    if (activeTab.columnFilter) {
-      const { column, value } = activeTab.columnFilter;
-      const colIdx = columns.findIndex((c) => c.name === column);
-      if (colIdx >= 0) {
-        const needle = value.toLowerCase();
-        result = result.filter((row) => {
-          const cell = row[colIdx];
-          return cell !== null && cell !== undefined && String(cell).toLowerCase().includes(needle);
-        });
-      }
-    }
-    return result;
-  })();
 
   return (
     <div
@@ -250,7 +245,7 @@ export function DataGrid({ rows, hiddenColumns, selectedRows, onSelectionChange 
           </tr>
         </thead>
         <tbody>
-          {filteredRows.map((row, rowIndex) => {
+          {rows.map((row, rowIndex) => {
             const isSelected = selectedRows.has(rowIndex);
             return (
               <tr
@@ -279,10 +274,10 @@ export function DataGrid({ rows, hiddenColumns, selectedRows, onSelectionChange 
                       <div
                         className={`truncate max-w-full ${isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""}`}
                         title={isNull ? "NULL" : isFk ? `FK → ${col!.fk_ref![0]}.${col!.fk_ref![1]}: ${String(cell)}` : String(cell)}
-                        onClick={isFk ? () => handleFkClick(col!, cell) : undefined}
+                        onClick={isFk ? (e) => handleFkClick(col!, cell, e) : undefined}
                         role={isFk ? "button" : undefined}
                         tabIndex={isFk ? 0 : undefined}
-                        onKeyDown={isFk ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleFkClick(col!, cell); } } : undefined}
+                        onKeyDown={isFk ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleFkClick(col!, cell, e as any); } } : undefined}
                       >
                         {isNull ? (
                           <span className="italic text-text-muted">NULL</span>
@@ -298,6 +293,18 @@ export function DataGrid({ rows, hiddenColumns, selectedRows, onSelectionChange 
           })}
         </tbody>
       </table>
+      {/* FK preview popover */}
+      {fkPreview && (
+        <FkPreviewPopover
+          connectionId={fkPreview.connectionId}
+          schema={fkPreview.schema}
+          table={fkPreview.table}
+          column={fkPreview.column}
+          value={fkPreview.value}
+          anchorRect={fkPreview.anchorRect}
+          onClose={() => setFkPreview(null)}
+        />
+      )}
     </div>
   );
 }
