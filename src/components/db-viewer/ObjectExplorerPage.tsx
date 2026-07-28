@@ -88,28 +88,200 @@ function itemLabel(item: AnyObject): string {
     return name;
 }
 
-function SourceCode({ source }: { source: string }) {
+// ─── syntax highlighting for PL/pgSQL / SQL ──────────────
+
+const SQL_KEYWORDS = new Set([
+    "ADD", "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "BEGIN", "BETWEEN",
+    "BY", "CALL", "CASCADE", "CASE", "CAST", "CHECK", "CLOSE", "COLLATE",
+    "COLUMN", "COMMIT", "CONSTRAINT", "CONTINUE", "CREATE", "CROSS",
+    "CURRENT", "CURSOR", "DECLARE", "DEFAULT", "DELETE", "DESC", "DISTINCT",
+    "DO", "DROP", "ELSE", "ELSIF", "END", "EXCEPTION", "EXECUTE", "EXISTS",
+    "EXIT", "FETCH", "FOR", "FOREIGN", "FROM", "FULL", "FUNCTION", "GRANT",
+    "GROUP", "HAVING", "IF", "IN", "INDEX", "INNER", "INSERT", "INTO", "IS",
+    "JOIN", "KEY", "LANGUAGE", "LEFT", "LIMIT", "LOOP", "NOT", "NULL", "OF",
+    "OFFSET", "ON", "OPEN", "OR", "ORDER", "OUTER", "OVER", "PERFORM",
+    "PLPGSQL", "PRIMARY", "PROCEDURE", "QUERY", "RAISE", "REFERENCES",
+    "REPLACE", "RETURN", "RETURNS", "REVOKE", "RIGHT", "ROLLBACK", "ROW",
+    "ROWS", "SCHEMA", "SELECT", "SET", "STRICT", "TABLE", "THEN", "TO",
+    "TRIGGER", "UNION", "UPDATE", "USING", "VALUES", "VIEW", "WHEN", "WHERE",
+    "WHILE", "WITH",
+]);
+
+const SQL_TYPES = new Set([
+    "BIGINT", "BIGSERIAL", "BIT", "BOOL", "BOOLEAN", "BPCHAR", "BYTEA",
+    "CHAR", "CHARACTER", "DATE", "DECIMAL", "DOUBLE", "FLOAT", "FLOAT4",
+    "FLOAT8", "INT", "INT2", "INT4", "INT8", "INTEGER", "INTERVAL", "JSON",
+    "JSONB", "MONEY", "NAME", "NUMERIC", "OID", "REAL", "SERIAL", "SMALLINT",
+    "TEXT", "TIME", "TIMESTAMP", "TIMESTAMPTZ", "UUID", "VARBIT", "VARCHAR",
+    "VOID", "XML",
+]);
+
+interface Token {
+    text: string;
+    kind: "keyword" | "type" | "string" | "comment" | "number" | "operator" | "plain";
+}
+
+function tokenizeLine(line: string): Token[] {
+    const tokens: Token[] = [];
+    let i = 0;
+
+    while (i < line.length) {
+        if (/\s/.test(line[i])) {
+            let ws = "";
+            while (i < line.length && /\s/.test(line[i])) { ws += line[i]; i++; }
+            tokens.push({ text: ws, kind: "plain" });
+            continue;
+        }
+        if (line[i] === "-" && line[i + 1] === "-") {
+            tokens.push({ text: line.slice(i), kind: "comment" });
+            return tokens;
+        }
+        if (line[i] === "/" && line[i + 1] === "*") {
+            const end = line.indexOf("*/", i + 2);
+            if (end !== -1) {
+                tokens.push({ text: line.slice(i, end + 2), kind: "comment" });
+                i = end + 2;
+            } else {
+                tokens.push({ text: line.slice(i), kind: "comment" });
+                return tokens;
+            }
+            continue;
+        }
+        if (line[i] === "$") {
+            let dollar = "";
+            const start = i;
+            while (i < line.length && line[i] === "$") { dollar += "$"; i++; }
+            let tag = "";
+            if (dollar.length === 1 && i < line.length && line[i] !== "$") {
+                while (i < line.length && line[i] !== "$") { tag += line[i]; i++; }
+                if (line[i] === "$") { i++; dollar = `$${tag}$`; }
+            }
+            const endTag = dollar;
+            const endIdx = line.indexOf(endTag, i);
+            if (endIdx !== -1) {
+                tokens.push({ text: line.slice(start, endIdx + endTag.length), kind: "string" });
+                i = endIdx + endTag.length;
+            } else {
+                tokens.push({ text: line.slice(start), kind: "string" });
+                return tokens;
+            }
+            continue;
+        }
+        if (line[i] === "'") {
+            let str = "'";
+            i++;
+            while (i < line.length) {
+                if (line[i] === "'" && line[i + 1] === "'") { str += "''"; i += 2; continue; }
+                if (line[i] === "'") { str += "'"; i++; break; }
+                str += line[i];
+                i++;
+            }
+            tokens.push({ text: str, kind: "string" });
+            continue;
+        }
+        if (/[0-9]/.test(line[i])) {
+            let num = "";
+            while (i < line.length && /[0-9.]/.test(line[i])) { num += line[i]; i++; }
+            tokens.push({ text: num, kind: "number" });
+            continue;
+        }
+        if (/[=<>!+\-*/%&|^~@#;,.[\](){}]/.test(line[i])) {
+            let op = line[i];
+            i++;
+            if (i < line.length) {
+                const pair = op + line[i];
+                if ([":=", "=>", "<=", ">=", "<>", "||", "::"].includes(pair)) {
+                    op = pair;
+                    i++;
+                }
+            }
+            tokens.push({ text: op, kind: "operator" });
+            continue;
+        }
+        let word = "";
+        while (i < line.length && /[a-zA-Z_]/.test(line[i])) { word += line[i]; i++; }
+        const upper = word.toUpperCase();
+        if (SQL_KEYWORDS.has(upper)) {
+            tokens.push({ text: word, kind: "keyword" });
+        } else if (SQL_TYPES.has(upper)) {
+            tokens.push({ text: word, kind: "type" });
+        } else {
+            tokens.push({ text: word, kind: "plain" });
+        }
+    }
+    return tokens;
+}
+
+function SyntaxCode({ source, language: _language }: { source: string; language?: string }) {
     const [expanded, setExpanded] = useState(false);
-    const maxLen = 800;
-    const truncated = source.length > maxLen && !expanded;
-    const display = truncated ? source.slice(0, maxLen) : source;
+    const maxLines = 60;
+    const lines = source.split("\n");
+    const truncated = !expanded && lines.length > maxLines;
+    const displayLines = truncated ? lines.slice(0, maxLines) : lines;
+    const maxLineNum = String(displayLines.length).length;
+
+    const TOKEN_COLORS: Record<string, string> = {
+        keyword: "text-blue-400",
+        type: "text-emerald-400",
+        string: "text-amber-300",
+        comment: "text-text-subtle italic",
+        number: "text-purple-400",
+        operator: "text-text-muted",
+        plain: "text-text",
+    };
 
     return (
         <div>
-            <pre className="text-xs text-text leading-relaxed bg-surface-raised rounded-lg p-4 overflow-x-auto whitespace-pre font-mono border border-border">
-                {display}
-                {truncated && (
-                    <span className="text-text-subtle">...</span>
-                )}
-            </pre>
-            {source.length > maxLen && (
-                <button
-                    type="button"
-                    onClick={() => setExpanded((v) => !v)}
-                    className="text-xs text-accent hover:underline mt-2"
-                >
-                    {expanded ? "Show less" : "Show full source"}
-                </button>
+            <div className="overflow-x-auto">
+                <pre className="text-xs leading-6 font-mono bg-canvas">
+                    {displayLines.map((line, i) => {
+                        const tokens = tokenizeLine(line);
+                        const num = String(i + 1).padStart(maxLineNum, " ");
+                        return (
+                            <div
+                                key={i}
+                                className="flex hover:bg-surface/30"
+                            >
+                                <span className="inline-block text-right select-none text-text-subtle border-r border-border pr-3 mr-3 shrink-0"
+                                    style={{ minWidth: `${maxLineNum + 2}ch` }}
+                                >
+                                    {num}
+                                </span>
+                                <span className="flex-1 whitespace-pre">
+                                    {tokens.length === 1 && tokens[0].text === "" && line.trim() === ""
+                                        ? "\u00A0"
+                                        : tokens.map((t, j) => (
+                                            <span key={j} className={TOKEN_COLORS[t.kind]}>
+                                                {t.text}
+                                            </span>
+                                        ))}
+                                </span>
+                            </div>
+                        );
+                    })}
+                </pre>
+            </div>
+            {truncated && (
+                <div className="flex items-center justify-center py-1.5 border-t border-border">
+                    <button
+                        type="button"
+                        onClick={() => setExpanded(true)}
+                        className="text-xs text-accent hover:underline"
+                    >
+                        Show all {lines.length} lines…
+                    </button>
+                </div>
+            )}
+            {expanded && lines.length > maxLines && (
+                <div className="flex items-center justify-center py-1.5 border-t border-border">
+                    <button
+                        type="button"
+                        onClick={() => setExpanded(false)}
+                        className="text-xs text-accent hover:underline"
+                    >
+                        Collapse
+                    </button>
+                </div>
             )}
         </div>
     );
@@ -120,188 +292,124 @@ function renderDetail(type: ObjectType, item: AnyObject) {
         case "functions": {
             const f = item as FunctionInfo;
             return (
-                <div className="space-y-4">
-                    {/* Metadata card */}
-                    <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                        <div className="px-4 py-2 border-b border-border">
-                            <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                                Signature
-                            </h4>
-                        </div>
-                        <div className="divide-y divide-border">
-                            <div className="flex items-center px-4 py-2.5">
-                                <span className="text-xs text-text-muted w-24 shrink-0">Returns</span>
-                                <span className="text-sm text-accent font-mono">{f.return_type || "void"}</span>
-                            </div>
-                            <div className="flex items-center px-4 py-2.5">
-                                <span className="text-xs text-text-muted w-24 shrink-0">Language</span>
-                                <span className="text-sm text-text">{f.language}</span>
-                            </div>
-                            <div className="flex items-center px-4 py-2.5">
-                                <span className="text-xs text-text-muted w-24 shrink-0">Kind</span>
-                                <span className="text-sm text-text">{f.kind === "f" ? "Function" : "Procedure"}</span>
-                            </div>
-                            <div className="flex items-center px-4 py-2.5">
-                                <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
-                                <span className="text-sm text-text font-mono">{f.schema}</span>
-                            </div>
-                        </div>
+                <div>
+                    <div className="border-b border-border px-4 py-2">
+                        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Signature</span>
                     </div>
-
-                    {/* Arguments */}
-                    {f.argument_names.length > 0 && (
-                        <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                            <div className="px-4 py-2 border-b border-border flex items-center justify-between">
-                                <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                                    Arguments
-                                </h4>
-                                <span className="text-[10px] text-text-subtle">
-                                    {f.argument_names.length} total
-                                </span>
-                            </div>
-                            <div className="divide-y divide-border">
-                                {f.argument_names.map((name, i) => (
-                                    <div
-                                        key={i}
-                                        className="flex items-center px-4 py-2.5"
-                                    >
-                                        <div className="w-24 shrink-0">
-                                            <span className="text-xs text-text-muted">
-                                                {f.argument_modes?.[i] &&
-                                                    f.argument_modes[i] !==
-                                                        "IN" && (
-                                                        <span className="text-amber-400 font-medium mr-1">
-                                                            {
-                                                                f.argument_modes[
-                                                                    i
-                                                                ]
-                                                            }
-                                                        </span>
-                                                    )}
-                                                #{i + 1}
-                                            </span>
-                                        </div>
-                                        <span className="text-sm text-accent font-mono">
-                                            {name}
-                                        </span>
-                                        <span className="mx-2 text-border">
-                                            :
-                                        </span>
-                                        <span className="text-sm text-text-muted font-mono">
-                                            {f.argument_types?.[i] ||
-                                                "unknown"}
-                                        </span>
-                                    </div>
-                                ))}
-                            </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Returns</span>
+                        <span className="text-sm text-accent font-mono">{f.return_type || "void"}</span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Language</span>
+                        <span className="text-sm text-text">{f.language}</span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Kind</span>
+                        <span className="text-sm text-text">{f.kind === "f" ? "Function" : "Procedure"}</span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
+                        <span className="text-sm text-text font-mono">{f.schema}</span>
+                    </div>
+                    {f.argument_names.length > 0 && (<>
+                        <div className="border-b border-border px-4 py-2 flex items-center justify-between">
+                            <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Arguments</span>
+                            <span className="text-[10px] text-text-subtle">{f.argument_names.length} total</span>
                         </div>
-                    )}
-
-                    {/* Source */}
-                    {f.source && (
-                        <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                            <div className="px-4 py-2 border-b border-border flex items-center justify-between">
-                                <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                                    Source
-                                </h4>
-                                <span className="text-[10px] text-text-subtle">
-                                    {f.language}
-                                </span>
+                        {f.argument_names.map((name, i) => (
+                            <div key={i} className="border-b border-border px-4 py-2 flex items-center">
+                                <div className="w-24 shrink-0">
+                                    <span className="text-xs text-text-muted">
+                                        {f.argument_modes?.[i] && f.argument_modes[i] !== "IN" && (
+                                            <span className="text-amber-400 font-medium mr-1">{f.argument_modes[i]}</span>
+                                        )}
+                                        #{i + 1}
+                                    </span>
+                                </div>
+                                <span className="text-sm text-accent font-mono">{name}</span>
+                                <span className="mx-2 text-border">:</span>
+                                <span className="text-sm text-text-muted font-mono">{f.argument_types?.[i] || "unknown"}</span>
                             </div>
-                            <div className="p-4">
-                                <SourceCode source={f.source} />
-                            </div>
+                        ))}
+                    </>)}
+                    {f.source && (<>
+                        <div className="border-b border-border px-4 py-2 flex items-center justify-between">
+                            <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Source</span>
+                            <span className="text-[10px] text-text-subtle">{f.language}</span>
                         </div>
-                    )}
+                        <SyntaxCode source={f.source} language={f.language} />
+                    </>)}
                 </div>
             );
         }
         case "triggers": {
             const t = item as TriggerInfo;
             return (
-                <div className="space-y-4">
-                    {/* Metadata */}
-                    <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                        <div className="px-4 py-2 border-b border-border">
-                            <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                                Details
-                            </h4>
-                        </div>
-                        <div className="divide-y divide-border">
-                            <div className="flex items-center px-4 py-2.5">
-                                <span className="text-xs text-text-muted w-24 shrink-0">Table</span>
-                                <span className="text-sm text-text font-mono">{t.table_schema}.{t.table_name}</span>
-                            </div>
-                            <div className="flex items-center px-4 py-2.5">
-                                <span className="text-xs text-text-muted w-24 shrink-0">Event</span>
-                                <span className="text-sm text-text">{t.event_manipulation}</span>
-                            </div>
-                            <div className="flex items-center px-4 py-2.5">
-                                <span className="text-xs text-text-muted w-24 shrink-0">Timing</span>
-                                <span className="text-sm text-text">{t.action_timing} {t.action_orientation}</span>
-                            </div>
-                            <div className="flex items-center px-4 py-2.5">
-                                <span className="text-xs text-text-muted w-24 shrink-0">Status</span>
-                                <span className={`text-sm ${t.enabled === "O" ? "text-emerald-400" : "text-red-400"}`}>
-                                    {t.enabled === "O" ? "Enabled" : t.enabled === "D" ? "Disabled" : t.enabled}
-                                </span>
-                            </div>
-                            <div className="flex items-center px-4 py-2.5">
-                                <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
-                                <span className="text-sm text-text font-mono">{t.schema}</span>
-                            </div>
-                        </div>
+                <div>
+                    <div className="border-b border-border px-4 py-2">
+                        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Details</span>
                     </div>
-
-                    {/* Definition */}
-                    {t.action_statement && (
-                        <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                            <div className="px-4 py-2 border-b border-border flex items-center justify-between">
-                                <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                                    Definition
-                                </h4>
-                                <span className="text-[10px] text-text-subtle">SQL</span>
-                            </div>
-                            <div className="p-4">
-                                <SourceCode source={t.action_statement} />
-                            </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Table</span>
+                        <span className="text-sm text-text font-mono">{t.table_schema}.{t.table_name}</span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Event</span>
+                        <span className="text-sm text-text">{t.event_manipulation}</span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Timing</span>
+                        <span className="text-sm text-text">{t.action_timing} {t.action_orientation}</span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Status</span>
+                        <span className={`text-sm ${t.enabled === "O" ? "text-emerald-400" : "text-red-400"}`}>
+                            {t.enabled === "O" ? "Enabled" : t.enabled === "D" ? "Disabled" : t.enabled}
+                        </span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
+                        <span className="text-sm text-text font-mono">{t.schema}</span>
+                    </div>
+                    {t.action_statement && (<>
+                        <div className="border-b border-border px-4 py-2 flex items-center justify-between">
+                            <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Definition</span>
+                            <span className="text-[10px] text-text-subtle">SQL</span>
                         </div>
-                    )}
+                        <SyntaxCode source={t.action_statement} />
+                    </>)}
                 </div>
             );
         }
         case "sequences": {
             const s = item as SequenceInfo;
             return (
-                <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                    <div className="px-4 py-2 border-b border-border">
-                        <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                            Sequence Values
-                        </h4>
+                <div>
+                    <div className="border-b border-border px-4 py-2">
+                        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Sequence Values</span>
                     </div>
-                    <div className="divide-y divide-border">
-                        <div className="flex items-center px-4 py-2.5">
-                            <span className="text-xs text-text-muted w-28 shrink-0">Current Value</span>
-                            <span className="text-sm text-accent font-mono">{s.current_value}</span>
-                        </div>
-                        <div className="flex items-center px-4 py-2.5">
-                            <span className="text-xs text-text-muted w-28 shrink-0">Increment</span>
-                            <span className="text-sm text-text font-mono">{s.increment}</span>
-                        </div>
-                        <div className="flex items-center px-4 py-2.5">
-                            <span className="text-xs text-text-muted w-28 shrink-0">Start</span>
-                            <span className="text-sm text-text font-mono">{s.start_value}</span>
-                        </div>
-                        <div className="flex items-center px-4 py-2.5">
-                            <span className="text-xs text-text-muted w-28 shrink-0">Min / Max</span>
-                            <span className="text-sm text-text font-mono">{s.min_value} / {s.max_value}</span>
-                        </div>
-                        <div className="flex items-center px-4 py-2.5">
-                            <span className="text-xs text-text-muted w-28 shrink-0">Cycle</span>
-                            <span className={`text-sm ${s.cycle ? "text-amber-400" : "text-text-muted"}`}>
-                                {s.cycle ? "Yes" : "No"}
-                            </span>
-                        </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-28 shrink-0">Current Value</span>
+                        <span className="text-sm text-accent font-mono">{s.current_value}</span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-28 shrink-0">Increment</span>
+                        <span className="text-sm text-text font-mono">{s.increment}</span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-28 shrink-0">Start</span>
+                        <span className="text-sm text-text font-mono">{s.start_value}</span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-28 shrink-0">Min / Max</span>
+                        <span className="text-sm text-text font-mono">{s.min_value} / {s.max_value}</span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-28 shrink-0">Cycle</span>
+                        <span className={`text-sm ${s.cycle ? "text-amber-400" : "text-text-muted"}`}>
+                            {s.cycle ? "Yes" : "No"}
+                        </span>
                     </div>
                 </div>
             );
@@ -309,38 +417,24 @@ function renderDetail(type: ObjectType, item: AnyObject) {
         case "enums": {
             const e = item as EnumInfo;
             return (
-                <div className="space-y-4">
-                    <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                        <div className="px-4 py-2 border-b border-border">
-                            <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                                Details
-                            </h4>
-                        </div>
-                        <div className="flex items-center px-4 py-2.5">
-                            <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
-                            <span className="text-sm text-text font-mono">{e.schema}</span>
-                        </div>
+                <div>
+                    <div className="border-b border-border px-4 py-2">
+                        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Details</span>
                     </div>
-
-                    <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                        <div className="px-4 py-2 border-b border-border flex items-center justify-between">
-                            <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                                Values
-                            </h4>
-                            <span className="text-[10px] text-text-subtle">{e.labels.length} labels</span>
-                        </div>
-                        <div className="p-4">
-                            <div className="flex flex-wrap gap-2">
-                                {e.labels.map((label) => (
-                                    <span
-                                        key={label}
-                                        className="inline-flex items-center px-3 py-1.5 text-xs rounded-md bg-accent/10 text-accent border border-accent/20 font-mono"
-                                    >
-                                        {label}
-                                    </span>
-                                ))}
-                            </div>
-                        </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
+                        <span className="text-sm text-text font-mono">{e.schema}</span>
+                    </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Values</span>
+                        <span className="text-[10px] text-text-subtle">{e.labels.length} labels</span>
+                    </div>
+                    <div className="p-4 flex flex-wrap gap-2">
+                        {e.labels.map((label) => (
+                            <span key={label} className="inline-flex items-center px-3 py-1.5 text-xs rounded-md bg-accent/10 text-accent border border-accent/20 font-mono">
+                                {label}
+                            </span>
+                        ))}
                     </div>
                 </div>
             );
@@ -348,28 +442,24 @@ function renderDetail(type: ObjectType, item: AnyObject) {
         case "extensions": {
             const e = item as ExtensionInfo;
             return (
-                <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                    <div className="px-4 py-2 border-b border-border">
-                        <h4 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                            Extension
-                        </h4>
+                <div>
+                    <div className="border-b border-border px-4 py-2">
+                        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Extension</span>
                     </div>
-                    <div className="divide-y divide-border">
-                        <div className="flex items-center px-4 py-2.5">
-                            <span className="text-xs text-text-muted w-24 shrink-0">Version</span>
-                            <span className="text-sm text-text font-mono">{e.version}</span>
-                        </div>
-                        <div className="flex items-center px-4 py-2.5">
-                            <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
-                            <span className="text-sm text-text font-mono">{e.schema}</span>
-                        </div>
-                        {e.comment && (
-                            <div className="px-4 py-2.5">
-                                <span className="text-xs text-text-muted block mb-1">Comment</span>
-                                <p className="text-sm text-text leading-relaxed">{e.comment}</p>
-                            </div>
-                        )}
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Version</span>
+                        <span className="text-sm text-text font-mono">{e.version}</span>
                     </div>
+                    <div className="border-b border-border px-4 py-2 flex items-center">
+                        <span className="text-xs text-text-muted w-24 shrink-0">Schema</span>
+                        <span className="text-sm text-text font-mono">{e.schema}</span>
+                    </div>
+                    {e.comment && (
+                        <div className="border-b border-border px-4 py-2.5">
+                            <span className="text-xs text-text-muted block mb-1">Comment</span>
+                            <p className="text-sm text-text leading-relaxed">{e.comment}</p>
+                        </div>
+                    )}
                 </div>
             );
         }
