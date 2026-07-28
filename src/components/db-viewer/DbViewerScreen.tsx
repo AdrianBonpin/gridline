@@ -84,6 +84,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
   const [filterRules, setFilterRules] = useState<FilterRule[]>([]);
   const [sortRules, setSortRules] = useState<SortRule[]>([]);
+  const smartSortApplied = useRef<Set<string>>(new Set());
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
   const [editModalOpen, setEditModalOpen] = useState(false);
   const connections = useConnectionStore((s) => s.connections);
@@ -149,6 +150,105 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
     if (activeTab.error) return;
     fetchData(activeTab);
   }, [activeTab, fetchData]);
+
+  // Smart default sort: apply once when data first loads for a tab
+  useEffect(() => {
+    if (!activeTab) return;
+    if (activeTab.loading) return;
+    if (!activeTab.data) return;
+    if (smartSortApplied.current.has(activeTab.id)) return;
+
+    const cols = activeTab.data.columns;
+
+    const getColType = (name: string) => {
+      const col = cols.find((c) => c.name.toLowerCase() === name.toLowerCase());
+      return col?.data_type.toLowerCase() ?? "";
+    };
+    const isNumeric = (name: string) => {
+      const t = getColType(name);
+      return ["integer", "int", "int2", "int4", "int8", "smallint", "bigint",
+        "serial", "bigserial", "smallserial", "tinyint", "mediumint",
+        "numeric", "decimal", "real", "float", "float4", "float8",
+        "double precision", "double", "number"].includes(t);
+    };
+    const isTimestamp = (name: string) => {
+      const t = getColType(name);
+      return ["timestamp", "timestamptz", "timestamp without time zone",
+        "timestamp with time zone", "date", "datetime", "datetime2",
+        "smalldatetime"].some((pt) => t.includes(pt));
+    };
+
+    // Find the first column name that exists and passes type checks
+    const findCol = (candidates: string[], numericOnly = false): string | undefined => {
+      for (const cand of candidates) {
+        const match = cols.find((c) => c.name.toLowerCase() === cand.toLowerCase());
+        if (!match) continue;
+        if (numericOnly && !isNumeric(match.name)) continue;
+        return match.name;
+      }
+      return undefined;
+    };
+    const findBySuffix = (suffixes: string[], numericOnly = false): string | undefined => {
+      for (const c of cols) {
+        const name = c.name.toLowerCase();
+        if (suffixes.some((s) => name.endsWith(s))) {
+          if (numericOnly && !isNumeric(c.name)) continue;
+          return c.name;
+        }
+      }
+      return undefined;
+    };
+    const findByPrefix = (prefixes: string[], numericOnly = false): string | undefined => {
+      for (const c of cols) {
+        const name = c.name.toLowerCase();
+        if (prefixes.some((p) => name.startsWith(p))) {
+          if (numericOnly && !isNumeric(c.name)) continue;
+          return c.name;
+        }
+      }
+      return undefined;
+    };
+
+    // Priority-ordered rules: each returns [columnName | undefined, order]
+    const rules: Array<() => [string | undefined, "asc" | "desc"]> = [
+      // Tier 1: Explicit recency columns
+      () => [findCol(["updated_at", "modified_at", "changed_at", "altered_at", "revised_at"]), "desc"],
+      () => [findCol(["created_at", "inserted_at", "added_at", "published_at", "posted_at", "registered_at"]), "desc"],
+      () => [findCol(["deleted_at", "removed_at", "expired_at", "archived_at"]), "desc"],
+      // Tier 2: Generic date/timestamp columns (DESC = newest)
+      () => {
+        const col = cols.find((c) => isTimestamp(c.name));
+        return col ? [col.name, "desc"] : [undefined, "desc"];
+      },
+      // Tier 3: Any *_at suffix (covers updated_at, created_at, etc. in any casing)
+      () => [findBySuffix(["_at"]), "desc"],
+      // Tier 4: Any *_on suffix (e.g. action_on, performed_on)
+      () => [findBySuffix(["_on"]), "desc"],
+      // Tier 5: last_* prefix (e.g. last_login, last_seen, last_modified)
+      () => [findByPrefix(["last_"]), "desc"],
+      // Tier 6: Numeric ID (DESC = highest/newest)
+      () => [findCol(["id", "uid", "pk"], true), "desc"],
+      // Tier 7: Any *_id suffix (numeric FKs usually increment)
+      () => [findBySuffix(["_id"], true), "desc"],
+      // Tier 8: Sequence/order columns (ASC = natural order)
+      () => [findCol(["seq", "sequence", "ordinal", "sort", "sort_order", "sortorder", "position", "pos", "display_order"], true), "asc"],
+      // Tier 9: Rank/priority (ASC if lower = higher priority, DESC if higher = more)
+      () => [findCol(["rank", "ranking", "priority", "weight", "score", "rating"], true), "desc"],
+      // Tier 10: Version/revision tracking (DESC = latest)
+      () => [findCol(["version", "revision", "rev", "build", "release"], true), "desc"],
+      // Tier 11: Count/quantity (DESC = most)
+      () => [findCol(["count", "total", "amount", "quantity", "qty", "num", "number", "no"], true), "desc"],
+    ];
+
+    for (const rule of rules) {
+      const [colName, order] = rule();
+      if (colName) {
+        smartSortApplied.current.add(activeTab.id);
+        setSortRules([{ id: crypto.randomUUID(), column: colName, order }]);
+        return;
+      }
+    }
+  }, [activeTab]);
 
   // Sync tab columnFilter (set by FK popover) into the toolbar filterRules
   useEffect(() => {
