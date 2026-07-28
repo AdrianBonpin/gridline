@@ -2,7 +2,7 @@ import { BaseEdge, getSmoothStepPath, type EdgeProps } from "@xyflow/react";
 
 const C = "#3b82f6";
 const S = 10;
-const G = 12;
+const G = 4;
 
 export function CrowsFootEdge({
   id,
@@ -24,16 +24,18 @@ export function CrowsFootEdge({
 
   // Which way does the edge go? (source → target)
   const toRight = targetX >= sourceX;
-  // At source: edge exits, symbol points back toward source table
-  const sDir = toRight ? -1 : 1; // source marker points left if edge goes right
-  // At target: edge enters, symbol points back toward target table
-  const tDir = toRight ? 1 : -1;
+  // Source: offset AWAY from source card (into the gap), lines point BACK toward source
+  // Target: offset AWAY from target card (into the gap), lines point BACK toward target
+  const sOff = toRight ? 1 : -1;  // source offset direction
+  const tOff = toRight ? -1 : 1;  // target offset direction
+  const sDir = toRight ? -1 : 1;  // source lines point toward source table
+  const tDir = toRight ? 1 : -1;  // target lines point toward target table
 
   return (
     <g>
       <BaseEdge id={id} path={edgePath} style={{ stroke: C, strokeWidth: 1.5, ...style }} />
-      {sm && <Mark type={sm} cx={sourceX} cy={sourceY} dir={sDir} />}
-      {em && <Mark type={em} cx={targetX} cy={targetY} dir={tDir} />}
+      {sm && <Mark type={sm} cx={sourceX + sOff * G} cy={sourceY} dir={sDir} />}
+      {em && <Mark type={em} cx={targetX + tOff * G} cy={targetY} dir={tDir} />}
     </g>
   );
 }
