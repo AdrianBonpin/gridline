@@ -206,50 +206,41 @@ export function VirtualDataGrid({
 
   return (
     <div ref={parentRef} className="overflow-auto h-full" style={{ overscrollBehavior: "none" }}>
-      {/* ── header table (separated from body for reliable virtualization) ── */}
-      <table className="border-collapse text-left text-sm" style={{ tableLayout: "fixed", width: "100%" }}>
-        <colgroup>
-          <col style={{ width: 40, minWidth: 40 }} />
+      {/* ── sticky header ── */}
+      <div className="sticky top-0 z-10 bg-canvas border-b border-border">
+        <div className="flex items-center">
+          <div style={{ width: 40, minWidth: 40 }} className="px-2 py-2 flex justify-center">
+            <input
+              ref={selectAllRef}
+              type="checkbox"
+              checked={allSelected}
+              onChange={onToggleAll}
+              className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
+            />
+          </div>
           {visibleColumns.map((col) => (
-            <col key={col.name} style={{ width: getWidth(col.name) }} />
-          ))}
-        </colgroup>
-        <thead className="sticky top-0 z-10 bg-transparent">
-          <tr>
-            <th className="border-b border-r border-border px-2 py-2">
-              <input
-                ref={selectAllRef}
-                type="checkbox"
-                checked={allSelected}
-                onChange={onToggleAll}
-                className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
+            <div
+              key={col.name}
+              className="group relative px-3 py-2 font-heading text-text-muted border-r border-border last:border-r-0"
+              style={{ width: getWidth(col.name), flexShrink: 0 }}
+            >
+              <div className="truncate flex items-center gap-1">
+                {col.is_pk && <Key size={10} className="text-accent shrink-0" />}
+                {col.is_fk && <Key size={10} className="text-amber-400 shrink-0" />}
+                <span className="text-text text-xs">{col.name}</span>
+                <span className="text-[10px] text-text-muted/50 shrink-0" title={col.data_type}>
+                  {abbreviateType(col.data_type)}
+                </span>
+              </div>
+              <div
+                className="absolute right-0 top-0 h-full w-[6px] cursor-col-resize select-none bg-transparent hover:bg-accent/30 active:bg-accent/50"
+                onMouseDown={(e) => startResize(col.name, e)}
+                onDoubleClick={() => resetWidth(col.name)}
               />
-            </th>
-            {visibleColumns.map((col) => (
-              <th
-                key={col.name}
-                className="group relative border-b border-r border-border px-3 py-2 font-heading text-text-muted last:border-r-0"
-                style={{ width: getWidth(col.name), maxWidth: getWidth(col.name) }}
-              >
-                <div className="truncate flex items-center gap-1">
-                  {col.is_pk && <Key size={10} className="text-accent shrink-0" />}
-                  {col.is_fk && <Key size={10} className="text-amber-400 shrink-0" />}
-                  <span className="text-text text-xs">{col.name}</span>
-                  <span className="text-[10px] text-text-muted/50 shrink-0" title={col.data_type}>
-                    {abbreviateType(col.data_type)}
-                  </span>
-                </div>
-                {/* resize handle */}
-                <div
-                  className="absolute right-0 top-0 h-full w-[6px] cursor-col-resize select-none bg-transparent hover:bg-accent/30 active:bg-accent/50"
-                  onMouseDown={(e) => startResize(col.name, e)}
-                  onDoubleClick={() => resetWidth(col.name)}
-                />
-              </th>
-            ))}
-          </tr>
-        </thead>
-      </table>
+            </div>
+          ))}
+        </div>
+      </div>
 
       {/* ── virtual body ── */}
       {rows.length === 0 ? (
@@ -272,7 +263,7 @@ export function VirtualDataGrid({
                 key={virtualRow.key}
                 data-index={virtualRow.index}
                 className={`flex items-center border-b border-border ${
-                  isSelected ? "bg-accent/5" : "bg-canvas"
+                  isSelected ? "bg-accent/5" : ""
                 } hover:bg-surface/50`}
                 style={{
                   position: "absolute",
@@ -283,7 +274,7 @@ export function VirtualDataGrid({
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
               >
-                <div style={{ width: 40 }} className="flex justify-center">
+                <div style={{ width: 40, minWidth: 40 }} className="flex justify-center">
                   <input
                     type="checkbox"
                     checked={isSelected}

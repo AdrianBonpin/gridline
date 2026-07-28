@@ -560,7 +560,7 @@ export function TableControls({
   };
 
   return (
-    <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 bg-surface/50 text-xs text-text-muted">
+    <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted">
       {/* ── left side ──────────────────────────────── */}
       <div className="flex items-center gap-1">
         {/* Insert Row */}
