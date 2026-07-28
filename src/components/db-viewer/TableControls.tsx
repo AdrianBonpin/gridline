@@ -19,9 +19,6 @@ const AUTO_REFRESH_OPTIONS = [
 
 const PAGE_SIZES = [50, 100, 200, 500] as const;
 
-// fallback when no active tab
-const DEFAULT_PAGE_SIZE = 50;
-
 const EXPORT_FORMATS = [
   { label: "JSON", ext: "json" },
   { label: "CSV", ext: "csv" },

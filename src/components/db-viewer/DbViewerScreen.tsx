@@ -555,7 +555,7 @@ export function DbViewerScreen({
                             </div>
                             {/* panel resize handle */}
                             <div
-                                className="w-1.25 cursor-col-resize hover:bg-accent/30 active:bg-accent/50 shrink-0"
+                                className="w-1.25 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0"
                                 onMouseDown={onPanelResizeStart}
                                 onDoubleClick={() => setTablePanelWidth(280)}
                             />
