@@ -85,7 +85,7 @@ export const SchemaVisualizerNode = memo(function SchemaVisualizerNode({
               <span className="text-text truncate max-w-[120px]">{col.name}</span>
             </div>
             {/* Right side: type */}
-            <span className="text-text-muted text-[10px] shrink-0 ml-2">
+            <span className="text-text-muted text-[10px] shrink-0 ml-2 max-w-[60px] truncate inline-block align-middle">
               {abbreviateType(col.data_type)}
             </span>
 

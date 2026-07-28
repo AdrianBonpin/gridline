@@ -37,7 +37,7 @@ function layoutGraph(
 ): { nodes: Node[]; edges: Edge[] } {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: "LR", nodesep: 60, ranksep: 120, marginx: 40, marginy: 40 });
+  g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 100, marginx: 40, marginy: 40 });
 
   const cardinalityMap = new Map<string, string>();
   for (const rel of relationships) {
@@ -80,7 +80,7 @@ function layoutGraph(
             targetHandle: `pk-${refColumn}`,
             type: "crowsfoot",
             label: cardinality,
-            data: { cardinality, startMarker: markers.markerStart, endMarker: markers.markerEnd },
+            data: { cardinality, startMarker: markers.markerStart, endMarker: markers.markerEnd, origRight: true },
             style: { stroke: "#3b82f6", strokeWidth: 1.5 },
             labelStyle: { fill: "#9ca3af", fontSize: 9 },
             labelBgStyle: { fill: "#1f2937", fillOpacity: 0.85 },
