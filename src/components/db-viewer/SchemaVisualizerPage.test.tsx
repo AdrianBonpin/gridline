@@ -63,4 +63,18 @@ describe("SchemaVisualizerPage", () => {
     );
     expect(screen.getByText(/reset layout/i)).toBeInTheDocument();
   });
+
+  it("shows error message when introspection fails", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    (invoke as any).mockRejectedValueOnce(new Error("Connection lost"));
+
+    render(
+      <TooltipProvider>
+        <SchemaVisualizerPage connectionId="conn-1" onSchemaChange={() => {}} />
+      </TooltipProvider>,
+    );
+
+    const errorMsg = await screen.findByText(/failed to load schema/i);
+    expect(errorMsg).toBeInTheDocument();
+  });
 });

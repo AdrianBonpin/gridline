@@ -125,6 +125,15 @@ export function SchemaVisualizerPage({
         const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(graph.tables);
         setNodes(layoutedNodes);
         setEdges(layoutedEdges);
+        if (graph.tables.length > 200) {
+          const proceed = window.confirm(
+            `This schema has ${graph.tables.length} tables. Rendering the full diagram may be slow. Continue?`,
+          );
+          if (!proceed) {
+            setLoading(false);
+            return;
+          }
+        }
         setTableCount(graph.tables.length);
       }
     } catch (e) {
