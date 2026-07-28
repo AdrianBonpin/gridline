@@ -1,6 +1,6 @@
 import { memo } from "react";
 import type { Connection, Tag } from "../../lib/types";
-import { DB_ICONS, DB_LABELS } from "../../lib/dbIcons";
+import { DbIcon, DB_LABELS } from "../../lib/dbIcons";
 import { ENV_LABELS, ENV_COLORS } from "../../lib/environment";
 import { TagBadge } from "../tags/TagBadge";
 import { Check, GripVertical } from "lucide-react";
@@ -75,8 +75,8 @@ function ConnectionCardBase({
             </div>
             <div className="p-4">
                 <div className="flex items-center gap-3 mb-2">
-                    <div className="w-9 h-9 rounded-lg bg-surface-raised border border-border flex items-center justify-center text-xl">
-                        {DB_ICONS[connection.db_type] ?? "❓"}
+                    <div className="w-9 h-9 rounded-lg bg-surface-raised border border-border flex items-center justify-center overflow-hidden">
+                        <DbIcon type={connection.db_type} size={20} />
                     </div>
                     <div className="flex-1 min-w-0">
                         <div className="font-semibold truncate text-text">
