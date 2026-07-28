@@ -12,6 +12,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import dagre from "dagre";
 import { RotateCcw, ChevronUp, ChevronDown } from "lucide-react";
+import { CrowsFootEdge } from "./CrowsFootEdge";
 import { SchemaVisualizerNode } from "./SchemaVisualizerNode";
 import { LEGEND_ITEMS } from "./legendHelpers";
 import { SelectDropdown } from "../ui/SelectDropdown";
@@ -20,6 +21,7 @@ import { useDbViewerStore } from "../../stores/dbViewerStore";
 import type { SchemaGraph, TableNode as TableNodeType } from "../../lib/types";
 
 const nodeTypes = { tableNode: SchemaVisualizerNode };
+const edgeTypes = { crowsfoot: CrowsFootEdge };
 
 const CARD_WIDTH = 240;
 const ROW_HEIGHT = 28;
@@ -77,10 +79,10 @@ function layoutGraph(
             target: refTable,
             sourceHandle: `fk-${col.name}`,
             targetHandle: `pk-${refColumn}`,
-            type: "smoothstep",
+            type: "crowsfoot",
             label: cardinality,
-            markerStart: markers.markerStart,
-            markerEnd: markers.markerEnd,
+            markerStart: markers.markerStart || undefined,
+            markerEnd: markers.markerEnd || undefined,
             style: { stroke: "#3b82f6", strokeWidth: 1.5 },
             labelStyle: { fill: "#9ca3af", fontSize: 9 },
             labelBgStyle: { fill: "#1f2937", fillOpacity: 0.85 },
@@ -110,11 +112,11 @@ function layoutGraph(
 function getEdgeMarkers(cardinality: string): { markerStart: string; markerEnd: string } {
   switch (cardinality) {
     case "1:1":
-      return { markerStart: "url(#rf-cf-one)", markerEnd: "url(#rf-cf-one)" };
+      return { markerStart: "one", markerEnd: "one" };
     case "1:N":
-      return { markerStart: "url(#rf-cf-many)", markerEnd: "url(#rf-cf-one)" };
+      return { markerStart: "many", markerEnd: "one" };
     case "N:M":
-      return { markerStart: "url(#rf-cf-many)", markerEnd: "url(#rf-cf-many)" };
+      return { markerStart: "many", markerEnd: "many" };
     default:
       return { markerStart: "", markerEnd: "" };
   }
@@ -240,20 +242,6 @@ export function SchemaVisualizerPage({
 
       {/* Canvas */}
       <div className="flex-1 min-h-0 relative">
-        {/* Hidden SVG with crow's foot marker defs — must be before ReactFlow */}
-        <svg width="0" height="0" className="absolute" aria-hidden="true">
-          <defs>
-            <marker id="rf-cf-one" viewBox="0 0 12 12" refX="12" refY="6" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-              <line x1="2" y1="0" x2="2" y2="12" stroke="#3b82f6" strokeWidth="1.5" />
-            </marker>
-            <marker id="rf-cf-many" viewBox="0 0 14 12" refX="14" refY="6" markerWidth="10" markerHeight="8" orient="auto-start-reverse">
-              <line x1="0" y1="0" x2="10" y2="3" stroke="#3b82f6" strokeWidth="1.5" />
-              <line x1="0" y1="12" x2="10" y2="9" stroke="#3b82f6" strokeWidth="1.5" />
-              <line x1="0" y1="6" x2="10" y2="6" stroke="#3b82f6" strokeWidth="1.5" />
-            </marker>
-          </defs>
-        </svg>
-
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center z-10 bg-canvas/80">
             <p className="text-text-muted text-sm">Loading schema...</p>
@@ -287,6 +275,7 @@ export function SchemaVisualizerPage({
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           fitView
           minZoom={0.1}
           maxZoom={2}
