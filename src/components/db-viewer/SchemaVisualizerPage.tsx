@@ -217,6 +217,12 @@ export function SchemaVisualizerPage({
     });
   }, [edges, highlightedEdge]);
 
+  const highlightedCardinality = useMemo(() => {
+    if (!highlightedEdge) return null;
+    const edge = edges.find((e) => e.id === highlightedEdge);
+    return (edge?.data as any)?.cardinality as string | null;
+  }, [edges, highlightedEdge]);
+
   const handleSchemaChange = useCallback(
     (schema: string) => {
       setCurrentSchema(schema);
@@ -343,35 +349,36 @@ export function SchemaVisualizerPage({
           </button>
           {legendOpen && (
             <div className="mt-2 space-y-1.5">
-              {LEGEND_ITEMS.map((item) => (
-                <div key={item.cardinality} className="flex items-center gap-2.5">
-                  {/* Edge representation: horizontal line with endpoint symbols */}
+              {LEGEND_ITEMS.map((item) => {
+                const isActive = highlightedCardinality === item.cardinality;
+                return (
+                <div key={item.cardinality} className={`flex items-center gap-2.5 transition-opacity ${highlightedCardinality && !isActive ? "opacity-20" : ""}`}>
                   <svg width="36" height="12" className="shrink-0">
-                    <line x1={6} y1={6} x2={30} y2={6} stroke={item.color} strokeWidth={1.5} />
+                    <line x1={6} y1={6} x2={30} y2={6} stroke={isActive ? "#f59e0b" : item.color} strokeWidth={isActive ? 2 : 1.5} />
                     {/* Start marker */}
                     {item.markerStart === "one" ? (
-                      <line x1={6} y1={2} x2={6} y2={10} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
+                      <line x1={6} y1={2} x2={6} y2={10} stroke={isActive ? "#f59e0b" : item.color} strokeWidth={isActive ? 2 : 1.5} strokeLinecap="round" />
                     ) : (
                       <>
-                        <line x1={6} y1={3} x2={12} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
-                        <line x1={6} y1={6} x2={12} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
-                        <line x1={6} y1={9} x2={12} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
+                        <line x1={6} y1={3} x2={12} y2={6} stroke={isActive ? "#f59e0b" : item.color} strokeWidth={isActive ? 2 : 1.5} strokeLinecap="round" />
+                        <line x1={6} y1={6} x2={12} y2={6} stroke={isActive ? "#f59e0b" : item.color} strokeWidth={isActive ? 2 : 1.5} strokeLinecap="round" />
+                        <line x1={6} y1={9} x2={12} y2={6} stroke={isActive ? "#f59e0b" : item.color} strokeWidth={isActive ? 2 : 1.5} strokeLinecap="round" />
                       </>
                     )}
                     {/* End marker */}
                     {item.markerEnd === "one" ? (
-                      <line x1={30} y1={2} x2={30} y2={10} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
+                      <line x1={30} y1={2} x2={30} y2={10} stroke={isActive ? "#f59e0b" : item.color} strokeWidth={isActive ? 2 : 1.5} strokeLinecap="round" />
                     ) : (
                       <>
-                        <line x1={30} y1={3} x2={24} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
-                        <line x1={30} y1={6} x2={24} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
-                        <line x1={30} y1={9} x2={24} y2={6} stroke={item.color} strokeWidth={1.5} strokeLinecap="round" />
+                        <line x1={30} y1={3} x2={24} y2={6} stroke={isActive ? "#f59e0b" : item.color} strokeWidth={isActive ? 2 : 1.5} strokeLinecap="round" />
+                        <line x1={30} y1={6} x2={24} y2={6} stroke={isActive ? "#f59e0b" : item.color} strokeWidth={isActive ? 2 : 1.5} strokeLinecap="round" />
+                        <line x1={30} y1={9} x2={24} y2={6} stroke={isActive ? "#f59e0b" : item.color} strokeWidth={isActive ? 2 : 1.5} strokeLinecap="round" />
                       </>
                     )}
                   </svg>
-                  <span className="text-text-muted text-[11px]">{item.label}</span>
+                  <span className={`text-[11px] ${isActive ? "text-amber-400 font-medium" : "text-text-muted"}`}>{item.label}</span>
                 </div>
-              ))}
+              )})}
             </div>
           )}
         </div>
