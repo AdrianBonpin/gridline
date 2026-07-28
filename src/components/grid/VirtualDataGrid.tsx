@@ -44,14 +44,14 @@ export function VirtualDataGrid({
           No rows in result set
         </div>
       ) : (
-        <table style={{ tableLayout: "fixed", width: "100%" }}>
+        <table className="border-collapse text-left text-sm" style={{ tableLayout: "fixed", width: "100%" }}>
           <colgroup>
-            <col style={{ width: 40 }} />
+            <col style={{ width: 40, minWidth: 40 }} />
             {visibleColumns.map((col) => (
               <col key={col.name} style={{ width: 200 }} />
             ))}
           </colgroup>
-          <thead className="sticky top-0 z-10 bg-canvas">
+          <thead className="sticky top-0 z-10 bg-surface">
             <tr>
               <th className="border-b border-r border-border px-2 py-2">
                 <input
@@ -89,8 +89,7 @@ export function VirtualDataGrid({
                       <div
                         key={virtualRow.key}
                         data-index={virtualRow.index}
-                        ref={virtualizer.measureElement}
-                        className="flex items-center border-b border-border"
+                        className={`flex items-center border-b border-border ${isSelected ? "bg-accent/5" : ""} hover:bg-surface/50`}
                         style={{
                           position: "absolute",
                           top: 0,
