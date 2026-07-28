@@ -140,6 +140,7 @@ export function SchemaVisualizerPage({
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tableCount, setTableCount] = useState(0);
   const [legendOpen, setLegendOpen] = useState(true);
 
   const fetchGraph = useCallback(async () => {
