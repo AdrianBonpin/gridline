@@ -825,9 +825,35 @@ ORDER BY c.ordinal_position"#;
                 })
                 .collect();
 
-            // Get data (with filters and sorts applied)
+            // Get data (with filters and sorts applied).
+            // Custom/enum types need explicit ::text cast because tokio-postgres
+            // FromSql<String> rejects custom type OIDs even in simple query mode.
+            let standard_pg_types: &[&str] = &[
+                "uuid", "text", "varchar", "char", "bpchar", "name",
+                "int2", "int4", "int8", "smallint", "integer", "bigint",
+                "float4", "float8", "real", "double precision",
+                "numeric", "decimal", "money",
+                "bool", "boolean",
+                "date", "time", "timetz", "timestamp", "timestamptz",
+                "interval", "json", "jsonb", "bytea", "oid",
+                "timestamp without time zone", "timestamp with time zone",
+                "time without time zone", "time with time zone",
+            ];
+            let select_cols: Vec<String> = columns
+                .iter()
+                .map(|c| {
+                    let lower = c.data_type.to_lowercase();
+                    if standard_pg_types.contains(&lower.as_str()) {
+                        format!("\"{}\"", c.name)
+                    } else {
+                        // Custom type (enum, composite, domain) — cast to text
+                        format!("\"{}\"::text", c.name)
+                    }
+                })
+                .collect();
             let data_query = format!(
-                "SELECT * FROM \"{}\".\"{}\" WHERE 1=1{} {} LIMIT {} OFFSET {}",
+                "SELECT {} FROM \"{}\".\"{}\" WHERE 1=1{} {} LIMIT {} OFFSET {}",
+                select_cols.join(", "),
                 schema, table, filter_clause, order_clause, ps, off
             );
             let data_rows = if filter_params.is_empty() {
