@@ -3,7 +3,7 @@ import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { TableTree } from "./TableTree";
-import { ObjectTree } from "./ObjectTree";
+import { ObjectExplorerPage } from "./ObjectExplorerPage";
 import { TabBar } from "./TabBar";
 import { VirtualDataGrid } from "../grid/VirtualDataGrid";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
@@ -548,24 +548,24 @@ export function DbViewerScreen({
                             </div>
                         </div>
                     ) : currentView === "functions" ? (
-                        <ObjectTree
+                        <ObjectExplorerPage
                             type="functions"
                             connectionId={connectionId}
                         />
                     ) : currentView === "triggers" ? (
-                        <ObjectTree
+                        <ObjectExplorerPage
                             type="triggers"
                             connectionId={connectionId}
                         />
                     ) : currentView === "sequences" ? (
-                        <ObjectTree
+                        <ObjectExplorerPage
                             type="sequences"
                             connectionId={connectionId}
                         />
                     ) : currentView === "enums" ? (
-                        <ObjectTree type="enums" connectionId={connectionId} />
+                        <ObjectExplorerPage type="enums" connectionId={connectionId} />
                     ) : currentView === "extensions" ? (
-                        <ObjectTree
+                        <ObjectExplorerPage
                             type="extensions"
                             connectionId={connectionId}
                         />

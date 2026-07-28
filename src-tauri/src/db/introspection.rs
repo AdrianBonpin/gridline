@@ -203,10 +203,10 @@ pub fn build_count_query(schema: &str, table: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Query functions and procedures in a schema.
-pub fn pg_functions_query(schema: &str) -> String {
+pub fn pg_functions_query(_schema: &str) -> String {
     format!(
         "SELECT p.proname, n.nspname, \
-         pg_get_function_result(p.oid) AS return_type, \
+         pg_catalog.format_type(p.prorettype, NULL) AS return_type, \
          ARRAY(SELECT unnest(p.proargtypes::regtype[]::text[])) AS arg_types, \
          ARRAY(SELECT unnest(p.proargnames::text[])) AS arg_names, \
          ARRAY(SELECT unnest(p.proargmodes::text[])) AS arg_modes, \
@@ -222,7 +222,7 @@ pub fn pg_functions_query(schema: &str) -> String {
 }
 
 /// Query triggers in a schema.
-pub fn pg_triggers_query(schema: &str) -> String {
+pub fn pg_triggers_query(_schema: &str) -> String {
     format!(
         "SELECT t.tgname, tn.nspname AS trigger_schema, \
          cn.nspname AS table_schema, c.relname AS table_name, \
@@ -263,7 +263,7 @@ pub fn pg_sequences_query(schema: &str) -> String {
 }
 
 /// Query enums in a schema.
-pub fn pg_enums_query(schema: &str) -> String {
+pub fn pg_enums_query(_schema: &str) -> String {
     format!(
         "SELECT t.typname, n.nspname, \
          ARRAY(SELECT e.enumlabel FROM pg_enum e \
