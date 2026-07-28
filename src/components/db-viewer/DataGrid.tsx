@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Key } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { abbreviateType } from "../../lib/utils";
 
 // TODO: Replace this plain HTML table with @tanstack/react-virtual for large
 // result sets so we can render millions of rows without DOM overhead.
@@ -224,10 +226,12 @@ export function DataGrid({ rows, hiddenColumns, selectedRows, onSelectionChange 
                 className="group relative border-b border-r border-border px-3 py-2 font-heading text-text-muted last:border-r-0"
                 style={{ width: getWidth(col.name), maxWidth: getWidth(col.name) }}
               >
-                <div className="truncate">
+                <div className="truncate flex items-center gap-1">
+                  {col.is_pk && <Key size={10} className="text-accent shrink-0" />}
+                  {col.is_fk && <Key size={10} className="text-amber-400 shrink-0" />}
                   <span className="text-text text-xs">{col.name}</span>
-                  <span className="ml-1.5 text-[10px] text-text-muted/60">
-                    {col.data_type}
+                  <span className="ml-1 text-[10px] text-text-muted/60" title={col.data_type}>
+                    {abbreviateType(col.data_type)}
                   </span>
                 </div>
                 {/* resize handle */}
