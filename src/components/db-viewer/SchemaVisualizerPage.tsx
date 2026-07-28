@@ -50,6 +50,7 @@ function layoutGraph(
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
+  // Phase 1: build nodes, register graph edges for dagre, run layout
   for (const table of tables) {
     const height = getNodeHeight(table.columns.length);
     g.setNode(table.name, { width: CARD_WIDTH, height });
@@ -62,6 +63,8 @@ function layoutGraph(
     });
   }
 
+  // Collect FK edges for dagre (don't build ReactFlow edges yet)
+  const fkEdges: { table: TableNodeType; col: any; refTable: string; refColumn: string; cardinality: string }[] = [];
   for (const table of tables) {
     for (const col of table.columns) {
       if (col.fk_ref) {
@@ -69,24 +72,8 @@ function layoutGraph(
         if (tables.some((t) => t.name === refTable && t.schema === refSchema)) {
           const edgeKey = `${table.name}.${col.name}->${refTable}.${refColumn}`;
           const cardinality = cardinalityMap.get(edgeKey) ?? "1:N";
-          const markers = getEdgeMarkers(cardinality);
-
           g.setEdge(table.name, refTable, {});
-          edges.push({
-            id: edgeKey,
-            source: table.name,
-            target: refTable,
-            sourceHandle: `fk-${col.name}`,
-            targetHandle: `pk-${refColumn}`,
-            type: "crowsfoot",
-            label: cardinality,
-            data: { cardinality, startMarker: markers.markerStart, endMarker: markers.markerEnd },
-            style: { stroke: "#3b82f6", strokeWidth: 1.5 },
-            labelStyle: { fill: "#9ca3af", fontSize: 9 },
-            labelBgStyle: { fill: "#1f2937", fillOpacity: 0.85 },
-            labelBgPadding: [3, 1],
-            labelBorderRadius: 0,
-          });
+          fkEdges.push({ table, col, refTable, refColumn, cardinality });
         }
       }
     }
@@ -94,14 +81,45 @@ function layoutGraph(
 
   dagre.layout(g);
 
+  // Apply positions
+  const posMap = new Map<string, { x: number; y: number }>();
   for (const node of nodes) {
     const dagreNode = g.node(node.id);
     if (dagreNode) {
-      node.position = {
-        x: dagreNode.x - CARD_WIDTH / 2,
-        y: dagreNode.y - (dagreNode as any).height / 2,
-      };
+      const x = dagreNode.x - CARD_WIDTH / 2;
+      const y = dagreNode.y - (dagreNode as any).height / 2;
+      node.position = { x, y };
+      posMap.set(node.id, { x, y });
     }
+  }
+
+  // Phase 2: build ReactFlow edges using computed positions to pick handle sides
+  for (const { table, col, refTable, refColumn, cardinality } of fkEdges) {
+    const edgeKey = `${table.name}.${col.name}->${refTable}.${refColumn}`;
+    const markers = getEdgeMarkers(cardinality);
+    const srcPos = posMap.get(table.name);
+    const tgtPos = posMap.get(refTable);
+
+    // Pick handle side: use the side closest to the connected node
+    const srcOnLeft = srcPos && tgtPos ? srcPos.x < tgtPos.x : true;
+    const sourceHandle = srcOnLeft ? `fk-${col.name}` : `fk-left-${col.name}`;
+    const targetHandle = srcOnLeft ? `pk-${refColumn}` : `pk-right-${refColumn}`;
+
+    edges.push({
+      id: edgeKey,
+      source: table.name,
+      target: refTable,
+      sourceHandle,
+      targetHandle,
+      type: "crowsfoot",
+      label: cardinality,
+      data: { cardinality, startMarker: markers.markerStart, endMarker: markers.markerEnd },
+      style: { stroke: "#3b82f6", strokeWidth: 1.5 },
+      labelStyle: { fill: "#9ca3af", fontSize: 9 },
+      labelBgStyle: { fill: "#1f2937", fillOpacity: 0.85 },
+      labelBgPadding: [3, 1],
+      labelBorderRadius: 0,
+    });
   }
 
   return { nodes, edges };

@@ -89,25 +89,43 @@ export const SchemaVisualizerNode = memo(function SchemaVisualizerNode({
               {abbreviateType(col.data_type)}
             </span>
 
-            {/* FK source handle */}
+            {/* FK source handles (both sides) */}
             {col.is_fk && (
-              <Handle
-                type="source"
-                position={Position.Right}
-                id={`fk-${col.name}`}
-                className="!w-2 !h-2 !bg-accent !border-2 !border-canvas"
-                style={{ top: "50%", right: -5 }}
-              />
+              <>
+                <Handle
+                  type="source"
+                  position={Position.Right}
+                  id={`fk-${col.name}`}
+                  className="!w-2 !h-2 !bg-accent !border-2 !border-canvas"
+                  style={{ top: "50%", right: -5 }}
+                />
+                <Handle
+                  type="source"
+                  position={Position.Left}
+                  id={`fk-left-${col.name}`}
+                  className="!w-2 !h-2 !bg-accent !border-2 !border-canvas"
+                  style={{ top: "50%", left: -5 }}
+                />
+              </>
             )}
-            {/* PK target handle */}
+            {/* PK target handles (both sides) */}
             {col.is_pk && (
-              <Handle
-                type="target"
-                position={Position.Left}
-                id={`pk-${col.name}`}
-                className="!w-2 !h-2 !bg-amber-400 !border-2 !border-canvas"
-                style={{ top: "50%", left: -5 }}
-              />
+              <>
+                <Handle
+                  type="target"
+                  position={Position.Left}
+                  id={`pk-${col.name}`}
+                  className="!w-2 !h-2 !bg-amber-400 !border-2 !border-canvas"
+                  style={{ top: "50%", left: -5 }}
+                />
+                <Handle
+                  type="target"
+                  position={Position.Right}
+                  id={`pk-right-${col.name}`}
+                  className="!w-2 !h-2 !bg-amber-400 !border-2 !border-canvas"
+                  style={{ top: "50%", right: -5 }}
+                />
+              </>
             )}
           </div>
         ))}
