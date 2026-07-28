@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, ChangeItem } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, ChangeItem, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus } from "./types";
 
 // NOTE on argument key naming:
 // Tauri v2's #[tauri::command] macro converts Rust snake_case parameter names
@@ -96,4 +96,22 @@ export async function getFkPreview(
 
 export async function refreshConnection(connectionId: string): Promise<void> {
   return invoke<void>("refresh_connection", { connectionId });
+}
+
+// ─── Backup / Restore / Sync ──────────────────────────────────
+
+export async function detectPgTools(): Promise<PgToolStatus> {
+  return invoke<PgToolStatus>("detect_pg_tools");
+}
+
+export async function pgDump(connectionId: string, options: BackupOptions): Promise<string> {
+  return invoke<string>("pg_dump", { connectionId, options });
+}
+
+export async function pgRestore(connectionId: string, options: RestoreOptions): Promise<string> {
+  return invoke<string>("pg_restore", { connectionId, options });
+}
+
+export async function dbSync(options: SyncOptions): Promise<string> {
+  return invoke<string>("db_sync", { options });
 }
