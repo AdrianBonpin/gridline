@@ -1,7 +1,8 @@
 import { BaseEdge, getSmoothStepPath, type EdgeProps } from "@xyflow/react";
 
 const C = "#3b82f6";
-const S = 8;
+const S = 10;
+const G = 6; // gap from handle
 
 export function CrowsFootEdge({
   id,
@@ -21,83 +22,60 @@ export function CrowsFootEdge({
   const sm = (data as any)?.startMarker as string;
   const em = (data as any)?.endMarker as string;
 
-  // Direction unit vector (source → target)
+  // Direction: which way does edge go?
   const dx = targetX - sourceX;
   const dy = targetY - sourceY;
-  const len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len; // unit toward target
-  const uy = dy / len;
-  // Perpendicular unit vector (rotate 90° CCW)
-  const px = -uy;
-  const py = ux;
 
   return (
     <g>
       <BaseEdge id={id} path={edgePath} style={{ stroke: C, strokeWidth: 1.5, ...style }} />
-      {/* Source marker */}
-      {sm && (
-        <Mark 
-          type={sm} 
-          cx={sourceX} cy={sourceY} 
-          ex={ux} ey={uy}   // edge direction (outward from source)
-          px={px} py={py}   // perpendicular
-        />
-      )}
-      {/* Target marker */}
-      {em && (
-        <Mark 
-          type={em} 
-          cx={targetX} cy={targetY} 
-          ex={-ux} ey={-uy}  // edge direction reversed (outward from target)
-          px={px} py={py}
-        />
-      )}
+      {sm && <Mark type={sm} cx={sourceX} cy={sourceY} dirX={dx} dirY={dy} />}
+      {em && <Mark type={em} cx={targetX} cy={targetY} dirX={-dx} dirY={-dy} />}
     </g>
   );
 }
 
 /**
- * Draws crow's foot symbol at (cx, cy).
- * - (ex, ey) = unit vector pointing OUTWARD from the node along the edge
- * - (px, py) = unit vector perpendicular to the edge
+ * Draws fixed-orientation marker at (cx, cy).
+ * (dirX, dirY) indicates which way the edge goes FROM this point.
+ * Symbol points TOWARD the node (opposite to dir).
  */
-function Mark({ type, cx, cy, ex, ey, px, py }: {
-  type: string; cx: number; cy: number; ex: number; ey: number; px: number; py: number;
+function Mark({ type, cx, cy, dirX, dirY }: {
+  type: string; cx: number; cy: number; dirX: number; dirY: number;
 }) {
-  const G = 6; // gap from handle
-  const ox = cx + ex * G; // offset outward from handle
-  const oy = cy + ey * G;
+  // Normalize
+  const len = Math.hypot(dirX, dirY) || 1;
+  const ux = dirX / len;
+  const uy = dirY / len;
+
+  // Offset from handle
+  const ox = cx + ux * G;
+  const oy = cy + uy * G;
+
+  // Point TOWARD the node (opposite to dir)
+  const nx = -ux;
+  const ny = -uy;
 
   if (type === "one") {
-    // Short line perpendicular to edge, at the offset point
+    // Simple vertical line | 
     return (
       <line
-        x1={ox + px * S} y1={oy + py * S}
-        x2={ox - px * S} y2={oy - py * S}
+        x1={ox} y1={oy - S}
+        x2={ox} y2={oy + S}
         stroke={C} strokeWidth={2} strokeLinecap="round"
       />
     );
   }
 
   if (type === "many") {
-    // Three lines fanning INWARD (back toward the node)
-    const a0 = Math.atan2(ey, ex); // base angle pointing outward
-    const spread = 0.35; // radians (~20°)
-    const len = S + 2;
+    // Crow's foot: 3 lines fanning TOWARD the node
+    // Use mostly horizontal spread, mixed with vertical based on edge direction
+    const spread = 5;
     return (
       <g>
-        {[-spread, 0, spread].map((off, i) => {
-          const ang = a0 + off;
-          const lx = ox + Math.cos(ang) * len;
-          const ly = oy + Math.sin(ang) * len;
-          return (
-            <line key={i}
-              x1={ox} y1={oy}
-              x2={lx} y2={ly}
-              stroke={C} strokeWidth={2} strokeLinecap="round"
-            />
-          );
-        })}
+        <line x1={ox} y1={oy - spread} x2={ox + nx * S} y2={oy - spread + ny * S} stroke={C} strokeWidth={2} strokeLinecap="round" />
+        <line x1={ox} y1={oy} x2={ox + nx * S} y2={oy + ny * S} stroke={C} strokeWidth={2} strokeLinecap="round" />
+        <line x1={ox} y1={oy + spread} x2={ox + nx * S} y2={oy + spread + ny * S} stroke={C} strokeWidth={2} strokeLinecap="round" />
       </g>
     );
   }
