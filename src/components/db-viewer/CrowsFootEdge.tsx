@@ -2,7 +2,7 @@ import { BaseEdge, getSmoothStepPath, type EdgeProps } from "@xyflow/react";
 
 const C = "#3b82f6";
 const S = 10;
-const G = 4;
+const G = 8;
 
 export function CrowsFootEdge({
     id,
@@ -90,36 +90,13 @@ function Mark({
     }
 
     if (type === "many") {
-        const sp = 5;
+        const sp = 4;
+        const tx = cx + dir * S;
         return (
             <g>
-                <line
-                    x1={cx}
-                    y1={cy - sp}
-                    x2={cx + dir * S}
-                    y2={cy - sp}
-                    stroke={C}
-                    strokeWidth={2}
-                    strokeLinecap="round"
-                />
-                <line
-                    x1={cx}
-                    y1={cy}
-                    x2={cx + dir * S}
-                    y2={cy}
-                    stroke={C}
-                    strokeWidth={2}
-                    strokeLinecap="round"
-                />
-                <line
-                    x1={cx}
-                    y1={cy + sp}
-                    x2={cx + dir * S}
-                    y2={cy + sp}
-                    stroke={C}
-                    strokeWidth={2}
-                    strokeLinecap="round"
-                />
+                <line x1={cx} y1={cy - sp} x2={tx} y2={cy} stroke={C} strokeWidth={2} strokeLinecap="round" />
+                <line x1={cx} y1={cy}      x2={tx} y2={cy} stroke={C} strokeWidth={2} strokeLinecap="round" />
+                <line x1={cx} y1={cy + sp} x2={tx} y2={cy} stroke={C} strokeWidth={2} strokeLinecap="round" />
             </g>
         );
     }
