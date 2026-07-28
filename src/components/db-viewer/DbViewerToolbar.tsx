@@ -1,4 +1,4 @@
-import { RefreshCw, Plus, Search, Pencil, Check, AlertCircle } from "lucide-react";
+import { RefreshCw, Plus, Search, Pencil, Check, AlertCircle, X } from "lucide-react";
 import { useState, useCallback, useRef, useEffect } from "react";
 import { SelectDropdown } from "../ui/SelectDropdown";
 import { Tooltip } from "../ui/Tooltip";
@@ -14,6 +14,8 @@ export function DbViewerToolbar({
   setCurrentSchema,
   onEdit,
   connectionId,
+  searchQuery,
+  onSearchChange,
 }: {
   databases: string[];
   currentDatabase: string | null;
@@ -23,11 +25,41 @@ export function DbViewerToolbar({
   setCurrentSchema: (schema: string | null) => void;
   onEdit?: () => void;
   connectionId?: string;
+  searchQuery: string;
+  onSearchChange: (q: string) => void;
 }) {
+  const [searchOpen, setSearchOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [result, setResult] = useState<'idle' | 'success' | 'error'>('idle');
   const resultTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
   const populate = useDbViewerStore((s) => s.populate);
+
+  // Focus input when search opens
+  useEffect(() => {
+    if (searchOpen && searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, [searchOpen]);
+
+  // Auto-hide on blur when empty
+  const handleSearchBlur = useCallback(() => {
+    // Small delay to allow clicks on clear button / search icon
+    setTimeout(() => {
+      if (!searchQuery.trim()) {
+        setSearchOpen(false);
+      }
+    }, 150);
+  }, [searchQuery]);
+
+  const toggleSearch = useCallback(() => {
+    setSearchOpen((prev) => {
+      const next = !prev;
+      if (!next) onSearchChange(""); // clear when closing
+      return next;
+    });
+  }, [onSearchChange]);
 
   // Cleanup result timer on unmount
   useEffect(() => {
@@ -97,11 +129,38 @@ export function DbViewerToolbar({
           <Tooltip content="Search Tables" side="bottom">
             <button
               aria-label="Search Tables"
-              className="w-7 h-7 rounded-md flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised cursor-pointer opacity-50"
+              onClick={toggleSearch}
+              className={`w-7 h-7 rounded-md flex items-center justify-center cursor-pointer ${searchOpen ? "text-accent bg-accent/10" : "text-text-muted hover:text-text hover:bg-surface-raised"}`}
             >
               <Search size={14} />
             </button>
           </Tooltip>
+        </div>
+      </div>
+      {/* Search input */}
+      <div
+        ref={searchContainerRef}
+        className={`overflow-hidden transition-all duration-200 ease-out ${searchOpen ? "max-h-10 opacity-100" : "max-h-0 opacity-0"}`}
+      >
+        <div className="relative flex items-center">
+          <Search size={12} className="absolute left-2.5 text-text-muted pointer-events-none" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            onBlur={handleSearchBlur}
+            placeholder="Filter tables…"
+            className="w-full bg-transparent border-0 border-b border-border pl-8 pr-7 py-1.5 text-xs text-text placeholder:text-text-muted/60 outline-none focus:border-accent/50 transition-colors"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => onSearchChange("")}
+              className="absolute right-1 flex items-center justify-center w-5 h-5 rounded text-text-muted hover:text-text cursor-pointer"
+            >
+              <X size={12} />
+            </button>
+          )}
         </div>
       </div>
       {(databases.length > 1 || schemas.length > 1) && (

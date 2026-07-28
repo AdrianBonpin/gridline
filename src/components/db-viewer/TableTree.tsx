@@ -7,7 +7,7 @@ import { abbreviateType } from "../../lib/utils";
 import type { ColumnInfo } from "../../lib/types";
 import * as cmd from "../../lib/commands";
 
-export function TableTree() {
+export function TableTree({ searchQuery }: { searchQuery?: string }) {
   const tables = useDbViewerStore((s) => s.tables);
   const currentSchema = useDbViewerStore((s) => s.currentSchema);
   const openTab = useDbViewerStore((s) => s.openTab);
@@ -15,9 +15,11 @@ export function TableTree() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [columnCache, setColumnCache] = useState<Record<string, ColumnInfo[]>>({});
 
-  const filteredTables = currentSchema
+  const q = (searchQuery ?? "").toLowerCase().trim();
+
+  const filteredTables = (currentSchema
     ? tables.filter((t) => t.schema === currentSchema)
-    : tables;
+    : tables).filter((t) => !q || t.name.toLowerCase().includes(q));
 
   const toggle = async (key: string, schema: string, tableName: string) => {
     const isExpanded = expanded.has(key);

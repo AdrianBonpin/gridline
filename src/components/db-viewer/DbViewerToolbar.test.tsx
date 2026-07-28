@@ -11,6 +11,8 @@ const defaultProps = {
   schemas: [] as string[],
   currentSchema: null as string | null,
   setCurrentSchema: () => {},
+  searchQuery: "",
+  onSearchChange: () => {},
 };
 
 describe("DbViewerToolbar", () => {

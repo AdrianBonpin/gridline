@@ -84,6 +84,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
   const [filterRules, setFilterRules] = useState<FilterRule[]>([]);
   const [sortRules, setSortRules] = useState<SortRule[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
   const smartSortApplied = useRef<Set<string>>(new Set());
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
   const [editModalOpen, setEditModalOpen] = useState(false);
@@ -345,9 +346,11 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
                 setCurrentSchema={setCurrentSchema}
                 onEdit={() => setEditModalOpen(true)}
                 connectionId={connectionId}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
               />
               <div className="flex-1 overflow-y-auto" style={{ overscrollBehavior: "none" }}>
-                <TableTree />
+                <TableTree searchQuery={searchQuery} />
               </div>
             </div>
             {/* panel resize handle */}
