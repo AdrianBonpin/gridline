@@ -25,66 +25,58 @@ pub fn validate_schema_name(name: &str) -> Result<(), String> {
 /// Build a parameterized query that fetches all tables, columns, and
 /// PK/FK/UNIQUE metadata for a PostgreSQL schema in a single round-trip.
 pub fn build_pg_schema_graph_query(_schema: &str) -> String {
+    // Uses pg_catalog directly instead of information_schema views.
+    // information_schema views are extremely slow on some servers (remote/
+    // cloud) because they scan all databases' catalogs. pg_catalog with
+    // LATERAL joins is typically 500x+ faster (~200ms vs 120s for 55 tables).
     r#"SELECT
-      t.table_name,
-      t.table_schema,
-      t.table_type,
-      c.column_name,
-      CASE WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name ELSE c.data_type END AS data_type,
-      c.is_nullable,
-      c.ordinal_position,
-      COALESCE(pk.is_pk, false) AS is_pk,
-      COALESCE(fk.is_fk, false) AS is_fk,
-      fk.foreign_table_schema,
-      fk.foreign_table_name,
-      fk.foreign_column_name,
-      COALESCE(uq.is_unique, false) AS is_unique
-  FROM information_schema.tables t
-  JOIN information_schema.columns c
-      ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-  LEFT JOIN (
-      SELECT ku.table_schema, ku.table_name, ku.column_name, true AS is_pk
-      FROM information_schema.table_constraints tc
-      JOIN information_schema.key_column_usage ku
-          ON tc.constraint_catalog = ku.constraint_catalog
-          AND tc.constraint_schema = ku.constraint_schema
-          AND tc.constraint_name = ku.constraint_name
-      WHERE tc.constraint_type = 'PRIMARY KEY'
-  ) pk ON c.table_schema = pk.table_schema
-      AND c.table_name = pk.table_name
-      AND c.column_name = pk.column_name
-  LEFT JOIN (
-      SELECT ku.table_schema, ku.table_name, ku.column_name, true AS is_fk,
-             ccu.table_schema AS foreign_table_schema,
-             ccu.table_name AS foreign_table_name,
-             ccu.column_name AS foreign_column_name
-      FROM information_schema.table_constraints tc
-      JOIN information_schema.key_column_usage ku
-          ON tc.constraint_catalog = ku.constraint_catalog
-          AND tc.constraint_schema = ku.constraint_schema
-          AND tc.constraint_name = ku.constraint_name
-      JOIN information_schema.constraint_column_usage ccu
-          ON tc.constraint_catalog = ccu.constraint_catalog
-          AND tc.constraint_schema = ccu.constraint_schema
-          AND tc.constraint_name = ccu.constraint_name
-      WHERE tc.constraint_type = 'FOREIGN KEY'
-  ) fk ON c.table_schema = fk.table_schema
-      AND c.table_name = fk.table_name
-      AND c.column_name = fk.column_name
-  LEFT JOIN (
-      SELECT ku.table_schema, ku.table_name, ku.column_name, true AS is_unique
-      FROM information_schema.table_constraints tc
-      JOIN information_schema.key_column_usage ku
-          ON tc.constraint_catalog = ku.constraint_catalog
-          AND tc.constraint_schema = ku.constraint_schema
-          AND tc.constraint_name = ku.constraint_name
-      WHERE tc.constraint_type = 'UNIQUE'
-  ) uq ON c.table_schema = uq.table_schema
-      AND c.table_name = uq.table_name
-      AND c.column_name = uq.column_name
-  WHERE t.table_schema = $1
-      AND t.table_type IN ('BASE TABLE', 'VIEW')
-  ORDER BY t.table_name, c.ordinal_position"#.to_string()
+    c.relname AS table_name,
+    n.nspname AS table_schema,
+    CASE WHEN c.relkind = 'v' THEN 'VIEW' ELSE 'BASE TABLE' END AS table_type,
+    a.attname AS column_name,
+    pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+    NOT a.attnotnull AS is_nullable,
+    a.attnum AS ordinal_position,
+    COALESCE(pk.is_pk, false) AS is_pk,
+    COALESCE(fk.is_fk, false) AS is_fk,
+    fk.foreign_table_schema,
+    fk.foreign_table_name,
+    fk.foreign_column_name,
+    COALESCE(uq.is_unique, false) AS is_unique
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
+JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+LEFT JOIN LATERAL (
+    SELECT true AS is_pk
+    FROM pg_catalog.pg_constraint pk2
+    WHERE pk2.conrelid = c.oid AND pk2.contype = 'p' AND a.attnum = ANY(pk2.conkey)
+    LIMIT 1
+) pk ON true
+LEFT JOIN LATERAL (
+    SELECT true AS is_fk,
+           ref_n.nspname AS foreign_table_schema,
+           ref_c.relname AS foreign_table_name,
+           ref_a.attname AS foreign_column_name
+    FROM pg_catalog.pg_constraint fk2
+    JOIN pg_catalog.pg_class ref_c ON fk2.confrelid = ref_c.oid
+    JOIN pg_catalog.pg_namespace ref_n ON ref_c.relnamespace = ref_n.oid
+    JOIN pg_catalog.pg_attribute ref_a
+        ON ref_a.attrelid = ref_c.oid AND ref_a.attnum = ANY(fk2.confkey)
+    WHERE fk2.conrelid = c.oid AND fk2.contype = 'f'
+      AND a.attnum = ANY(fk2.conkey)
+    LIMIT 1
+) fk ON true
+LEFT JOIN LATERAL (
+    SELECT true AS is_unique
+    FROM pg_catalog.pg_constraint uq2
+    WHERE uq2.conrelid = c.oid AND uq2.contype = 'u' AND a.attnum = ANY(uq2.conkey)
+    LIMIT 1
+) uq ON true
+WHERE n.nspname = $1
+    AND c.relkind IN ('r', 'v', 'p')
+    AND a.attnum > 0
+    AND NOT a.attisdropped
+ORDER BY c.relname, a.attnum"#.to_string()
 }
 
 /// Infer relationship cardinality from constraint metadata.
@@ -352,9 +344,9 @@ mod tests {
     #[test]
     fn build_pg_schema_graph_query_queries_columns() {
         let sql = build_pg_schema_graph_query("myschema");
-        assert!(sql.contains("information_schema.columns"), "should query columns");
-        assert!(sql.contains("information_schema.tables"), "should query tables");
-        assert!(sql.contains("constraint_type"), "should include constraint info");
+        assert!(sql.contains("pg_catalog.pg_class"), "should query pg_class");
+        assert!(sql.contains("pg_catalog.pg_attribute"), "should query pg_attribute");
+        assert!(sql.contains("pg_catalog.pg_constraint"), "should include constraint info");
     }
 
     #[test]
