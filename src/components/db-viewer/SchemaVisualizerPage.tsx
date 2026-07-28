@@ -289,7 +289,9 @@ export function SchemaVisualizerPage({
             position="bottom-right"
             nodeStrokeWidth={2}
             nodeClassName="!fill-accent/20 !stroke-accent"
-            maskColor="var(--color-canvas)"
+            maskColor="rgba(18,18,24,0.85)"
+            maskStrokeColor="var(--color-border)"
+            maskStrokeWidth={1}
             className="!bg-surface !border !border-border !rounded-none !shadow-lg"
           />
           <Controls
