@@ -32,27 +32,29 @@ export function CrowsFootEdge({
   const sDir = right ? 1 : -1;
   const tDir = right ? -1 : 1;
 
+  const edgeColor = (style as any)?.stroke as string || C;
+
   return (
     <g>
-      <BaseEdge id={id} path={edgePath} style={{ stroke: C, strokeWidth: 1.5, ...style }} />
-      {sm && <Mark type={sm} cx={sourceX + sOff * G} cy={sourceY} dir={sDir} />}
-      {em && <Mark type={em} cx={targetX + tOff * G} cy={targetY} dir={tDir} />}
+      <BaseEdge id={id} path={edgePath} style={{ stroke: edgeColor, strokeWidth: 1.5, ...style }} />
+      {sm && <Mark type={sm} cx={sourceX + sOff * G} cy={sourceY} dir={sDir} color={edgeColor} />}
+      {em && <Mark type={em} cx={targetX + tOff * G} cy={targetY} dir={tDir} color={edgeColor} />}
     </g>
   );
 }
 
-function Mark({ type, cx, cy, dir }: { type: string; cx: number; cy: number; dir: number }) {
+function Mark({ type, cx, cy, dir, color }: { type: string; cx: number; cy: number; dir: number; color: string }) {
   if (type === "one") {
-    return <line x1={cx} y1={cy - S} x2={cx} y2={cy + S} stroke={C} strokeWidth={2} strokeLinecap="round" />;
+    return <line x1={cx} y1={cy - S} x2={cx} y2={cy + S} stroke={color} strokeWidth={2} strokeLinecap="round" />;
   }
   if (type === "many") {
     const sp = 6;
     const tx = cx + dir * S;
     return (
       <g>
-        <line x1={cx} y1={cy - sp} x2={tx} y2={cy} stroke={C} strokeWidth={2} strokeLinecap="round" />
-        <line x1={cx} y1={cy}      x2={tx} y2={cy} stroke={C} strokeWidth={2} strokeLinecap="round" />
-        <line x1={cx} y1={cy + sp} x2={tx} y2={cy} stroke={C} strokeWidth={2} strokeLinecap="round" />
+        <line x1={cx} y1={cy - sp} x2={tx} y2={cy} stroke={color} strokeWidth={2} strokeLinecap="round" />
+        <line x1={cx} y1={cy}      x2={tx} y2={cy} stroke={color} strokeWidth={2} strokeLinecap="round" />
+        <line x1={cx} y1={cy + sp} x2={tx} y2={cy} stroke={color} strokeWidth={2} strokeLinecap="round" />
       </g>
     );
   }
