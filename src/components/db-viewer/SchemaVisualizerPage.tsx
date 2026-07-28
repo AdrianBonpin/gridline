@@ -110,11 +110,11 @@ function layoutGraph(
 function getEdgeMarkers(cardinality: string): { markerStart: string; markerEnd: string } {
   switch (cardinality) {
     case "1:1":
-      return { markerStart: "url(#cf-one)", markerEnd: "url(#cf-one)" };
+      return { markerStart: "url(#rf-cf-one)", markerEnd: "url(#rf-cf-one)" };
     case "1:N":
-      return { markerStart: "url(#cf-many)", markerEnd: "url(#cf-one)" };
+      return { markerStart: "url(#rf-cf-many)", markerEnd: "url(#rf-cf-one)" };
     case "N:M":
-      return { markerStart: "url(#cf-many)", markerEnd: "url(#cf-many)" };
+      return { markerStart: "url(#rf-cf-many)", markerEnd: "url(#rf-cf-many)" };
     default:
       return { markerStart: "", markerEnd: "" };
   }
@@ -267,20 +267,6 @@ export function SchemaVisualizerPage({
           </div>
         )}
 
-        {/* SVG marker defs for crow's foot notation */}
-        <svg className="absolute w-0 h-0" aria-hidden="true">
-          <defs>
-            <marker id="cf-one" viewBox="0 0 12 12" refX="12" refY="6" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-              <line x1="2" y1="0" x2="2" y2="12" stroke="#3b82f6" strokeWidth="1.5" />
-            </marker>
-            <marker id="cf-many" viewBox="0 0 14 12" refX="14" refY="6" markerWidth="10" markerHeight="8" orient="auto-start-reverse">
-              <line x1="0" y1="0" x2="10" y2="3" stroke="#3b82f6" strokeWidth="1.5" />
-              <line x1="0" y1="12" x2="10" y2="9" stroke="#3b82f6" strokeWidth="1.5" />
-              <line x1="0" y1="6" x2="10" y2="6" stroke="#3b82f6" strokeWidth="1.5" />
-            </marker>
-          </defs>
-        </svg>
-
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -293,6 +279,16 @@ export function SchemaVisualizerPage({
           className="bg-canvas"
           proOptions={{ hideAttribution: true }}
         >
+          <defs>
+            <marker id="rf-cf-one" viewBox="0 0 12 12" refX="12" refY="6" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <line x1="2" y1="0" x2="2" y2="12" stroke="#3b82f6" strokeWidth="1.5" />
+            </marker>
+            <marker id="rf-cf-many" viewBox="0 0 14 12" refX="14" refY="6" markerWidth="10" markerHeight="8" orient="auto-start-reverse">
+              <line x1="0" y1="0" x2="10" y2="3" stroke="#3b82f6" strokeWidth="1.5" />
+              <line x1="0" y1="12" x2="10" y2="9" stroke="#3b82f6" strokeWidth="1.5" />
+              <line x1="0" y1="6" x2="10" y2="6" stroke="#3b82f6" strokeWidth="1.5" />
+            </marker>
+          </defs>
           <Background variant="dots" gap={20} color="var(--color-border)" />
           <MiniMap
             position="bottom-right"
