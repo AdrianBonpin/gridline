@@ -186,3 +186,48 @@ export interface ConnectionTestResult {
   server_version?: string | null;
   latency_ms?: number | null;
 }
+
+// ─── Backup Types ────────────────────────────────────────────────
+
+export interface BackupOptions {
+  format: "plain" | "custom" | "tar" | "directory";
+  filePath: string;
+  schema?: string;
+  tables?: string[];
+  noOwner: boolean;
+}
+
+export interface RestoreOptions {
+  format: string;
+  filePath: string;
+  clean: boolean;
+  schema?: string;
+}
+
+export interface SyncOptions {
+  sourceConnectionId: string;
+  targetConnectionId: string;
+  schema?: string;
+  tables?: string[];
+}
+
+export interface PgToolStatus {
+  pg_dump_found: boolean;
+  pg_restore_found: boolean;
+  pg_dump_version: string | null;
+  pg_restore_version: string | null;
+}
+
+export interface BackupJob {
+  id: string;
+  connection_id: string;
+  type: "dump" | "restore" | "sync";
+  format: string | null;
+  file_path: string | null;
+  source_connection_id: string | null;
+  status: "running" | "completed" | "failed" | "cancelled";
+  error_message: string | null;
+  size_bytes: number | null;
+  started_at: string;
+  completed_at: string | null;
+}

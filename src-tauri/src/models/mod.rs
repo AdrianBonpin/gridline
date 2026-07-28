@@ -1,9 +1,11 @@
+pub mod backup;
 pub mod connection;
 pub mod db_viewer;
 pub mod folder;
 pub mod tag;
 pub mod settings;
 
+pub use backup::*;
 pub use connection::{Connection, ConnectionInput};
 #[allow(unused_imports)]
 pub use db_viewer::{Change, ColumnInfo, Pagination, QueryResult, TableInfo};
