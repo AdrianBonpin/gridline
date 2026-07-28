@@ -347,24 +347,55 @@ pub fn parse_table_info_rows(rows: &[Vec<serde_json::Value>]) -> Vec<TableInfo> 
 
 /// Convert a PostgreSQL row value at column index `i` to a JSON value.
 ///
-/// Tries common PostgreSQL types (String, i64, f64, bool) in order.
-/// Falls back to `Null` if no type matches.
-///
-/// **Note:** This is a simplified approach. Complex types (arrays, JSON, etc.)
-/// may not be handled correctly. Future iterations should use proper type
-/// mapping via `typeinfo` from `get_table_data`'s column introspection.
+/// Tries numeric/boolean types first (which need exact Rust type matching),
+/// then UUID (with-uuid-1 feature), then chrono types (with-chrono-0_4),
+/// then JSON/JSONB, then falls back to String.
 fn pg_value_to_json(row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
-    if let Ok(Some(v)) = row.try_get::<_, Option<String>>(i) {
-        return serde_json::Value::String(v);
+    // Integer types
+    if let Ok(Some(v)) = row.try_get::<_, Option<i32>>(i) {
+        return serde_json::json!(v);
     }
     if let Ok(Some(v)) = row.try_get::<_, Option<i64>>(i) {
         return serde_json::json!(v);
     }
+    if let Ok(Some(v)) = row.try_get::<_, Option<i16>>(i) {
+        return serde_json::json!(v);
+    }
+    // Float types
     if let Ok(Some(v)) = row.try_get::<_, Option<f64>>(i) {
         return serde_json::json!(v);
     }
+    if let Ok(Some(v)) = row.try_get::<_, Option<f32>>(i) {
+        return serde_json::json!(v);
+    }
+    // Boolean
     if let Ok(Some(v)) = row.try_get::<_, Option<bool>>(i) {
         return serde_json::json!(v);
+    }
+    // UUID
+    if let Ok(Some(v)) = row.try_get::<_, Option<uuid::Uuid>>(i) {
+        return serde_json::Value::String(v.to_string());
+    }
+    // Timestamp / date types
+    if let Ok(Some(v)) = row.try_get::<_, Option<chrono::NaiveDateTime>>(i) {
+        return serde_json::Value::String(v.to_string());
+    }
+    if let Ok(Some(v)) = row.try_get::<_, Option<chrono::DateTime<chrono::Utc>>>(i) {
+        return serde_json::Value::String(v.to_rfc3339());
+    }
+    if let Ok(Some(v)) = row.try_get::<_, Option<chrono::NaiveDate>>(i) {
+        return serde_json::Value::String(v.to_string());
+    }
+    if let Ok(Some(v)) = row.try_get::<_, Option<chrono::NaiveTime>>(i) {
+        return serde_json::Value::String(v.to_string());
+    }
+    // JSON/JSONB
+    if let Ok(Some(v)) = row.try_get::<_, Option<serde_json::Value>>(i) {
+        return v;
+    }
+    // Text fallback
+    if let Ok(Some(v)) = row.try_get::<_, Option<String>>(i) {
+        return serde_json::Value::String(v);
     }
     serde_json::Value::Null
 }

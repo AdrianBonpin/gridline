@@ -277,7 +277,7 @@ export function DataGrid({ rows, hiddenColumns, selectedRows, onSelectionChange 
                   return (
                     <td key={col.name} className="border-r border-border px-3 py-2 last:border-r-0 font-heading text-xs" style={{ overflow: "hidden" }}>
                       <div
-                        className={`truncate max-w-full ${isFk ? "cursor-pointer text-accent hover:underline" : ""}`}
+                        className={`truncate max-w-full ${isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""}`}
                         title={isNull ? "NULL" : isFk ? `FK → ${col!.fk_ref![0]}.${col!.fk_ref![1]}: ${String(cell)}` : String(cell)}
                         onClick={isFk ? () => handleFkClick(col!, cell) : undefined}
                         role={isFk ? "button" : undefined}
