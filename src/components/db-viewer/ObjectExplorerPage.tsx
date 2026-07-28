@@ -418,7 +418,7 @@ function SyntaxCode({
 
     return (
         <div>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto overscroll-x-none">
                 <pre className="text-xs leading-6 font-mono whitespace-pre w-max min-w-full">
                     {displayLines.map(
                         (entry: { tokens: Token[] }, i: number) => {
