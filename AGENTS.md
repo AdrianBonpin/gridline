@@ -217,7 +217,7 @@ cargo test               # Rust tests
 | Schema/database selector | ✅ | Ghost-style dropdowns, single-row layout |
 | Refresh database (spin + success/error feedback) | ✅ | Re-fetches databases, schemas, and tables |
 | Search tables filter | ✅ | Animated input, real-time filter by name, auto-hide on blur |
-| Column metadata (PK, FK, type, nullable, default) | ✅ | Expand table row to see columns with icons |
+| Column metadata (PK, FK, type, nullable, default) | ✅ | Expand table row to see columns with icons. ENUM/custom types resolved via udt_name, cast ::text for data retrieval. |
 | FK detection | ✅ | `information_schema.constraint_column_usage` + `PRAGMA foreign_key_list` |
 | FK preview popover | ✅ | Click FK cell → popover with referenced row → "Open" button creates filtered tab |
 | JSON/JSONB cell popover | ✅ | Formatted/Raw tabs with copy button |
@@ -234,7 +234,7 @@ cargo test               # Rust tests
 | Edit connection modal (from DB viewer) | ✅ | AnimatedModal with keychain password fetch on test |
 | Connection drop banner | ✅ | Auto-detects broken connections with reconnect prompt |
 | Inline cell editing | ❌ | Cells are read-only; changes via queue Insert button only |
-| Virtualized data grid | ❌ | Plain HTML `<table>`; TODO: @tanstack/react-virtual for 100k+ rows |
+| Virtualized data grid | ✅ | Row-level virtualization via @tanstack/react-virtual `useVirtualizer`; handles 100k+ rows |
 | Row detail / expandable row view | ❌ | |
 | Keyboard cell navigation (arrow keys, Tab) | ❌ | |
 | Cell-level copy (right-click or Ctrl+C) | ❌ | Only bulk copy via toolbar |
