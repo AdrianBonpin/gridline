@@ -12,6 +12,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import dagre from "dagre";
 import { RotateCcw, ChevronUp, ChevronDown } from "lucide-react";
+import { CrowsFootEdge } from "./CrowsFootEdge";
 import { SchemaVisualizerNode } from "./SchemaVisualizerNode";
 import { LEGEND_ITEMS } from "./legendHelpers";
 import { SelectDropdown } from "../ui/SelectDropdown";
@@ -20,6 +21,7 @@ import { useDbViewerStore } from "../../stores/dbViewerStore";
 import type { SchemaGraph, TableNode as TableNodeType } from "../../lib/types";
 
 const nodeTypes = { tableNode: SchemaVisualizerNode };
+const edgeTypes = { crowsfoot: CrowsFootEdge };
 
 const CARD_WIDTH = 240;
 const ROW_HEIGHT = 28;
@@ -76,7 +78,7 @@ function layoutGraph(
             target: refTable,
             sourceHandle: `fk-${col.name}`,
             targetHandle: `pk-${refColumn}`,
-            type: "smoothstep",
+            type: "crowsfoot",
             label: cardinality,
             markerStart: markers.markerStart || undefined,
             markerEnd: markers.markerEnd || undefined,
@@ -110,15 +112,15 @@ function layoutGraph(
 function getEdgeMarkers(cardinality: string): { markerStart: string; markerEnd: string } {
   switch (cardinality) {
     case "1:1":
-      return { markerStart: "url(#cf-one)", markerEnd: "url(#cf-one)" };
+      return { markerStart: "one", markerEnd: "one" };
     case "0..1:0..1":
-      return { markerStart: "url(#cf-zero-one)", markerEnd: "url(#cf-zero-one)" };
+      return { markerStart: "one", markerEnd: "one" };
     case "1:N":
-      return { markerStart: "url(#cf-many)", markerEnd: "url(#cf-one)" };
+      return { markerStart: "many", markerEnd: "one" };
     case "0..N":
-      return { markerStart: "url(#cf-zero-many)", markerEnd: "url(#cf-one)" };
+      return { markerStart: "many", markerEnd: "one" };
     case "N:M":
-      return { markerStart: "url(#cf-many)", markerEnd: "url(#cf-many)" };
+      return { markerStart: "many", markerEnd: "many" };
     default:
       return { markerStart: "", markerEnd: "" };
   }
@@ -277,32 +279,13 @@ export function SchemaVisualizerPage({
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           fitView
           minZoom={0.1}
           maxZoom={2}
           className="bg-canvas"
           proOptions={{ hideAttribution: true }}
         >
-          <defs>
-            <marker id="cf-one" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-              <line x1="0" y1="0" x2="0" y2="10" stroke="#3b82f6" strokeWidth="1.5" />
-            </marker>
-            <marker id="cf-many" viewBox="0 0 12 10" refX="12" refY="5" markerWidth="9" markerHeight="7" orient="auto-start-reverse">
-              <line x1="0" y1="0" x2="8" y2="2" stroke="#3b82f6" strokeWidth="1.5" />
-              <line x1="0" y1="5" x2="8" y2="5" stroke="#3b82f6" strokeWidth="1.5" />
-              <line x1="0" y1="10" x2="8" y2="8" stroke="#3b82f6" strokeWidth="1.5" />
-            </marker>
-            <marker id="cf-zero-one" viewBox="0 0 16 10" refX="16" refY="5" markerWidth="11" markerHeight="7" orient="auto-start-reverse">
-              <circle cx="3" cy="5" r="2.5" fill="none" stroke="#3b82f6" strokeWidth="1.2" />
-              <line x1="8" y1="0" x2="8" y2="10" stroke="#3b82f6" strokeWidth="1.5" />
-            </marker>
-            <marker id="cf-zero-many" viewBox="0 0 18 10" refX="18" refY="5" markerWidth="13" markerHeight="7" orient="auto-start-reverse">
-              <circle cx="3" cy="5" r="2.5" fill="none" stroke="#3b82f6" strokeWidth="1.2" />
-              <line x1="8" y1="0" x2="16" y2="2" stroke="#3b82f6" strokeWidth="1.5" />
-              <line x1="8" y1="5" x2="16" y2="5" stroke="#3b82f6" strokeWidth="1.5" />
-              <line x1="8" y1="10" x2="16" y2="8" stroke="#3b82f6" strokeWidth="1.5" />
-            </marker>
-          </defs>
           <Background variant="dots" gap={20} color="var(--color-border)" />
           <MiniMap
             position="bottom-right"
