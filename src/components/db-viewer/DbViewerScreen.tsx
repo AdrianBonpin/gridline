@@ -15,6 +15,9 @@ import { useConnectionStore } from "../../stores/connectionStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useShortcut } from "../../hooks/useShortcut";
 import { ConnectionDropBanner } from "./ConnectionDropBanner";
+import { BackupPage } from "./BackupPage";
+import { RestorePage } from "./RestorePage";
+import { SyncPage } from "./SyncPage";
 import * as cmd from "../../lib/commands";
 
 export interface DbViewerScreenProps {
@@ -566,6 +569,12 @@ export function DbViewerScreen({
                             type="extensions"
                             connectionId={connectionId}
                         />
+                    ) : currentView === "backup" ? (
+                        <BackupPage connectionId={connectionId} />
+                    ) : currentView === "restore" ? (
+                        <RestorePage connectionId={connectionId} />
+                    ) : currentView === "sync" ? (
+                        <SyncPage />
                     ) : null}
                     {currentView === "db-viewer" && <ChangesQueuePanel />}
                 </div>

@@ -1,13 +1,16 @@
 import {
+    ArrowLeftRight,
     Database,
-    Grid2x2,
+    Download,
     FunctionSquare,
     GitBranch,
+    Grid2x2,
     Home,
     ListOrdered,
     Puzzle,
     Settings,
     Tag,
+    Upload,
 } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
 
@@ -48,6 +51,13 @@ export function DbViewerSidebar({
         },
         { id: "enums", label: "Enums", icon: <Tag size={20} /> },
         { id: "extensions", label: "Extensions", icon: <Puzzle size={20} /> },
+        { id: "backup", label: "Backup", icon: <Download size={20} /> },
+        { id: "restore", label: "Restore", icon: <Upload size={20} /> },
+        {
+            id: "sync",
+            label: "DB Sync",
+            icon: <ArrowLeftRight size={20} />,
+        },
     ];
 
     const bottomItems: NavItem[] = [
