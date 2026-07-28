@@ -130,8 +130,83 @@ export function VirtualDataGrid({
     anchorRect: DOMRect | null;
   } | null>(null);
 
+  // ── cell renderer (shared between header sizing and body) ──
+
+  const renderCell = useCallback(
+    (col: ColumnInfo, row: unknown[], _rowIndex: number) => {
+      const ci = columns.findIndex((c) => c.name === col.name);
+      const cell = ci >= 0 ? row[ci] : undefined;
+      const isNull = cell === null || cell === undefined;
+      const isFk = col.is_fk && col.fk_ref && !isNull;
+      const isJson = !isNull && (col.data_type === "jsonb" || col.data_type === "json");
+      const jp = isJson ? jsonPreview(cell) : { label: "", isJson: false };
+
+      const handleJsonClick = (e: React.MouseEvent) => {
+        if (isJson) {
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          setJsonPopover({ value: cell, anchorRect: rect });
+        }
+      };
+
+      return (
+        <div
+          key={col.name}
+          className={`px-3 py-2 font-heading text-xs truncate select-text ${
+            isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""
+          } ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""}`}
+          role={isFk || isJson ? "button" : undefined}
+          tabIndex={isFk || isJson ? 0 : undefined}
+          onKeyDown={
+            isFk || isJson
+              ? (e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    if (isFk) handleFkClick(col, cell, e as any);
+                    else if (isJson) {
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      setJsonPopover({ value: cell, anchorRect: rect });
+                    }
+                  }
+                }
+              : undefined
+          }
+          style={{ width: getWidth(col.name), flexShrink: 0 }}
+          title={
+            isNull
+              ? "NULL"
+              : isFk
+                ? `FK → ${col.fk_ref![0]}.${col.fk_ref![1]}: ${String(cell)}`
+                : isJson
+                  ? "Click to view JSON"
+                  : String(cell)
+          }
+          onClick={
+            isFk
+              ? (e) => handleFkClick(col, cell, e)
+              : isJson
+                ? handleJsonClick
+                : undefined
+          }
+        >
+          {isNull ? (
+            <span className="italic text-text-muted">NULL</span>
+          ) : isJson ? (
+            <span className="inline-flex items-center gap-0.5">
+              <Braces size={10} className="shrink-0" />
+              {jp.label}
+            </span>
+          ) : (
+            String(cell)
+          )}
+        </div>
+      );
+    },
+    [columns, getWidth, handleFkClick],
+  );
+
   return (
     <div ref={parentRef} className="overflow-auto h-full" style={{ overscrollBehavior: "none" }}>
+      {/* ── header table (separated from body for reliable virtualization) ── */}
       <table className="border-collapse text-left text-sm" style={{ tableLayout: "fixed", width: "100%" }}>
         <colgroup>
           <col style={{ width: 40, minWidth: 40 }} />
@@ -139,7 +214,7 @@ export function VirtualDataGrid({
             <col key={col.name} style={{ width: getWidth(col.name) }} />
           ))}
         </colgroup>
-        <thead className="sticky top-0 z-10 bg-surface">
+        <thead className="sticky top-0 z-10 bg-transparent">
           <tr>
             <th className="border-b border-r border-border px-2 py-2">
               <input
@@ -174,119 +249,55 @@ export function VirtualDataGrid({
             ))}
           </tr>
         </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={visibleColumns.length + 1} className="py-12 text-center text-sm text-text-muted">
-                No rows in result set
-              </td>
-            </tr>
-          ) : (
-            <tr style={{ height: virtualizer.getTotalSize() }}>
-              <td style={{ padding: 0 }} colSpan={visibleColumns.length + 1}>
-                <div style={{ position: "relative" }}>
-                  {virtualizer.getVirtualItems().map((virtualRow) => {
-                    const row = rows[virtualRow.index];
-                    const isSelected = selectedRows.has(virtualRow.index);
-                    return (
-                      <div
-                        key={virtualRow.key}
-                        data-index={virtualRow.index}
-                        className={`flex items-center border-b border-border ${isSelected ? "bg-accent/5" : ""} hover:bg-surface/50`}
-                        style={{
-                          position: "absolute",
-                          top: 0,
-                          left: 0,
-                          width: "100%",
-                          height: `${virtualRow.size}px`,
-                          transform: `translateY(${virtualRow.start}px)`,
-                        }}
-                      >
-                        <div style={{ width: 40 }} className="flex justify-center">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => onToggleRow(virtualRow.index)}
-                            className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
-                          />
-                        </div>
-                        {visibleColumns.map((col) => {
-                          const ci = columns.findIndex((c) => c.name === col.name);
-                          const cell = ci >= 0 ? row[ci] : undefined;
-                          const isNull = cell === null || cell === undefined;
-                          const isFk = col.is_fk && col.fk_ref && !isNull;
-                          const isJson = !isNull && (col.data_type === "jsonb" || col.data_type === "json");
-                          const jp = isJson ? jsonPreview(cell) : { label: "", isJson: false };
-
-                          const handleJsonClick = (e: React.MouseEvent) => {
-                            if (isJson) {
-                              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                              setJsonPopover({ value: cell, anchorRect: rect });
-                            }
-                          };
-
-                          return (
-                            <div
-                              key={col.name}
-                              className={`px-3 py-2 font-heading text-xs truncate select-text ${
-                                isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""
-                              } ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""}`}
-                              role={isFk || isJson ? "button" : undefined}
-                              tabIndex={isFk || isJson ? 0 : undefined}
-                              onKeyDown={
-                                isFk || isJson
-                                  ? (e) => {
-                                      if (e.key === "Enter" || e.key === " ") {
-                                        e.preventDefault();
-                                        if (isFk) handleFkClick(col, cell, e as any);
-                                        else if (isJson) {
-                                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                          setJsonPopover({ value: cell, anchorRect: rect });
-                                        }
-                                      }
-                                    }
-                                  : undefined
-                              }
-                              style={{ width: getWidth(col.name), flexShrink: 0 }}
-                              title={
-                                isNull
-                                  ? "NULL"
-                                  : isFk
-                                    ? `FK → ${col.fk_ref![0]}.${col.fk_ref![1]}: ${String(cell)}`
-                                    : isJson
-                                      ? "Click to view JSON"
-                                      : String(cell)
-                              }
-                              onClick={
-                                isFk
-                                  ? (e) => handleFkClick(col, cell, e)
-                                  : isJson
-                                    ? handleJsonClick
-                                    : undefined
-                              }
-                            >
-                              {isNull ? (
-                                <span className="italic text-text-muted">NULL</span>
-                              ) : isJson ? (
-                                <span className="inline-flex items-center gap-0.5">
-                                  <Braces size={10} className="shrink-0" />
-                                  {jp.label}
-                                </span>
-                              ) : (
-                                String(cell)
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
-                </div>
-              </td>
-            </tr>
-          )}
-        </tbody>
       </table>
+
+      {/* ── virtual body ── */}
+      {rows.length === 0 ? (
+        <div className="py-12 text-center text-sm text-text-muted">
+          No rows in result set
+        </div>
+      ) : (
+        <div
+          style={{
+            height: virtualizer.getTotalSize(),
+            position: "relative",
+            width: "100%",
+          }}
+        >
+          {virtualizer.getVirtualItems().map((virtualRow) => {
+            const row = rows[virtualRow.index];
+            const isSelected = selectedRows.has(virtualRow.index);
+            return (
+              <div
+                key={virtualRow.key}
+                data-index={virtualRow.index}
+                className={`flex items-center border-b border-border ${
+                  isSelected ? "bg-accent/5" : "bg-canvas"
+                } hover:bg-surface/50`}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  height: `${virtualRow.size}px`,
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+              >
+                <div style={{ width: 40 }} className="flex justify-center">
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => onToggleRow(virtualRow.index)}
+                    className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
+                  />
+                </div>
+                {visibleColumns.map((col) => renderCell(col, row, virtualRow.index))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* FK preview popover */}
       {fkPreview && (
         <FkPreviewPopover
