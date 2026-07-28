@@ -172,31 +172,29 @@ export function SchemaVisualizerPage({
     <div className="flex-1 flex flex-col min-h-0 bg-canvas">
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-3 py-2 border-b border-border shrink-0">
-        {(databases.length > 1 || schemas.length > 1) && (
-          <div className="flex items-center gap-2">
-            {databases.length > 1 && (
-              <SelectDropdown
-                value={currentDatabase ?? ""}
-                onChange={setCurrentDatabase}
-                options={databases.map((d) => ({ value: d, label: d }))}
-                placeholder="Select database"
-                variant="ghost"
-              />
-            )}
-            {databases.length > 1 && schemas.length > 1 && (
-              <span className="text-border">|</span>
-            )}
-            {schemas.length > 1 && (
-              <SelectDropdown
-                value={currentSchema ?? ""}
-                options={schemaOptions}
-                onChange={handleSchemaChange}
-                placeholder="Select schema"
-                variant="ghost"
-              />
-            )}
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {databases.length > 1 && (
+            <SelectDropdown
+              value={currentDatabase ?? ""}
+              onChange={setCurrentDatabase}
+              options={databases.map((d) => ({ value: d, label: d }))}
+              placeholder="Select database"
+              variant="ghost"
+            />
+          )}
+          {databases.length > 1 && schemas.length > 0 && (
+            <span className="text-border">|</span>
+          )}
+          {schemas.length > 0 && (
+            <SelectDropdown
+              value={currentSchema ?? ""}
+              options={schemaOptions}
+              onChange={handleSchemaChange}
+              placeholder="Select schema"
+              variant="ghost"
+            />
+          )}
+        </div>
         <div className="flex-1" />
         <span className="text-xs text-text-muted">
           {tableCount} {tableCount === 1 ? "table" : "tables"}
@@ -284,7 +282,7 @@ export function SchemaVisualizerPage({
         </div>
 
         {/* Powered by React Flow */}
-        <div className="absolute bottom-3 right-3 z-10 text-[10px] text-text-muted/50 border border-border bg-surface/80 px-2 py-0.5 rounded-none pointer-events-none">
+        <div className="absolute top-0 left-0 z-10 text-[10px] text-text-muted/50 border border-border bg-surface/80 px-2 py-0.5 rounded-none pointer-events-none">
           Powered by React Flow
         </div>
       </div>
