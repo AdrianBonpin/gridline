@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DndContext, DragOverlay, closestCenter, type DragEndEvent } from "@dnd-kit/core";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useFilteredConnections } from "../../hooks/useConnections";
@@ -7,6 +8,7 @@ import { SearchBar } from "../search/SearchBar";
 import type { SearchBarHandle } from "../search/SearchBar";
 import { ActionRow } from "./ActionRow";
 import { ConnectionGrid } from "../connections/ConnectionGrid";
+import { ConnectionCard } from "../connections/ConnectionCard";
 import { CreateFolderDialog } from "../folders/CreateFolderDialog";
 import { EditFolderDialog } from "../folders/EditFolderDialog";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -36,6 +38,7 @@ export function HomeScreen() {
         type: "folder" | "selected";
         folder?: Folder;
     } | null>(null);
+    const [activeDragId, setActiveDragId] = useState<string | null>(null);
     const searchRef = useRef<SearchBarHandle>(null);
     const setSearchQuery = useUiStore((s) => s.setSearchQuery);
     const setPrefilledConnectionString = useUiStore(
@@ -54,6 +57,29 @@ export function HomeScreen() {
         setPrefilledConnectionString(url);
         setActiveView("new-connection");
     };
+
+    const handleDragEnd = useCallback(async (event: DragEndEvent) => {
+        const { active, over } = event;
+        if (!over) return;
+
+        const connectionId = active.id as string;
+        let folderId: string | null = null;
+
+        if (over.id === "root") {
+            folderId = null;
+        } else if (typeof over.id === "string" && over.id.startsWith("folder-")) {
+            const folderData = (over.data.current as any)?.folder;
+            folderId = folderData?.id ?? null;
+        } else {
+            return; // dropped on something unexpected
+        }
+
+        try {
+            await useConnectionStore.getState().moveConnection(connectionId, folderId);
+        } catch {
+            // Error handling in store; no additional action needed here
+        }
+    }, []);
 
     // Cmd+K to focus search (configurable in Settings → Shortcuts)
     useShortcut("command_palette", () => {
@@ -140,20 +166,41 @@ export function HomeScreen() {
                     visibleItemIds={visibleItemIds}
                 />
             </div>
-            <ConnectionGrid
-                connections={connections}
-                tags={tags}
-                folders={folders}
-                activeFolderId={activeFolderId}
-                onFolderSelect={setActiveFolderId}
-                hasSearch={searchQuery.length > 0}
-                onTagToggle={toggleTag}
-                onOpenDbViewer={handleOpenDbViewer}
-                onEditFolder={(f) => setEditFolder(f)}
-                onDeleteFolder={(f) =>
-                    setConfirmDelete({ type: "folder", folder: f })
-                }
-            />
+            <DndContext
+                onDragStart={(event) => setActiveDragId(event.active.id as string)}
+                onDragEnd={async (event) => {
+                    setActiveDragId(null);
+                    await handleDragEnd(event);
+                }}
+                collisionDetection={closestCenter}
+            >
+                <ConnectionGrid
+                    connections={connections}
+                    tags={tags}
+                    folders={folders}
+                    activeFolderId={activeFolderId}
+                    onFolderSelect={setActiveFolderId}
+                    hasSearch={searchQuery.length > 0}
+                    onTagToggle={toggleTag}
+                    onOpenDbViewer={handleOpenDbViewer}
+                    onEditFolder={(f) => setEditFolder(f)}
+                    onDeleteFolder={(f) =>
+                        setConfirmDelete({ type: "folder", folder: f })
+                    }
+                />
+                <DragOverlay dropAnimation={null}>
+                    {activeDragId && connections.find((c) => c.id === activeDragId) ? (
+                        <div className="opacity-80">
+                            <ConnectionCard
+                                connection={connections.find((c) => c.id === activeDragId)!}
+                                tags={tags}
+                                onTagToggle={() => {}}
+                                onOpenDbViewer={() => {}}
+                            />
+                        </div>
+                    ) : null}
+                </DragOverlay>
+            </DndContext>
             <CreateFolderDialog
                 open={folderDialogOpen}
                 parentOptions={folders}
