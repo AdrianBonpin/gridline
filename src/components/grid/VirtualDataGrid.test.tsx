@@ -193,4 +193,49 @@ describe("VirtualDataGrid", () => {
     const handles = document.querySelectorAll('[class*="cursor-col-resize"]');
     expect(handles.length).toBe(2); // one per visible column
   });
+
+  it("renders 10000 rows without crashing (virtualization)", () => {
+    const bigRows: unknown[][] = Array.from({ length: 10000 }, (_, i) => [i, `Name${i}`]);
+    mockGetTotalSize.mockReturnValue(10000 * 36);
+    mockGetVirtualItems.mockReturnValue(
+      Array.from({ length: 20 }, (_, i) => ({ key: i, index: i, start: i * 36, size: 36 }))
+    );
+    render(
+      <VirtualDataGrid connectionId="conn-1" rows={bigRows} columns={mockColumns}
+        hiddenColumns={new Set()} selectedRows={new Set()}
+        onToggleRow={() => {}} onToggleAll={() => {}} />,
+    );
+    const checkboxes = screen.getAllByRole("checkbox");
+    expect(checkboxes.length).toBeLessThan(50); // virtualized: only visible rows + select all
+  });
+
+  it("shows select-all as checked when all rows selected", () => {
+    const allSelected = new Set([0, 1]);
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(
+      mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 }))
+    );
+    render(
+      <VirtualDataGrid connectionId="conn-1" rows={mockRows} columns={mockColumns}
+        hiddenColumns={new Set()} selectedRows={allSelected}
+        onToggleRow={() => {}} onToggleAll={() => {}} />,
+    );
+    const selectAll = screen.getAllByRole("checkbox")[0] as HTMLInputElement;
+    expect(selectAll.checked).toBe(true);
+  });
+
+  it("hides columns in hiddenColumns set", () => {
+    const hidden = new Set(["name"]);
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(
+      mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 }))
+    );
+    render(
+      <VirtualDataGrid connectionId="conn-1" rows={mockRows} columns={mockColumns}
+        hiddenColumns={hidden} selectedRows={new Set()}
+        onToggleRow={() => {}} onToggleAll={() => {}} />,
+    );
+    expect(screen.queryByText("name")).not.toBeInTheDocument();
+    expect(screen.getByText("id")).toBeInTheDocument();
+  });
 });
