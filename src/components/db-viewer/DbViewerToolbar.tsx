@@ -104,23 +104,32 @@ export function DbViewerToolbar({
           </Tooltip>
         </div>
       </div>
-      {databases.length > 1 && (
-        <SelectDropdown
-          value={currentDatabase ?? ""}
-          onChange={setCurrentDatabase}
-          options={databases.map((d) => ({ value: d, label: d }))}
-          placeholder="Select database"
-          aria-label="Select database"
-        />
-      )}
-      {schemas.length > 1 && (
-        <SelectDropdown
-          value={currentSchema ?? ""}
-          onChange={setCurrentSchema}
-          options={schemas.map((s) => ({ value: s, label: s }))}
-          placeholder="Select schema"
-          aria-label="Select schema"
-        />
+      {(databases.length > 1 || schemas.length > 1) && (
+        <div className="flex items-center gap-2">
+          {databases.length > 1 && (
+            <SelectDropdown
+              value={currentDatabase ?? ""}
+              onChange={setCurrentDatabase}
+              options={databases.map((d) => ({ value: d, label: d }))}
+              placeholder="Select database"
+              aria-label="Select database"
+              variant="ghost"
+            />
+          )}
+          {databases.length > 1 && schemas.length > 1 && (
+            <span className="text-border">|</span>
+          )}
+          {schemas.length > 1 && (
+            <SelectDropdown
+              value={currentSchema ?? ""}
+              onChange={setCurrentSchema}
+              options={schemas.map((s) => ({ value: s, label: s }))}
+              placeholder="Select schema"
+              aria-label="Select schema"
+              variant="ghost"
+            />
+          )}
+        </div>
       )}
     </div>
   );

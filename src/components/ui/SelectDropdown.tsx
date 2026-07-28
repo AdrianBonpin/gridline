@@ -11,6 +11,7 @@ interface SelectDropdownProps {
   onChange: (value: string) => void;
   options: SelectDropdownOption[];
   placeholder?: string;
+  variant?: "pill" | "ghost";
   "aria-label"?: string;
 }
 
@@ -19,6 +20,7 @@ export function SelectDropdown({
   onChange,
   options,
   placeholder = "Select…",
+  variant = "pill",
   "aria-label": ariaLabel,
 }: SelectDropdownProps) {
   const [open, setOpen] = useState(false);
@@ -51,18 +53,22 @@ export function SelectDropdown({
     setOpen(false);
   };
 
+  const buttonClass = variant === "ghost"
+    ? "flex items-center gap-1 text-sm text-text-muted hover:text-text transition-colors cursor-pointer"
+    : "w-full flex items-center justify-between rounded-full bg-surface border border-border px-4 py-2 pr-10 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer";
+
   return (
     <div className="relative" ref={menuRef}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-label={ariaLabel}
-        className="w-full flex items-center justify-between rounded-full bg-surface border border-border px-4 py-2 pr-10 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
+        className={buttonClass}
       >
         <span className="truncate">{selectedLabel}</span>
         <ChevronDown
           size={14}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+          className={variant === "ghost" ? "text-text-muted" : "absolute right-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"}
         />
       </button>
       {open && (
