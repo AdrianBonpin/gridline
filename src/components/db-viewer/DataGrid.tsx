@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Key } from "lucide-react";
+import { Key, Braces } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { abbreviateType } from "../../lib/utils";
 import { FkPreviewPopover } from "./FkPreviewPopover";
+import { JsonCellPopover, jsonPreview } from "./JsonCellPopover";
 
 // TODO: Replace this plain HTML table with @tanstack/react-virtual for large
 // result sets so we can render millions of rows without DOM overhead.
@@ -35,6 +36,12 @@ export function DataGrid({ connectionId, rows, hiddenColumns, selectedRows, onSe
     table: string;
     column: string;
     value: string;
+    anchorRect: DOMRect | null;
+  } | null>(null);
+
+  // JSON cell popover state
+  const [jsonPopover, setJsonPopover] = useState<{
+    value: unknown;
     anchorRect: DOMRect | null;
   } | null>(null);
 
@@ -268,19 +275,33 @@ export function DataGrid({ connectionId, rows, hiddenColumns, selectedRows, onSe
                   const cell = ci >= 0 ? row[ci] : undefined;
                   const isNull = cell === null || cell === undefined;
                   const isFk = col.is_fk && col.fk_ref && !isNull;
+                  const isJson = !isNull && (col.data_type === "jsonb" || col.data_type === "json");
+                  const jp = isJson ? jsonPreview(cell) : { label: "", isJson: false };
+
+                  const handleJsonClick = (e: React.MouseEvent) => {
+                    if (isJson) {
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      setJsonPopover({ value: cell, anchorRect: rect });
+                    }
+                  };
 
                   return (
                     <td key={col.name} className="border-r border-border px-3 py-2 last:border-r-0 font-heading text-xs" style={{ overflow: "hidden" }}>
                       <div
-                        className={`truncate max-w-full ${isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""}`}
-                        title={isNull ? "NULL" : isFk ? `FK → ${col!.fk_ref![0]}.${col!.fk_ref![1]}: ${String(cell)}` : String(cell)}
-                        onClick={isFk ? (e) => handleFkClick(col!, cell, e) : undefined}
-                        role={isFk ? "button" : undefined}
-                        tabIndex={isFk ? 0 : undefined}
-                        onKeyDown={isFk ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleFkClick(col!, cell, e as any); } } : undefined}
+                        className={`truncate max-w-full select-text ${isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""} ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""}`}
+                        title={isNull ? "NULL" : isFk ? `FK → ${col!.fk_ref![0]}.${col!.fk_ref![1]}: ${String(cell)}` : isJson ? "Click to view JSON" : String(cell)}
+                        onClick={isFk ? (e) => handleFkClick(col!, cell, e) : isJson ? handleJsonClick : undefined}
+                        role={isFk || isJson ? "button" : undefined}
+                        tabIndex={isFk || isJson ? 0 : undefined}
+                        onKeyDown={isFk ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleFkClick(col!, cell, e as any); } } : isJson ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleJsonClick(e as any); } } : undefined}
                       >
                         {isNull ? (
                           <span className="italic text-text-muted">NULL</span>
+                        ) : isJson ? (
+                          <span className="inline-flex items-center gap-0.5">
+                            <Braces size={10} className="shrink-0" />
+                            {jp.label}
+                          </span>
                         ) : (
                           String(cell)
                         )}
@@ -303,6 +324,14 @@ export function DataGrid({ connectionId, rows, hiddenColumns, selectedRows, onSe
           value={fkPreview.value}
           anchorRect={fkPreview.anchorRect}
           onClose={() => setFkPreview(null)}
+        />
+      )}
+      {/* JSON cell popover */}
+      {jsonPopover && (
+        <JsonCellPopover
+          value={jsonPopover.value}
+          anchorRect={jsonPopover.anchorRect}
+          onClose={() => setJsonPopover(null)}
         />
       )}
     </div>
