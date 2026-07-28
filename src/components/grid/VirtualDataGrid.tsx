@@ -59,6 +59,9 @@ export function VirtualDataGrid({
     [colWidths],
   );
 
+  // Total width for horizontal scroll support
+  const totalWidth = 40 + visibleColumns.reduce((sum, c) => sum + getWidth(c.name), 0);
+
   const resizeRef = useRef<{ col: string; startX: number; startWidth: number } | null>(null);
 
   const startResize = useCallback(
@@ -151,7 +154,7 @@ export function VirtualDataGrid({
       return (
         <div
           key={col.name}
-          className={`px-3 py-2 font-heading text-xs truncate select-text ${
+          className={`px-3 py-2 font-heading text-xs truncate select-text border-r border-border ${
             isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""
           } ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""}`}
           role={isFk || isJson ? "button" : undefined}
@@ -207,9 +210,9 @@ export function VirtualDataGrid({
   return (
     <div ref={parentRef} className="overflow-auto h-full" style={{ overscrollBehavior: "none" }}>
       {/* ── sticky header ── */}
-      <div className="sticky top-0 z-10 bg-canvas border-b border-border">
-        <div className="flex items-center">
-          <div style={{ width: 40, minWidth: 40 }} className="px-2 py-2 flex justify-center">
+      <div className="sticky top-0 z-10 bg-canvas">
+        <div className="flex items-center border-b border-border" style={{ minWidth: totalWidth }}>
+          <div style={{ width: 40, minWidth: 40 }} className="px-2 py-2 flex justify-center border-r border-border">
             <input
               ref={selectAllRef}
               type="checkbox"
@@ -269,12 +272,12 @@ export function VirtualDataGrid({
                   position: "absolute",
                   top: 0,
                   left: 0,
-                  width: "100%",
+                  minWidth: totalWidth,
                   height: `${virtualRow.size}px`,
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
               >
-                <div style={{ width: 40, minWidth: 40 }} className="flex justify-center">
+                <div style={{ width: 40, minWidth: 40 }} className="flex justify-center border-r border-border">
                   <input
                     type="checkbox"
                     checked={isSelected}
