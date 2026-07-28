@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
-import { X } from "lucide-react";
+import { AnimatedModal } from "../ui/AnimatedModal";
+import { Button } from "../ui/Button";
 import { DetailedConnectionForm } from "../connections/DetailedConnectionForm";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -73,13 +74,19 @@ export function EditConnectionModal({
   const handleTest = useCallback(async () => {
     setTesting(true);
     try {
+      // Fetch password from keychain if not provided in form
+      let password = form.password;
+      if (!password) {
+        password = await useConnectionStore.getState().getConnectionPassword(connection.id).catch(() => null);
+      }
+
       const result = await testConnection({
         name: form.name,
         db_type: form.db_type,
         host: form.host,
         port: form.port,
         username: form.username,
-        password: form.password,
+        password,
         database: form.database,
         folder_id: form.folder_id,
         environment: form.environment,
@@ -95,39 +102,22 @@ export function EditConnectionModal({
     } finally {
       setTesting(false);
     }
-  }, [form, notify]);
-
-  if (!open) return null;
+  }, [form, notify, connection.id]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] bg-black/50">
-      <div className="w-full max-w-lg max-h-[80vh] overflow-y-auto rounded-xl bg-surface border border-border shadow-2xl">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <h2 className="text-sm font-semibold text-text">Edit Connection</h2>
-          <button onClick={onClose} className="text-text-muted hover:text-text cursor-pointer">
-            <X size={18} />
-          </button>
-        </div>
-        <div className="p-4">
-          <DetailedConnectionForm form={form} onChange={(updates) => setForm((prev) => ({ ...prev, ...updates }))} />
-        </div>
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
-          <button
-            onClick={handleTest}
-            disabled={testing}
-            className="rounded-lg border border-border px-4 py-1.5 text-sm text-text hover:bg-surface-raised transition-colors disabled:opacity-50 cursor-pointer"
-          >
+    <AnimatedModal open={open} onClose={onClose}>
+      <div className="w-full min-w-md max-w-lg max-h-[80vh] overflow-y-auto">
+        <h3 className="font-heading text-text text-lg mb-4">Edit Connection</h3>
+        <DetailedConnectionForm form={form} onChange={(updates) => setForm((prev) => ({ ...prev, ...updates }))} />
+        <div className="flex justify-end gap-2 mt-4">
+          <Button variant="ghost" onClick={handleTest} disabled={testing}>
             {testing ? "Testing..." : "Test"}
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="rounded-lg bg-accent px-4 py-1.5 text-sm text-white hover:bg-accent/90 transition-colors disabled:opacity-50 cursor-pointer"
-          >
+          </Button>
+          <Button onClick={handleSave} disabled={saving}>
             {saving ? "Saving..." : "Save"}
-          </button>
+          </Button>
         </div>
       </div>
-    </div>
+    </AnimatedModal>
   );
 }

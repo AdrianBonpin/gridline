@@ -222,6 +222,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
                 currentSchema={currentSchema}
                 setCurrentSchema={setCurrentSchema}
                 onEdit={() => setEditModalOpen(true)}
+                connectionId={connectionId}
               />
               <div className="flex-1 overflow-y-auto" style={{ overscrollBehavior: "none" }}>
                 <TableTree />
