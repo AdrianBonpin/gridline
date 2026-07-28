@@ -3,8 +3,10 @@ import type { Connection, Tag } from "../../lib/types";
 import { DB_ICONS, DB_LABELS } from "../../lib/dbIcons";
 import { ENV_LABELS, ENV_COLORS } from "../../lib/environment";
 import { TagBadge } from "../tags/TagBadge";
-import { Check } from "lucide-react";
+import { Check, GripVertical } from "lucide-react";
 import { useUiStore } from "../../stores/uiStore";
+import { useDraggable } from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
 
 interface ConnectionCardProps {
     connection: Connection;
@@ -21,6 +23,18 @@ function ConnectionCardBase({
 }: ConnectionCardProps) {
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const toggleItemSelection = useUiStore((s) => s.toggleItemSelection);
+
+    const { attributes, listeners, setNodeRef, transform, isDragging } =
+        useDraggable({
+            id: connection.id,
+            data: { type: "connection", connection },
+        });
+
+    const style: React.CSSProperties = {
+        transform: CSS.Translate.toString(transform),
+        opacity: isDragging ? 0.5 : 1,
+        cursor: isDragging ? "grabbing" : "default",
+    };
     const tagMap = new Map(tags.map((t) => [t.id, t]));
     const cardTags = connection.tag_ids
         .map((id) => tagMap.get(id))
@@ -42,6 +56,8 @@ function ConnectionCardBase({
 
     return (
         <div
+            ref={setNodeRef}
+            style={style}
             onClick={handleClick}
             className={`relative group rounded-xl border transition-colors cursor-pointer ${
                 isSelected
@@ -49,6 +65,14 @@ function ConnectionCardBase({
                     : "bg-surface border-border hover:border-border-hover"
             }`}
         >
+            <div
+                {...listeners}
+                {...attributes}
+                className="absolute top-1 left-1 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab z-10"
+                aria-label="Drag to move connection"
+            >
+                <GripVertical size={14} className="text-text-muted" />
+            </div>
             <div className="p-4">
                 <div className="flex items-center gap-3 mb-2">
                     <div className="w-9 h-9 rounded-lg bg-surface-raised border border-border flex items-center justify-center text-xl">
