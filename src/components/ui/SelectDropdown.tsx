@@ -40,10 +40,11 @@ export function SelectDropdown({
         setOpen(false);
       }
     };
-    document.addEventListener("mousedown", handleMouseDown);
+    // Use capture phase so we fire before React Flow's stopPropagation
+    document.addEventListener("mousedown", handleMouseDown, true);
     document.addEventListener("keydown", handleKeyDown);
     return () => {
-      document.removeEventListener("mousedown", handleMouseDown);
+      document.removeEventListener("mousedown", handleMouseDown, true);
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [open]);
