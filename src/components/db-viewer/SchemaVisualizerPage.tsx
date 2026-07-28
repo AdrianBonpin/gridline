@@ -11,7 +11,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import dagre from "dagre";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, ChevronUp, ChevronDown } from "lucide-react";
 import { SchemaVisualizerNode } from "./SchemaVisualizerNode";
 import { LEGEND_ITEMS } from "./legendHelpers";
 import { SelectDropdown } from "../ui/SelectDropdown";
@@ -29,15 +29,26 @@ function getNodeHeight(colCount: number): number {
   return HEADER_HEIGHT + colCount * ROW_HEIGHT + 4;
 }
 
-function layoutGraph(tables: TableNodeType[]): { nodes: Node[]; edges: Edge[] } {
+function layoutGraph(
+  tables: TableNodeType[],
+  relationships: { source_table: string; target_table: string; source_column: string; target_column: string; cardinality: string }[],
+): { nodes: Node[]; edges: Edge[] } {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({ rankdir: "LR", nodesep: 60, ranksep: 120, marginx: 40, marginy: 40 });
 
+  // Build a lookup: key = "sourceTable.sourceCol->targetTable.targetCol" → cardinality
+  const cardinalityMap = new Map<string, string>();
+  for (const rel of relationships) {
+    cardinalityMap.set(
+      `${rel.source_table}.${rel.source_column}->${rel.target_table}.${rel.target_column}`,
+      rel.cardinality,
+    );
+  }
+
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
-  // Build nodes
   for (const table of tables) {
     const height = getNodeHeight(table.columns.length);
     g.setNode(table.name, { width: CARD_WIDTH, height });
@@ -50,25 +61,30 @@ function layoutGraph(tables: TableNodeType[]): { nodes: Node[]; edges: Edge[] } 
     });
   }
 
-  // Build edges from FK references in columns
   for (const table of tables) {
     for (const col of table.columns) {
       if (col.fk_ref) {
         const [refSchema, refTable, refColumn] = col.fk_ref;
         if (tables.some((t) => t.name === refTable && t.schema === refSchema)) {
+          const edgeKey = `${table.name}.${col.name}->${refTable}.${refColumn}`;
+          const cardinality = cardinalityMap.get(edgeKey) ?? "1:N";
+          const markers = getEdgeMarkers(cardinality);
+
           g.setEdge(table.name, refTable, {});
           edges.push({
-            id: `${table.name}.${col.name}->${refTable}.${refColumn}`,
+            id: edgeKey,
             source: table.name,
             target: refTable,
             sourceHandle: `fk-${col.name}`,
             targetHandle: `pk-${refColumn}`,
             type: "smoothstep",
-            label: "1:N",
+            label: cardinality,
+            markerStart: markers.markerStart,
+            markerEnd: markers.markerEnd,
             style: { stroke: "#3b82f6", strokeWidth: 1.5 },
-            labelStyle: { fill: "#9ca3af", fontSize: 10 },
-            labelBgStyle: { fill: "#1f2937", fillOpacity: 0.9 },
-            labelBgPadding: [4, 2],
+            labelStyle: { fill: "#9ca3af", fontSize: 9 },
+            labelBgStyle: { fill: "#1f2937", fillOpacity: 0.85 },
+            labelBgPadding: [3, 1],
             labelBorderRadius: 0,
           });
         }
@@ -78,7 +94,6 @@ function layoutGraph(tables: TableNodeType[]): { nodes: Node[]; edges: Edge[] } 
 
   dagre.layout(g);
 
-  // Apply dagre positions
   for (const node of nodes) {
     const dagreNode = g.node(node.id);
     if (dagreNode) {
@@ -90,6 +105,19 @@ function layoutGraph(tables: TableNodeType[]): { nodes: Node[]; edges: Edge[] } 
   }
 
   return { nodes, edges };
+}
+
+function getEdgeMarkers(cardinality: string): { markerStart: string; markerEnd: string } {
+  switch (cardinality) {
+    case "1:1":
+      return { markerStart: "url(#cf-one)", markerEnd: "url(#cf-one)" };
+    case "1:N":
+      return { markerStart: "url(#cf-many)", markerEnd: "url(#cf-one)" };
+    case "N:M":
+      return { markerStart: "url(#cf-many)", markerEnd: "url(#cf-many)" };
+    default:
+      return { markerStart: "", markerEnd: "" };
+  }
 }
 
 export interface SchemaVisualizerPageProps {
@@ -112,7 +140,7 @@ export function SchemaVisualizerPage({
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tableCount, setTableCount] = useState(0);
+  const [legendOpen, setLegendOpen] = useState(true);
 
   const fetchGraph = useCallback(async () => {
     if (!currentSchema) return;
@@ -125,7 +153,7 @@ export function SchemaVisualizerPage({
         setEdges([]);
         setTableCount(0);
       } else {
-        const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(graph.tables);
+        const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(graph.tables, graph.relationships);
         setNodes(layoutedNodes);
         setEdges(layoutedEdges);
         if (graph.tables.length > 200) {
@@ -238,6 +266,20 @@ export function SchemaVisualizerPage({
           </div>
         )}
 
+        {/* SVG marker defs for crow's foot notation */}
+        <svg className="absolute w-0 h-0" aria-hidden="true">
+          <defs>
+            <marker id="cf-one" viewBox="0 0 12 12" refX="12" refY="6" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <line x1="2" y1="0" x2="2" y2="12" stroke="#3b82f6" strokeWidth="1.5" />
+            </marker>
+            <marker id="cf-many" viewBox="0 0 14 12" refX="14" refY="6" markerWidth="10" markerHeight="8" orient="auto-start-reverse">
+              <line x1="0" y1="0" x2="10" y2="3" stroke="#3b82f6" strokeWidth="1.5" />
+              <line x1="0" y1="12" x2="10" y2="9" stroke="#3b82f6" strokeWidth="1.5" />
+              <line x1="0" y1="6" x2="10" y2="6" stroke="#3b82f6" strokeWidth="1.5" />
+            </marker>
+          </defs>
+        </svg>
+
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -266,19 +308,30 @@ export function SchemaVisualizerPage({
 
         {/* Legend */}
         <div className="absolute top-3 right-3 z-10 bg-surface border border-border rounded-none px-3 py-2 text-xs shadow-lg">
-          <p className="font-semibold text-text mb-1.5">Relationships</p>
-          {LEGEND_ITEMS.map((item) => (
-            <div key={item.cardinality} className="flex items-center gap-2 py-0.5">
-              <span
-                className="w-3 h-0.5 inline-block"
-                style={{ backgroundColor: item.color }}
-              />
-              <span className="text-text-muted font-mono text-[10px]">
-                {item.cardinality}
-              </span>
-              <span className="text-text-muted">{item.label}</span>
+          <button
+            type="button"
+            onClick={() => setLegendOpen(!legendOpen)}
+            className="flex items-center gap-1 font-semibold text-text w-full"
+          >
+            {legendOpen ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+            Relationships
+          </button>
+          {legendOpen && (
+            <div className="mt-1.5">
+              {LEGEND_ITEMS.map((item) => (
+                <div key={item.cardinality} className="flex items-center gap-2 py-0.5">
+                  <span
+                    className="w-3 h-0.5 inline-block"
+                    style={{ backgroundColor: item.color }}
+                  />
+                  <span className="text-text-muted font-mono text-[10px]">
+                    {item.cardinality}
+                  </span>
+                  <span className="text-text-muted">{item.label}</span>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
 
         {/* Powered by React Flow */}
