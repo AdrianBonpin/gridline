@@ -9,3 +9,4 @@ pub mod ssh;
 pub mod keychain;
 pub mod demo;
 pub mod backup;
+pub mod schema_graph;
