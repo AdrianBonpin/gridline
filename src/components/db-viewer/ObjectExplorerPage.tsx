@@ -70,6 +70,24 @@ type AnyObject =
     | EnumInfo
     | ExtensionInfo;
 
+/** Build a unique key per item. Functions use their signature to disambiguate overloads. */
+function itemKey(item: AnyObject): string {
+    const name = (item as any).name as string;
+    if ("argument_types" in item && Array.isArray(item.argument_types)) {
+        return `${name}(${item.argument_types.join(",")})`;
+    }
+    return name;
+}
+
+/** Display name for the tree list. Functions show their argument signature. */
+function itemLabel(item: AnyObject): string {
+    const name = (item as any).name as string;
+    if ("argument_types" in item && Array.isArray(item.argument_types) && item.argument_types.length > 0) {
+        return `${name}(${item.argument_types.join(", ")})`;
+    }
+    return name;
+}
+
 function SourceCode({ source }: { source: string }) {
     const [expanded, setExpanded] = useState(false);
     const maxLen = 500;
@@ -379,8 +397,8 @@ export function ObjectExplorerPage({
         if (!items) return [];
         if (!q) return items;
         return items.filter((item) => {
-            const name = "name" in item ? (item as any).name : "";
-            return name.toLowerCase().includes(q);
+            const label = itemLabel(item).toLowerCase();
+            return label.includes(q);
         });
     }, [items, q]);
 
@@ -529,17 +547,15 @@ export function ObjectExplorerPage({
 
                     {!loading &&
                         filtered.map((item) => {
-                            const name =
-                                "name" in item
-                                    ? (item as any).name
-                                    : "";
+                            const name = itemLabel(item);
+                            const key = itemKey(item);
                             const isSelected =
-                                selectedItem &&
-                                (selectedItem as any).name === name;
+                                selectedItem !== null &&
+                                itemKey(selectedItem) === itemKey(item);
 
                             return (
                                 <div
-                                    key={name}
+                                    key={key}
                                     onClick={() => setSelectedItem(item)}
                                     className={`group flex items-center gap-1 px-3 py-1 cursor-pointer transition-colors ${
                                         isSelected
@@ -581,7 +597,7 @@ export function ObjectExplorerPage({
                             </div>
                             <div>
                                 <h2 className="text-lg font-semibold text-text font-mono">
-                                    {(selectedItem as any).name}
+                                    {itemLabel(selectedItem)}
                                 </h2>
                                 <p className="text-xs text-text-muted capitalize">
                                     {singular}
