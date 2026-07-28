@@ -101,8 +101,11 @@ export function SchemaVisualizerPage({
   connectionId,
   onSchemaChange,
 }: SchemaVisualizerPageProps) {
+  const databases = useDbViewerStore((s) => s.databases);
   const schemas = useDbViewerStore((s) => s.schemas);
+  const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
   const currentSchema = useDbViewerStore((s) => s.currentSchema);
+  const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
   const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
@@ -169,12 +172,31 @@ export function SchemaVisualizerPage({
     <div className="flex-1 flex flex-col min-h-0 bg-canvas">
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-3 py-2 border-b border-border shrink-0">
-        <SelectDropdown
-          value={currentSchema ?? ""}
-          options={schemaOptions}
-          onChange={handleSchemaChange}
-          placeholder="Select schema"
-        />
+        {(databases.length > 1 || schemas.length > 1) && (
+          <div className="flex items-center gap-2">
+            {databases.length > 1 && (
+              <SelectDropdown
+                value={currentDatabase ?? ""}
+                onChange={setCurrentDatabase}
+                options={databases.map((d) => ({ value: d, label: d }))}
+                placeholder="Select database"
+                variant="ghost"
+              />
+            )}
+            {databases.length > 1 && schemas.length > 1 && (
+              <span className="text-border">|</span>
+            )}
+            {schemas.length > 1 && (
+              <SelectDropdown
+                value={currentSchema ?? ""}
+                options={schemaOptions}
+                onChange={handleSchemaChange}
+                placeholder="Select schema"
+                variant="ghost"
+              />
+            )}
+          </div>
+        )}
         <div className="flex-1" />
         <span className="text-xs text-text-muted">
           {tableCount} {tableCount === 1 ? "table" : "tables"}
@@ -228,16 +250,19 @@ export function SchemaVisualizerPage({
           minZoom={0.1}
           maxZoom={2}
           className="bg-canvas"
+          proOptions={{ hideAttribution: true }}
         >
           <Background variant="dots" gap={20} color="var(--color-border)" />
           <MiniMap
             position="bottom-right"
-            className="!bg-surface !border !border-border !rounded-none"
+            nodeStrokeWidth={2}
+            nodeClassName="!fill-accent/20 !stroke-accent"
             maskColor="var(--color-canvas)"
+            className="!bg-surface !border !border-border !rounded-none !shadow-lg"
           />
           <Controls
             position="bottom-left"
-            className="!bg-surface !border !border-border !rounded-none"
+            className="!rounded-none !shadow-lg [&_button]:!bg-surface [&_button]:!text-text-muted [&_button]:!border-border [&_button]:hover:!bg-surface-raised [&_button]:hover:!text-text [&_button]:!shadow-none"
           />
         </ReactFlow>
 
@@ -256,6 +281,11 @@ export function SchemaVisualizerPage({
               <span className="text-text-muted">{item.label}</span>
             </div>
           ))}
+        </div>
+
+        {/* Powered by React Flow */}
+        <div className="absolute bottom-3 right-3 z-10 text-[10px] text-text-muted/50 border border-border bg-surface/80 px-2 py-0.5 rounded-none pointer-events-none">
+          Powered by React Flow
         </div>
       </div>
     </div>
