@@ -154,7 +154,7 @@ export function VirtualDataGrid({
       return (
         <div
           key={col.name}
-          className={`px-3 py-2 font-heading text-xs truncate select-text border-r border-border ${
+          className={`px-3 py-2 font-heading text-xs truncate select-text border-r border-border self-stretch ${
             isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""
           } ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""}`}
           role={isFk || isJson ? "button" : undefined}
@@ -212,7 +212,7 @@ export function VirtualDataGrid({
       {/* ── sticky header ── */}
       <div className="sticky top-0 z-10 bg-canvas">
         <div className="flex items-center border-b border-border" style={{ minWidth: totalWidth }}>
-          <div style={{ width: 40, minWidth: 40 }} className="px-2 py-2 flex justify-center border-r border-border">
+          <div style={{ width: 40, minWidth: 40 }} className="px-2 py-2 flex items-center justify-center border-r border-border self-stretch">
             <input
               ref={selectAllRef}
               type="checkbox"
@@ -224,7 +224,7 @@ export function VirtualDataGrid({
           {visibleColumns.map((col) => (
             <div
               key={col.name}
-              className="group relative px-3 py-2 font-heading text-text-muted border-r border-border last:border-r-0"
+              className="group relative px-3 py-2 font-heading text-text-muted border-r border-border last:border-r-0 self-stretch"
               style={{ width: getWidth(col.name), flexShrink: 0 }}
             >
               <div className="truncate flex items-center gap-1">
@@ -277,7 +277,7 @@ export function VirtualDataGrid({
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
               >
-                <div style={{ width: 40, minWidth: 40 }} className="flex justify-center border-r border-border">
+                <div style={{ width: 40, minWidth: 40 }} className="flex items-center justify-center border-r border-border self-stretch">
                   <input
                     type="checkbox"
                     checked={isSelected}
