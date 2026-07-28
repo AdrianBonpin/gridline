@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Key, Braces } from "lucide-react";
 import type { ColumnInfo } from "../../lib/types";
@@ -34,6 +34,14 @@ export function VirtualDataGrid({
 
   const visibleColumns = columns.filter((c) => !hiddenColumns.has(c.name));
   const allSelected = rows.length > 0 && selectedRows.size === rows.length;
+  const selectAllRef = useRef<HTMLInputElement>(null);
+
+  // Indeterminate state for partial selection
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = selectedRows.size > 0 && selectedRows.size < rows.length;
+    }
+  }, [selectedRows.size, rows.length]);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -135,6 +143,7 @@ export function VirtualDataGrid({
           <tr>
             <th className="border-b border-r border-border px-2 py-2">
               <input
+                ref={selectAllRef}
                 type="checkbox"
                 checked={allSelected}
                 onChange={onToggleAll}
@@ -207,7 +216,7 @@ export function VirtualDataGrid({
                           const isNull = cell === null || cell === undefined;
                           const isFk = col.is_fk && col.fk_ref && !isNull;
                           const isJson = !isNull && (col.data_type === "jsonb" || col.data_type === "json");
-                          const jp = isJson ? jsonPreview(cell) : null;
+                          const jp = isJson ? jsonPreview(cell) : { label: "", isJson: false };
 
                           const handleJsonClick = (e: React.MouseEvent) => {
                             if (isJson) {
@@ -222,6 +231,22 @@ export function VirtualDataGrid({
                               className={`px-3 py-2 font-heading text-xs truncate select-text ${
                                 isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""
                               } ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""}`}
+                              role={isFk || isJson ? "button" : undefined}
+                              tabIndex={isFk || isJson ? 0 : undefined}
+                              onKeyDown={
+                                isFk || isJson
+                                  ? (e) => {
+                                      if (e.key === "Enter" || e.key === " ") {
+                                        e.preventDefault();
+                                        if (isFk) handleFkClick(col, cell, e as any);
+                                        else if (isJson) {
+                                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                          setJsonPopover({ value: cell, anchorRect: rect });
+                                        }
+                                      }
+                                    }
+                                  : undefined
+                              }
                               style={{ width: getWidth(col.name), flexShrink: 0 }}
                               title={
                                 isNull
@@ -245,7 +270,7 @@ export function VirtualDataGrid({
                               ) : isJson ? (
                                 <span className="inline-flex items-center gap-0.5">
                                   <Braces size={10} className="shrink-0" />
-                                  {jp!.label}
+                                  {jp.label}
                                 </span>
                               ) : (
                                 String(cell)
