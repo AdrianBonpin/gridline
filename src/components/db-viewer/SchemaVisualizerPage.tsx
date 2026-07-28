@@ -100,8 +100,15 @@ function layoutGraph(
     const srcPos = posMap.get(table.name);
     const tgtPos = posMap.get(refTable);
 
-    // Pick handle side: use the side closest to the connected node
-    const srcOnLeft = srcPos && tgtPos ? srcPos.x < tgtPos.x : true;
+    // Pick handle side: compute distance for both combinations, pick shortest
+    const srcOnLeft = (() => {
+      if (!srcPos || !tgtPos) return true;
+      // Right FK + Left PK (facing each other)
+      const d1 = Math.hypot((srcPos.x + CARD_WIDTH) - tgtPos.x, srcPos.y - tgtPos.y);
+      // Left FK + Right PK (backs facing)
+      const d2 = Math.hypot(srcPos.x - (tgtPos.x + CARD_WIDTH), srcPos.y - tgtPos.y);
+      return d1 <= d2;
+    })();
     const sourceHandle = srcOnLeft ? `fk-${col.name}` : `fk-left-${col.name}`;
     const targetHandle = srcOnLeft ? `pk-${refColumn}` : `pk-right-${refColumn}`;
 
