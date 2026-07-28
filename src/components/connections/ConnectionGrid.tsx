@@ -1,10 +1,12 @@
 import type { Connection, Folder, Tag } from "../../lib/types";
+import { useMemo } from "react";
 import { Folder as FolderIcon, Check, Pencil, Trash2 } from "lucide-react";
 import { useDroppable } from "@dnd-kit/core";
 import { ConnectionCard } from "./ConnectionCard";
 import { FolderBreadcrumb } from "../folders/FolderBreadcrumb";
-import { getChildFolders } from "../../lib/utils";
+import { getChildFolders, getDescendantFolderIds } from "../../lib/utils";
 import { useUiStore } from "../../stores/uiStore";
+import { useConnectionStore } from "../../stores/connectionStore";
 import { TagBadge } from "../tags/TagBadge";
 
 interface DroppableFolderCardProps {
@@ -136,6 +138,16 @@ export function ConnectionGrid({
     const directConnections = connections.filter(
         (c) => c.folder_id === currentFolderId,
     );
+    const allStoreConnections = useConnectionStore((s) => s.connections);
+    const allStoreFolders = useConnectionStore((s) => s.folders);
+    // Check if the folder is truly empty (unfiltered) to avoid false "empty" message
+    const folderIsTrulyEmpty = useMemo(() => {
+        if (!currentFolderId) return false;
+        const allowed = new Set(getDescendantFolderIds(allStoreFolders, currentFolderId));
+        const hasConns = allStoreConnections.some((c) => c.folder_id !== null && allowed.has(c.folder_id));
+        const hasSubfolders = allStoreFolders.some((f) => f.parent_id === currentFolderId);
+        return !hasConns && !hasSubfolders;
+    }, [currentFolderId, allStoreConnections, allStoreFolders]);
     const hasItems = visibleFolders.length > 0 || directConnections.length > 0;
     const isSelecting = selectedItemIds.length > 0;
     const activeFolder = currentFolderId
@@ -185,9 +197,11 @@ export function ConnectionGrid({
                 <div className="text-center w-full py-16 text-text-muted">
                     {hasSearch
                         ? "No connections match your search."
-                        : activeFolderId
+                        : activeFolderId && folderIsTrulyEmpty
                           ? "This folder is empty. Add a connection or subfolder."
-                          : "No connections yet. Create one to get started."}
+                          : activeFolderId
+                            ? "No connections match current filters."
+                            : "No connections yet. Create one to get started."}
                 </div>
             ) : (
                 <div
