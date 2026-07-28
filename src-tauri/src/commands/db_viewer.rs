@@ -23,7 +23,7 @@ use tokio_postgres::types::ToSql;
 /// tokio-postgres's `Display` only prints "db error", so we walk the
 /// `std::error::Error::source()` chain and also use `Debug` to surface the
 /// real message (e.g. "password authentication failed for user \"x\"").
-fn pg_error_message(err: &tokio_postgres::Error) -> String {
+pub(crate) fn pg_error_message(err: &tokio_postgres::Error) -> String {
     // Prefer the Debug representation, which includes severity + message + code.
     let raw = format!("{:?}", err);
     // Redact postgres URL fragments and password=... sequences.
@@ -486,7 +486,7 @@ fn sqlite_value_to_json(row: &rusqlite::Row, i: usize) -> serde_json::Value {
     }
 }
 
-fn pg_value_to_json(row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
+pub(crate) fn pg_value_to_json(row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
     // Integer types
     if let Ok(Some(v)) = row.try_get::<_, Option<i32>>(i) {
         return serde_json::json!(v);
