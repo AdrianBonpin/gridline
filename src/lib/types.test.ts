@@ -11,6 +11,10 @@ import type {
   ChangeStatus,
   DbViewerTab,
   ConnectionTestResult,
+  SchemaGraph,
+  TableNode,
+  GraphColumn,
+  Relationship,
 } from "./types";
 
 describe("ActiveView", () => {
@@ -357,5 +361,71 @@ describe("ConnectionTestResult", () => {
     };
     expect(result.ok).toBe(false);
     expect(result.error).toBe("Connection refused");
+  });
+});
+
+describe("Schema graph types", () => {
+  it("GraphColumn has correct shape", () => {
+    const col: GraphColumn = {
+      name: "user_id",
+      data_type: "integer",
+      is_pk: false,
+      is_fk: true,
+      is_unique: false,
+      fk_ref: ["public", "users", "id"],
+    };
+    expect(col.name).toBe("user_id");
+    expect(col.is_fk).toBe(true);
+    expect(col.fk_ref).toEqual(["public", "users", "id"]);
+  });
+
+  it("TableNode has correct shape", () => {
+    const node: TableNode = {
+      name: "orders",
+      schema: "public",
+      table_type: "TABLE",
+      columns: [
+        { name: "id", data_type: "integer", is_pk: true, is_fk: false, is_unique: true, fk_ref: null },
+        { name: "user_id", data_type: "integer", is_pk: false, is_fk: true, is_unique: false, fk_ref: ["public", "users", "id"] },
+      ],
+    };
+    expect(node.name).toBe("orders");
+    expect(node.columns).toHaveLength(2);
+  });
+
+  it("Relationship has correct shape", () => {
+    const rel: Relationship = {
+      source_schema: "public",
+      source_table: "orders",
+      source_column: "user_id",
+      target_schema: "public",
+      target_table: "users",
+      target_column: "id",
+      cardinality: "1:N",
+    };
+    expect(rel.cardinality).toBe("1:N");
+  });
+
+  it("SchemaGraph has correct shape", () => {
+    const graph: SchemaGraph = {
+      tables: [
+        { name: "users", schema: "public", table_type: "TABLE", columns: [] },
+      ],
+      relationships: [],
+    };
+    expect(graph.tables).toHaveLength(1);
+    expect(graph.relationships).toHaveLength(0);
+  });
+
+  it("fk_ref can be null for non-FK columns", () => {
+    const col: GraphColumn = {
+      name: "name",
+      data_type: "text",
+      is_pk: false,
+      is_fk: false,
+      is_unique: false,
+      fk_ref: null,
+    };
+    expect(col.fk_ref).toBeNull();
   });
 });
