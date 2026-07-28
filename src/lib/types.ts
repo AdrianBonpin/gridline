@@ -180,6 +180,54 @@ export interface DbViewerTab {
   updated_at: string;
 }
 
+export interface FunctionInfo {
+  name: string;
+  schema: string;
+  return_type: string;
+  argument_types: string[];
+  argument_names: string[];
+  argument_modes: string[];
+  language: string;
+  source: string | null;
+  kind: string;
+}
+
+export interface TriggerInfo {
+  name: string;
+  schema: string;
+  table_schema: string;
+  table_name: string;
+  event_manipulation: string;
+  action_timing: string;
+  action_orientation: string;
+  action_statement: string;
+  enabled: string;
+}
+
+export interface SequenceInfo {
+  name: string;
+  schema: string;
+  start_value: string;
+  min_value: string;
+  max_value: string;
+  increment: string;
+  current_value: string;
+  cycle: boolean;
+}
+
+export interface EnumInfo {
+  name: string;
+  schema: string;
+  labels: string[];
+}
+
+export interface ExtensionInfo {
+  name: string;
+  schema: string;
+  version: string;
+  comment: string | null;
+}
+
 export interface ConnectionTestResult {
   ok: boolean;
   error?: string | null;
