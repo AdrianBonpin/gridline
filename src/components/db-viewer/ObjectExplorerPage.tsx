@@ -262,6 +262,26 @@ export function ObjectExplorerPage({
     type,
     connectionId,
 }: ObjectExplorerPageProps) {
+    const [panelWidth, setPanelWidth] = useState(280);
+    const panelResizeRef = useRef<{ startX: number; startW: number } | null>(null);
+
+    const onPanelResizeStart = useCallback((e: React.MouseEvent) => {
+        panelResizeRef.current = { startX: e.clientX, startW: panelWidth };
+        const onMove = (ev: MouseEvent) => {
+            if (!panelResizeRef.current) return;
+            const delta = ev.clientX - panelResizeRef.current.startX;
+            const next = Math.max(180, Math.min(500, panelResizeRef.current.startW + delta));
+            setPanelWidth(next);
+        };
+        const onUp = () => {
+            panelResizeRef.current = null;
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    }, [panelWidth]);
+
     const databases = useDbViewerStore((s) => s.databases);
     const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
     const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
@@ -373,7 +393,7 @@ export function ObjectExplorerPage({
             {/* Left panel: toolbar + object list */}
             <div
                 className="border-r border-border flex flex-col shrink-0"
-                style={{ width: 280 }}
+                style={{ width: panelWidth }}
             >
                 <div className="p-3 border-b border-border space-y-2">
                     <div className="flex items-center justify-between">
@@ -436,7 +456,7 @@ export function ObjectExplorerPage({
 
                     {/* Database/Schema dropdowns */}
                     {(databases.length > 1 || schemas.length > 1) && (
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2">
                             {databases.length > 1 && (
                                 <SelectDropdown
                                     value={currentDatabase ?? ""}
@@ -453,7 +473,7 @@ export function ObjectExplorerPage({
                                 />
                             )}
                             {databases.length > 1 && schemas.length > 1 && (
-                                <span className="text-border text-sm">|</span>
+                                <span className="text-border">|</span>
                             )}
                             {schemas.length > 1 && (
                                 <SelectDropdown
@@ -476,7 +496,7 @@ export function ObjectExplorerPage({
 
                 {/* Object list */}
                 <div
-                    className="flex-1 overflow-y-auto py-1"
+                    className="flex-1 overflow-y-auto"
                     style={{ overscrollBehavior: "none" }}
                 >
                     {loading && (
@@ -521,7 +541,7 @@ export function ObjectExplorerPage({
                                 <div
                                     key={name}
                                     onClick={() => setSelectedItem(item)}
-                                    className={`group flex items-center gap-2 px-3 py-1.5 cursor-pointer transition-colors ${
+                                    className={`group flex items-center gap-1 px-3 py-1 cursor-pointer transition-colors ${
                                         isSelected
                                             ? "bg-accent/10 text-accent"
                                             : "text-text hover:bg-surface-raised"
@@ -542,6 +562,13 @@ export function ObjectExplorerPage({
                         })}
                 </div>
             </div>
+
+            {/* Panel resize handle */}
+            <div
+                className="w-1 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0 border-r border-border"
+                onMouseDown={onPanelResizeStart}
+                onDoubleClick={() => setPanelWidth(280)}
+            />
 
             {/* Right panel: detail view */}
             <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
