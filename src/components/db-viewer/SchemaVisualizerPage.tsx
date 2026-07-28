@@ -146,6 +146,7 @@ export function SchemaVisualizerPage({
   const [error, setError] = useState<string | null>(null);
   const [tableCount, setTableCount] = useState(0);
   const [legendOpen, setLegendOpen] = useState(true);
+  const [highlightedEdge, setHighlightedEdge] = useState<string | null>(null);
 
   const fetchGraph = useCallback(async () => {
     if (!currentSchema) return;
@@ -186,7 +187,35 @@ export function SchemaVisualizerPage({
 
   const handleResetLayout = useCallback(() => {
     fetchGraph();
+    setHighlightedEdge(null);
   }, [fetchGraph]);
+
+  const handleEdgeClick = useCallback(
+    (_event: React.MouseEvent, edge: Edge) => {
+      setHighlightedEdge(edge.id === highlightedEdge ? null : edge.id);
+    },
+    [highlightedEdge],
+  );
+
+  const handlePaneClick = useCallback(() => {
+    setHighlightedEdge(null);
+  }, []);
+
+  // Derive edges with highlighting applied
+  const displayEdges = useMemo(() => {
+    if (!highlightedEdge) return edges;
+    return edges.map((e) => {
+      if (e.id === highlightedEdge) {
+        return {
+          ...e,
+          style: { ...e.style, stroke: "#f59e0b", strokeWidth: 2.5, opacity: 1 },
+          labelStyle: { ...e.labelStyle, fill: "#f59e0b" },
+          labelBgStyle: { ...e.labelBgStyle, fill: "#1f2937", fillOpacity: 0.95 },
+        };
+      }
+      return { ...e, style: { ...e.style, opacity: 0.15 } };
+    });
+  }, [edges, highlightedEdge]);
 
   const handleSchemaChange = useCallback(
     (schema: string) => {
@@ -273,11 +302,13 @@ export function SchemaVisualizerPage({
 
         <ReactFlow
           nodes={nodes}
-          edges={edges}
+          edges={displayEdges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
+          onEdgeClick={handleEdgeClick}
+          onPaneClick={handlePaneClick}
           fitView
           minZoom={0.1}
           maxZoom={2}
