@@ -672,37 +672,41 @@ function renderDetail(type: ObjectType, item: AnyObject) {
                             Sequence Values
                         </span>
                     </div>
-                    <div className="border-b border-border px-4 py-2 flex items-center">
-                        <span className="text-xs text-text-muted w-28 shrink-0">
-                            Current Value
-                        </span>
-                        <span className="text-sm text-accent font-mono">
-                            {s.current_value}
-                        </span>
+                    <div className="border-b border-border flex flex-row">
+                        <div className="border-r border-border px-4 py-2 flex items-center flex-2">
+                            <span className="text-xs text-text-muted w-28 shrink-0">
+                                Current Value
+                            </span>
+                            <span className="text-sm text-accent font-mono">
+                                {s.current_value}
+                            </span>
+                        </div>
+                        <div className="flex-2 px-4 py-2 flex items-center">
+                            <span className="text-xs text-text-muted w-28 shrink-0">
+                                Increment
+                            </span>
+                            <span className="text-sm text-text font-mono">
+                                {s.increment}
+                            </span>
+                        </div>
                     </div>
-                    <div className="border-b border-border px-4 py-2 flex items-center">
-                        <span className="text-xs text-text-muted w-28 shrink-0">
-                            Increment
-                        </span>
-                        <span className="text-sm text-text font-mono">
-                            {s.increment}
-                        </span>
-                    </div>
-                    <div className="border-b border-border px-4 py-2 flex items-center">
-                        <span className="text-xs text-text-muted w-28 shrink-0">
-                            Start
-                        </span>
-                        <span className="text-sm text-text font-mono">
-                            {s.start_value}
-                        </span>
-                    </div>
-                    <div className="border-b border-border px-4 py-2 flex items-center">
-                        <span className="text-xs text-text-muted w-28 shrink-0">
-                            Min / Max
-                        </span>
-                        <span className="text-sm text-text font-mono">
-                            {s.min_value} / {s.max_value}
-                        </span>
+                    <div className="border-b border-border flex flex-row">
+                        <div className="border-r border-border px-4 py-2 flex items-center flex-2">
+                            <span className="text-xs text-text-muted w-28 shrink-0">
+                                Start
+                            </span>
+                            <span className="text-sm text-text font-mono">
+                                {s.start_value}
+                            </span>
+                        </div>
+                        <div className="flex-2 px-4 py-2 flex items-center">
+                            <span className="text-xs text-text-muted w-28 shrink-0">
+                                Min / Max
+                            </span>
+                            <span className="text-sm text-text font-mono">
+                                {s.min_value} / {s.max_value}
+                            </span>
+                        </div>
                     </div>
                     <div className="border-b border-border px-4 py-2 flex items-center">
                         <span className="text-xs text-text-muted w-28 shrink-0">
@@ -764,21 +768,23 @@ function renderDetail(type: ObjectType, item: AnyObject) {
                             Extension
                         </span>
                     </div>
-                    <div className="border-b border-border px-4 py-2 flex items-center">
-                        <span className="text-xs text-text-muted w-24 shrink-0">
-                            Version
-                        </span>
-                        <span className="text-sm text-text font-mono">
-                            {e.version}
-                        </span>
-                    </div>
-                    <div className="border-b border-border px-4 py-2 flex items-center">
-                        <span className="text-xs text-text-muted w-24 shrink-0">
-                            Schema
-                        </span>
-                        <span className="text-sm text-text font-mono">
-                            {e.schema}
-                        </span>
+                    <div className="border-b border-border flex flex-row">
+                        <div className="border-r border-border px-4 py-2 flex items-center flex-2">
+                            <span className="text-xs text-text-muted w-24 shrink-0">
+                                Version
+                            </span>
+                            <span className="text-sm text-text font-mono">
+                                {e.version}
+                            </span>
+                        </div>
+                        <div className="flex-2 px-4 py-2 flex items-center">
+                            <span className="text-xs text-text-muted w-24 shrink-0">
+                                Schema
+                            </span>
+                            <span className="text-sm text-text font-mono">
+                                {e.schema}
+                            </span>
+                        </div>
                     </div>
                     {e.comment && (
                         <div className="border-b border-border px-4 py-2.5">
