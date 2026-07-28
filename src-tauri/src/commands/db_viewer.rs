@@ -3,8 +3,11 @@
 //! This module provides pure SQL builder functions, pagination helpers,
 //! and Tauri commands for the database viewer.
 
-use crate::db::pool::DbConfig;
-use crate::models::db_viewer::{Change, ColumnInfo, QueryResult, TableInfo};
+use crate::db::pool::{DbConfig, DbHandle};
+use crate::models::db_viewer::{
+    Change, ColumnInfo, EnumInfo, ExtensionInfo, FunctionInfo, QueryResult,
+    SequenceInfo, TableInfo, TriggerInfo,
+};
 use std::collections::HashMap;
 use tauri::State;
 use tokio_postgres::types::ToSql;
@@ -1124,6 +1127,169 @@ pub async fn refresh_connection(
             Ok(())
         }
         None => Err("Connection not found".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_functions(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<FunctionInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_functions_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| FunctionInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    return_type: r.get::<_, Option<String>>(2).unwrap_or_default(),
+                    argument_types: r.get::<_, Option<Vec<String>>>(3).unwrap_or_default(),
+                    argument_names: r.get::<_, Option<Vec<String>>>(4).unwrap_or_default(),
+                    argument_modes: r.get::<_, Option<Vec<String>>>(5).unwrap_or_default(),
+                    language: r.get(6),
+                    source: r.get(7),
+                    kind: r.get(8),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_triggers(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<TriggerInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_triggers_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| TriggerInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    table_schema: r.get(2),
+                    table_name: r.get(3),
+                    event_manipulation: r.get(4),
+                    action_timing: r.get(5),
+                    action_orientation: r.get(6),
+                    action_statement: r.get(7),
+                    enabled: r.get(8),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_sequences(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<SequenceInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_sequences_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| SequenceInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    start_value: r.get::<_, Option<String>>(2).unwrap_or_default(),
+                    min_value: r.get::<_, Option<String>>(3).unwrap_or_default(),
+                    max_value: r.get::<_, Option<String>>(4).unwrap_or_default(),
+                    increment: r.get::<_, Option<String>>(5).unwrap_or_default(),
+                    current_value: r.get::<_, Option<String>>(6).unwrap_or_default(),
+                    cycle: r.get::<_, Option<String>>(7)
+                        .map(|s| s == "YES")
+                        .unwrap_or(false),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_enums(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<EnumInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_enums_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| EnumInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    labels: r.get::<_, Option<Vec<String>>>(2).unwrap_or_default(),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_extensions(
+    connection_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<ExtensionInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let query = crate::db::introspection::pg_extensions_query();
+            let rows = client
+                .query(&query, &[])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| ExtensionInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    version: r.get::<_, Option<String>>(2).unwrap_or_default(),
+                    comment: r.get(3),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
     }
 }
 
