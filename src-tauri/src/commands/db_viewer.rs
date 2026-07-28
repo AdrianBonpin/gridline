@@ -90,6 +90,122 @@ pub fn offset(page: i64, page_size: i64) -> i64 {
     (page - 1) * page_size
 }
 
+// ---------------------------------------------------------------------------
+// Filter / Sort → SQL helpers
+// ---------------------------------------------------------------------------
+
+/// Returns true when the column name contains only safe identifier characters.
+fn is_safe_identifier(col: &str) -> bool {
+    !col.is_empty() && col.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Build a WHERE clause from filter rules for PostgreSQL (parameterized $n).
+/// Returns `(where_clause, param_values)` where `where_clause` starts with
+/// " AND " (suitable for appending after WHERE 1=1).
+fn build_pg_filter_clause(
+    filters: &[crate::models::db_viewer::FilterRule],
+    param_start: &mut usize,
+) -> (String, Vec<String>) {
+    let mut clauses = String::new();
+    let mut params: Vec<String> = Vec::new();
+
+    for rule in filters {
+        let col = &rule.column;
+        if !is_safe_identifier(col) {
+            continue; // skip unsafe column names
+        }
+
+        let clause = match rule.operator.as_str() {
+            "null" => {
+                format!(" AND \"{}\" IS NULL", col)
+            }
+            "notnull" => {
+                format!(" AND \"{}\" IS NOT NULL", col)
+            }
+            op @ ("eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt") => {
+                *param_start += 1;
+                let p = *param_start;
+                params.push(rule.value.clone());
+                match op {
+                    "eq" => format!(" AND \"{}\"::text = ${}", col, p),
+                    "neq" => format!(" AND \"{}\"::text != ${}", col, p),
+                    "contains" => format!(" AND \"{}\"::text ILIKE '%' || ${} || '%'", col, p),
+                    "starts" => format!(" AND \"{}\"::text ILIKE ${} || '%'", col, p),
+                    "ends" => format!(" AND \"{}\"::text ILIKE '%' || ${}", col, p),
+                    "gt" => format!(" AND \"{}\"::numeric > ${}::numeric", col, p),
+                    "lt" => format!(" AND \"{}\"::numeric < ${}::numeric", col, p),
+                    _ => unreachable!(),
+                }
+            }
+            _ => continue, // unknown operator → skip
+        };
+        clauses.push_str(&clause);
+    }
+
+    (clauses, params)
+}
+
+/// Build a WHERE clause from filter rules for SQLite (positional ? params).
+fn build_sqlite_filter_clause(filters: &[crate::models::db_viewer::FilterRule]) -> (String, Vec<String>) {
+    let mut clauses = String::new();
+    let mut params: Vec<String> = Vec::new();
+
+    for rule in filters {
+        let col = &rule.column;
+        if !is_safe_identifier(col) {
+            continue;
+        }
+
+        let clause = match rule.operator.as_str() {
+            "null" => {
+                format!(" AND \"{}\" IS NULL", col)
+            }
+            "notnull" => {
+                format!(" AND \"{}\" IS NOT NULL", col)
+            }
+            op @ ("eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt") => {
+                params.push(rule.value.clone());
+                match op {
+                    "eq" => format!(" AND \"{}\" = ?", col),
+                    "neq" => format!(" AND \"{}\" != ?", col),
+                    "contains" => format!(" AND \"{}\" LIKE '%' || ? || '%'", col),
+                    "starts" => format!(" AND \"{}\" LIKE ? || '%'", col),
+                    "ends" => format!(" AND \"{}\" LIKE '%' || ?", col),
+                    "gt" => format!(" AND CAST(\"{}\" AS REAL) > CAST(? AS REAL)", col),
+                    "lt" => format!(" AND CAST(\"{}\" AS REAL) < CAST(? AS REAL)", col),
+                    _ => unreachable!(),
+                }
+            }
+            _ => continue,
+        };
+        clauses.push_str(&clause);
+    }
+
+    (clauses, params)
+}
+
+/// Build an ORDER BY clause from sort rules.
+/// Returns an empty string when there are no valid sort rules.
+fn build_order_clause(sorts: &[crate::models::db_viewer::SortRule]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for rule in sorts {
+        if !is_safe_identifier(&rule.column) {
+            continue;
+        }
+        let dir = match rule.order.as_str() {
+            "asc" | "ASC" => "ASC",
+            "desc" | "DESC" => "DESC",
+            _ => continue,
+        };
+        parts.push(format!("\"{}\" {}", rule.column, dir));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ORDER BY {}", parts.join(", "))
+    }
+}
+
 /// Build a parameterized UPDATE SQL statement.
 ///
 /// The returned SQL uses `?` placeholders for both the SET values and the
@@ -584,22 +700,41 @@ pub async fn get_table_data(
     table: String,
     page: Option<i64>,
     page_size: Option<i64>,
+    filters: Option<Vec<crate::models::db_viewer::FilterRule>>,
+    sorts: Option<Vec<crate::models::db_viewer::SortRule>>,
     state: State<'_, crate::AppState>,
 ) -> Result<QueryResult, String> {
     let p = page.unwrap_or(1);
     let ps = page_size.unwrap_or(50);
     let off = (p - 1) * ps;
+    let filters = filters.unwrap_or_default();
+    let sorts = sorts.unwrap_or_default();
 
     let mut pm = state.pool_manager.lock().await;
     match pm.get(&connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
-            // Get total count
+            // Build filter clause (shared by COUNT and data queries)
+            let mut pg_param_idx: usize = 0;
+            let (filter_clause, mut filter_params) =
+                build_pg_filter_clause(&filters, &mut pg_param_idx);
+            let order_clause = build_order_clause(&sorts);
+
+            // Get total count (with filters applied)
             let count_query =
-                format!("SELECT COUNT(*) FROM \"{}\".\"{}\"", schema, table);
-            let count_row = client
-                .query_one(&count_query, &[])
-                .await
-                .map_err(|e| e.to_string())?;
+                format!("SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}", schema, table, filter_clause);
+            let count_row = if filter_params.is_empty() {
+                client
+                    .query_one(&count_query, &[])
+                    .await
+                    .map_err(|e| e.to_string())?
+            } else {
+                let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                    filter_params.iter().map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                client
+                    .query_one(&count_query, &param_refs)
+                    .await
+                    .map_err(|e| e.to_string())?
+            };
             let total_rows: i64 = count_row.get(0);
 
             // Get column info with FK detection and enum type names
@@ -671,15 +806,24 @@ ORDER BY c.ordinal_position"#;
                 })
                 .collect();
 
-            // Get data
+            // Get data (with filters and sorts applied)
             let data_query = format!(
-                "SELECT * FROM \"{}\".\"{}\" LIMIT {} OFFSET {}",
-                schema, table, ps, off
+                "SELECT * FROM \"{}\".\"{}\" WHERE 1=1{} {} LIMIT {} OFFSET {}",
+                schema, table, filter_clause, order_clause, ps, off
             );
-            let data_rows = client
-                .query(&data_query, &[])
-                .await
-                .map_err(|e| e.to_string())?;
+            let data_rows = if filter_params.is_empty() {
+                client
+                    .query(&data_query, &[])
+                    .await
+                    .map_err(|e| e.to_string())?
+            } else {
+                let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                    filter_params.iter().map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                client
+                    .query(&data_query, &param_refs)
+                    .await
+                    .map_err(|e| e.to_string())?
+            };
             let rows: Vec<Vec<serde_json::Value>> = data_rows
                 .iter()
                 .map(|row| (0..row.len()).map(|i| pg_value_to_json(row, i)).collect())
@@ -694,11 +838,20 @@ ORDER BY c.ordinal_position"#;
             })
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            // Build filter clause (shared by COUNT and data queries)
+            let (filter_clause, filter_vals) = build_sqlite_filter_clause(&filters);
+            let order_clause = build_order_clause(&sorts);
+
             let count_query =
-                format!("SELECT COUNT(*) FROM \"{}\".\"{}\"", schema, table);
-            let total_rows: i64 = conn
-                .query_row(&count_query, [], |r| r.get(0))
-                .map_err(|e| e.to_string())?;
+                format!("SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}", schema, table, filter_clause);
+            let total_rows: i64 = if filter_vals.is_empty() {
+                conn.query_row(&count_query, [], |r| r.get(0))
+                    .map_err(|e| e.to_string())?
+            } else {
+                let refs: Vec<&dyn rusqlite::types::ToSql> = filter_vals.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                conn.query_row(&count_query, rusqlite::params_from_iter(&refs), |r| r.get(0))
+                    .map_err(|e| e.to_string())?
+            };
 
             // Get column metadata via PRAGMA table_info
             let pragma_query = format!("PRAGMA table_info('{}')", table);
@@ -753,16 +906,16 @@ ORDER BY c.ordinal_position"#;
                 })
                 .collect();
 
-            // Get data
+            // Get data (with filters and sorts applied)
             let data_query = format!(
-                "SELECT * FROM \"{}\".\"{}\" LIMIT {} OFFSET {}",
-                schema, table, ps, off
+                "SELECT * FROM \"{}\".\"{}\" WHERE 1=1{} {} LIMIT {} OFFSET {}",
+                schema, table, filter_clause, order_clause, ps, off
             );
             let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
             let col_count = stmt.column_count();
 
-            let rows: Vec<Vec<serde_json::Value>> = stmt
-                .query_map([], |row| {
+            let rows: Vec<Vec<serde_json::Value>> = if filter_vals.is_empty() {
+                stmt.query_map([], |row| {
                     let mut vals = Vec::new();
                     for i in 0..col_count {
                         let val: Option<String> = row.get(i).unwrap_or(None);
@@ -775,7 +928,24 @@ ORDER BY c.ordinal_position"#;
                 })
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
-                .collect();
+                .collect()
+            } else {
+                let refs: Vec<&dyn rusqlite::types::ToSql> = filter_vals.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                stmt.query_map(rusqlite::params_from_iter(&refs), |row| {
+                    let mut vals = Vec::new();
+                    for i in 0..col_count {
+                        let val: Option<String> = row.get(i).unwrap_or(None);
+                        vals.push(
+                            val.map(serde_json::Value::String)
+                                .unwrap_or(serde_json::Value::Null),
+                        );
+                    }
+                    Ok(vals)
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect()
+            };
 
             Ok(QueryResult {
                 columns,

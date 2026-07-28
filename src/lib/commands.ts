@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, ChangeItem, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo } from "./types";
+import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 
 // NOTE on argument key naming:
 // Tauri v2's #[tauri::command] macro converts Rust snake_case parameter names
@@ -76,8 +77,10 @@ export async function getTableData(
   table: string,
   page?: number,
   pageSize?: number,
+  filters?: FilterRule[],
+  sorts?: SortRule[],
 ): Promise<QueryResult> {
-  return invoke<QueryResult>("get_table_data", { connectionId, schema, table, page, pageSize });
+  return invoke<QueryResult>("get_table_data", { connectionId, schema, table, page, pageSize, filters, sorts });
 }
 
 export async function executeChange(connectionId: string, change: ChangeItem): Promise<void> {

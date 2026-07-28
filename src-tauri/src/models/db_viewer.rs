@@ -1,5 +1,22 @@
 use serde::{Deserialize, Serialize};
 
+/// A single filter rule sent from the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilterRule {
+    pub id: String,
+    pub column: String,
+    pub operator: String,  // "eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt" | "null" | "notnull"
+    pub value: String,
+}
+
+/// A single sort rule sent from the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SortRule {
+    pub id: String,
+    pub column: String,
+    pub order: String,  // "asc" | "desc"
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableInfo {
     pub name: String,

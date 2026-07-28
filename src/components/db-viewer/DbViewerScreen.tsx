@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
@@ -16,100 +16,11 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { useShortcut } from "../../hooks/useShortcut";
 import { ConnectionDropBanner } from "./ConnectionDropBanner";
 import * as cmd from "../../lib/commands";
-import type { ColumnInfo } from "../../lib/types";
 
 export interface DbViewerScreenProps {
     connectionId: string;
     onHome: () => void;
     onSettings: () => void;
-}
-
-// ─── client-side filter/sort helpers ─────────────────────
-
-type FilterRule = {
-    id: string;
-    column: string;
-    operator:
-        | "eq"
-        | "neq"
-        | "contains"
-        | "starts"
-        | "ends"
-        | "gt"
-        | "lt"
-        | "null"
-        | "notnull";
-    value: string;
-};
-
-type SortRule = { id: string; column: string; order: "asc" | "desc" };
-
-function applyFilters(
-    rows: unknown[][],
-    columns: ColumnInfo[],
-    rules: FilterRule[],
-): unknown[][] {
-    if (rules.length === 0) return rows;
-    return rows.filter((row) =>
-        rules.every((rule) => {
-            const ci = columns.findIndex((c) => c.name === rule.column);
-            if (ci < 0) return true;
-            const cell = row[ci];
-            const str = cell === null || cell === undefined ? "" : String(cell);
-            switch (rule.operator) {
-                case "null":
-                    return cell === null;
-                case "notnull":
-                    return cell !== null;
-                case "eq":
-                    return str === rule.value;
-                case "neq":
-                    return str !== rule.value;
-                case "contains":
-                    return str.toLowerCase().includes(rule.value.toLowerCase());
-                case "starts":
-                    return str
-                        .toLowerCase()
-                        .startsWith(rule.value.toLowerCase());
-                case "ends":
-                    return str.toLowerCase().endsWith(rule.value.toLowerCase());
-                case "gt":
-                    return Number(str) > Number(rule.value);
-                case "lt":
-                    return Number(str) < Number(rule.value);
-                default:
-                    return true;
-            }
-        }),
-    );
-}
-
-function applySorts(
-    rows: unknown[][],
-    columns: ColumnInfo[],
-    rules: SortRule[],
-): unknown[][] {
-    if (rules.length === 0) return rows;
-    return [...rows].sort((a, b) => {
-        for (const rule of rules) {
-            const ci = columns.findIndex((c) => c.name === rule.column);
-            if (ci < 0) continue;
-            const va = a[ci];
-            const vb = b[ci];
-            const cmp =
-                va === null && vb === null
-                    ? 0
-                    : va === null
-                      ? -1
-                      : vb === null
-                        ? 1
-                        : String(va).localeCompare(String(vb), undefined, {
-                              numeric: true,
-                          });
-            if (cmp !== 0) return rule.order === "asc" ? cmp : -cmp;
-        }
-        return 0;
-    });
 }
 
 export function DbViewerScreen({
@@ -121,11 +32,7 @@ export function DbViewerScreen({
     const [dismissedError, setDismissedError] = useState<string | null>(null);
     const [currentView, setCurrentView] = useState<string>("db-viewer");
     const [tablePanelWidth, setTablePanelWidth] = useState(280);
-    const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
-    const [filterRules, setFilterRules] = useState<FilterRule[]>([]);
-    const [sortRules, setSortRules] = useState<SortRule[]>([]);
     const [searchQuery, setSearchQuery] = useState("");
-    const smartSortApplied = useRef<Set<string>>(new Set());
     const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
     const [editModalOpen, setEditModalOpen] = useState(false);
     const connections = useConnectionStore((s) => s.connections);
@@ -134,6 +41,10 @@ export function DbViewerScreen({
     const settings = useSettingsStore((s) => s.settings);
     const setDefaultPageSize = useDbViewerStore((s) => s.setDefaultPageSize);
     const clearColumnFilter = useDbViewerStore((s) => s.clearColumnFilter);
+    const setFilterRules = useDbViewerStore((s) => s.setFilterRules);
+    const setSortRules = useDbViewerStore((s) => s.setSortRules);
+    const toggleHiddenColumn = useDbViewerStore((s) => s.toggleHiddenColumn);
+    const setSmartSortApplied = useDbViewerStore((s) => s.setSmartSortApplied);
 
     // Sync settings defaults to store
     useEffect(() => {
@@ -149,6 +60,12 @@ export function DbViewerScreen({
         if (!s.activeTabId) return null;
         return s.tabs.find((t) => t.id === s.activeTabId) ?? null;
     });
+
+    // Derive per-tab toolbar state from active tab
+    const filterRules = activeTab?.filterRules ?? [];
+    const sortRules = activeTab?.sortRules ?? [];
+    const hiddenColumns = new Set(activeTab?.hiddenColumns ?? []);
+
     const setTabData = useDbViewerStore((s) => s.setTabData);
     const setTabError = useDbViewerStore((s) => s.setTabError);
     const databases = useDbViewerStore((s) => s.databases);
@@ -170,6 +87,8 @@ export function DbViewerScreen({
                     tab.table,
                     tab.page,
                     tab.pageSize,
+                    tab.filterRules,
+                    tab.sortRules,
                 );
                 setTabData(tab.id, result);
             } catch (e) {
@@ -203,7 +122,7 @@ export function DbViewerScreen({
         if (!activeTab) return;
         if (activeTab.loading) return;
         if (!activeTab.data) return;
-        if (smartSortApplied.current.has(activeTab.id)) return;
+        if (activeTab.smartSortApplied) return;
 
         const cols = activeTab.data.columns;
 
@@ -406,8 +325,8 @@ export function DbViewerScreen({
         for (const rule of rules) {
             const [colName, order] = rule();
             if (colName) {
-                smartSortApplied.current.add(activeTab.id);
-                setSortRules([
+                setSmartSortApplied(activeTab.id);
+                setSortRules(activeTab.id, [
                     { id: crypto.randomUUID(), column: colName, order },
                 ]);
                 return;
@@ -419,22 +338,21 @@ export function DbViewerScreen({
     useEffect(() => {
         if (!activeTab?.columnFilter) return;
         const { column, value } = activeTab.columnFilter;
-        setFilterRules((prev) => {
-            const exists = prev.some(
-                (r) => r.column === column && r.value === value,
-            );
-            if (exists) return prev;
-            return [
-                ...prev,
-                {
-                    id: crypto.randomUUID(),
-                    column,
-                    operator: "contains" as const,
-                    value,
-                },
-            ];
-        });
-    }, [activeTab?.columnFilter]);
+        const currentRules = activeTab.filterRules ?? [];
+        const exists = currentRules.some(
+            (r) => r.column === column && r.value === value,
+        );
+        if (exists) return;
+        setFilterRules(activeTab.id, [
+            ...currentRules,
+            {
+                id: crypto.randomUUID(),
+                column,
+                operator: "contains" as const,
+                value,
+            },
+        ]);
+    }, [activeTab?.columnFilter, activeTab?.id, activeTab?.filterRules, setFilterRules]);
 
     // When the FK filter rule is removed from the toolbar, clear the tab's columnFilter
     useEffect(() => {
@@ -461,12 +379,8 @@ export function DbViewerScreen({
 
     const rawRows = activeTab?.data?.rows ?? [];
     const columns = activeTab?.data?.columns ?? [];
-    const processedRows = useMemo(() => {
-        let result = rawRows;
-        result = applyFilters(result, columns, filterRules);
-        result = applySorts(result, columns, sortRules);
-        return result;
-    }, [rawRows, columns, filterRules, sortRules]);
+    // Data is already filtered and sorted server-side; no client-side transform needed.
+    const processedRows = rawRows;
 
     const onPanelResizeStart = useCallback(
         (e: React.MouseEvent) => {
@@ -570,19 +484,17 @@ export function DbViewerScreen({
                                         rows={rawRows}
                                         hiddenColumns={hiddenColumns}
                                         onToggleColumn={(col) =>
-                                            setHiddenColumns((prev) => {
-                                                const next = new Set(prev);
-                                                if (next.has(col))
-                                                    next.delete(col);
-                                                else next.add(col);
-                                                return next;
-                                            })
+                                            toggleHiddenColumn(activeTab!.id, col)
                                         }
                                         onRefresh={handleRefresh}
                                         filterRules={filterRules}
-                                        onFilterChange={setFilterRules}
+                                        onFilterChange={(rules) =>
+                                            setFilterRules(activeTab!.id, rules)
+                                        }
                                         sortRules={sortRules}
-                                        onSortChange={setSortRules}
+                                        onSortChange={(rules) =>
+                                            setSortRules(activeTab!.id, rules)
+                                        }
                                         defaultRefreshRate={
                                             settings?.table_refresh_rate ?? 0
                                         }

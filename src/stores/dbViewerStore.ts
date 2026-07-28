@@ -5,6 +5,21 @@ import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo,
 
 export type QueueStatus = "pending" | "cancelled" | "committed" | "failed";
 
+export type FilterOperator = "eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt" | "null" | "notnull";
+
+export interface FilterRule {
+  id: string;
+  column: string;
+  operator: FilterOperator;
+  value: string;
+}
+
+export interface SortRule {
+  id: string;
+  column: string;
+  order: "asc" | "desc";
+}
+
 export interface QueueItem {
   id: string;
   type: ChangeItemType;
@@ -30,6 +45,10 @@ export interface ViewerTab {
   error: string | null;
   data: QueryResult | null;
   columnFilter?: { column: string; value: string };
+  filterRules: FilterRule[];
+  sortRules: SortRule[];
+  hiddenColumns: string[];
+  smartSortApplied: boolean;
 }
 
 // ─── Auto-increment counters ───────────────────────────────────
@@ -46,6 +65,10 @@ const initialTab = (schema: string, table: string, defaultPageSize?: number): Vi
   loading: true,
   error: null,
   data: null,
+  filterRules: [],
+  sortRules: [],
+  hiddenColumns: [],
+  smartSortApplied: false,
 });
 
 // ─── State interface ────────────────────────────────────────────
@@ -78,6 +101,11 @@ interface DbViewerState {
   setTabError: (tabId: string, error: string) => void;
   setColumnFilter: (tabId: string, column: string, value: string) => void;
   clearColumnFilter: (tabId: string) => void;
+  setFilterRules: (tabId: string, rules: FilterRule[]) => void;
+  setSortRules: (tabId: string, rules: SortRule[]) => void;
+  setHiddenColumns: (tabId: string, columns: string[]) => void;
+  toggleHiddenColumn: (tabId: string, column: string) => void;
+  setSmartSortApplied: (tabId: string) => void;
   addChange: (input: {
     type: ChangeItemType;
     sql?: string;
@@ -214,6 +242,48 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId ? { ...t, columnFilter: undefined } : t,
+      ),
+    })),
+
+  setFilterRules: (tabId, rules) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, filterRules: rules, page: 1, loading: true, error: null } : t,
+      ),
+    })),
+
+  setSortRules: (tabId, rules) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, sortRules: rules, page: 1, loading: true, error: null } : t,
+      ),
+    })),
+
+  setHiddenColumns: (tabId, columns) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, hiddenColumns: columns } : t,
+      ),
+    })),
+
+  toggleHiddenColumn: (tabId, column) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) => {
+        if (t.id !== tabId) return t;
+        const exists = t.hiddenColumns.includes(column);
+        return {
+          ...t,
+          hiddenColumns: exists
+            ? t.hiddenColumns.filter((c) => c !== column)
+            : [...t.hiddenColumns, column],
+        };
+      }),
+    })),
+
+  setSmartSortApplied: (tabId) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, smartSortApplied: true } : t,
       ),
     })),
 

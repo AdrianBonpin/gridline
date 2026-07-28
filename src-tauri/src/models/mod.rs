@@ -8,7 +8,7 @@ pub mod settings;
 pub use backup::*;
 pub use connection::{Connection, ConnectionInput};
 #[allow(unused_imports)]
-pub use db_viewer::{Change, ColumnInfo, Pagination, QueryResult, TableInfo};
+pub use db_viewer::{Change, ColumnInfo, FilterRule, Pagination, QueryResult, SortRule, TableInfo};
 pub use folder::{Folder, FolderInput};
 pub use settings::Settings;
 pub use tag::{Tag, TagInput};
