@@ -14,7 +14,9 @@
       {
         "title": "Gridline",
         "width": 1200,
-        "height": 800
+        "height": 800,
+        "backgroundColor": "#0A0A0B",
+        "titleBarStyle": "Transparent"
       }
     ],
     "security": {
@@ -31,5 +33,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
-  }
+  },
+  "plugins": {}
 }

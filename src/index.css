@@ -1,0 +1,48 @@
+@import "tailwindcss";
+@import "@fontsource/space-mono";
+@import "@fontsource/outfit";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-canvas: #0A0A0B;
+  --color-surface: #18181B;
+  --color-surface-raised: #27272A;
+  --color-border: #27272A;
+  --color-border-hover: #3F3F46;
+  --color-text: #FAFAFA;
+  --color-text-muted: #A1A1AA;
+  --color-accent: #2563EB;
+  --color-accent-hover: #1D4ED8;
+  --color-accent-muted: #60A5FA;
+  --font-family-heading: "Space Mono", monospace;
+  --font-family-sans: "Outfit", sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background-color: var(--color-canvas);
+  color: white;
+  font-family: var(--font-family-sans);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+  overflow: hidden;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  min-height: 100%;
+}
+
+@utility glass {
+  background-color: color-mix(in srgb, var(--color-surface) 90%, transparent);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+}

@@ -169,9 +169,136 @@ cargo test               # Rust tests
 - **Do NOT** render large query results in raw DOM — always use the virtualized grid component
 - **Do NOT** log credentials, connection strings, or query data
 - **Do NOT** introduce Electron, Node.js server processes, or Docker dependencies
+- **Do NOT** execute data-modifying SQL (INSERT, UPDATE, DELETE, DROP, ALTER) or any destructive CRUD operation (deleting connections, folders, tags) directly without explicit user confirmation. For database data, always push to the changes queue first and require "Commit All". For app entities (connections, folders, tags), show a confirmation dialog before executing.
 - **DO** keep Tauri commands thin — business logic lives in `db/` and `store/` modules
 - **DO** type all IPC boundaries explicitly
 - **DO** validate and sanitize all user-provided SQL and connection parameters before execution
+
+---
+
+## Implementation Status
+
+✅ = Complete &nbsp; 🟡 = Partial/Stub &nbsp; ❌ = Not Started
+
+### Connection Management
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| Connections CRUD (PostgreSQL, MySQL, SQLite, Redis) | ✅ | Full create/read/update/delete with form validation |
+| Connection testing (all DB types) | ✅ | PostgreSQL, MySQL, SQLite, Redis all testable |
+| DB Viewer: PostgreSQL browse + query | ✅ | Schemas, tables, paginated data, FK preview, JSON viewer |
+| DB Viewer: SQLite browse + query | ✅ | Full support via rusqlite |
+| DB Viewer: MySQL browse | ❌ | Test connection works; browsing not wired |
+| DB Viewer: Redis browse | ❌ | Test connection works; browsing not wired |
+| Password storage in OS keychain | ✅ | macOS Keychain, Linux Secret Service, Windows Credential Manager |
+| SSH tunnel config UI | ✅ | Host, port, user, auth method, key path, passphrase fields |
+| SSH tunnel runtime | 🟡 | UI exists; backend is a **placeholder** (TODO: ssh2 crate integration) |
+| SSL/TLS config UI | ✅ | Mode (disable/require/verify-ca/verify-full), cert paths |
+| SSL/TLS runtime | 🟡 | Config persisted; **not yet passed to sqlx/tokio-postgres** |
+
+### Home Screen & Organization
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| Connection cards grid (by folder) | ✅ | Grouped display, single-click to open DB viewer |
+| Folders CRUD | ✅ | Nested folders, reparent on delete, breadcrumb nav |
+| Tags CRUD | ✅ | Colors, drag reorder, filter connections by tag |
+| DB type filter (Postgres/MySQL/SQLite/Redis) | ✅ | Toggle chips to filter connection grid |
+| Global search (Cmd+K) | ✅ | Connection URL detection auto-fills new-connection form |
+| Import/Export connections (JSON) | ✅ | Bulk import with validation, skipped-record reporting |
+| Bulk select + delete connections/folders | ✅ | Checkbox selection with confirmation dialog |
+| Drag-and-drop connections to folders | ❌ | Currently only via edit form |
+| Move-to-folder bulk action | ❌ | |
+| Favorites / Recent connections | ❌ | |
+| Connection status indicator on cards | ❌ | |
+
+### Database Viewer
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| Multi-tab table browser | ✅ | Open tables in tabs, close with Cmd/Ctrl+W |
+| Schema/database selector | ✅ | Ghost-style dropdowns, single-row layout |
+| Refresh database (spin + success/error feedback) | ✅ | Re-fetches databases, schemas, and tables |
+| Search tables filter | ✅ | Animated input, real-time filter by name, auto-hide on blur |
+| Column metadata (PK, FK, type, nullable, default) | ✅ | Expand table row to see columns with icons |
+| FK detection | ✅ | `information_schema.constraint_column_usage` + `PRAGMA foreign_key_list` |
+| FK preview popover | ✅ | Click FK cell → popover with referenced row → "Open" button creates filtered tab |
+| JSON/JSONB cell popover | ✅ | Formatted/Raw tabs with copy button |
+| Smart default sort | ✅ | 12-tier priority: updated_at → created_at → *_at → *_id → seq/rank/version |
+| Data grid pagination | ✅ | Page nav, page size selector persisted in settings |
+| Column filtering (client-side) | ✅ | eq, neq, contains, starts, ends, gt, lt, null, notnull |
+| Column sorting (client-side) | ✅ | Multi-column asc/desc |
+| Column show/hide | ✅ | Toggle visibility per column |
+| Column resize (drag handle) | ✅ | Double-click to auto-fit |
+| Row selection (checkboxes + select all) | ✅ | Bulk copy (JSON/CSV/SQL) and delete |
+| Export toolbar (JSON, CSV, SQL, Markdown) | ✅ | Client-side Blob download of visible rows |
+| Auto-refresh timer | ✅ | Configurable interval in settings |
+| Changes queue (INSERT, UPDATE, DELETE) | ✅ | Queue changes → Commit All; cancel individual changes |
+| Edit connection modal (from DB viewer) | ✅ | AnimatedModal with keychain password fetch on test |
+| Connection drop banner | ✅ | Auto-detects broken connections with reconnect prompt |
+| Inline cell editing | ❌ | Cells are read-only; changes via queue Insert button only |
+| Virtualized data grid | ❌ | Plain HTML `<table>`; TODO: @tanstack/react-virtual for 100k+ rows |
+| Row detail / expandable row view | ❌ | |
+| Keyboard cell navigation (arrow keys, Tab) | ❌ | |
+| Cell-level copy (right-click or Ctrl+C) | ❌ | Only bulk copy via toolbar |
+
+### Object Explorer (non-table objects)
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| Functions | ❌ | Stub button in sidebar; not queried from `pg_proc` |
+| Triggers | ❌ | Stub button in sidebar |
+| Sequences | ❌ | Not listed anywhere |
+| Enums / user-defined types | ❌ | `udt_name` returned in column metadata but no enum viewer |
+| Extensions | ❌ | Not queried from `pg_extension` |
+| Indexes (per table) | ❌ | |
+| Constraints (CHECK, UNIQUE beyond PK/FK) | ❌ | |
+| Materialized views | ❌ | Not distinguished from regular views |
+| Stored procedures | ❌ | |
+| Schema visualizer (ER diagram) | ❌ | Stub button in sidebar |
+
+### Query Editor
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| SQL text editor (Monaco) | ❌ | `src/components/editor/` does not exist yet |
+| SQL autocomplete (keywords, tables, columns) | ❌ | |
+| Custom query execution (arbitrary SQL) | ❌ | Only `SELECT * FROM table` via tab open |
+| Multiple result sets | ❌ | |
+| Query history / recent queries | ❌ | No persistence or UI |
+| Saved queries (named, organized) | ❌ | No `queries` table in local SQLite |
+| Query favorites / pinning | ❌ | |
+| Editor settings (font, tab size, word wrap, minimap) | ❌ | Settings page has "Editor" tab with "coming soon" placeholder |
+
+### Backup & Restore
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| pg_dump wrapper | ❌ | No Rust command; shell out to system binary per design decision #3 |
+| pg_restore wrapper | ❌ | |
+| Backup UI | ❌ | |
+| DB-to-DB sync | ❌ | |
+| SQLite .dump | ❌ | |
+| Table structure export (DDL) | ❌ | |
+
+### Settings
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| Theme (dark/light/system) | ✅ | Tailwind dark-first with ThemePicker |
+| Font size | ✅ | |
+| Default folder for new connections | ✅ | |
+| Table page size default | ✅ | |
+| Auto-refresh rate | ✅ | |
+| Tags management | ✅ | Full CRUD with color picker, drag reorder |
+| Shortcuts (2 configurable) | ✅ | Open command palette, Close tab |
+| Confirm-before-delete toggle | ✅ | |
+| Default ports per DB type | ✅ | |
+| More keyboard shortcuts | ❌ | Only 2 configurable actions |
+| Editor settings | ❌ | Placeholder tab |
+| SSH key management | ❌ | Only path inputs, no key file reading |
+| Settings export/import | ❌ | |
+
+### Demo & Onboarding
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| Demo SQLite database (auto-seeded) | ✅ | users, products, orders, order_items tables |
+| Re-add demo DB button | ✅ | Settings → Advanced |
+| Getting started / onboarding flow | ❌ | |
+| Welcome tooltips / tour | ❌ | |
 
 ---
 
