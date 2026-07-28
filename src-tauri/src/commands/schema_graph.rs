@@ -80,13 +80,26 @@ ORDER BY c.relname, a.attnum"#.to_string()
 }
 
 /// Infer relationship cardinality from constraint metadata.
-pub fn infer_cardinality(is_pk: bool, is_unique: bool, is_join_table_fk: bool) -> String {
+///
+/// - `is_pk`: the FK column is also part of the primary key
+/// - `is_unique`: the FK column has a UNIQUE constraint
+/// - `is_nullable`: the FK column allows NULL values
+/// - `is_join_table_fk`: this FK belongs to a join table
+pub fn infer_cardinality(
+    is_pk: bool,
+    is_unique: bool,
+    is_nullable: bool,
+    is_join_table_fk: bool,
+) -> String {
     if is_join_table_fk {
-        "N:M".into()
-    } else if is_pk || is_unique {
-        "1:1".into()
-    } else {
-        "1:N".into()
+        return "N:M".into();
+    }
+    let one_side = is_pk || is_unique;
+    match (one_side, is_nullable) {
+        (true, false) => "1:1".into(),
+        (true, true) => "0..1:0..1".into(),
+        (false, false) => "1:N".into(),
+        (false, true) => "0..N".into(),
     }
 }
 
@@ -102,6 +115,7 @@ pub fn parse_pg_schema_rows(
         let table_type = row[2].as_str().unwrap_or_default().to_string();
         let col_name = row[3].as_str().unwrap_or_default().to_string();
         let data_type = row[4].as_str().unwrap_or_default().to_string();
+        let is_nullable = row[5].as_bool().unwrap_or(false);
         let is_pk = row[7].as_bool().unwrap_or(false);
         let is_fk = row[8].as_bool().unwrap_or(false);
         let fk_schema = row[9].as_str().map(String::from);
@@ -124,6 +138,7 @@ pub fn parse_pg_schema_rows(
             is_pk,
             is_fk,
             is_unique: is_unique || is_pk,
+            is_nullable,
             fk_ref: fk_ref.clone(),
         };
 
@@ -161,12 +176,12 @@ pub fn parse_pg_schema_rows(
     for rel in &mut relationships {
         let source_key = (rel.source_schema.clone(), rel.source_table.clone());
         let is_join = join_table_keys.contains(&source_key);
-        let is_pk_or_unique = table_map
+        let (is_pk_or_unique, is_nullable) = table_map
             .get(&source_key)
             .and_then(|(_, cols)| cols.iter().find(|c| c.name == rel.source_column))
-            .map(|c| c.is_pk || c.is_unique)
-            .unwrap_or(false);
-        rel.cardinality = infer_cardinality(is_pk_or_unique, is_pk_or_unique, is_join);
+            .map(|c| (c.is_pk || c.is_unique, c.is_nullable))
+            .unwrap_or((false, false));
+        rel.cardinality = infer_cardinality(is_pk_or_unique, is_pk_or_unique, is_nullable, is_join);
     }
 
     let mut tables: Vec<TableNode> = table_map
@@ -238,13 +253,14 @@ fn build_sqlite_schema_graph(
                     source_column: name.clone(),
                     target_schema: "main".into(), target_table: ref_t.clone(),
                     target_column: ref_c.clone(),
-                    cardinality: if *is_pk { "1:1".into() } else { "1:N".into() },
+                    cardinality: infer_cardinality(*is_pk, false, !_nn, false),
                 });
             }
             GraphColumn {
                 name: name.clone(),
                 data_type: if dtype.is_empty() { "TEXT".into() } else { dtype.clone() },
                 is_pk: *is_pk, is_fk, is_unique: *is_pk,
+                is_nullable: !_nn,
                 fk_ref: fk_ref.map(|(s, t, c)| (s, t, c)),
             }
         }).collect();
@@ -351,22 +367,29 @@ mod tests {
 
     #[test]
     fn infer_cardinality_one_to_one_pk() {
-        assert_eq!(infer_cardinality(true, false, false), "1:1");
+        assert_eq!(infer_cardinality(true, false, false, false), "1:1");
     }
 
     #[test]
-    fn infer_cardinality_one_to_one_unique() {
-        assert_eq!(infer_cardinality(false, true, false), "1:1");
+    fn infer_cardinality_zero_or_one() {
+        // UNIQUE + nullable → 0..1:0..1
+        assert_eq!(infer_cardinality(false, true, true, false), "0..1:0..1");
     }
 
     #[test]
     fn infer_cardinality_one_to_many() {
-        assert_eq!(infer_cardinality(false, false, false), "1:N");
+        assert_eq!(infer_cardinality(false, false, false, false), "1:N");
+    }
+
+    #[test]
+    fn infer_cardinality_zero_or_many() {
+        // not PK, not UNIQUE, nullable → 0..N
+        assert_eq!(infer_cardinality(false, false, true, false), "0..N");
     }
 
     #[test]
     fn infer_cardinality_many_to_many() {
-        assert_eq!(infer_cardinality(false, false, true), "N:M");
+        assert_eq!(infer_cardinality(false, false, false, true), "N:M");
     }
 
     #[test]

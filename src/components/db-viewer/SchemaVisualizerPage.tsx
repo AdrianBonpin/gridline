@@ -110,11 +110,16 @@ function layoutGraph(
 }
 
 function getEdgeMarkers(cardinality: string): { markerStart: string; markerEnd: string } {
+  // markerStart = FK/child side, markerEnd = PK/parent side
   switch (cardinality) {
     case "1:1":
       return { markerStart: "one", markerEnd: "one" };
+    case "0..1:0..1":
+      return { markerStart: "zero-one", markerEnd: "zero-one" };
     case "1:N":
       return { markerStart: "many", markerEnd: "one" };
+    case "0..N":
+      return { markerStart: "zero-many", markerEnd: "one" };
     case "N:M":
       return { markerStart: "many", markerEnd: "many" };
     default:

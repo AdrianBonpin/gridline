@@ -174,6 +174,7 @@ pub struct GraphColumn {
     pub is_pk: bool,
     pub is_fk: bool,
     pub is_unique: bool,
+    pub is_nullable: bool,
     pub fk_ref: Option<(String, String, String)>,
 }
 
@@ -393,6 +394,7 @@ mod tests {
                         is_pk: true,
                         is_fk: false,
                         is_unique: true,
+                        is_nullable: false,
                         fk_ref: None,
                     },
                     GraphColumn {
@@ -401,6 +403,7 @@ mod tests {
                         is_pk: false,
                         is_fk: false,
                         is_unique: true,
+                        is_nullable: false,
                         fk_ref: None,
                     },
                 ],
@@ -453,6 +456,7 @@ mod tests {
             is_pk: false,
             is_fk: false,
             is_unique: false,
+            is_nullable: false,
             fk_ref: None,
         };
         let json = serde_json::to_string(&col_none).unwrap();
@@ -465,6 +469,7 @@ mod tests {
             is_pk: false,
             is_fk: true,
             is_unique: false,
+            is_nullable: false,
             fk_ref: Some(("public".into(), "users".into(), "id".into())),
         };
         let json = serde_json::to_string(&col_some).unwrap();

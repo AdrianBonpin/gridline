@@ -288,6 +288,7 @@ export interface GraphColumn {
   is_pk: boolean;
   is_fk: boolean;
   is_unique: boolean;
+  is_nullable: boolean;
   /** [referenced_schema, referenced_table, referenced_column] */
   fk_ref: [string, string, string] | null;
 }
