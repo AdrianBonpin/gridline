@@ -14,7 +14,7 @@ export function CrowsFootEdge({
   data,
   style,
 }: EdgeProps) {
-  const [edgePath, , , offsetSx, offsetSy, offsetTx, offsetTy] = getSmoothStepPath({
+  const [edgePath] = getSmoothStepPath({
     sourceX, sourceY, sourcePosition,
     targetX, targetY, targetPosition,
     borderRadius: 8,
@@ -23,9 +23,11 @@ export function CrowsFootEdge({
   const sm = (data as any)?.startMarker as string;
   const em = (data as any)?.endMarker as string;
 
-  // Tangent direction at each endpoint from the path geometry
-  const sa = Math.atan2(offsetSy - sourceY, offsetSx - sourceX);
-  const ta = Math.atan2(targetY - offsetTy, targetX - offsetTx);
+  // Straight-line direction (simple, correct for ER diagrams)
+  const dx = targetX - sourceX;
+  const dy = targetY - sourceY;
+  const sa = Math.atan2(dy, dx); // source angle = edge direction
+  const ta = sa + Math.PI;        // target angle = opposite direction
   const d = (r: number) => r * 180 / Math.PI;
 
   return (
