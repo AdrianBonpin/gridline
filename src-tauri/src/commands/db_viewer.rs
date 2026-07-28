@@ -469,6 +469,23 @@ pub fn parse_table_info_rows(rows: &[Vec<serde_json::Value>]) -> Vec<TableInfo> 
 /// Tries numeric/boolean types first (which need exact Rust type matching),
 /// then UUID (with-uuid-1 feature), then chrono types (with-chrono-0_4),
 /// then JSON/JSONB, then falls back to String.
+fn sqlite_value_to_json(row: &rusqlite::Row, i: usize) -> serde_json::Value {
+    use rusqlite::types::ValueRef;
+    match row.get_ref(i) {
+        Ok(ValueRef::Null) => serde_json::Value::Null,
+        Ok(ValueRef::Integer(v)) => serde_json::json!(v),
+        Ok(ValueRef::Real(v)) => serde_json::json!(v),
+        Ok(ValueRef::Text(v)) => serde_json::Value::String(
+            String::from_utf8_lossy(v).to_string(),
+        ),
+        Ok(ValueRef::Blob(v)) => serde_json::Value::String(format!(
+            "[{}B blob]",
+            v.len()
+        )),
+        Err(_) => serde_json::Value::Null,
+    }
+}
+
 fn pg_value_to_json(row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
     // Integer types
     if let Ok(Some(v)) = row.try_get::<_, Option<i32>>(i) {
@@ -918,11 +935,7 @@ ORDER BY c.ordinal_position"#;
                 stmt.query_map([], |row| {
                     let mut vals = Vec::new();
                     for i in 0..col_count {
-                        let val: Option<String> = row.get(i).unwrap_or(None);
-                        vals.push(
-                            val.map(serde_json::Value::String)
-                                .unwrap_or(serde_json::Value::Null),
-                        );
+                        vals.push(sqlite_value_to_json(row, i));
                     }
                     Ok(vals)
                 })
@@ -934,11 +947,7 @@ ORDER BY c.ordinal_position"#;
                 stmt.query_map(rusqlite::params_from_iter(&refs), |row| {
                     let mut vals = Vec::new();
                     for i in 0..col_count {
-                        let val: Option<String> = row.get(i).unwrap_or(None);
-                        vals.push(
-                            val.map(serde_json::Value::String)
-                                .unwrap_or(serde_json::Value::Null),
-                        );
+                        vals.push(sqlite_value_to_json(row, i));
                     }
                     Ok(vals)
                 })
@@ -1127,11 +1136,7 @@ ORDER BY c.ordinal_position"#;
                 .query_map([&value], |row| {
                     let mut vals = Vec::new();
                     for i in 0..col_count {
-                        let val: Option<String> = row.get(i).unwrap_or(None);
-                        vals.push(
-                            val.map(serde_json::Value::String)
-                                .unwrap_or(serde_json::Value::Null),
-                        );
+                        vals.push(sqlite_value_to_json(row, i));
                     }
                     Ok(vals)
                 })
