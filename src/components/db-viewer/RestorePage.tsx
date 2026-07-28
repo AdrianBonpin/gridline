@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { FileSearch, Upload } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "../ui/Button";
 import { BackupProgress } from "./BackupProgress";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
-import { detectPgTools, pgRestore } from "../../lib/commands";
+import { detectPgTools, pgRestore, getSchemas } from "../../lib/commands";
 import type { PgToolStatus } from "../../lib/types";
 
 interface RestorePageProps {
@@ -37,7 +38,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
     const [confirmed, setConfirmed] = useState(false);
     const [toolStatus, setToolStatus] = useState<PgToolStatus | null>(null);
     const [checkingTools, setCheckingTools] = useState(true);
-    const [running, setRunning] = useState(false);
+    const [availableSchemas, setAvailableSchemas] = useState<string[]>([]);
 
     const activeJobId = useBackupStore((s) => s.activeJobId);
     const jobs = useBackupStore((s) => s.jobs);
@@ -45,6 +46,24 @@ export function RestorePage({ connectionId }: RestorePageProps) {
     const notify = useNotificationStore((s) => s.notify);
 
     const activeJob = jobs.find((j) => j.id === activeJobId);
+    const isRunning = activeJob?.status === "running";
+    const pendingJobRef = useRef<string | null>(null);
+
+    useEffect(() => {
+        if (!pendingJobRef.current || !activeJob) return;
+        if (activeJob.id !== pendingJobRef.current) return;
+
+        if (activeJob.status === "completed") {
+            notify("Restore completed successfully", "success");
+            pendingJobRef.current = null;
+        } else if (activeJob.status === "failed") {
+            notify(
+                `Restore failed: ${activeJob.error_message || "Unknown error"}`,
+                "error",
+            );
+            pendingJobRef.current = null;
+        }
+    }, [activeJob, notify]);
 
     useEffect(() => {
         setCheckingTools(true);
@@ -60,25 +79,23 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                 }),
             )
             .finally(() => setCheckingTools(false));
-    }, []);
+
+        getSchemas(connectionId)
+            .then((schemas) => setAvailableSchemas(schemas))
+            .catch(() => setAvailableSchemas([]));
+    }, [connectionId]);
 
     const handlePickFile = useCallback(async () => {
-        try {
-            const { open: openDialog } =
-                await import("@tauri-apps/plugin-dialog");
-            const picked = await openDialog({
-                multiple: false,
-                filters: [
-                    {
-                        name: "Backup Files",
-                        extensions: ["dump", "sql", "tar", "custom", "gz"],
-                    },
-                ],
-            });
-            if (picked && typeof picked === "string") setFilePath(picked);
-        } catch {
-            // dialog not available (non-Tauri env)
-        }
+        const picked = await open({
+            multiple: false,
+            filters: [
+                {
+                    name: "Backup Files",
+                    extensions: ["dump", "sql", "tar", "custom", "gz"],
+                },
+            ],
+        });
+        if (picked && typeof picked === "string") setFilePath(picked);
     }, []);
 
     const handleStartRestore = useCallback(async () => {
@@ -86,9 +103,10 @@ export function RestorePage({ connectionId }: RestorePageProps) {
             notify("Please select a file path", "error");
             return;
         }
-        setRunning(true);
         const jobId = `restore-${Date.now()}`;
         startJob(jobId, "restore");
+        pendingJobRef.current = jobId;
+
         try {
             await pgRestore(connectionId, {
                 format,
@@ -96,18 +114,14 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                 clean,
                 schema: schema || undefined,
             });
-            notify("Restore completed successfully", "success");
         } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            notify(`Restore failed: ${parseError(msg)}`, "error");
-        } finally {
-            setRunning(false);
+            useBackupStore.getState().failJob(jobId, msg);
         }
     }, [filePath, format, clean, schema, connectionId, startJob, notify]);
 
     const toolsMissing = toolStatus && !toolStatus.pg_restore_found;
-    const canStart = filePath && confirmed && !running;
-    const isRunning = activeJob?.status === "running";
+    const canStart = filePath && confirmed && !isRunning;
 
     return (
         <div className="flex flex-col h-full">
@@ -201,22 +215,27 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                 </div>
 
                                 {/* Schema (optional) */}
-                                <div className="space-y-1 w-full">
+                                <div className="space-y-1">
                                     <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
                                         Schema{" "}
                                         <span className="font-normal normal-case tracking-normal">
                                             (optional)
                                         </span>
                                     </label>
-                                    <input
-                                        type="text"
+                                    <select
                                         value={schema}
                                         onChange={(e) =>
                                             setSchema(e.target.value)
                                         }
-                                        placeholder="public"
-                                        className="w-full px-4 py-2 text-sm text-text placeholder-text-muted/50 border-b border-border focus:border-accent focus:outline-none transition-colors"
-                                    />
+                                        className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
+                                    >
+                                        <option value="">All schemas</option>
+                                        {availableSchemas.map((s) => (
+                                            <option key={s} value={s}>
+                                                {s}
+                                            </option>
+                                        ))}
+                                    </select>
                                 </div>
 
                                 {/* Clean toggle */}
@@ -259,12 +278,13 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                             </div>
 
                             {/* Progress */}
-                            {isRunning && (
-                                <div className="glass p-4">
+                            {activeJob && (
+                                <div className="px-4">
                                     <BackupProgress
-                                        progress={50}
+                                        progress={activeJob.status === "completed" ? 100 : 50}
                                         jobType="restore"
-                                        status="running"
+                                        status={activeJob.status}
+                                        errorMessage={activeJob.error_message ?? undefined}
                                     />
                                 </div>
                             )}
@@ -276,7 +296,9 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                     disabled={!canStart}
                                 >
                                     <Upload size={14} className="mr-1.5" />
-                                    {running ? "Restoring..." : "Start Restore"}
+                                    {isRunning
+                                        ? "Restoring..."
+                                        : "Start Restore"}
                                 </Button>
                             </div>
                         </>
@@ -287,16 +309,3 @@ export function RestorePage({ connectionId }: RestorePageProps) {
     );
 }
 
-function parseError(msg: string): string {
-    if (msg.includes("pg_restore:")) {
-        const [, ...rest] = msg.split("pg_restore:");
-        return rest.join(":").trim() || msg;
-    }
-    if (msg.includes("No such file or directory")) {
-        return "File not found. Check the path and try again.";
-    }
-    if (msg.includes("Permission denied")) {
-        return "Permission denied. Check file permissions.";
-    }
-    return msg;
-}

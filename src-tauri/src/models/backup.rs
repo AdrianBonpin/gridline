@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BackupOptions {
     pub format: String, // "plain" | "custom" | "tar" | "directory"
     pub file_path: String,
@@ -10,6 +11,7 @@ pub struct BackupOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RestoreOptions {
     pub format: String,
     pub file_path: String,
@@ -18,6 +20,7 @@ pub struct RestoreOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncOptions {
     pub source_connection_id: String,
     pub target_connection_id: String,
@@ -72,7 +75,7 @@ mod tests {
         };
         let json = serde_json::to_string(&opts).unwrap();
         assert!(json.contains("plain"));
-        assert!(json.contains("no_owner"));
+        assert!(json.contains("noOwner"));
     }
 
     #[test]

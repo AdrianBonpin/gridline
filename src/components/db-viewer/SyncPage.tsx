@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { ArrowLeftRight, Database } from "lucide-react";
 import { Button } from "../ui/Button";
 import { BackupProgress } from "./BackupProgress";
 import { useBackupStore } from "../../stores/backupStore";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useNotificationStore } from "../../stores/notificationStore";
-import { detectPgTools, dbSync } from "../../lib/commands";
+import { detectPgTools, dbSync, getSchemas } from "../../lib/commands";
 import type { PgToolStatus } from "../../lib/types";
 
 export function SyncPage() {
@@ -15,7 +15,7 @@ export function SyncPage() {
     const [confirmed, setConfirmed] = useState(false);
     const [toolStatus, setToolStatus] = useState<PgToolStatus | null>(null);
     const [checkingTools, setCheckingTools] = useState(true);
-    const [running, setRunning] = useState(false);
+    const [availableSchemas, setAvailableSchemas] = useState<string[]>([]);
 
     const connections = useConnectionStore((s) => s.connections);
     const activeJobId = useBackupStore((s) => s.activeJobId);
@@ -24,6 +24,24 @@ export function SyncPage() {
     const notify = useNotificationStore((s) => s.notify);
 
     const activeJob = jobs.find((j) => j.id === activeJobId);
+    const isRunning = activeJob?.status === "running";
+    const pendingJobRef = useRef<string | null>(null);
+
+    useEffect(() => {
+        if (!pendingJobRef.current || !activeJob) return;
+        if (activeJob.id !== pendingJobRef.current) return;
+
+        if (activeJob.status === "completed") {
+            notify("Sync completed successfully", "success");
+            pendingJobRef.current = null;
+        } else if (activeJob.status === "failed") {
+            notify(
+                `Sync failed: ${activeJob.error_message || "Unknown error"}`,
+                "error",
+            );
+            pendingJobRef.current = null;
+        }
+    }, [activeJob, notify]);
 
     useEffect(() => {
         setCheckingTools(true);
@@ -41,6 +59,18 @@ export function SyncPage() {
             .finally(() => setCheckingTools(false));
     }, []);
 
+    // Fetch schemas from the source connection when it changes
+    useEffect(() => {
+        if (!sourceConnectionId) {
+            setAvailableSchemas([]);
+            setSchema("");
+            return;
+        }
+        getSchemas(sourceConnectionId)
+            .then((schemas) => setAvailableSchemas(schemas))
+            .catch(() => setAvailableSchemas([]));
+    }, [sourceConnectionId]);
+
     const handleStartSync = useCallback(async () => {
         if (!sourceConnectionId || !targetConnectionId) {
             notify("Please select both source and target connections", "error");
@@ -50,9 +80,10 @@ export function SyncPage() {
             notify("Source and target must be different", "error");
             return;
         }
-        setRunning(true);
         const jobId = `sync-${Date.now()}`;
         startJob(jobId, "sync");
+        pendingJobRef.current = jobId;
+
         try {
             await dbSync({
                 sourceConnectionId,
@@ -60,12 +91,9 @@ export function SyncPage() {
                 schema: schema || undefined,
                 tables: undefined,
             });
-            notify("Sync completed successfully", "success");
         } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            notify(`Sync failed: ${parseError(msg)}`, "error");
-        } finally {
-            setRunning(false);
+            useBackupStore.getState().failJob(jobId, msg);
         }
     }, [sourceConnectionId, targetConnectionId, schema, startJob, notify]);
 
@@ -73,8 +101,7 @@ export function SyncPage() {
         toolStatus &&
         (!toolStatus.pg_dump_found || !toolStatus.pg_restore_found);
     const canStart =
-        sourceConnectionId && targetConnectionId && confirmed && !running;
-    const isRunning = activeJob?.status === "running";
+        sourceConnectionId && targetConnectionId && confirmed && !isRunning;
 
     const postgresqlConnections = connections.filter(
         (c) => c.db_type === "postgresql",
@@ -194,22 +221,32 @@ export function SyncPage() {
                                 </div>
 
                                 {/* Schema (optional) */}
-                                <div className="space-y-1 w-full">
+                                <div className="space-y-1">
                                     <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
                                         Schema{" "}
                                         <span className="font-normal normal-case tracking-normal">
                                             (optional)
                                         </span>
                                     </label>
-                                    <input
-                                        type="text"
+                                    <select
                                         value={schema}
                                         onChange={(e) =>
                                             setSchema(e.target.value)
                                         }
-                                        placeholder="public"
-                                        className="w-full px-4 py-2 text-sm text-text placeholder-text-muted/50 border-b border-border focus:border-accent focus:outline-none transition-colors"
-                                    />
+                                        disabled={!sourceConnectionId}
+                                        className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        <option value="">
+                                            {sourceConnectionId
+                                                ? "All schemas"
+                                                : "Select a source first"}
+                                        </option>
+                                        {availableSchemas.map((s) => (
+                                            <option key={s} value={s}>
+                                                {s}
+                                            </option>
+                                        ))}
+                                    </select>
                                 </div>
 
                                 {/* Flow indicator */}
@@ -256,12 +293,13 @@ export function SyncPage() {
                             </div>
 
                             {/* Progress */}
-                            {isRunning && (
-                                <div className="glass p-4">
+                            {activeJob && (
+                                <div className="px-4">
                                     <BackupProgress
-                                        progress={50}
+                                        progress={activeJob.status === "completed" ? 100 : 50}
                                         jobType="sync"
-                                        status="running"
+                                        status={activeJob.status}
+                                        errorMessage={activeJob.error_message ?? undefined}
                                     />
                                 </div>
                             )}
@@ -276,7 +314,7 @@ export function SyncPage() {
                                         size={14}
                                         className="mr-1.5"
                                     />
-                                    {running ? "Syncing..." : "Start Sync"}
+                                    {isRunning ? "Syncing..." : "Start Sync"}
                                 </Button>
                             </div>
                         </>
@@ -287,16 +325,3 @@ export function SyncPage() {
     );
 }
 
-function parseError(msg: string): string {
-    if (msg.includes("pg_dump:") || msg.includes("pg_restore:")) {
-        const parts = msg.split(/pg_(dump|restore):/);
-        return parts[parts.length - 1]?.trim() || msg;
-    }
-    if (msg.includes("No such file or directory")) {
-        return "File not found. Check the output path and try again.";
-    }
-    if (msg.includes("Permission denied")) {
-        return "Permission denied. Check file permissions.";
-    }
-    return msg;
-}

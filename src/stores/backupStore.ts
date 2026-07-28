@@ -47,7 +47,6 @@ export const useBackupStore = create<BackupStore>((set, get) => ({
 
   completeJob: (jobId: string) =>
     set((s) => ({
-      activeJobId: null,
       progress: 100,
       jobs: s.jobs.map((j) =>
         j.id === jobId
@@ -58,7 +57,6 @@ export const useBackupStore = create<BackupStore>((set, get) => ({
 
   failJob: (jobId: string, error: string) =>
     set((s) => ({
-      activeJobId: null,
       jobs: s.jobs.map((j) =>
         j.id === jobId
           ? {

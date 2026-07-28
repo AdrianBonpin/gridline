@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Download, FolderOpen, HardDrive } from "lucide-react";
+import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "../ui/Button";
 import { BackupProgress } from "./BackupProgress";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
-import { detectPgTools, pgDump } from "../../lib/commands";
+import { detectPgTools, pgDump, getSchemas } from "../../lib/commands";
 import type { PgToolStatus } from "../../lib/types";
 
 interface BackupPageProps {
@@ -38,7 +39,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
     const [noOwner, setNoOwner] = useState(true);
     const [toolStatus, setToolStatus] = useState<PgToolStatus | null>(null);
     const [checkingTools, setCheckingTools] = useState(true);
-    const [running, setRunning] = useState(false);
+    const [availableSchemas, setAvailableSchemas] = useState<string[]>([]);
 
     const activeJobId = useBackupStore((s) => s.activeJobId);
     const jobs = useBackupStore((s) => s.jobs);
@@ -46,6 +47,27 @@ export function BackupPage({ connectionId }: BackupPageProps) {
     const notify = useNotificationStore((s) => s.notify);
 
     const activeJob = jobs.find((j) => j.id === activeJobId);
+    const isRunning = activeJob?.status === "running";
+
+    // Track our job ID so we only react to jobs we started
+    const pendingJobRef = useRef<string | null>(null);
+
+    // React to job completion/failure via store events
+    useEffect(() => {
+        if (!pendingJobRef.current || !activeJob) return;
+        if (activeJob.id !== pendingJobRef.current) return;
+
+        if (activeJob.status === "completed") {
+            notify("Backup completed successfully", "success");
+            pendingJobRef.current = null;
+        } else if (activeJob.status === "failed") {
+            notify(
+                `Backup failed: ${activeJob.error_message || "Unknown error"}`,
+                "error",
+            );
+            pendingJobRef.current = null;
+        }
+    }, [activeJob, notify]);
 
     useEffect(() => {
         setCheckingTools(true);
@@ -60,31 +82,30 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                 }),
             )
             .finally(() => setCheckingTools(false));
-    }, []);
+
+        getSchemas(connectionId)
+            .then((schemas) => setAvailableSchemas(schemas))
+            .catch(() => setAvailableSchemas([]));
+    }, [connectionId]);
 
     const handlePickFile = useCallback(async () => {
-        try {
-            const { save } = await import("@tauri-apps/plugin-dialog");
-            const extensions: Record<BackupFormat, string[]> = {
-                plain: ["sql"],
-                custom: ["dump", "custom"],
-                tar: ["tar"],
-                directory: [],
-            };
-            const picked = await save({
-                defaultPath: `backup.${
-                    format === "custom"
-                        ? "dump"
-                        : format === "plain"
-                          ? "sql"
-                          : "tar"
-                }`,
-                filters: [{ name: "Backup", extensions: extensions[format] }],
-            });
-            if (picked) setFilePath(picked);
-        } catch {
-            // dialog not available (non-Tauri env)
-        }
+        const extensions: Record<BackupFormat, string[]> = {
+            plain: ["sql"],
+            custom: ["dump", "custom"],
+            tar: ["tar"],
+            directory: [],
+        };
+        const picked = await save({
+            defaultPath: `backup.${
+                format === "custom"
+                    ? "dump"
+                    : format === "plain"
+                      ? "sql"
+                      : "tar"
+            }`,
+            filters: [{ name: "Backup", extensions: extensions[format] }],
+        });
+        if (picked) setFilePath(picked);
     }, [format]);
 
     const handleStartBackup = useCallback(async () => {
@@ -92,10 +113,13 @@ export function BackupPage({ connectionId }: BackupPageProps) {
             notify("Please select a file path", "error");
             return;
         }
-        setRunning(true);
         const jobId = `dump-${Date.now()}`;
         startJob(jobId, "dump");
+        pendingJobRef.current = jobId;
+
         try {
+            // pgDump returns the job ID immediately — completion
+            // comes via Tauri events handled by the backupStore
             await pgDump(connectionId, {
                 format,
                 filePath,
@@ -103,17 +127,15 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                 tables: undefined,
                 noOwner,
             });
-            notify("Backup completed successfully", "success");
         } catch (e) {
+            // If the command itself fails (e.g. connection not found),
+            // the event won't fire — handle here
             const msg = e instanceof Error ? e.message : String(e);
-            notify(`Backup failed: ${parseError(msg)}`, "error");
-        } finally {
-            setRunning(false);
+            useBackupStore.getState().failJob(jobId, msg);
         }
     }, [filePath, format, schema, noOwner, connectionId, startJob, notify]);
 
     const toolsMissing = toolStatus && !toolStatus.pg_dump_found;
-    const isRunning = activeJob?.status === "running";
 
     return (
         <div className="flex flex-col h-full">
@@ -209,22 +231,27 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                 </div>
 
                                 {/* Schema (optional) */}
-                                <div className="space-y-1 w-full">
+                                <div className="space-y-1">
                                     <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
                                         Schema{" "}
                                         <span className="font-normal normal-case tracking-normal">
                                             (optional)
                                         </span>
                                     </label>
-                                    <input
-                                        type="text"
+                                    <select
                                         value={schema}
                                         onChange={(e) =>
                                             setSchema(e.target.value)
                                         }
-                                        placeholder="public"
-                                        className="w-full px-4 py-2 text-sm text-text placeholder-text-muted/50 border-b border-border focus:border-accent focus:outline-none transition-colors"
-                                    />
+                                        className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
+                                    >
+                                        <option value="">All schemas</option>
+                                        {availableSchemas.map((s) => (
+                                            <option key={s} value={s}>
+                                                {s}
+                                            </option>
+                                        ))}
+                                    </select>
                                 </div>
 
                                 {/* No-owner toggle */}
@@ -247,12 +274,13 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                             </div>
 
                             {/* Progress */}
-                            {isRunning && (
-                                <div className="glass p-4">
+                            {activeJob && (
+                                <div className="px-4">
                                     <BackupProgress
-                                        progress={50}
+                                        progress={activeJob.status === "completed" ? 100 : 50}
                                         jobType="dump"
-                                        status="running"
+                                        status={activeJob.status}
+                                        errorMessage={activeJob.error_message ?? undefined}
                                     />
                                 </div>
                             )}
@@ -261,10 +289,10 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                             <div className="flex justify-end pb-2 pr-2">
                                 <Button
                                     onClick={handleStartBackup}
-                                    disabled={running || !filePath}
+                                    disabled={isRunning || !filePath}
                                 >
                                     <Download size={14} className="mr-1.5" />
-                                    {running ? "Backing up..." : "Start Backup"}
+                                    {isRunning ? "Backing up..." : "Start Backup"}
                                 </Button>
                             </div>
                         </>
@@ -275,16 +303,3 @@ export function BackupPage({ connectionId }: BackupPageProps) {
     );
 }
 
-function parseError(msg: string): string {
-    if (msg.includes("pg_dump:")) {
-        const [, ...rest] = msg.split("pg_dump:");
-        return rest.join(":").trim() || msg;
-    }
-    if (msg.includes("No such file or directory")) {
-        return "File not found. Check the output path and try again.";
-    }
-    if (msg.includes("Permission denied")) {
-        return "Permission denied. Check file permissions for the output path.";
-    }
-    return msg;
-}
