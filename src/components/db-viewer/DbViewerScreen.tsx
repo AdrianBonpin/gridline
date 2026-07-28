@@ -3,6 +3,7 @@ import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { TableTree } from "./TableTree";
+import { ObjectTree } from "./ObjectTree";
 import { TabBar } from "./TabBar";
 import { VirtualDataGrid } from "../grid/VirtualDataGrid";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
@@ -80,6 +81,7 @@ function applySorts(rows: unknown[][], columns: ColumnInfo[], rules: SortRule[])
 export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScreenProps) {
   const { connectionError, connect } = useDbConnection(connectionId);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  const [currentView, setCurrentView] = useState<string>("db-viewer");
   const [tablePanelWidth, setTablePanelWidth] = useState(280);
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
   const [filterRules, setFilterRules] = useState<FilterRule[]>([]);
@@ -313,6 +315,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
     (view: string) => {
       if (view === "home") onHome();
       else if (view === "settings") onSettings();
+      else setCurrentView(view);
     },
     [onHome, onSettings],
   );
@@ -323,7 +326,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
   return (
     <TooltipProvider>
       <div className="h-screen bg-canvas flex border-t border-border">
-        <DbViewerSidebar currentView="db-viewer" onNavigate={handleNavigate} />
+        <DbViewerSidebar currentView={currentView} onNavigate={handleNavigate} />
         <div className="flex-1 flex flex-col min-h-0">
           {connectionError && connectionError !== dismissedError && (
             <ConnectionDropBanner
@@ -335,86 +338,98 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
               onDismiss={() => setDismissedError(connectionError)}
             />
           )}
-          <div className="flex flex-1 min-h-0 overflow-hidden">
-            <div className="border-r border-border flex flex-col shrink-0" style={{ width: tablePanelWidth }}>
-              <DbViewerToolbar
-                databases={databases}
-                currentDatabase={currentDatabase}
-                setCurrentDatabase={setCurrentDatabase}
-                schemas={schemas}
-                currentSchema={currentSchema}
-                setCurrentSchema={setCurrentSchema}
-                onEdit={() => setEditModalOpen(true)}
-                connectionId={connectionId}
-                searchQuery={searchQuery}
-                onSearchChange={setSearchQuery}
+          {currentView === "db-viewer" ? (
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+              <div className="border-r border-border flex flex-col shrink-0" style={{ width: tablePanelWidth }}>
+                <DbViewerToolbar
+                  databases={databases}
+                  currentDatabase={currentDatabase}
+                  setCurrentDatabase={setCurrentDatabase}
+                  schemas={schemas}
+                  currentSchema={currentSchema}
+                  setCurrentSchema={setCurrentSchema}
+                  onEdit={() => setEditModalOpen(true)}
+                  connectionId={connectionId}
+                  searchQuery={searchQuery}
+                  onSearchChange={setSearchQuery}
+                />
+                <div className="flex-1 overflow-y-auto" style={{ overscrollBehavior: "none" }}>
+                  <TableTree searchQuery={searchQuery} />
+                </div>
+              </div>
+              {/* panel resize handle */}
+              <div
+                className="w-[5px] cursor-col-resize hover:bg-accent/30 active:bg-accent/50 shrink-0"
+                onMouseDown={onPanelResizeStart}
+                onDoubleClick={() => setTablePanelWidth(280)}
               />
-              <div className="flex-1 overflow-y-auto" style={{ overscrollBehavior: "none" }}>
-                <TableTree searchQuery={searchQuery} />
+              <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
+                <TabBar />
+                {activeTab?.data && (
+                  <TableControls
+                    connectionId={connectionId}
+                    schema={activeSchema}
+                    table={activeTable}
+                    columns={columns}
+                    rows={rawRows}
+                    hiddenColumns={hiddenColumns}
+                    onToggleColumn={(col) =>
+                      setHiddenColumns((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(col)) next.delete(col); else next.add(col);
+                        return next;
+                      })
+                    }
+                    onRefresh={handleRefresh}
+                    filterRules={filterRules}
+                    onFilterChange={setFilterRules}
+                    sortRules={sortRules}
+                    onSortChange={setSortRules}
+                    defaultRefreshRate={settings?.table_refresh_rate ?? 0}
+                    selectedCount={selectedRows.size}
+                    selectedRows={processedRows.filter((_, i) => selectedRows.has(i))}
+                    onClearSelection={() => setSelectedRows(new Set())}
+                  />
+                )}
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                  <VirtualDataGrid
+                    connectionId={connectionId}
+                    rows={processedRows}
+                    columns={columns}
+                    hiddenColumns={hiddenColumns}
+                    selectedRows={selectedRows}
+                    onToggleRow={(rowIndex) => {
+                      setSelectedRows((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(rowIndex)) next.delete(rowIndex);
+                        else next.add(rowIndex);
+                        return next;
+                      });
+                    }}
+                    onToggleAll={() => {
+                      setSelectedRows((prev) => {
+                        if (prev.size === processedRows.length && processedRows.length > 0) {
+                          return new Set();
+                        }
+                        return new Set(processedRows.map((_, i) => i));
+                      });
+                    }}
+                  />
+                </div>
               </div>
             </div>
-            {/* panel resize handle */}
-            <div
-              className="w-[5px] cursor-col-resize hover:bg-accent/30 active:bg-accent/50 shrink-0"
-              onMouseDown={onPanelResizeStart}
-              onDoubleClick={() => setTablePanelWidth(280)}
-            />
-            <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
-              <TabBar />
-              {activeTab?.data && (
-                <TableControls
-                  connectionId={connectionId}
-                  schema={activeSchema}
-                  table={activeTable}
-                  columns={columns}
-                  rows={rawRows}
-                  hiddenColumns={hiddenColumns}
-                  onToggleColumn={(col) =>
-                    setHiddenColumns((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(col)) next.delete(col); else next.add(col);
-                      return next;
-                    })
-                  }
-                  onRefresh={handleRefresh}
-                  filterRules={filterRules}
-                  onFilterChange={setFilterRules}
-                  sortRules={sortRules}
-                  onSortChange={setSortRules}
-                  defaultRefreshRate={settings?.table_refresh_rate ?? 0}
-                  selectedCount={selectedRows.size}
-                  selectedRows={processedRows.filter((_, i) => selectedRows.has(i))}
-                  onClearSelection={() => setSelectedRows(new Set())}
-                />
-              )}
-              <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                <VirtualDataGrid
-                  connectionId={connectionId}
-                  rows={processedRows}
-                  columns={columns}
-                  hiddenColumns={hiddenColumns}
-                  selectedRows={selectedRows}
-                  onToggleRow={(rowIndex) => {
-                    setSelectedRows((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(rowIndex)) next.delete(rowIndex);
-                      else next.add(rowIndex);
-                      return next;
-                    });
-                  }}
-                  onToggleAll={() => {
-                    setSelectedRows((prev) => {
-                      if (prev.size === processedRows.length && processedRows.length > 0) {
-                        return new Set();
-                      }
-                      return new Set(processedRows.map((_, i) => i));
-                    });
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-          <ChangesQueuePanel />
+          ) : currentView === "functions" ? (
+            <ObjectTree type="functions" connectionId={connectionId} />
+          ) : currentView === "triggers" ? (
+            <ObjectTree type="triggers" connectionId={connectionId} />
+          ) : currentView === "sequences" ? (
+            <ObjectTree type="sequences" connectionId={connectionId} />
+          ) : currentView === "enums" ? (
+            <ObjectTree type="enums" connectionId={connectionId} />
+          ) : currentView === "extensions" ? (
+            <ObjectTree type="extensions" connectionId={connectionId} />
+          ) : null}
+          {currentView === "db-viewer" && <ChangesQueuePanel />}
         </div>
         {currentConnection && (
           <EditConnectionModal

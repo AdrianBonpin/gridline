@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { QueryResult, TableInfo, ChangeItemType } from "../lib/types";
+import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo } from "../lib/types";
 
 // ─── Local types ────────────────────────────────────────────────
 
@@ -60,6 +60,11 @@ interface DbViewerState {
   tables: TableInfo[];
   currentDatabase: string | null;
   currentSchema: string | null;
+  functions: FunctionInfo[] | null;
+  triggers: TriggerInfo[] | null;
+  sequences: SequenceInfo[] | null;
+  enums: EnumInfo[] | null;
+  extensions: ExtensionInfo[] | null;
 
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
@@ -88,6 +93,11 @@ interface DbViewerState {
   markChangeFailed: (changeId: string, error: string) => void;
   setCurrentDatabase: (db: string | null) => void;
   setCurrentSchema: (schema: string | null) => void;
+  setFunctions: (functions: FunctionInfo[]) => void;
+  setTriggers: (triggers: TriggerInfo[]) => void;
+  setSequences: (sequences: SequenceInfo[]) => void;
+  setEnums: (enums: EnumInfo[]) => void;
+  setExtensions: (extensions: ExtensionInfo[]) => void;
   populate: (
     databases: string[],
     schemas: string[],
@@ -108,6 +118,11 @@ const initialState = {
   tables: [] as TableInfo[],
   currentDatabase: null as string | null,
   currentSchema: null as string | null,
+  functions: null as FunctionInfo[] | null,
+  triggers: null as TriggerInfo[] | null,
+  sequences: null as SequenceInfo[] | null,
+  enums: null as EnumInfo[] | null,
+  extensions: null as ExtensionInfo[] | null,
 };
 
 // ─── Store ──────────────────────────────────────────────────────
@@ -244,6 +259,11 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
 
   setCurrentDatabase: (db) => set({ currentDatabase: db }),
   setCurrentSchema: (schema) => set({ currentSchema: schema }),
+  setFunctions: (functions) => set({ functions }),
+  setTriggers: (triggers) => set({ triggers }),
+  setSequences: (sequences) => set({ sequences }),
+  setEnums: (enums) => set({ enums }),
+  setExtensions: (extensions) => set({ extensions }),
 
   populate: (databases, schemas, tables) =>
     set({ databases, schemas, tables }),

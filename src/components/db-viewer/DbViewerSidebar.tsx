@@ -1,4 +1,4 @@
-import { Database, Grid2x2, FunctionSquare, GitBranch, Home, Settings } from "lucide-react";
+import { Database, Grid2x2, FunctionSquare, GitBranch, Home, ListOrdered, Puzzle, Settings, Tag } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
 
 export interface DbViewerSidebarProps {
@@ -17,8 +17,11 @@ export function DbViewerSidebar({ currentView, onNavigate }: DbViewerSidebarProp
   const topItems: NavItem[] = [
     { id: "db-viewer", label: "Explorer", icon: <Database size={20} /> },
     { id: "schema-visualizer", label: "Schema Visualizer coming soon", icon: <Grid2x2 size={20} />, stub: true },
-    { id: "functions", label: "Functions coming soon", icon: <FunctionSquare size={20} />, stub: true },
-    { id: "triggers", label: "Triggers coming soon", icon: <GitBranch size={20} />, stub: true },
+    { id: "functions", label: "Functions", icon: <FunctionSquare size={20} /> },
+    { id: "triggers", label: "Triggers", icon: <GitBranch size={20} /> },
+    { id: "sequences", label: "Sequences", icon: <ListOrdered size={20} /> },
+    { id: "enums", label: "Enums", icon: <Tag size={20} /> },
+    { id: "extensions", label: "Extensions", icon: <Puzzle size={20} /> },
   ];
 
   const bottomItems: NavItem[] = [

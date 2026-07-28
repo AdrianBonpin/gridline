@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, ChangeItem, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, ChangeItem, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo } from "./types";
 
 // NOTE on argument key naming:
 // Tauri v2's #[tauri::command] macro converts Rust snake_case parameter names
@@ -114,4 +114,26 @@ export async function pgRestore(connectionId: string, options: RestoreOptions): 
 
 export async function dbSync(options: SyncOptions): Promise<string> {
   return invoke<string>("db_sync", { options });
+}
+
+// ─── Object Explorer (Functions, Triggers, Sequences, Enums, Extensions) ────
+
+export async function getFunctions(connectionId: string, schema?: string): Promise<FunctionInfo[]> {
+  return invoke<FunctionInfo[]>("get_functions", { connectionId, schema });
+}
+
+export async function getTriggers(connectionId: string, schema?: string): Promise<TriggerInfo[]> {
+  return invoke<TriggerInfo[]>("get_triggers", { connectionId, schema });
+}
+
+export async function getSequences(connectionId: string, schema?: string): Promise<SequenceInfo[]> {
+  return invoke<SequenceInfo[]>("get_sequences", { connectionId, schema });
+}
+
+export async function getEnums(connectionId: string, schema?: string): Promise<EnumInfo[]> {
+  return invoke<EnumInfo[]>("get_enums", { connectionId, schema });
+}
+
+export async function getExtensions(connectionId: string): Promise<ExtensionInfo[]> {
+  return invoke<ExtensionInfo[]>("get_extensions", { connectionId });
 }
