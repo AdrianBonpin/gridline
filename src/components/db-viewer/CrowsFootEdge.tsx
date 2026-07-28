@@ -14,33 +14,30 @@ export function CrowsFootEdge({
   data,
   style,
 }: EdgeProps) {
-  const [edgePath] = getSmoothStepPath({
+  const [edgePath, labelX, labelY, offsetSx, offsetSy, offsetTx, offsetTy] = getSmoothStepPath({
     sourceX, sourceY, sourcePosition,
     targetX, targetY, targetPosition,
     borderRadius: 8,
   });
 
-  // data.startMarker / data.endMarker: "one" | "many" | ""
   const sm = (data as any)?.startMarker as string;
   const em = (data as any)?.endMarker as string;
 
-  const dx = targetX - sourceX;
-  const dy = targetY - sourceY;
-  const len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len;
-  const uy = dy / len;
-  const G = 8;
+  // Tangent at source: from source point to first offset point
+  const sxDir = Math.atan2(offsetSy - sourceY, offsetSx - sourceX);
+  // Tangent at target: from last offset point to target point
+  const txDir = Math.atan2(targetY - offsetTy, targetX - offsetTx);
+
   const deg = (rad: number) => rad * 180 / Math.PI;
+  const G = 6;
 
   return (
     <g>
       <BaseEdge id={id} path={edgePath} style={{ stroke: C, strokeWidth: 1.5, ...style }} />
-      {/* Source marker */}
-      <g transform={`translate(${sourceX + ux * G},${sourceY + uy * G}) rotate(${deg(Math.atan2(uy, ux))})`}>
+      <g transform={`translate(${sourceX},${sourceY}) rotate(${deg(sxDir)})`}>
         <Sym type={sm} />
       </g>
-      {/* Target marker */}
-      <g transform={`translate(${targetX - ux * G},${targetY - uy * G}) rotate(${deg(Math.atan2(-uy, -ux))})`}>
+      <g transform={`translate(${targetX},${targetY}) rotate(${deg(txDir)})`}>
         <Sym type={em} />
       </g>
     </g>
@@ -49,14 +46,14 @@ export function CrowsFootEdge({
 
 function Sym({ type }: { type: string }) {
   if (type === "one") {
-    return <line x1={0} y1={-S} x2={0} y2={S} stroke={C} strokeWidth={2} />;
+    return <line x1={0} y1={-S} x2={0} y2={S} stroke={C} strokeWidth={1.5} />;
   }
   if (type === "many") {
     return (
       <g>
-        <line x1={0} y1={0} x2={-S} y2={-S * 0.7} stroke={C} strokeWidth={2} />
-        <line x1={0} y1={0} x2={-S} y2={0} stroke={C} strokeWidth={2} />
-        <line x1={0} y1={0} x2={-S} y2={S * 0.7} stroke={C} strokeWidth={2} />
+        <line x1={0} y1={0} x2={-S} y2={-S * 0.7} stroke={C} strokeWidth={1.5} />
+        <line x1={0} y1={0} x2={-S} y2={0} stroke={C} strokeWidth={1.5} />
+        <line x1={0} y1={0} x2={-S} y2={S * 0.7} stroke={C} strokeWidth={1.5} />
       </g>
     );
   }
