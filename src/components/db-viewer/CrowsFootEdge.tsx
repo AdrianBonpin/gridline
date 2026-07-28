@@ -34,8 +34,8 @@ export function CrowsFootEdge({
     // Target: offset AWAY from target card (into the gap), lines point BACK toward target
     const sOff = toRight ? 1 : -1; // source offset direction
     const tOff = toRight ? -1 : 1; // target offset direction
-    const sDir = toRight ? -1 : 1; // source lines point toward source table
-    const tDir = toRight ? 1 : -1; // target lines point toward target table
+    const sDir = toRight ? 1 : -1;  // source lines point toward source table
+    const tDir = toRight ? -1 : 1;  // target lines point toward target table
 
     return (
         <g>
