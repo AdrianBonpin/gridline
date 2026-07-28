@@ -5,6 +5,7 @@ import {
   ChevronDown, FileJson, FileText, Terminal,
 } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { Tooltip } from "../ui/Tooltip";
 import type { ColumnInfo } from "../../lib/types";
 
 const AUTO_REFRESH_OPTIONS = [
@@ -190,7 +191,7 @@ function FilterModal({
     >
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-text">Column Filters</span>
-        <button type="button" onClick={() => setOpen(false)} className="text-text-muted hover:text-text">
+        <button type="button" onClick={() => setOpen(false)} className="text-text-muted hover:text-text cursor-pointer">
           <X size={14} />
         </button>
       </div>
@@ -199,14 +200,14 @@ function FilterModal({
           <select
             value={rule.column}
             onChange={(e) => updateRule(rule.id, { column: e.target.value })}
-            className="flex-1 rounded border border-border bg-surface text-xs px-1.5 py-1 text-text min-w-0"
+            className="flex-1 rounded border border-border bg-surface text-xs px-1.5 py-1 text-text min-w-0 cursor-pointer"
           >
             {columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
           </select>
           <select
             value={rule.operator}
             onChange={(e) => updateRule(rule.id, { operator: e.target.value as FilterRule["operator"] })}
-            className="w-24 rounded border border-border bg-surface text-xs px-1 py-1 text-text"
+            className="w-24 rounded border border-border bg-surface text-xs px-1 py-1 text-text cursor-pointer"
           >
             <option value="eq">=</option>
             <option value="neq">≠</option>
@@ -227,7 +228,7 @@ function FilterModal({
               className="flex-1 rounded border border-border bg-surface text-xs px-1.5 py-1 text-text min-w-0"
             />
           )}
-          <button type="button" onClick={() => removeRule(rule.id)} className="text-text-muted hover:text-red-400 shrink-0">
+          <button type="button" onClick={() => removeRule(rule.id)} className="text-text-muted hover:text-red-400 shrink-0 cursor-pointer">
             <Trash2 size={14} />
           </button>
         </div>
@@ -235,7 +236,7 @@ function FilterModal({
       <button
         type="button"
         onClick={addRule}
-        className="text-xs text-accent hover:underline mt-1"
+        className="text-xs text-accent hover:underline mt-1 cursor-pointer"
       >
         + Add filter
       </button>
@@ -286,7 +287,7 @@ function SortModal({
     >
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-text">Sort Rules</span>
-        <button type="button" onClick={() => setOpen(false)} className="text-text-muted hover:text-text">
+        <button type="button" onClick={() => setOpen(false)} className="text-text-muted hover:text-text cursor-pointer">
           <X size={14} />
         </button>
       </div>
@@ -295,19 +296,19 @@ function SortModal({
           <select
             value={rule.column}
             onChange={(e) => updateRule(rule.id, { column: e.target.value })}
-            className="flex-1 rounded border border-border bg-surface text-xs px-1.5 py-1 text-text min-w-0"
+            className="flex-1 rounded border border-border bg-surface text-xs px-1.5 py-1 text-text min-w-0 cursor-pointer"
           >
             {columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
           </select>
           <select
             value={rule.order}
             onChange={(e) => updateRule(rule.id, { order: e.target.value as "asc" | "desc" })}
-            className="w-20 rounded border border-border bg-surface text-xs px-1 py-1 text-text"
+            className="w-20 rounded border border-border bg-surface text-xs px-1 py-1 text-text cursor-pointer"
           >
             <option value="asc">ASC</option>
             <option value="desc">DESC</option>
           </select>
-          <button type="button" onClick={() => removeRule(rule.id)} className="text-text-muted hover:text-red-400 shrink-0">
+          <button type="button" onClick={() => removeRule(rule.id)} className="text-text-muted hover:text-red-400 shrink-0 cursor-pointer">
             <Trash2 size={14} />
           </button>
         </div>
@@ -315,7 +316,7 @@ function SortModal({
       <button
         type="button"
         onClick={addRule}
-        className="text-xs text-accent hover:underline mt-1"
+        className="text-xs text-accent hover:underline mt-1 cursor-pointer"
       >
         + Add sort
       </button>
@@ -409,7 +410,7 @@ function BulkActionsDropdown({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-accent hover:bg-surface-raised transition-colors"
+        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-accent hover:bg-surface-raised transition-colors cursor-pointer"
       >
         <span className="text-xs font-medium">Actions</span>
         <ChevronDown size={12} />
@@ -418,7 +419,7 @@ function BulkActionsDropdown({
         <button
           type="button"
           onClick={handleCopyJSON}
-          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors"
+          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
         >
           <FileJson size={13} className="text-text-muted" />
           Copy as JSON
@@ -426,7 +427,7 @@ function BulkActionsDropdown({
         <button
           type="button"
           onClick={handleCopyCSV}
-          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors"
+          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
         >
           <FileText size={13} className="text-text-muted" />
           Copy as CSV
@@ -434,7 +435,7 @@ function BulkActionsDropdown({
         <button
           type="button"
           onClick={handleCopySQL}
-          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors"
+          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
         >
           <Terminal size={13} className="text-text-muted" />
           Copy as SQL INSERT
@@ -443,7 +444,7 @@ function BulkActionsDropdown({
         <button
           type="button"
           onClick={handleDeleteSelected}
-          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-red-400 hover:bg-surface-raised transition-colors"
+          className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-red-400 hover:bg-surface-raised transition-colors cursor-pointer"
         >
           <Trash2 size={13} />
           Delete selected rows
@@ -563,48 +564,51 @@ export function TableControls({
       {/* ── left side ──────────────────────────────── */}
       <div className="flex items-center gap-1">
         {/* Insert Row */}
-        <button
-          type="button"
-          onClick={handleInsertRow}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors"
-          aria-label="Insert row"
-          title="Insert row"
-        >
-          <Plus size={14} />
-        </button>
+        <Tooltip content="Insert row" side="bottom">
+          <button
+            type="button"
+            onClick={handleInsertRow}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
+            aria-label="Insert row"
+          >
+            <Plus size={14} />
+          </button>
+        </Tooltip>
 
         {/* Refresh */}
-        <button
-          type="button"
-          onClick={onRefresh}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors"
-          aria-label="Refresh"
-          title="Refresh"
-        >
-          <RefreshCw size={14} />
-        </button>
+        <Tooltip content="Refresh" side="bottom">
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
+            aria-label="Refresh"
+          >
+            <RefreshCw size={14} />
+          </button>
+        </Tooltip>
 
         {/* Auto-refresh */}
         <div className="relative">
-          <button
-            type="button"
-            onClick={() => setAutoRefreshOpen((v) => !v)}
-            className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors ${
-              autoRefresh > 0 ? "text-accent" : "hover:text-text"
-            }`}
-            aria-label="Auto-refresh"
-            title={`Auto-refresh: ${autoRefresh > 0 ? `${autoRefresh / 1000}s` : "Off"}`}
-          >
-            <Clock size={14} />
-            {autoRefresh > 0 && <span className="text-[10px] font-medium">{autoRefresh / 1000}s</span>}
-          </button>
+          <Tooltip content={`Auto-refresh: ${autoRefresh > 0 ? `${autoRefresh / 1000}s` : "Off"}`} side="bottom">
+            <button
+              type="button"
+              onClick={() => setAutoRefreshOpen((v) => !v)}
+              className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors cursor-pointer ${
+                autoRefresh > 0 ? "text-accent" : "hover:text-text"
+              }`}
+              aria-label="Auto-refresh"
+            >
+              <Clock size={14} />
+              {autoRefresh > 0 && <span className="text-[10px] font-medium">{autoRefresh / 1000}s</span>}
+            </button>
+          </Tooltip>
           <DropdownMenu open={autoRefreshOpen} setOpen={setAutoRefreshOpen}>
             {AUTO_REFRESH_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
                 type="button"
                 onClick={() => { setAutoRefresh(opt.value); setAutoRefreshOpen(false); }}
-                className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-surface-raised transition-colors ${
+                className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-surface-raised transition-colors cursor-pointer ${
                   autoRefresh === opt.value ? "text-accent" : "text-text"
                 }`}
               >
@@ -619,23 +623,23 @@ export function TableControls({
 
         {/* Filter */}
         <div className="relative">
-          <button
-            type="button"
-            onClick={() => setFilterOpen((v) => !v)}
-            className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors ${
-              filterRules.length > 0 ? "text-accent" : "hover:text-text"
-            }`}
-            aria-label="Column filters"
-            title="Column filters"
-          >
-            <Filter size={14} />
-            <span>Filter</span>
-            {filterRules.length > 0 && (
-              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-accent text-white text-[10px] font-bold">
-                {filterRules.length}
-              </span>
-            )}
-          </button>
+          <Tooltip content="Column filters" side="bottom">
+            <button
+              type="button"
+              onClick={() => setFilterOpen((v) => !v)}
+              className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors cursor-pointer ${
+                filterRules.length > 0 ? "text-accent" : "hover:text-text"
+              }`}
+              aria-label="Column filters"
+            >
+              <Filter size={14} />
+              {filterRules.length > 0 && (
+                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-accent text-white text-[10px] font-bold">
+                  {filterRules.length}
+                </span>
+              )}
+            </button>
+          </Tooltip>
           <FilterModal
             columns={columns}
             rules={filterRules}
@@ -647,23 +651,23 @@ export function TableControls({
 
         {/* Sort */}
         <div className="relative">
-          <button
-            type="button"
-            onClick={() => setSortOpen((v) => !v)}
-            className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors ${
-              sortRules.length > 0 ? "text-accent" : "hover:text-text"
-            }`}
-            aria-label="Sort rules"
-            title="Sort rules"
-          >
-            <ArrowUpDown size={14} />
-            <span>Sort</span>
-            {sortRules.length > 0 && (
-              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-accent text-white text-[10px] font-bold">
-                {sortRules.length}
-              </span>
-            )}
-          </button>
+          <Tooltip content="Sort rules" side="bottom">
+            <button
+              type="button"
+              onClick={() => setSortOpen((v) => !v)}
+              className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors cursor-pointer ${
+                sortRules.length > 0 ? "text-accent" : "hover:text-text"
+              }`}
+              aria-label="Sort rules"
+            >
+              <ArrowUpDown size={14} />
+              {sortRules.length > 0 && (
+                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-accent text-white text-[10px] font-bold">
+                  {sortRules.length}
+                </span>
+              )}
+            </button>
+          </Tooltip>
           <SortModal
             columns={columns}
             rules={sortRules}
@@ -675,23 +679,23 @@ export function TableControls({
 
         {/* Export */}
         <div className="relative">
-          <button
-            type="button"
-            onClick={() => setExportOpen((v) => !v)}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors"
-            aria-label="Export"
-            title="Export"
-          >
-            <Download size={14} />
-            <span>Export</span>
-          </button>
+          <Tooltip content="Export" side="bottom">
+            <button
+              type="button"
+              onClick={() => setExportOpen((v) => !v)}
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
+              aria-label="Export"
+            >
+              <Download size={14} />
+            </button>
+          </Tooltip>
           <DropdownMenu open={exportOpen} setOpen={setExportOpen}>
             {EXPORT_FORMATS.map((fmt) => (
               <button
                 key={fmt.ext}
                 type="button"
                 onClick={() => handleExport(fmt.ext)}
-                className="w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors"
+                className="w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
               >
                 {fmt.label}
               </button>
@@ -710,13 +714,12 @@ export function TableControls({
           <button
             type="button"
             onClick={() => setQueueOpen((v) => !v)}
-            className={`relative flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors ${
+            className={`relative flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors cursor-pointer ${
               changesQueue.some((c) => c.status === "pending")
                 ? "text-amber-400 hover:bg-surface-raised"
                 : "text-text-muted hover:text-text hover:bg-surface-raised"
             }`}
             aria-label="Action queue"
-            title="Action queue"
           >
             <span className="text-xs font-medium">Queue</span>
             {changesQueue.filter((c) => c.status === "pending").length > 0 && (
@@ -753,8 +756,7 @@ export function TableControls({
                     <button
                       type="button"
                       onClick={() => cancelChange(item.id)}
-                      className="text-text-muted hover:text-red-400 ml-2 shrink-0"
-                      title="Cancel"
+                      className="text-text-muted hover:text-red-400 ml-2 shrink-0 cursor-pointer"
                     >
                       <X size={12} />
                     </button>
@@ -780,7 +782,7 @@ export function TableControls({
             <button
               type="button"
               onClick={onClearSelection}
-              className="text-text-muted hover:text-text transition-colors"
+              className="text-text-muted hover:text-text transition-colors cursor-pointer"
               aria-label="Clear selection"
             >
               <X size={14} />
@@ -791,15 +793,16 @@ export function TableControls({
 
         {/* Columns toggle */}
         <div className="relative">
-          <button
-            type="button"
-            onClick={() => setColumnMenuOpen((v) => !v)}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors"
-            aria-label="Toggle columns"
-            title="Show/hide columns"
-          >
-            <Columns size={14} />
-          </button>
+          <Tooltip content="Show/hide columns" side="bottom">
+            <button
+              type="button"
+              onClick={() => setColumnMenuOpen((v) => !v)}
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
+              aria-label="Toggle columns"
+            >
+              <Columns size={14} />
+            </button>
+          </Tooltip>
           <DropdownMenu open={columnMenuOpen} setOpen={setColumnMenuOpen} align="right">
             <div className="px-2 py-1 text-[10px] text-text-muted uppercase tracking-wider">Visible columns</div>
             <div className="max-h-64 overflow-y-auto">
@@ -808,7 +811,7 @@ export function TableControls({
                   key={col.name}
                   type="button"
                   onClick={() => onToggleColumn(col.name)}
-                  className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors"
+                  className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
                 >
                   <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
                     hiddenColumns.has(col.name) ? "border-border bg-transparent" : "border-accent bg-accent"

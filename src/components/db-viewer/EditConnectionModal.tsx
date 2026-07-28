@@ -104,7 +104,7 @@ export function EditConnectionModal({
       <div className="w-full max-w-lg max-h-[80vh] overflow-y-auto rounded-xl bg-surface border border-border shadow-2xl">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <h2 className="text-sm font-semibold text-text">Edit Connection</h2>
-          <button onClick={onClose} className="text-text-muted hover:text-text">
+          <button onClick={onClose} className="text-text-muted hover:text-text cursor-pointer">
             <X size={18} />
           </button>
         </div>
@@ -115,14 +115,14 @@ export function EditConnectionModal({
           <button
             onClick={handleTest}
             disabled={testing}
-            className="rounded-lg border border-border px-4 py-1.5 text-sm text-text hover:bg-surface-raised transition-colors disabled:opacity-50"
+            className="rounded-lg border border-border px-4 py-1.5 text-sm text-text hover:bg-surface-raised transition-colors disabled:opacity-50 cursor-pointer"
           >
             {testing ? "Testing..." : "Test"}
           </button>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="rounded-lg bg-accent px-4 py-1.5 text-sm text-white hover:bg-accent/90 transition-colors disabled:opacity-50"
+            className="rounded-lg bg-accent px-4 py-1.5 text-sm text-white hover:bg-accent/90 transition-colors disabled:opacity-50 cursor-pointer"
           >
             {saving ? "Saving..." : "Save"}
           </button>

@@ -17,7 +17,7 @@ export function ConnectionDropBanner({ error, onRetry, onDismiss }: ConnectionDr
         <button
           type="button"
           onClick={onRetry}
-          className="text-sm px-3 py-1.5 rounded-md bg-red-500/20 text-red-200 hover:bg-red-500/30 transition-colors"
+          className="text-sm px-3 py-1.5 rounded-md bg-red-500/20 text-red-200 hover:bg-red-500/30 transition-colors cursor-pointer"
         >
           Reconnect
         </button>
@@ -25,7 +25,7 @@ export function ConnectionDropBanner({ error, onRetry, onDismiss }: ConnectionDr
           type="button"
           aria-label="Dismiss error"
           onClick={onDismiss}
-          className="p-1.5 rounded-md text-red-300 hover:bg-red-500/20 transition-colors"
+          className="p-1.5 rounded-md text-red-300 hover:bg-red-500/20 transition-colors cursor-pointer"
         >
           <X size={16} />
         </button>

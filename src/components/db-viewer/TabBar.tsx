@@ -37,7 +37,7 @@ export function TabBar() {
             <button
               type="button"
               onClick={() => setActiveTab(tab.id)}
-              className="flex-1 text-left outline-none"
+              className="flex-1 text-left outline-none cursor-pointer"
             >
               {tab.table}
             </button>
@@ -48,7 +48,7 @@ export function TabBar() {
                 closeTab(tab.id);
               }}
               aria-label={`Close ${tab.table}`}
-              className="rounded p-0.5 opacity-60 transition-opacity hover:bg-surface-raised hover:opacity-100"
+              className="rounded p-0.5 opacity-60 transition-opacity hover:bg-surface-raised hover:opacity-100 cursor-pointer"
             >
               <X className="h-3.5 w-3.5" />
             </button>

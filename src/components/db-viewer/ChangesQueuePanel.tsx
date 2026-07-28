@@ -115,7 +115,7 @@ export function ChangesQueuePanel() {
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center justify-between px-4 py-2 text-sm text-text hover:bg-surface-raised/50"
+        className="flex w-full items-center justify-between px-4 py-2 text-sm text-text hover:bg-surface-raised/50 cursor-pointer"
       >
         <div className="flex items-center gap-2">
           {expanded ? (
@@ -140,7 +140,7 @@ export function ChangesQueuePanel() {
             e.stopPropagation();
             handleCommitAll();
           }}
-          className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
         >
           Commit All
         </button>
@@ -188,7 +188,7 @@ function ChangeRow({
             type="button"
             aria-label="Cancel"
             onClick={onCancel}
-            className="rounded p-1 text-text-muted hover:bg-red-500/10 hover:text-red-500"
+            className="rounded p-1 text-text-muted hover:bg-red-500/10 hover:text-red-500 cursor-pointer"
           >
             <X className="h-4 w-4" />
           </button>

@@ -199,7 +199,7 @@ export function DbViewerScreen({ connectionId, onHome, onSettings }: DbViewerScr
 
   return (
     <TooltipProvider>
-      <div className="h-screen bg-canvas flex">
+      <div className="h-screen bg-canvas flex border-t border-border">
         <DbViewerSidebar currentView="db-viewer" onNavigate={handleNavigate} />
         <div className="flex-1 flex flex-col min-h-0">
           {connectionError && connectionError !== dismissedError && (
