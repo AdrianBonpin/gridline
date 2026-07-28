@@ -555,7 +555,7 @@ export function DbViewerScreen({
                             </div>
                             {/* panel resize handle */}
                             <div
-                                className="w-1.25 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0"
+                                className="w-1 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0 border-r border-border"
                                 onMouseDown={onPanelResizeStart}
                                 onDoubleClick={() => setTablePanelWidth(280)}
                             />
@@ -598,6 +598,7 @@ export function DbViewerScreen({
                                 <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                                     <VirtualDataGrid
                                         connectionId={connectionId}
+                                        schema={activeSchema}
                                         rows={processedRows}
                                         columns={columns}
                                         hiddenColumns={hiddenColumns}

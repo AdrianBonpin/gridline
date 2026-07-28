@@ -50,6 +50,7 @@ describe("VirtualDataGrid", () => {
     render(
       <VirtualDataGrid
         connectionId="conn-1"
+        schema="public"
         rows={mockRows}
         columns={mockColumns}
         hiddenColumns={new Set()}
@@ -77,6 +78,7 @@ describe("VirtualDataGrid", () => {
     render(
       <VirtualDataGrid
         connectionId="conn-1"
+        schema="public"
         rows={mockRows}
         columns={mockColumns}
         hiddenColumns={new Set()}
@@ -106,6 +108,7 @@ describe("VirtualDataGrid", () => {
     render(
       <VirtualDataGrid
         connectionId="conn-1"
+        schema="public"
         rows={rows}
         columns={mockColumns}
         hiddenColumns={new Set()}
@@ -126,6 +129,7 @@ describe("VirtualDataGrid", () => {
     render(
       <VirtualDataGrid
         connectionId="conn-1"
+        schema="public"
         rows={[]}
         columns={mockColumns}
         hiddenColumns={new Set()}
@@ -143,7 +147,7 @@ describe("VirtualDataGrid", () => {
     mockGetTotalSize.mockReturnValue(mockRows.length * 36);
     mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
 
-    render(<VirtualDataGrid connectionId="conn-1" rows={mockRows} columns={mockColumns}
+    render(<VirtualDataGrid connectionId="conn-1" schema="public" rows={mockRows} columns={mockColumns}
       hiddenColumns={new Set()} selectedRows={new Set()}
       onToggleRow={(i) => { toggled = i; }} onToggleAll={() => {}} />);
 
@@ -159,7 +163,7 @@ describe("VirtualDataGrid", () => {
     mockGetTotalSize.mockReturnValue(36);
     mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
 
-    render(<VirtualDataGrid connectionId="conn-1" rows={[[42]]} columns={fkCols}
+    render(<VirtualDataGrid connectionId="conn-1" schema="public" rows={[[42]]} columns={fkCols}
       hiddenColumns={new Set()} selectedRows={new Set()}
       onToggleRow={() => {}} onToggleAll={() => {}} />);
 
@@ -175,7 +179,7 @@ describe("VirtualDataGrid", () => {
     mockGetTotalSize.mockReturnValue(36);
     mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
 
-    render(<VirtualDataGrid connectionId="conn-1" rows={[[JSON.stringify({ key: "val", count: 3 })]]} columns={jsonCols}
+    render(<VirtualDataGrid connectionId="conn-1" schema="public" rows={[[JSON.stringify({ key: "val", count: 3 })]]} columns={jsonCols}
       hiddenColumns={new Set()} selectedRows={new Set()}
       onToggleRow={() => {}} onToggleAll={() => {}} />);
 
@@ -186,7 +190,7 @@ describe("VirtualDataGrid", () => {
     mockGetTotalSize.mockReturnValue(0);
     mockGetVirtualItems.mockReturnValue([]);
 
-    render(<VirtualDataGrid connectionId="conn-1" rows={[]} columns={mockColumns}
+    render(<VirtualDataGrid connectionId="conn-1" schema="public" rows={[]} columns={mockColumns}
       hiddenColumns={new Set()} selectedRows={new Set()}
       onToggleRow={() => {}} onToggleAll={() => {}} />);
 
@@ -201,7 +205,7 @@ describe("VirtualDataGrid", () => {
       Array.from({ length: 20 }, (_, i) => ({ key: i, index: i, start: i * 36, size: 36 }))
     );
     render(
-      <VirtualDataGrid connectionId="conn-1" rows={bigRows} columns={mockColumns}
+      <VirtualDataGrid connectionId="conn-1" schema="public" rows={bigRows} columns={mockColumns}
         hiddenColumns={new Set()} selectedRows={new Set()}
         onToggleRow={() => {}} onToggleAll={() => {}} />,
     );
@@ -216,7 +220,7 @@ describe("VirtualDataGrid", () => {
       mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 }))
     );
     render(
-      <VirtualDataGrid connectionId="conn-1" rows={mockRows} columns={mockColumns}
+      <VirtualDataGrid connectionId="conn-1" schema="public" rows={mockRows} columns={mockColumns}
         hiddenColumns={new Set()} selectedRows={allSelected}
         onToggleRow={() => {}} onToggleAll={() => {}} />,
     );
@@ -231,7 +235,7 @@ describe("VirtualDataGrid", () => {
       mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 }))
     );
     render(
-      <VirtualDataGrid connectionId="conn-1" rows={mockRows} columns={mockColumns}
+      <VirtualDataGrid connectionId="conn-1" schema="public" rows={mockRows} columns={mockColumns}
         hiddenColumns={hidden} selectedRows={new Set()}
         onToggleRow={() => {}} onToggleAll={() => {}} />,
     );

@@ -847,7 +847,7 @@ ORDER BY c.ordinal_position"#;
             let col_rows = client
                 .query(col_query, &[&schema, &table])
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| pg_error_message(&e))?;
             let columns: Vec<ColumnInfo> = col_rows
                 .iter()
                 .map(|r| {
@@ -878,7 +878,7 @@ ORDER BY c.ordinal_position"#;
             let data_rows = client
                 .query(&data_query, &[&value])
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| pg_error_message(&e))?;
             let rows: Vec<Vec<serde_json::Value>> = data_rows
                 .iter()
                 .map(|row| (0..row.len()).map(|i| pg_value_to_json(row, i)).collect())

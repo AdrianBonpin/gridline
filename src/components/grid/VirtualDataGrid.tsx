@@ -8,6 +8,7 @@ import { JsonCellPopover, jsonPreview } from "../db-viewer/JsonCellPopover";
 
 interface VirtualDataGridProps {
   connectionId: string;
+  schema: string;
   rows: unknown[][];
   columns: ColumnInfo[];
   hiddenColumns: Set<string>;
@@ -23,6 +24,7 @@ const MAX_COL_WIDTH = 800;
 
 export function VirtualDataGrid({
   connectionId,
+  schema,
   rows,
   columns,
   hiddenColumns,
@@ -116,14 +118,14 @@ export function VirtualDataGrid({
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
       setFkPreview({
         connectionId,
-        schema: "",
+        schema,
         table: refTable,
         column: col.fk_ref[1],
         value: String(cellValue),
         anchorRect: rect,
       });
     },
-    [connectionId],
+    [connectionId, schema],
   );
 
   // ── JSON popover state ────────────────────────────────
