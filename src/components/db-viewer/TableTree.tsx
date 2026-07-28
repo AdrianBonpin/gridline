@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { ChevronRight, ChevronDown, Table2, Key, Diamond, Type } from "lucide-react";
+import { ChevronRight, ChevronDown, Table2, Key, Type } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { TableOverflowMenu } from "./TableOverflowMenu";
+import { abbreviateType } from "../../lib/utils";
 import type { ColumnInfo } from "../../lib/types";
 import * as cmd from "../../lib/commands";
 
@@ -86,17 +87,19 @@ export function TableTree() {
                   <div
                     key={col.name}
                     className="flex items-center gap-2 text-xs text-text-muted"
-                    title={col.data_type}
+                    title={col.is_fk && col.fk_ref
+                      ? `${col.data_type} → ${col.fk_ref[0]}.${col.fk_ref[1]}`
+                      : col.data_type}
                   >
                     {col.is_pk ? (
-                      <Key size={12} className="text-accent" />
+                      <Key size={12} className="text-accent shrink-0" />
                     ) : col.is_fk ? (
-                      <Diamond size={12} className="text-warning" />
+                      <Key size={12} className="text-amber-400 shrink-0" />
                     ) : (
-                      <Type size={12} />
+                      <Type size={12} className="shrink-0" />
                     )}
                     <span className="truncate">{col.name}</span>
-                    <span className="text-text-subtle truncate">{col.data_type}</span>
+                    <span className="text-text-subtle truncate" title={col.data_type}>{abbreviateType(col.data_type)}</span>
                   </div>
                 ))}
               </div>

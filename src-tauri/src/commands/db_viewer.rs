@@ -5,6 +5,7 @@
 
 use crate::db::pool::DbConfig;
 use crate::models::db_viewer::{Change, ColumnInfo, QueryResult, TableInfo};
+use std::collections::HashMap;
 use tauri::State;
 use tokio_postgres::types::ToSql;
 
@@ -567,22 +568,72 @@ pub async fn get_table_data(
                 .map_err(|e| e.to_string())?;
             let total_rows: i64 = count_row.get(0);
 
-            // Get column info
-            let col_query = "SELECT column_name, data_type, is_nullable, COALESCE((SELECT true FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage ku ON tc.constraint_name = ku.constraint_name WHERE tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_type = 'PRIMARY KEY' AND ku.column_name = c.column_name), false) as is_pk, false as is_fk, column_default FROM information_schema.columns c WHERE c.table_schema = $1 AND c.table_name = $2 ORDER BY c.ordinal_position".to_string();
+            // Get column info with FK detection and enum type names
+            let col_query = r#"SELECT
+    c.column_name,
+    CASE WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name ELSE c.data_type END AS data_type,
+    c.is_nullable,
+    COALESCE(pk.is_pk, false) AS is_pk,
+    COALESCE(fk.is_fk, false) AS is_fk,
+    fk.foreign_table_name,
+    fk.foreign_column_name,
+    c.column_default
+FROM information_schema.columns c
+LEFT JOIN (
+    SELECT ku.column_name, true AS is_pk
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage ku
+        ON tc.constraint_catalog = ku.constraint_catalog
+        AND tc.constraint_schema = ku.constraint_schema
+        AND tc.constraint_name = ku.constraint_name
+    WHERE tc.constraint_type = 'PRIMARY KEY'
+        AND tc.table_schema = $1
+        AND tc.table_name = $2
+) pk ON c.column_name = pk.column_name
+LEFT JOIN (
+    SELECT
+        ku.column_name,
+        true AS is_fk,
+        ccu.table_name AS foreign_table_name,
+        ccu.column_name AS foreign_column_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage ku
+        ON tc.constraint_catalog = ku.constraint_catalog
+        AND tc.constraint_schema = ku.constraint_schema
+        AND tc.constraint_name = ku.constraint_name
+    JOIN information_schema.constraint_column_usage ccu
+        ON tc.constraint_catalog = ccu.constraint_catalog
+        AND tc.constraint_schema = ccu.constraint_schema
+        AND tc.constraint_name = ccu.constraint_name
+    WHERE tc.constraint_type = 'FOREIGN KEY'
+        AND tc.table_schema = $1
+        AND tc.table_name = $2
+) fk ON c.column_name = fk.column_name
+WHERE c.table_schema = $1 AND c.table_name = $2
+ORDER BY c.ordinal_position"#;
             let col_rows = client
-                .query(&col_query, &[&schema, &table])
+                .query(col_query, &[&schema, &table])
                 .await
                 .map_err(|e| e.to_string())?;
             let columns: Vec<ColumnInfo> = col_rows
                 .iter()
-                .map(|r| ColumnInfo {
-                    name: r.get(0),
-                    data_type: r.get(1),
-                    is_nullable: r.get::<_, String>(2) == "YES",
-                    is_pk: r.get(3),
-                    is_fk: r.get(4),
-                    fk_ref: None,
-                    default_value: r.get::<_, Option<String>>(5),
+                .map(|r| {
+                    let is_fk: bool = r.get(4);
+                    let fk_table: Option<String> = r.get(5);
+                    let fk_column: Option<String> = r.get(6);
+                    ColumnInfo {
+                        name: r.get(0),
+                        data_type: r.get(1),
+                        is_nullable: r.get::<_, String>(2) == "YES",
+                        is_pk: r.get(3),
+                        is_fk,
+                        fk_ref: if is_fk {
+                            Some((fk_table.unwrap_or_default(), fk_column.unwrap_or_default()))
+                        } else {
+                            None
+                        },
+                        default_value: r.get::<_, Option<String>>(7),
+                    }
                 })
                 .collect();
 
@@ -615,24 +666,66 @@ pub async fn get_table_data(
                 .query_row(&count_query, [], |r| r.get(0))
                 .map_err(|e| e.to_string())?;
 
+            // Get column metadata via PRAGMA table_info
+            let pragma_query = format!("PRAGMA table_info('{}')", table);
+            let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
+            let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(1)?,   // name
+                        row.get::<_, String>(2)?,   // type
+                        row.get::<_, bool>(3)?,     // notnull
+                        row.get::<_, bool>(5)?,     // pk
+                        row.get::<_, Option<String>>(4)?, // dflt_value
+                    ))
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            // Get FK metadata via PRAGMA foreign_key_list
+            let fk_query = format!("PRAGMA foreign_key_list('{}')", table);
+            let fk_map: HashMap<String, (String, String)> =
+                if let Ok(mut fk_stmt) = conn.prepare(&fk_query) {
+                    fk_stmt
+                        .query_map([], |row| {
+                            Ok((
+                                row.get::<_, String>(3)?,  // from (column)
+                                row.get::<_, String>(2)?,  // table
+                                row.get::<_, String>(4)?,  // to (column)
+                            ))
+                        })
+                        .map_err(|e| e.to_string())?
+                        .filter_map(|r| r.ok())
+                        .map(|(from, ref_table, ref_col)| (from, (ref_table, ref_col)))
+                        .collect()
+                } else {
+                    HashMap::new()
+                };
+
+            let columns: Vec<ColumnInfo> = col_meta
+                .iter()
+                .map(|(name, dtype, notnull, is_pk, default_val)| {
+                    let fk = fk_map.get(name);
+                    ColumnInfo {
+                        name: name.clone(),
+                        data_type: if dtype.is_empty() { "TEXT".to_string() } else { dtype.clone() },
+                        is_nullable: !notnull,
+                        is_pk: *is_pk,
+                        is_fk: fk.is_some(),
+                        fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
+                        default_value: default_val.clone(),
+                    }
+                })
+                .collect();
+
+            // Get data
             let data_query = format!(
                 "SELECT * FROM \"{}\".\"{}\" LIMIT {} OFFSET {}",
                 schema, table, ps, off
             );
             let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
             let col_count = stmt.column_count();
-
-            let columns: Vec<ColumnInfo> = (0..col_count)
-                .map(|i| ColumnInfo {
-                    name: stmt.column_name(i).unwrap_or("?").to_string(),
-                    data_type: "TEXT".to_string(),
-                    is_nullable: true,
-                    is_pk: false,
-                    is_fk: false,
-                    fk_ref: None,
-                    default_value: None,
-                })
-                .collect();
 
             let rows: Vec<Vec<serde_json::Value>> = stmt
                 .query_map([], |row| {

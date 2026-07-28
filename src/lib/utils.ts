@@ -9,6 +9,28 @@ import type {
   ValidationResult,
 } from "./types";
 
+// ─── Data type abbreviations ─────────────────────────────
+
+const TYPE_ABBREV: Record<string, string> = {
+  "integer": "int",
+  "bigint": "int8",
+  "smallint": "int2",
+  "character varying": "varchar",
+  "character": "char",
+  "timestamp with time zone": "timestamptz",
+  "timestamp without time zone": "timestamp",
+  "time with time zone": "timetz",
+  "time without time zone": "time",
+  "boolean": "bool",
+  "double precision": "float8",
+  "real": "float4",
+};
+
+export function abbreviateType(dataType: string): string {
+  const lower = dataType.toLowerCase();
+  return TYPE_ABBREV[lower] ?? dataType;
+}
+
 const VALID_DB_TYPES: DbType[] = ["postgresql", "mysql", "sqlite", "redis"];
 
 export function validateConnectionInput(input: ConnectionInput): ValidationResult {
