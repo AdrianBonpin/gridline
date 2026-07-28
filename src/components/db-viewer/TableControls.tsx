@@ -17,7 +17,10 @@ const AUTO_REFRESH_OPTIONS = [
   { label: "5m", value: 300_000 },
 ] as const;
 
-const PAGE_SIZES = [100, 500, 1000, 2000] as const;
+const PAGE_SIZES = [50, 100, 200, 500] as const;
+
+// fallback when no active tab
+const DEFAULT_PAGE_SIZE = 50;
 
 const EXPORT_FORMATS = [
   { label: "JSON", ext: "json" },
@@ -522,7 +525,7 @@ export function TableControls({
 
   // pagination
   const totalRows = activeTab?.data?.total_rows ?? rows.length;
-  const pageSize = activeTab?.pageSize ?? 500;
+  const pageSize = activeTab?.pageSize ?? 50;
   const currentPage = activeTab?.page ?? 1;
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
   const clampedPage = Math.max(1, Math.min(currentPage, totalPages));

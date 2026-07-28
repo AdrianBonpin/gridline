@@ -210,8 +210,8 @@ export function VirtualDataGrid({
   return (
     <div ref={parentRef} className="overflow-auto h-full" style={{ overscrollBehavior: "none" }}>
       {/* ── sticky header ── */}
-      <div className="sticky top-0 z-10 bg-canvas">
-        <div className="flex items-center border-b border-border" style={{ minWidth: totalWidth }}>
+      <div className="sticky top-0 z-10">
+        <div className="flex items-center border-b border-border bg-canvas" style={{ minWidth: totalWidth }}>
           <div style={{ width: 40, minWidth: 40 }} className="px-2 py-2 flex items-center justify-center border-r border-border self-stretch">
             <input
               ref={selectAllRef}
