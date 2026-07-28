@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   MiniMap,
@@ -78,8 +78,8 @@ function layoutGraph(
             targetHandle: `pk-${refColumn}`,
             type: "smoothstep",
             label: cardinality,
-            markerStart: undefined,
-            markerEnd: undefined,
+            markerStart: markers.markerStart || undefined,
+            markerEnd: markers.markerEnd || undefined,
             style: { stroke: "#3b82f6", strokeWidth: 1.5 },
             labelStyle: { fill: "#9ca3af", fontSize: 9 },
             labelBgStyle: { fill: "#1f2937", fillOpacity: 0.85 },
@@ -110,15 +110,15 @@ function layoutGraph(
 function getEdgeMarkers(cardinality: string): { markerStart: string; markerEnd: string } {
   switch (cardinality) {
     case "1:1":
-      return { markerStart: "one", markerEnd: "one" };
+      return { markerStart: "url(#cf-one)", markerEnd: "url(#cf-one)" };
     case "0..1:0..1":
-      return { markerStart: "zero-one", markerEnd: "zero-one" };
+      return { markerStart: "url(#cf-zero-one)", markerEnd: "url(#cf-zero-one)" };
     case "1:N":
-      return { markerStart: "many", markerEnd: "one" };
+      return { markerStart: "url(#cf-many)", markerEnd: "url(#cf-one)" };
     case "0..N":
-      return { markerStart: "zero-many", markerEnd: "one" };
+      return { markerStart: "url(#cf-zero-many)", markerEnd: "url(#cf-one)" };
     case "N:M":
-      return { markerStart: "many", markerEnd: "many" };
+      return { markerStart: "url(#cf-many)", markerEnd: "url(#cf-many)" };
     default:
       return { markerStart: "", markerEnd: "" };
   }
@@ -146,7 +146,6 @@ export function SchemaVisualizerPage({
   const [error, setError] = useState<string | null>(null);
   const [tableCount, setTableCount] = useState(0);
   const [legendOpen, setLegendOpen] = useState(true);
-  const canvasRef = useRef<HTMLDivElement>(null);
 
   const fetchGraph = useCallback(async () => {
     if (!currentSchema) return;
@@ -244,7 +243,7 @@ export function SchemaVisualizerPage({
       </div>
 
       {/* Canvas */}
-      <div className="flex-1 min-h-0 relative" ref={canvasRef}>
+      <div className="flex-1 min-h-0 relative">
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center z-10 bg-canvas/80">
             <p className="text-text-muted text-sm">Loading schema...</p>
@@ -284,6 +283,26 @@ export function SchemaVisualizerPage({
           className="bg-canvas"
           proOptions={{ hideAttribution: true }}
         >
+          <defs>
+            <marker id="cf-one" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <line x1="0" y1="0" x2="0" y2="10" stroke="#3b82f6" strokeWidth="1.5" />
+            </marker>
+            <marker id="cf-many" viewBox="0 0 12 10" refX="12" refY="5" markerWidth="9" markerHeight="7" orient="auto-start-reverse">
+              <line x1="0" y1="0" x2="8" y2="2" stroke="#3b82f6" strokeWidth="1.5" />
+              <line x1="0" y1="5" x2="8" y2="5" stroke="#3b82f6" strokeWidth="1.5" />
+              <line x1="0" y1="10" x2="8" y2="8" stroke="#3b82f6" strokeWidth="1.5" />
+            </marker>
+            <marker id="cf-zero-one" viewBox="0 0 16 10" refX="16" refY="5" markerWidth="11" markerHeight="7" orient="auto-start-reverse">
+              <circle cx="3" cy="5" r="2.5" fill="none" stroke="#3b82f6" strokeWidth="1.2" />
+              <line x1="8" y1="0" x2="8" y2="10" stroke="#3b82f6" strokeWidth="1.5" />
+            </marker>
+            <marker id="cf-zero-many" viewBox="0 0 18 10" refX="18" refY="5" markerWidth="13" markerHeight="7" orient="auto-start-reverse">
+              <circle cx="3" cy="5" r="2.5" fill="none" stroke="#3b82f6" strokeWidth="1.2" />
+              <line x1="8" y1="0" x2="16" y2="2" stroke="#3b82f6" strokeWidth="1.5" />
+              <line x1="8" y1="5" x2="16" y2="5" stroke="#3b82f6" strokeWidth="1.5" />
+              <line x1="8" y1="10" x2="16" y2="8" stroke="#3b82f6" strokeWidth="1.5" />
+            </marker>
+          </defs>
           <Background variant="dots" gap={20} color="var(--color-border)" />
           <MiniMap
             position="bottom-right"
