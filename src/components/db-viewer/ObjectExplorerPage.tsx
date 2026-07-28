@@ -746,16 +746,19 @@ function renderDetail(type: ObjectType, item: AnyObject) {
                             {e.labels.length} labels
                         </span>
                     </div>
-                    <div className="p-4 flex flex-wrap gap-2">
-                        {e.labels.map((label) => (
-                            <span
-                                key={label}
-                                className="inline-flex items-center px-3 py-1.5 text-xs rounded-md bg-accent/10 text-accent border border-accent/20 font-mono"
-                            >
+                    {e.labels.map((label, i) => (
+                        <div
+                            key={label}
+                            className="border-b border-border px-4 py-2 flex items-center"
+                        >
+                            <span className="text-xs text-text-muted w-12 shrink-0 font-mono">
+                                #{i + 1}
+                            </span>
+                            <span className="text-sm text-accent font-mono">
                                 {label}
                             </span>
-                        ))}
-                    </div>
+                        </div>
+                    ))}
                 </div>
             );
         }
