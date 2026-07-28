@@ -68,7 +68,7 @@ function ConnectionCardBase({
             <div
                 {...listeners}
                 {...attributes}
-                className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab z-10"
+                className="absolute top-1/2 -translate-y-1/2 right-2 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab z-10"
                 aria-label="Drag to move connection"
             >
                 <GripVertical size={14} className="text-text-muted" />
@@ -91,7 +91,8 @@ function ConnectionCardBase({
                                 <span
                                     className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none ${ENV_COLORS[connection.environment] ?? "bg-surface-raised border-border text-text-muted"}`}
                                 >
-                                    {ENV_LABELS[connection.environment] ?? connection.environment}
+                                    {ENV_LABELS[connection.environment] ??
+                                        connection.environment}
                                 </span>
                             )}
                         </div>
