@@ -86,7 +86,6 @@ function layoutGraph(
             labelBgStyle: { fill: "#1f2937", fillOpacity: 0.85 },
             labelBgPadding: [3, 1],
             labelBorderRadius: 0,
-            data: { cardinality, markers },
           });
         }
       }
