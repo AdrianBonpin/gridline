@@ -208,6 +208,7 @@ export function SchemaVisualizerPage({
       if (e.id === highlightedEdge) {
         return {
           ...e,
+          zIndex: 1000,
           style: { ...e.style, stroke: "#f59e0b", strokeWidth: 2.5, opacity: 1 },
           labelStyle: { ...e.labelStyle, fill: "#f59e0b" },
           labelBgStyle: { ...e.labelBgStyle, fill: "#1f2937", fillOpacity: 0.95 },
