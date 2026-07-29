@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, ChangeItem, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, ChangeItem, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph } from "./types";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 
 // NOTE on argument key naming:
@@ -139,4 +139,11 @@ export async function getEnums(connectionId: string, schema?: string): Promise<E
 
 export async function getExtensions(connectionId: string): Promise<ExtensionInfo[]> {
   return invoke<ExtensionInfo[]>("get_extensions", { connectionId });
+}
+
+export async function getSchemaGraph(
+  connectionId: string,
+  schema?: string,
+): Promise<SchemaGraph> {
+  return invoke<SchemaGraph>("get_schema_graph", { connectionId, schema });
 }

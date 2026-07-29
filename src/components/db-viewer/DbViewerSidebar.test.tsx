@@ -38,4 +38,16 @@ describe("DbViewerSidebar", () => {
     await user.click(screen.getByLabelText(/settings/i));
     expect(onNavigate).toHaveBeenCalledWith("settings");
   });
+
+  it("renders Schema Visualizer nav item (not coming soon)", () => {
+    render(
+      <TooltipProvider>
+        <DbViewerSidebar currentView="db-viewer" onNavigate={() => {}} />
+      </TooltipProvider>
+    );
+    // Should find the label WITHOUT "coming soon"
+    const btn = screen.getByLabelText(/schema visualizer/i);
+    expect(btn).toBeInTheDocument();
+    expect(btn).not.toBeDisabled();
+  });
 });

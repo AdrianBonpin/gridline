@@ -279,3 +279,39 @@ export interface BackupJob {
   started_at: string;
   completed_at: string | null;
 }
+
+// ─── Schema Visualizer Types ────────────────────────────────────
+
+export interface GraphColumn {
+  name: string;
+  data_type: string;
+  is_pk: boolean;
+  is_fk: boolean;
+  is_unique: boolean;
+  is_nullable: boolean;
+  /** [referenced_schema, referenced_table, referenced_column] */
+  fk_ref: [string, string, string] | null;
+}
+
+export interface TableNode {
+  name: string;
+  schema: string;
+  table_type: string;
+  columns: GraphColumn[];
+}
+
+export interface Relationship {
+  source_schema: string;
+  source_table: string;
+  source_column: string;
+  target_schema: string;
+  target_table: string;
+  target_column: string;
+  /** Inferred cardinality: "1:1" | "1:N" | "N:M" */
+  cardinality: string;
+}
+
+export interface SchemaGraph {
+  tables: TableNode[];
+  relationships: Relationship[];
+}

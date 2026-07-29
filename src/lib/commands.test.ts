@@ -1,4 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue({ tables: [], relationships: [] }),
+}));
+
 import {
   testConnection,
   dbConnect,
@@ -9,7 +14,9 @@ import {
   getTableData,
   executeChange,
   refreshConnection,
+  getSchemaGraph,
 } from "./commands";
+import type { SchemaGraph } from "./types";
 
 describe("commands", () => {
   it("testConnection has correct signature", () => {
@@ -46,5 +53,18 @@ describe("commands", () => {
 
   it("refreshConnection returns full tree promise", () => {
     expect(typeof refreshConnection).toBe("function");
+  });
+
+  describe("getSchemaGraph", () => {
+    it("is a callable function with correct signature", () => {
+      expect(typeof getSchemaGraph).toBe("function");
+      const result: Promise<SchemaGraph> = getSchemaGraph("conn-1", "public");
+      expect(result).toBeInstanceOf(Promise);
+    });
+
+    it("accepts schema as optional", () => {
+      const result: Promise<SchemaGraph> = getSchemaGraph("conn-1");
+      expect(result).toBeInstanceOf(Promise);
+    });
   });
 });

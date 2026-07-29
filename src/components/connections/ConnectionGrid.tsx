@@ -1,10 +1,12 @@
 import type { Connection, Folder, Tag } from "../../lib/types";
+import { useMemo } from "react";
 import { Folder as FolderIcon, Check, Pencil, Trash2 } from "lucide-react";
 import { useDroppable } from "@dnd-kit/core";
 import { ConnectionCard } from "./ConnectionCard";
 import { FolderBreadcrumb } from "../folders/FolderBreadcrumb";
-import { getChildFolders } from "../../lib/utils";
+import { getChildFolders, getDescendantFolderIds } from "../../lib/utils";
 import { useUiStore } from "../../stores/uiStore";
+import { useConnectionStore } from "../../stores/connectionStore";
 import { TagBadge } from "../tags/TagBadge";
 
 interface DroppableFolderCardProps {
@@ -136,7 +138,14 @@ export function ConnectionGrid({
     const directConnections = connections.filter(
         (c) => c.folder_id === currentFolderId,
     );
-    const hasItems = visibleFolders.length > 0 || directConnections.length > 0;
+    const allStoreConnections = useConnectionStore((s) => s.connections);
+    const allStoreFolders = useConnectionStore((s) => s.folders);
+    // Check if any direct connections OR any subfolder has connections anywhere below
+    const hasItems = visibleFolders.length > 0 || directConnections.length > 0 ||
+        (currentFolderId && allStoreConnections.some((c) => {
+            const allowed = new Set(getDescendantFolderIds(allStoreFolders, currentFolderId));
+            return c.folder_id !== null && allowed.has(c.folder_id);
+        }));
     const isSelecting = selectedItemIds.length > 0;
     const activeFolder = currentFolderId
         ? (folders.find((f) => f.id === currentFolderId) ?? null)
@@ -199,8 +208,10 @@ export function ConnectionGrid({
                 >
                     {visibleFolders.map((f) => {
                         const isSelected = selectedItemIds.includes(f.id);
-                        const count = directConnections.filter(
-                            (c) => c.folder_id === f.id,
+                        // Count all connections in this subfolder (including nested descendants)
+                        const subIds = new Set(getDescendantFolderIds(folders, f.id));
+                        const count = allStoreConnections.filter(
+                            (c) => c.folder_id !== null && subIds.has(c.folder_id),
                         ).length;
                         const subfolderCount = getChildFolders(
                             folders,

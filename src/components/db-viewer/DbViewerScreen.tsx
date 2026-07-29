@@ -18,6 +18,7 @@ import { ConnectionDropBanner } from "./ConnectionDropBanner";
 import { BackupPage } from "./BackupPage";
 import { RestorePage } from "./RestorePage";
 import { SyncPage } from "./SyncPage";
+import { SchemaVisualizerPage } from "./SchemaVisualizerPage";
 import * as cmd from "../../lib/commands";
 
 export interface DbViewerScreenProps {
@@ -579,6 +580,13 @@ export function DbViewerScreen({
                         <RestorePage connectionId={connectionId} />
                     ) : currentView === "sync" ? (
                         <SyncPage />
+                    ) : currentView === "schema-visualizer" ? (
+                        <SchemaVisualizerPage
+                            connectionId={connectionId}
+                            onSchemaChange={(newSchema) => {
+                                useDbViewerStore.getState().setCurrentSchema(newSchema);
+                            }}
+                        />
                     ) : null}
                     {currentView === "db-viewer" && <ChangesQueuePanel />}
                 </div>
