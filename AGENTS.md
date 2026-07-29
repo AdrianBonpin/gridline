@@ -67,12 +67,14 @@ gridline/
 │   │   │   ├── connections.rs    # CRUD for saved connections
 │   │   │   ├── query.rs          # SQL execution
 │   │   │   ├── schema.rs         # Object tree introspection
+│   │   │   ├── schema_graph.rs   # ER diagram / relationship graph
 │   │   │   ├── backup.rs         # pg_dump / pg_restore wrappers
 │   │   │   └── workspace.rs      # Workspace/folder persistence
 │   │   ├── models/               # Serde structs shared across commands
 │   │   │   ├── mod.rs
 │   │   │   ├── connection.rs
 │   │   │   ├── query.rs
+│   │   │   ├── db_viewer.rs      # DB viewer types (SchemaGraph, TableNode, etc.)
 │   │   │   └── workspace.rs
 │   │   └── store/                # SQLite local persistence layer
 │   │       ├── mod.rs
@@ -251,7 +253,7 @@ cargo test               # Rust tests
 | Constraints (CHECK, UNIQUE beyond PK/FK) | ❌ | |
 | Materialized views | ❌ | Not distinguished from regular views |
 | Stored procedures | 🟡 | Included in Functions via p.prokind IN ('f','p'); no separate view yet |
-| Schema visualizer (ER diagram) | ❌ | Stub button in sidebar |
+| Schema visualizer (ER diagram) | ✅ | Full React Flow ER diagram with dagre auto-layout, crow's foot notation, schema selector, legend with cardinality colors, collapsible columns (PK/FK/unique-only), cross-schema FK support. PostgreSQL (single round-trip LATERAL query) + SQLite (PRAGMA). Uses @xyflow/react + dagre. |
 
 ### Query Editor
 | Feature | Status | Details |
