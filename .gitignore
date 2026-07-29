@@ -28,6 +28,11 @@ dist-ssr
 .superpowers/
 docs/superpowers/
 
+# Database (local state — never commit)
+*.db
+*.sqlite
+*.sqlite3
+
 # Env
 .env.*
 .env
