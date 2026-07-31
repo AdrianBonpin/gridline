@@ -1,4 +1,4 @@
-import { Plus, X } from "lucide-react";
+import { Play, X } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 
 export function TabBar() {
@@ -58,14 +58,14 @@ export function TabBar() {
       </div>
 
       {/* Right: fixed actions */}
-      <div className="flex shrink-0 items-stretch border-l border-border">
+      <div className="flex shrink-0 items-center gap-1.5 border-l border-border px-2">
         <button
           type="button"
           onClick={openQueryTab}
           aria-label="New query tab"
-          className="flex items-center gap-1 px-2.5 text-xs font-medium text-text transition-colors hover:bg-surface-raised cursor-pointer"
+          className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover cursor-pointer"
         >
-          <Plus className="h-3.5 w-3.5" />
+          <Play className="h-3 w-3 fill-current" />
           Query
         </button>
         <button
