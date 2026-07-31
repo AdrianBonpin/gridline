@@ -141,6 +141,44 @@ describe("TableControls", () => {
     expect(screen.queryByTestId("refresh-pulse")).not.toBeInTheDocument();
   });
 
+  it("waits for an in-flight refresh to complete before restarting the timer", () => {
+    vi.useFakeTimers();
+    seed([makeTab()], "tab-1");
+    const onRefresh = vi.fn(() => {
+      useDbViewerStore.setState((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.id === "tab-1" ? { ...t, loading: true } : t,
+        ),
+      }));
+    });
+    renderControls({ onRefresh, defaultRefreshRate: 5000 });
+
+    // First interval fires the refresh
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+
+    // While the refresh is still in flight, the timer must NOT fire again
+    act(() => {
+      vi.advanceTimersByTime(15000);
+    });
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+
+    // Once the refresh completes, a fresh countdown starts
+    act(() => {
+      useDbViewerStore.setState((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.id === "tab-1" ? { ...t, loading: false } : t,
+        ),
+      }));
+    });
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+  });
+
   it("defers auto-refresh when the user switches tabs (resets the timer)", () => {
     vi.useFakeTimers();
     const onRefresh = vi.fn();

@@ -514,14 +514,17 @@ export function TableControls({
   const [autoRefresh, setAutoRefresh] = useState(defaultRefreshRate);
   const [autoRefreshOpen, setAutoRefreshOpen] = useState(false);
 
-  // auto-refresh timer. Resets whenever the active tab changes so a freshly
-  // opened/reopened tab is not immediately refetched (deferred until the
-  // next full interval).
+  // Auto-refresh: a self-restarting timer that only counts down while the tab
+  // is idle. Fires a refresh, waits for it to complete (loading → false),
+  // then starts a fresh countdown. Also resets whenever the active tab changes
+  // so a freshly opened/reopened tab is not immediately refetched.
   useEffect(() => {
     if (autoRefresh === 0) return;
-    const id = setInterval(onRefresh, autoRefresh);
-    return () => clearInterval(id);
-  }, [autoRefresh, onRefresh, activeTabId]);
+    // While a refresh is in flight, wait for it to finish before counting down
+    if (isRefreshing) return;
+    const id = setTimeout(onRefresh, autoRefresh);
+    return () => clearTimeout(id);
+  }, [autoRefresh, onRefresh, isRefreshing, activeTabId]);
 
   // pagination
   const totalRows = activeTab?.data?.total_rows ?? rows.length;
