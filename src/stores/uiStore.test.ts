@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useUiStore } from "./uiStore";
 
-beforeEach(() => useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home", prefilledConnectionString: null, activeConnectionId: null }));
+beforeEach(() => useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeEnvironment: null, activeView: "home", prefilledConnectionString: null, activeConnectionId: null }));
 
 describe("uiStore", () => {
   it("starts on home view", () => expect(useUiStore.getState().activeView).toBe("home"));
@@ -39,6 +39,17 @@ describe("uiStore", () => {
     expect(useUiStore.getState().prefilledConnectionString).toBe("postgresql://a@b/c");
     useUiStore.getState().clearPrefilledConnectionString();
     expect(useUiStore.getState().prefilledConnectionString).toBeNull();
+  });
+
+  it("setEnvironment sets activeEnvironment", () => {
+    useUiStore.getState().setEnvironment("production");
+    expect(useUiStore.getState().activeEnvironment).toBe("production");
+  });
+
+  it("clearFilters resets activeEnvironment", () => {
+    useUiStore.getState().setEnvironment("staging");
+    useUiStore.getState().clearFilters();
+    expect(useUiStore.getState().activeEnvironment).toBeNull();
   });
 
   it("sets and clears activeConnectionId", () => {

@@ -54,6 +54,7 @@ beforeEach(() => {
     activeFolderId: null,
     activeTagIds: [],
     activeDbTypes: [],
+    activeEnvironment: null,
   });
 });
 
@@ -92,6 +93,33 @@ describe("useFilteredConnections", () => {
     const { result } = renderHook(() => useFilteredConnections());
     expect(result.current).toHaveLength(1);
     expect(result.current[0].id).toBe("c1");
+  });
+
+  it("returns ALL connections matching environment regardless of folder", () => {
+    useConnectionStore.setState({
+      connections: [
+        makeConn({ id: "c1", name: "Prod", db_type: "postgresql", folder_id: null, environment: "production" }),
+        makeConn({ id: "c2", name: "Dev", db_type: "sqlite", folder_id: "f1", environment: "development" }),
+      ],
+      folders: [{ id: "f1", name: "F1", parent_id: null, tag_ids: [], created_at: "", updated_at: "" }],
+    });
+    useUiStore.setState({ activeEnvironment: "development", activeFolderId: null });
+    const { result } = renderHook(() => useFilteredConnections());
+    expect(result.current).toHaveLength(1);
+    expect(result.current[0].id).toBe("c2");
+  });
+
+  it("environment filter counts as active filter (bypasses folder scope)", () => {
+    useConnectionStore.setState({
+      connections: [
+        makeConn({ id: "c1", name: "Prod", db_type: "postgresql", folder_id: null, environment: "production" }),
+        makeConn({ id: "c2", name: "Prod2", db_type: "postgresql", folder_id: "f1", environment: "production" }),
+      ],
+      folders: [{ id: "f1", name: "F1", parent_id: null, tag_ids: [], created_at: "", updated_at: "" }],
+    });
+    useUiStore.setState({ activeEnvironment: "production", activeFolderId: "f1" });
+    const { result } = renderHook(() => useFilteredConnections());
+    expect(result.current).toHaveLength(2);
   });
 
   it("returns ALL connections matching DB type filter regardless of folder", () => {
