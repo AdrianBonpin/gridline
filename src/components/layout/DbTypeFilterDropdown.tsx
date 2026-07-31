@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Filter } from "lucide-react";
 import { useUiStore } from "../../stores/uiStore";
+import { SelectDropdown } from "../ui/SelectDropdown";
 import type { DbType } from "../../lib/types";
 
 const DB_TYPES: { value: DbType; label: string }[] = [
@@ -16,8 +17,10 @@ export function DbTypeFilterDropdown() {
   const activeDbTypes = useUiStore((s) => s.activeDbTypes);
   const toggleDbType = useUiStore((s) => s.toggleDbType);
   const clearFilters = useUiStore((s) => s.clearFilters);
+  const activeEnvironment = useUiStore((s) => s.activeEnvironment);
+  const setEnvironment = useUiStore((s) => s.setEnvironment);
 
-  const activeCount = activeDbTypes.length;
+  const activeCount = activeDbTypes.length + (activeEnvironment ? 1 : 0);
   const hasActiveFilters = activeCount > 0;
 
   useEffect(() => {
@@ -80,6 +83,24 @@ export function DbTypeFilterDropdown() {
                   </label>
                 );
               })}
+            </div>
+            <div className="px-2 py-2">
+              <label className="block text-[10px] uppercase tracking-wider text-text-muted mb-1">
+                Environment
+              </label>
+              <SelectDropdown
+                value={activeEnvironment ?? ""}
+                onChange={(val) => setEnvironment(val === "" ? null : val)}
+                options={[
+                  { value: "", label: "All" },
+                  { value: "production", label: "Production" },
+                  { value: "staging", label: "Staging" },
+                  { value: "development", label: "Development" },
+                  { value: "none", label: "None" },
+                ]}
+                placeholder="All"
+                aria-label="Environment filter"
+              />
             </div>
             <div className="border-t border-border my-1" />
             <button
