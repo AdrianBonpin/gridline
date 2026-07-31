@@ -217,6 +217,29 @@ describe("VirtualDataGrid", () => {
     expect(lastCol.className).not.toContain("border-r-0");
   });
 
+  it("hides the select-all checkbox and header when no columns are present", () => {
+    mockGetTotalSize.mockReturnValue(0);
+    mockGetVirtualItems.mockReturnValue([]);
+
+    const { container } = render(
+      <VirtualDataGrid
+        connectionId="conn-1"
+        schema="public"
+        rows={[]}
+        columns={[]}
+        hiddenColumns={new Set()}
+        selectedRows={new Set()}
+        onToggleRow={() => {}}
+        onToggleAll={() => {}}
+      />,
+    );
+
+    // No table open → no select-all checkbox, no header bar, no empty-state message.
+    expect(screen.queryAllByRole("checkbox").length).toBe(0);
+    expect(container.querySelector(".sticky")).toBeNull();
+    expect(screen.queryByText(/no rows/i)).not.toBeInTheDocument();
+  });
+
   it("has resize handles on column headers", () => {
     mockGetTotalSize.mockReturnValue(0);
     mockGetVirtualItems.mockReturnValue([]);

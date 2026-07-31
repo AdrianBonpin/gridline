@@ -35,6 +35,7 @@ export function VirtualDataGrid({
   const parentRef = useRef<HTMLDivElement>(null);
 
   const visibleColumns = columns.filter((c) => !hiddenColumns.has(c.name));
+  const hasColumns = columns.length > 0;
   const allSelected = rows.length > 0 && selectedRows.size === rows.length;
   const selectAllRef = useRef<HTMLInputElement>(null);
 
@@ -62,7 +63,9 @@ export function VirtualDataGrid({
   );
 
   // Total width for horizontal scroll support
-  const totalWidth = 40 + visibleColumns.reduce((sum, c) => sum + getWidth(c.name), 0);
+  const totalWidth =
+    (hasColumns ? 40 : 0) +
+    visibleColumns.reduce((sum, c) => sum + getWidth(c.name), 0);
 
   const resizeRef = useRef<{ col: string; startX: number; startWidth: number } | null>(null);
 
@@ -211,44 +214,46 @@ export function VirtualDataGrid({
 
   return (
     <div ref={parentRef} className="overflow-auto h-full" style={{ overscrollBehavior: "none" }}>
-      {/* ── sticky header ── */}
-      <div className="sticky top-0 z-10">
-        <div className="flex items-center border-b border-border bg-canvas" style={{ width: totalWidth }}>
-          <div style={{ width: 40, minWidth: 40 }} className="px-2 py-2 flex items-center justify-center border-r border-border self-stretch">
-            <input
-              ref={selectAllRef}
-              type="checkbox"
-              checked={allSelected}
-              onChange={onToggleAll}
-              className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
-            />
-          </div>
-          {visibleColumns.map((col) => (
-            <div
-              key={col.name}
-              className="group relative px-3 py-2 font-heading text-text-muted border-r border-border self-stretch"
-              style={{ width: getWidth(col.name), flexShrink: 0 }}
-            >
-              <div className="truncate flex items-center gap-1">
-                {col.is_pk && <Key size={10} className="text-accent shrink-0" />}
-                {col.is_fk && <Key size={10} className="text-amber-400 shrink-0" />}
-                <span className="text-text text-xs">{col.name}</span>
-                <span className="text-[10px] text-text-muted/50 shrink-0" title={col.data_type}>
-                  {abbreviateType(col.data_type)}
-                </span>
-              </div>
-              <div
-                className="absolute right-0 top-0 h-full w-[6px] cursor-col-resize select-none bg-transparent hover:bg-accent/30 active:bg-accent/50"
-                onMouseDown={(e) => startResize(col.name, e)}
-                onDoubleClick={() => resetWidth(col.name)}
+      {/* ── sticky header (hidden when no columns/table open) ── */}
+      {hasColumns && (
+        <div className="sticky top-0 z-10">
+          <div className="flex items-center border-b border-border bg-canvas" style={{ width: totalWidth }}>
+            <div style={{ width: 40, minWidth: 40 }} className="px-2 py-2 flex items-center justify-center border-r border-border self-stretch">
+              <input
+                ref={selectAllRef}
+                type="checkbox"
+                checked={allSelected}
+                onChange={onToggleAll}
+                className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
               />
             </div>
-          ))}
+            {visibleColumns.map((col) => (
+              <div
+                key={col.name}
+                className="group relative px-3 py-2 font-heading text-text-muted border-r border-border self-stretch"
+                style={{ width: getWidth(col.name), flexShrink: 0 }}
+              >
+                <div className="truncate flex items-center gap-1">
+                  {col.is_pk && <Key size={10} className="text-accent shrink-0" />}
+                  {col.is_fk && <Key size={10} className="text-amber-400 shrink-0" />}
+                  <span className="text-text text-xs">{col.name}</span>
+                  <span className="text-[10px] text-text-muted/50 shrink-0" title={col.data_type}>
+                    {abbreviateType(col.data_type)}
+                  </span>
+                </div>
+                <div
+                  className="absolute right-0 top-0 h-full w-[6px] cursor-col-resize select-none bg-transparent hover:bg-accent/30 active:bg-accent/50"
+                  onMouseDown={(e) => startResize(col.name, e)}
+                  onDoubleClick={() => resetWidth(col.name)}
+                />
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* ── virtual body ── */}
-      {rows.length === 0 ? (
+      {/* ── virtual body (hidden when no columns/table open) ── */}
+      {!hasColumns ? null : rows.length === 0 ? (
         <div className="py-12 text-center text-sm text-text-muted">
           No rows in result set
         </div>
@@ -279,14 +284,16 @@ export function VirtualDataGrid({
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
               >
-                <div style={{ width: 40, minWidth: 40 }} className="flex items-center justify-center border-r border-border self-stretch">
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => onToggleRow(virtualRow.index)}
-                    className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
-                  />
-                </div>
+                {hasColumns && (
+                  <div style={{ width: 40, minWidth: 40 }} className="flex items-center justify-center border-r border-border self-stretch">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => onToggleRow(virtualRow.index)}
+                      className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
+                    />
+                  </div>
+                )}
                 {visibleColumns.map((col) => renderCell(col, row, virtualRow.index))}
               </div>
             );
