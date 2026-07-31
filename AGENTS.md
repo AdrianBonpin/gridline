@@ -203,9 +203,11 @@ cargo test               # Rust tests
 | Connection cards grid (by folder) | ✅ | Grouped display, single-click to open DB viewer |
 | Folders CRUD | ✅ | Nested folders, reparent on delete, breadcrumb nav |
 | Tags CRUD | ✅ | Colors, drag reorder, filter connections by tag |
-| Tag filter dropdown | ✅ | ActionRow Tags button → dropdown with checkboxes, active-count badge, Manage tags → Settings |
-| DB type filter (Postgres/MySQL/SQLite/Redis) | ✅ | Dropdown with checkboxes + Clear all; replaces toggle chips |
-| Global search (Cmd+K) | ✅ | Connection URL detection auto-fills new-connection form; shows results from ALL folders when search/filters active |
+| Tag filter dropdown | ✅ | ActionRow Tags button → dropdown with checkboxes, active-count badge, Manage tags → Settings. **OR semantics** — a connection shows if it has ANY selected tag (not all) |
+| Folder tag matching | ✅ | When any filter is active, folder cards show only if the folder matches a selected tag OR contains matching connections (directly or in subfolders) |
+| DB type filter (Postgres/MySQL/SQLite/Redis) | ✅ | Dropdown with checkboxes + Clear all; folder cards hidden when their contents don't match the DB type |
+| Environment filter | ✅ | Select in Filters dropdown: All / Production / Staging / Development / None (unassigned); counts toward active badge |
+| Global search (Cmd+K) | ✅ | Connection URL detection auto-fills new-connection form; shows results from ALL folders as if at root (folder scope bypassed while searching); breadcrumb shows "Showing Search Results" with Clear button |
 | Connection name editing | ✅ | Name field in GeneralTab edit form |
 | Import/Export connections (JSON) | ✅ | Bulk import with validation, skipped-record reporting |
 | Bulk select + delete connections/folders | ✅ | Checkbox selection with confirmation dialog |
@@ -264,7 +266,7 @@ cargo test               # Rust tests
 | SQL text editor (Monaco) | ✅ | Lazy-loaded Monaco SQL editor with Cmd/Ctrl+Enter to run (`src/components/editor/QueryEditor.tsx`) |
 | Custom query execution (arbitrary SQL) | ✅ | `execute_query` Rust command: subquery-wrapped pagination + raw fallback; PostgreSQL + SQLite; results in virtualized grid |
 | Destructive query guard | ✅ | Confirmation dialog for INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/REPLACE (`isDestructiveQuery` + `DestructiveQueryDialog`) |
-| Query history / recent queries | ✅ | Persisted to local SQLite `query_history` table (v5 migration) with per-connection history; `get_query_history`/`clear_query_history` commands |
+| Query history / recent queries | 🟡 | Backend + commands done (v5 `query_history` table, `get_query_history`/`clear_query_history`); UI dropdown to show history in the query editor is **not wired yet** |
 | SQL autocomplete (keywords, tables, columns) | ❌ | |
 | Multiple result sets | ❌ | |
 | Saved queries (named, organized) | ❌ | No `queries` table in local SQLite |
@@ -306,6 +308,11 @@ cargo test               # Rust tests
 | Re-add demo DB button | ✅ | Settings → Advanced |
 | Getting started / onboarding flow | ❌ | |
 | Welcome tooltips / tour | ❌ | |
+
+### AI Integration (Future Planning)
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| AI assistant (BYOK) | 🔮 | **Planned for future.** Bring-Your-Own-Key model (user supplies their own API key — no paywall, no bundling). Intended use cases: natural-language → SQL generation, query explanations, schema summaries, error message suggestions. No design decided yet — deliberate before implementation (privacy: SQL/text only sent to user's chosen provider, key stored in OS keychain like DB passwords). |
 
 ---
 

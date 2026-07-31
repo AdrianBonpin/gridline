@@ -26,8 +26,8 @@ Most database GUI clients either lock essential productivity features behind pay
 | OS credential vault | ✅ | ✅ | **Keychain / Secret Service** |
 | Workspace / folder hierarchy | ❌ | ❌ | **Multi-level tree + tags** |
 | Changes queue (stage & commit) | ❌ | ❌ | **✅ Queue → Commit All** |
-| Query history | ✅ (auto-saved) | ✅ | 🟡 *Upcoming* |
-| AI assistant | ✅ (BYO key) | ❌ (paid only) | ❌ |
+| Query history | ✅ (auto-saved) | ✅ | 🟡 *Backend done, UI pending* |
+| AI assistant | ✅ (BYO key) | ❌ (paid only) | 🔮 *Planned — BYOK* |
 | Open source | ❌ | ✅ (GPLv3) | **✅ (MIT)** |
 | Desktop shell | Native webview | Electron (~250MB) | **Tauri 2.0 (~40MB)** |
 
@@ -96,10 +96,14 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 - **Schema Visualizer (ER Diagram)** — interactive React Flow graph with dagre auto-layout, crow's foot notation (1:1, 1:N, N:M), color-coded relationships, schema selector, zoom controls, collapsible columns (PK/FK/unique-only), cross-schema FK support for PostgreSQL + SQLite
 
 ### SQL Editor & Query Workbench
-- **Multi-Tab Workspace** — unlimited named tabs, close with Cmd/Ctrl+W, session persistence across restarts
+- **Monaco SQL Editor** — lazy-loaded [Monaco Editor](https://microsoft.github.io/monaco-editor/) with SQL syntax highlighting, Cmd/Ctrl+Enter to run
+- **Custom Query Execution** — run arbitrary SQL on PostgreSQL + SQLite via the Rust `execute_query` command; subquery-wrapped pagination with automatic raw fallback for CTEs/multi-statement SQL
+- **Destructive Query Guard** — confirmation dialog for INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/REPLACE before execution
+- **Query Tabs** — dedicated query tabs alongside table tabs, results rendered in the same virtualized data grid, close with Cmd/Ctrl+W
+- **Multi-Tab Workspace** — unlimited named tabs, session persistence across restarts
 - **Changes Queue** — queue INSERT/UPDATE/DELETE changes; preview before committing all
 - **Smart Default Sort** — auto-detects `updated_at`, `created_at`, `_id` columns for logical initial sorting
-- *(Monaco Editor with SQL autocomplete, query history, and saved snippets — upcoming)*
+- *(SQL autocomplete, query history UI dropdown, saved queries/snippets — upcoming)*
 
 ### Data Grid & Schema Browser
 - **Virtualized Grid** — row-level virtualization via `@tanstack/react-virtual` handles 100k+ rows
@@ -133,7 +137,7 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 | **Frontend** | [React 19](https://react.dev) + [TypeScript](https://www.typescriptlang.org) | Component-based UI |
 | **Styling** | [Tailwind CSS](https://tailwindcss.com) | Utility-first, dark mode, glassmorphic design |
 | **State** | [Zustand](https://zustand.docs.pmnd.rs) / [Jotai](https://jotai.org) | Lightweight client-state for tabs, connections, queries |
-| **Code Editor** | *(planned)* [Monaco Editor](https://microsoft.github.io/monaco-editor/) | IDE-grade SQL editing with autocomplete (coming soon) |
+| **Code Editor** | [Monaco Editor](https://microsoft.github.io/monaco-editor/) | IDE-grade SQL editing with Cmd+Enter execution, lazy-loaded |
 | **Data Grid** | [TanStack Virtual](https://tanstack.com/virtual) | Virtualized row rendering for 100k+ rows |
 | **Local DB** | SQLite via [rusqlite](https://github.com/rusqlite/rusqlite) | User settings, saved queries, workspace state |
 
@@ -225,9 +229,11 @@ gridline/
 - **Phase 5 — Admin Tools** — `pg_dump`/`pg_restore` UI wrappers with real-time progress, DB-to-DB sync, backup/restore format selectors
 - **Phase 6 — Schema Visualizer** — Interactive ER diagram with React Flow + dagre, crow's foot notation, schema selector, legend, collapsible column views, PostgreSQL + SQLite support
 - **Home Screen & Organization** — Connection cards by folder, folders CRUD, tags CRUD with colors, global search (Cmd+K), import/export connections (JSON), bulk select/delete, DB type filter, demo SQLite database
+- **Query Editor (Core)** — Monaco SQL editor with Cmd+Enter execution, `execute_query` Rust command (PostgreSQL + SQLite, subquery pagination with raw fallback), query tabs in the DB viewer, destructive query confirmation dialog, `query_history` persistence backend
+- **Home Screen Filters** — Tag filter with OR semantics, folder cards matching tags or containing matching connections, DB type filter hiding empty folders, environment filter (All/Production/Staging/Development/None), global search across all folders with "Showing Search Results" breadcrumb + Clear
 
 ### 🟡 In Progress / Upcoming
-- **SQL Editor** — Monaco Editor integration with schema-aware SQL autocomplete, query history, saved queries
+- **Query Editor (Polish)** — SQL autocomplete, query history UI dropdown, saved queries
 - **SSH/SSL Runtime** — SSH tunnel via `ssh2` crate, SSL/TLS config passed to `sqlx`/`tokio-postgres`
 - **Inline Cell Editing** — Edit cells directly in the data grid
 - **Data Import** — CSV, JSON import with column mapping
@@ -238,6 +244,7 @@ gridline/
 - **Deeper PostgreSQL** — Indexes, constraints, materialized views, stored procedure view, user/role management
 - **Collaboration** — Team workspaces, shared connections, query sharing
 - **Notebook Reports** — SQL-backed markdown reports with embedded results
+- **AI Integration (BYOK)** — Bring-Your-Own-Key AI assistant: natural-language → SQL generation, query explanations, schema summaries, error suggestions. Key stored in OS keychain; only user's chosen provider sees SQL/text.
 
 ---
 
