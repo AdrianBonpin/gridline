@@ -237,7 +237,7 @@ cargo test               # Rust tests
 | Row selection (checkboxes + select all) | ✅ | Bulk copy (JSON/CSV/SQL) and delete |
 | Export toolbar (JSON, CSV, SQL, Markdown) | ✅ | Client-side Blob download of visible rows |
 | Auto-refresh timer | ✅ | Configurable interval in settings |
-| Changes queue (INSERT, UPDATE, DELETE) | ✅ | Queue changes → Commit All; cancel individual changes |
+| Changes queue (INSERT, UPDATE, DELETE) | ✅ | Queue changes → Commit All; cancel individual changes. Tab bar shows a **Changes** icon button with a pending-count badge that toggles the bottom panel (the queue dropdown was removed from the table toolbar — one entry point only) |
 | Edit connection modal (from DB viewer) | ✅ | AnimatedModal with keychain password fetch on test |
 | Connection drop banner | ✅ | Auto-detects broken connections with reconnect prompt |
 | Inline cell editing | ❌ | Cells are read-only; changes via queue Insert button only |

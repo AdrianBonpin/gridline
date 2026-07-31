@@ -25,7 +25,7 @@ Most database GUI clients either lock essential productivity features behind pay
 | SSH tunneling | 🟡 (likely paid) | ✅ | 🟡 *Config UI done* |
 | OS credential vault | ✅ | ✅ | **Keychain / Secret Service** |
 | Workspace / folder hierarchy | ❌ | ❌ | **Multi-level tree + tags** |
-| Changes queue (stage & commit) | ❌ | ❌ | **✅ Queue → Commit All** |
+| Changes queue (stage & commit) | ❌ | ❌ | **✅ Queue → Commit All** (tab-bar **Changes** button with count badge toggles the commit panel) |
 | Query history | ✅ (auto-saved) | ✅ | 🟡 *Backend done, UI pending* |
 | AI assistant | ✅ (BYO key) | ❌ (paid only) | 🔮 *Planned — BYOK* |
 | Open source | ❌ | ✅ (GPLv3) | **✅ (MIT)** |
@@ -102,7 +102,7 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 - **Query Tabs** — dedicated query tabs alongside table tabs, results rendered in the same virtualized data grid, close with Cmd/Ctrl+W
 - **SQL Autocomplete** — keyword + table suggestions from the active schema; typing `table.` suggests that table's columns (schema introspection, cached per schema)
 - **Multi-Tab Workspace** — unlimited named tabs, session persistence across restarts
-- **Changes Queue** — queue INSERT/UPDATE/DELETE changes; preview before committing all
+- **Changes Queue** — queue INSERT/UPDATE/DELETE changes; preview before committing all. The tab bar's **Changes** button (checklist icon + pending-count badge) toggles the bottom Commit All panel — the single entry point
 - **Smart Default Sort** — auto-detects `updated_at`, `created_at`, `_id` columns for logical initial sorting
 - *(query history UI dropdown, saved queries/snippets — upcoming)*
 
