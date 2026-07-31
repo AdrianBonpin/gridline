@@ -112,6 +112,17 @@ function exportData(
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Format an execution duration using the most sensible unit:
+ * ms below a second, seconds (1 decimal) up to a minute, minutes beyond.
+ */
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms == null) return "";
+  if (ms < 1000) return `${ms.toFixed(2)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${(ms / 60_000).toFixed(1)}m`;
+}
+
 // ─── sub-components ─────────────────────────────────────
 
 function DropdownMenu({
@@ -473,6 +484,8 @@ interface TableControlsProps {
   selectedRows: unknown[][];
   onClearSelection: () => void;
   defaultRefreshRate?: number;
+  /** "table" = full table toolbar; "query" = export/refresh/columns + timing */
+  variant?: "table" | "query";
 }
 
 export function TableControls({
@@ -492,7 +505,9 @@ export function TableControls({
   selectedRows,
   onClearSelection,
   defaultRefreshRate = 0,
+  variant = "table",
 }: TableControlsProps) {
+  const isQuery = variant === "query";
   const tabs = useDbViewerStore((s) => s.tabs);
   const activeTabId = useDbViewerStore((s) => s.activeTabId);
   const setPage = useDbViewerStore((s) => s.setPage);
@@ -565,6 +580,109 @@ export function TableControls({
     setExportOpen(false);
   };
 
+  const executionTimeMs = activeTab?.data?.execution_time_ms ?? null;
+
+  const refreshControl = (
+    <Tooltip
+      content={
+        isRefreshing
+          ? isQuery
+            ? "Running…"
+            : "Refreshing…"
+          : isQuery
+            ? "Re-trigger query"
+            : "Refresh"
+      }
+      side="bottom"
+    >
+      <button
+        type="button"
+        onClick={onRefresh}
+        className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
+        aria-label={isQuery ? "Re-run query" : "Refresh table"}
+      >
+        <RefreshCw
+          size={14}
+          className={isRefreshing ? "animate-spin text-accent" : ""}
+        />
+      </button>
+    </Tooltip>
+  );
+
+  const exportControl = (
+    <div className="relative">
+      <Tooltip content="Export" side="bottom">
+        <button
+          type="button"
+          onClick={() => setExportOpen((v) => !v)}
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
+          aria-label="Export"
+        >
+          <Download size={14} />
+        </button>
+      </Tooltip>
+      <DropdownMenu open={exportOpen} setOpen={setExportOpen}>
+        {EXPORT_FORMATS.map((fmt) => (
+          <button
+            key={fmt.ext}
+            type="button"
+            onClick={() => handleExport(fmt.ext)}
+            className="w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
+          >
+            {fmt.label}
+          </button>
+        ))}
+      </DropdownMenu>
+    </div>
+  );
+
+  const columnsControl = (
+    <div className="relative">
+      <Tooltip content="Show/hide columns" side="bottom">
+        <button
+          type="button"
+          onClick={() => setColumnMenuOpen((v) => !v)}
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
+          aria-label="Toggle columns"
+        >
+          <Columns size={14} />
+        </button>
+      </Tooltip>
+      <DropdownMenu
+        open={columnMenuOpen}
+        setOpen={setColumnMenuOpen}
+        align={isQuery ? "left" : "right"}
+      >
+        <div className="px-2 py-1 text-[10px] text-text-muted uppercase tracking-wider">
+          Visible columns
+        </div>
+        <div className="max-h-64 overflow-y-auto">
+          {columns.map((col) => (
+            <button
+              key={col.name}
+              type="button"
+              onClick={() => onToggleColumn(col.name)}
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
+            >
+              <span
+                className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                  hiddenColumns.has(col.name)
+                    ? "border-border bg-transparent"
+                    : "border-accent bg-accent"
+                }`}
+              >
+                {!hiddenColumns.has(col.name) && (
+                  <Check size={10} className="text-white" />
+                )}
+              </span>
+              <span className="truncate">{col.name}</span>
+            </button>
+          ))}
+        </div>
+      </DropdownMenu>
+    </div>
+  );
+
   return (
     <div className="relative flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted">
       {/* refresh pulse: absolutely positioned so it never causes layout shifts */}
@@ -577,148 +695,122 @@ export function TableControls({
       )}
       {/* ── left side ──────────────────────────────── */}
       <div className="flex items-center gap-1">
-        {/* Insert Row */}
-        <Tooltip content="Insert row" side="bottom">
-          <button
-            type="button"
-            onClick={handleInsertRow}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
-            aria-label="Insert row"
-          >
-            <Plus size={14} />
-          </button>
-        </Tooltip>
-
-        {/* Refresh */}
-        <Tooltip content={isRefreshing ? "Refreshing…" : "Refresh"} side="bottom">
-          <button
-            type="button"
-            onClick={onRefresh}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
-            aria-label="Refresh table"
-          >
-            <RefreshCw
-              size={14}
-              className={isRefreshing ? "animate-spin text-accent" : ""}
-            />
-          </button>
-        </Tooltip>
-
-        {/* Auto-refresh */}
-        <div className="relative">
-          <Tooltip content={`Auto-refresh: ${autoRefresh > 0 ? `${autoRefresh / 1000}s` : "Off"}`} side="bottom">
-            <button
-              type="button"
-              onClick={() => setAutoRefreshOpen((v) => !v)}
-              className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors cursor-pointer ${
-                autoRefresh > 0 ? "text-accent" : "hover:text-text"
-              }`}
-              aria-label="Auto-refresh"
-            >
-              <Clock size={14} />
-              {autoRefresh > 0 && <span className="text-[10px] font-medium">{autoRefresh / 1000}s</span>}
-            </button>
-          </Tooltip>
-          <DropdownMenu open={autoRefreshOpen} setOpen={setAutoRefreshOpen}>
-            {AUTO_REFRESH_OPTIONS.map((opt) => (
+        {isQuery ? (
+          <>
+            {exportControl}
+            {refreshControl}
+            <div className="w-px h-4 bg-border mx-1" />
+            {columnsControl}
+          </>
+        ) : (
+          <>
+            {/* Insert Row */}
+            <Tooltip content="Insert row" side="bottom">
               <button
-                key={opt.value}
                 type="button"
-                onClick={() => { setAutoRefresh(opt.value); setAutoRefreshOpen(false); }}
-                className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-surface-raised transition-colors cursor-pointer ${
-                  autoRefresh === opt.value ? "text-accent" : "text-text"
-                }`}
+                onClick={handleInsertRow}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
+                aria-label="Insert row"
               >
-                {autoRefresh === opt.value && <Check size={12} />}
-                <span className={autoRefresh === opt.value ? "" : "ml-5"}>{opt.label}</span>
+                <Plus size={14} />
               </button>
-            ))}
-          </DropdownMenu>
-        </div>
+            </Tooltip>
 
-        <div className="w-px h-4 bg-border mx-1" />
+            {refreshControl}
 
-        {/* Filter */}
-        <div className="relative">
-          <Tooltip content="Column filters" side="bottom">
-            <button
-              type="button"
-              onClick={() => setFilterOpen((v) => !v)}
-              className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors cursor-pointer ${
-                filterRules.length > 0 ? "text-accent" : "hover:text-text"
-              }`}
-              aria-label="Column filters"
-            >
-              <Filter size={14} />
-              {filterRules.length > 0 && (
-                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-accent text-white text-[10px] font-bold">
-                  {filterRules.length}
-                </span>
-              )}
-            </button>
-          </Tooltip>
-          <FilterModal
-            columns={columns}
-            rules={filterRules}
-            onChange={onFilterChange}
-            open={filterOpen}
-            setOpen={setFilterOpen}
-          />
-        </div>
+            {/* Auto-refresh */}
+            <div className="relative">
+              <Tooltip content={`Auto-refresh: ${autoRefresh > 0 ? `${autoRefresh / 1000}s` : "Off"}`} side="bottom">
+                <button
+                  type="button"
+                  onClick={() => setAutoRefreshOpen((v) => !v)}
+                  className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors cursor-pointer ${
+                    autoRefresh > 0 ? "text-accent" : "hover:text-text"
+                  }`}
+                  aria-label="Auto-refresh"
+                >
+                  <Clock size={14} />
+                  {autoRefresh > 0 && <span className="text-[10px] font-medium">{autoRefresh / 1000}s</span>}
+                </button>
+              </Tooltip>
+              <DropdownMenu open={autoRefreshOpen} setOpen={setAutoRefreshOpen}>
+                {AUTO_REFRESH_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => { setAutoRefresh(opt.value); setAutoRefreshOpen(false); }}
+                    className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-surface-raised transition-colors cursor-pointer ${
+                      autoRefresh === opt.value ? "text-accent" : "text-text"
+                    }`}
+                  >
+                    {autoRefresh === opt.value && <Check size={12} />}
+                    <span className={autoRefresh === opt.value ? "" : "ml-5"}>{opt.label}</span>
+                  </button>
+                ))}
+              </DropdownMenu>
+            </div>
 
-        {/* Sort */}
-        <div className="relative">
-          <Tooltip content="Sort rules" side="bottom">
-            <button
-              type="button"
-              onClick={() => setSortOpen((v) => !v)}
-              className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors cursor-pointer ${
-                sortRules.length > 0 ? "text-accent" : "hover:text-text"
-              }`}
-              aria-label="Sort rules"
-            >
-              <ArrowUpDown size={14} />
-              {sortRules.length > 0 && (
-                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-accent text-white text-[10px] font-bold">
-                  {sortRules.length}
-                </span>
-              )}
-            </button>
-          </Tooltip>
-          <SortModal
-            columns={columns}
-            rules={sortRules}
-            onChange={onSortChange}
-            open={sortOpen}
-            setOpen={setSortOpen}
-          />
-        </div>
+            <div className="w-px h-4 bg-border mx-1" />
 
-        {/* Export */}
-        <div className="relative">
-          <Tooltip content="Export" side="bottom">
-            <button
-              type="button"
-              onClick={() => setExportOpen((v) => !v)}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
-              aria-label="Export"
-            >
-              <Download size={14} />
-            </button>
-          </Tooltip>
-          <DropdownMenu open={exportOpen} setOpen={setExportOpen}>
-            {EXPORT_FORMATS.map((fmt) => (
-              <button
-                key={fmt.ext}
-                type="button"
-                onClick={() => handleExport(fmt.ext)}
-                className="w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
-              >
-                {fmt.label}
-              </button>
-            ))}
-          </DropdownMenu>
-        </div>
+            {/* Filter */}
+            <div className="relative">
+              <Tooltip content="Column filters" side="bottom">
+                <button
+                  type="button"
+                  onClick={() => setFilterOpen((v) => !v)}
+                  className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors cursor-pointer ${
+                    filterRules.length > 0 ? "text-accent" : "hover:text-text"
+                  }`}
+                  aria-label="Column filters"
+                >
+                  <Filter size={14} />
+                  {filterRules.length > 0 && (
+                    <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-accent text-white text-[10px] font-bold">
+                      {filterRules.length}
+                    </span>
+                  )}
+                </button>
+              </Tooltip>
+              <FilterModal
+                columns={columns}
+                rules={filterRules}
+                onChange={onFilterChange}
+                open={filterOpen}
+                setOpen={setFilterOpen}
+              />
+            </div>
+
+            {/* Sort */}
+            <div className="relative">
+              <Tooltip content="Sort rules" side="bottom">
+                <button
+                  type="button"
+                  onClick={() => setSortOpen((v) => !v)}
+                  className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised transition-colors cursor-pointer ${
+                    sortRules.length > 0 ? "text-accent" : "hover:text-text"
+                  }`}
+                  aria-label="Sort rules"
+                >
+                  <ArrowUpDown size={14} />
+                  {sortRules.length > 0 && (
+                    <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-accent text-white text-[10px] font-bold">
+                      {sortRules.length}
+                    </span>
+                  )}
+                </button>
+              </Tooltip>
+              <SortModal
+                columns={columns}
+                rules={sortRules}
+                onChange={onSortChange}
+                open={sortOpen}
+                setOpen={setSortOpen}
+              />
+            </div>
+
+            {exportControl}
+          </>
+        )}
       </div>
 
       {/* ── spacer ──────────────────────────────────── */}
@@ -726,7 +818,19 @@ export function TableControls({
 
       {/* ── right side ─────────────────────────────── */}
       <div className="flex items-center gap-2">
-        {/* Action queue button */}
+        {isQuery && executionTimeMs != null && (
+          <>
+            <span
+              className="flex items-center gap-1.5 tabular-nums"
+              aria-label="Execution time"
+            >
+              <Clock size={12} className="text-text-muted" />
+              {formatDuration(executionTimeMs)}
+            </span>
+            <div className="w-px h-4 bg-border" />
+          </>
+        )}
+        {!isQuery && (
         <div className="relative">
           <button
             type="button"
@@ -783,6 +887,7 @@ export function TableControls({
             </div>
           </DropdownMenu>
         </div>
+        )}
         {/* Selected count + bulk actions */}
         {selectedCount > 0 && (
           <>
@@ -808,39 +913,7 @@ export function TableControls({
           </>
         )}
 
-        {/* Columns toggle */}
-        <div className="relative">
-          <Tooltip content="Show/hide columns" side="bottom">
-            <button
-              type="button"
-              onClick={() => setColumnMenuOpen((v) => !v)}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
-              aria-label="Toggle columns"
-            >
-              <Columns size={14} />
-            </button>
-          </Tooltip>
-          <DropdownMenu open={columnMenuOpen} setOpen={setColumnMenuOpen} align="right">
-            <div className="px-2 py-1 text-[10px] text-text-muted uppercase tracking-wider">Visible columns</div>
-            <div className="max-h-64 overflow-y-auto">
-              {columns.map((col) => (
-                <button
-                  key={col.name}
-                  type="button"
-                  onClick={() => onToggleColumn(col.name)}
-                  className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
-                >
-                  <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
-                    hiddenColumns.has(col.name) ? "border-border bg-transparent" : "border-accent bg-accent"
-                  }`}>
-                    {!hiddenColumns.has(col.name) && <Check size={10} className="text-white" />}
-                  </span>
-                  <span className="truncate">{col.name}</span>
-                </button>
-              ))}
-            </div>
-          </DropdownMenu>
-        </div>
+        {!isQuery && columnsControl}
 
         <div className="w-px h-4 bg-border" />
 

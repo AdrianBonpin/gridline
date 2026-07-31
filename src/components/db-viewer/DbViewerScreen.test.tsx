@@ -65,6 +65,7 @@ const mockQueryResult = {
     total_rows: 1,
     page: 1,
     page_size: 50,
+    execution_time_ms: 42,
 };
 
 describe("DbViewerScreen", () => {
@@ -151,6 +152,9 @@ describe("DbViewerScreen", () => {
         await waitFor(() =>
             expect(executeQuery).toHaveBeenCalledWith("c1", "SELECT 1", 1, 50),
         );
+        // query variant toolbar shows the execution time from the result
+        await waitFor(() => expect(screen.getByText("42.00ms")).toBeInTheDocument());
+        expect(screen.getByLabelText(/execution time/i)).toBeInTheDocument();
     });
 
     it("shows a destructive-query confirmation dialog and executes on confirm", async () => {

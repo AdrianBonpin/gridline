@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import { TableControls } from "./TableControls";
+import { TableControls, formatDuration } from "./TableControls";
 import { TooltipProvider } from "../ui/Tooltip";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import type { ViewerTab } from "../../stores/dbViewerStore";
@@ -68,6 +68,114 @@ function renderControls(
     </TooltipProvider>,
   );
 }
+
+describe("formatDuration", () => {
+  it("formats milliseconds with two decimals", () => {
+    expect(formatDuration(15)).toBe("15.00ms");
+  });
+
+  it("formats seconds with one decimal once past a second", () => {
+    expect(formatDuration(1500)).toBe("1.5s");
+    expect(formatDuration(3200)).toBe("3.2s");
+  });
+
+  it("formats minutes for long-running queries", () => {
+    expect(formatDuration(90000)).toBe("1.5m");
+  });
+
+  it("returns an empty string when there is no timing", () => {
+    expect(formatDuration(null)).toBe("");
+    expect(formatDuration(undefined)).toBe("");
+  });
+});
+
+describe("TableControls query variant", () => {
+  it("shows Export, Re-run, and Columns on the left", () => {
+    seed([makeTab({ tabType: "query" })], "tab-1");
+    renderControls({ variant: "query" });
+    expect(screen.getByLabelText(/export/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/re-run query/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/toggle columns/i)).toBeInTheDocument();
+  });
+
+  it("hides table-only controls and the queue", () => {
+    seed([makeTab({ tabType: "query" })], "tab-1");
+    renderControls({ variant: "query" });
+    expect(screen.queryByLabelText(/insert row/i)).toBeNull();
+    expect(screen.queryByLabelText(/auto-refresh/i)).toBeNull();
+    expect(screen.queryByLabelText(/column filters/i)).toBeNull();
+    expect(screen.queryByLabelText(/sort rules/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /action queue/i })).toBeNull();
+  });
+
+  it("shows the execution time from the result with a clock", () => {
+    seed(
+      [
+        makeTab({
+          tabType: "query",
+          data: {
+            columns,
+            rows: [],
+            total_rows: 0,
+            page: 1,
+            page_size: 50,
+            execution_time_ms: 15,
+          },
+        }),
+      ],
+      "tab-1",
+    );
+    renderControls({ variant: "query" });
+    expect(screen.getByLabelText(/execution time/i)).toBeInTheDocument();
+    expect(screen.getByText("15.00ms")).toBeInTheDocument();
+  });
+
+  it("keeps the row count and pagination", () => {
+    seed(
+      [
+        makeTab({
+          tabType: "query",
+          data: {
+            columns,
+            rows: [[1]],
+            total_rows: 42,
+            page: 1,
+            page_size: 50,
+            execution_time_ms: 15,
+          },
+        }),
+      ],
+      "tab-1",
+    );
+    renderControls({ variant: "query" });
+    expect(screen.getByText(/of 42/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/next page/i)).toBeInTheDocument();
+  });
+
+  it("table variant keeps the queue and does not show execution time", () => {
+    seed(
+      [
+        makeTab({
+          data: {
+            columns,
+            rows: [[1]],
+            total_rows: 1,
+            page: 1,
+            page_size: 50,
+            execution_time_ms: 15,
+          },
+        }),
+      ],
+      "tab-1",
+    );
+    renderControls({});
+    expect(
+      screen.getByRole("button", { name: /action queue/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/toggle columns/i)).toBeInTheDocument();
+    expect(screen.queryByText("15.00ms")).toBeNull();
+  });
+});
 
 describe("TableControls", () => {
   beforeEach(() => {
