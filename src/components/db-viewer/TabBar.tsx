@@ -8,11 +8,7 @@ export function TabBar() {
   const setActiveTab = useDbViewerStore((state) => state.setActiveTab);
 
   if (tabs.length === 0) {
-    return (
-      <div className="flex h-10 items-center border-b border-border px-3 text-sm text-text-muted">
-        No tables open
-      </div>
-    );
+    return null;
   }
 
   return (

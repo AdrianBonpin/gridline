@@ -11,9 +11,9 @@ describe("TabBar", () => {
     useDbViewerStore.getState().reset();
   });
 
-  it("shows empty state when no tabs", () => {
-    render(<TabBar />);
-    expect(screen.getByText(/No tables open/i)).toBeInTheDocument();
+  it("renders nothing when no tabs are open", () => {
+    const { container } = render(<TabBar />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("renders open tab names", () => {
