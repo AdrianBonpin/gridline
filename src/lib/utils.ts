@@ -112,16 +112,29 @@ export function getChildFolders(folders: Folder[], parentId: string | null): Fol
 export function filterConnections(
   connections: Connection[],
   tags: Tag[],
-  filter: { query: string; activeTagIds?: string[]; activeDbTypes?: DbType[] },
+  filter: {
+    query: string;
+    activeTagIds?: string[];
+    activeDbTypes?: DbType[];
+    activeEnvironment?: string | null;
+  },
 ): Connection[] {
   const q = filter.query.trim().toLowerCase();
   const tagIds = filter.activeTagIds ?? [];
   const dbTypes = filter.activeDbTypes ?? [];
+  const activeEnvironment = filter.activeEnvironment;
   const tagNameById = new Map(tags.map((t) => [t.id, t.name.toLowerCase()]));
 
   return connections.filter((c) => {
     if (dbTypes.length > 0 && !dbTypes.includes(c.db_type)) return false;
-    if (tagIds.length > 0 && !tagIds.every((id) => c.tag_ids.includes(id))) return false;
+    if (tagIds.length > 0 && !tagIds.some((id) => c.tag_ids.includes(id))) return false;
+    if (activeEnvironment !== undefined && activeEnvironment !== null && activeEnvironment !== "") {
+      if (activeEnvironment === "none") {
+        if (c.environment) return false;
+      } else if (c.environment !== activeEnvironment) {
+        return false;
+      }
+    }
     if (q.length > 0) {
       const tagNames = c.tag_ids.map((id) => tagNameById.get(id) ?? "").join(" ");
       const haystack = `${c.name} ${c.host} ${c.db_type} ${tagNames}`.toLowerCase();

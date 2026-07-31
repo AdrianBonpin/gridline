@@ -20,6 +20,7 @@ const makeConnection = (over: Partial<Connection> = {}): Connection => ({
   folder_id: null,
   keychain_ref: null,
   tag_ids: [],
+  environment: null,
   created_at: "2026-07-26T00:00:00Z",
   updated_at: "2026-07-26T00:00:00Z",
   ...over,
@@ -283,6 +284,39 @@ describe("filterConnections", () => {
   });
   it("search matches tag name", () => {
     expect(filterConnections(conns, tags, { query: "cache" })).toEqual([conns[1]]);
+  });
+
+  it("matches ANY selected tag (OR semantics)", () => {
+    // c1 has t1, c2 has t2. Selecting both t1+t2 should return BOTH connections.
+    const result = filterConnections(conns, tags, { query: "", activeTagIds: ["t1", "t2"] });
+    expect(result).toHaveLength(2);
+  });
+
+  it("matches when connection has only one of multiple selected tags", () => {
+    const c3 = makeConnection({ id: "c3", name: "Cache", host: "cache.local", db_type: "postgresql", tag_ids: ["t1"], folder_id: "f1", environment: "production" });
+    const result = filterConnections([...conns, c3], tags, { query: "", activeTagIds: ["t1", "t2"] });
+    // c3 only has t1 but should still show
+    expect(result.map((c) => c.id)).toContain("c3");
+  });
+
+  it("filters by environment", () => {
+    const c1 = makeConnection({ id: "c1", name: "Prod", db_type: "postgresql", tag_ids: [], environment: "production" });
+    const c2 = makeConnection({ id: "c2", name: "Dev", db_type: "postgresql", tag_ids: [], environment: "development" });
+    const result = filterConnections([c1, c2], tags, { query: "", activeEnvironment: "production" });
+    expect(result).toEqual([c1]);
+  });
+
+  it("activeEnvironment 'none' filters to connections without environment", () => {
+    const c1 = makeConnection({ id: "c1", name: "Prod", db_type: "postgresql", tag_ids: [], environment: "production" });
+    const c2 = makeConnection({ id: "c2", name: "NoEnv", db_type: "postgresql", tag_ids: [], environment: null });
+    const result = filterConnections([c1, c2], tags, { query: "", activeEnvironment: "none" });
+    expect(result).toEqual([c2]);
+  });
+
+  it("environment null/undefined means no filtering", () => {
+    const c1 = makeConnection({ id: "c1", name: "Prod", db_type: "postgresql", tag_ids: [], environment: "production" });
+    const result = filterConnections([c1], tags, { query: "" });
+    expect(result).toEqual([c1]);
   });
 });
 
