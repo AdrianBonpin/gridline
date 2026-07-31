@@ -31,7 +31,7 @@ export function QueryToolbar({
             type="button"
             onClick={onRun}
             disabled={readOnly}
-            className="group flex items-center gap-1.5 rounded px-2 py-0.5 font-medium text-text hover:bg-surface-raised transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+            className="group flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 font-medium text-white transition-colors hover:bg-accent-hover cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="Run query"
           >
             <Play className="h-3.5 w-3.5 transition-[fill] duration-150 group-hover:fill-current" />
