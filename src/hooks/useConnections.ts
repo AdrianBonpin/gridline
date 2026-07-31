@@ -18,7 +18,12 @@ export function useFilteredConnections(): Connection[] {
     activeDbTypes,
   });
 
-  if (activeFolderId) {
+  const hasFilters =
+    searchQuery.length > 0 ||
+    activeTagIds.length > 0 ||
+    activeDbTypes.length > 0;
+
+  if (!hasFilters && activeFolderId) {
     const allowed = new Set(getDescendantFolderIds(folders, activeFolderId));
     filtered = filtered.filter(
       (c) => c.folder_id !== null && allowed.has(c.folder_id),
