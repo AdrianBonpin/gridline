@@ -19,27 +19,35 @@ vi.mock("@tanstack/react-virtual", () => ({
     }),
 }));
 
-vi.mock("@monaco-editor/react", () => ({
-    default: ({ value, onChange, onMount }: any) => {
-        if (onMount) {
-            onMount({
-                addAction: vi.fn(),
-                getValue: () => value,
-                setValue: (v: string) => onChange?.(v),
-                focus: vi.fn(),
-            });
-        }
-        return (
-            <div data-testid="monaco-editor">
-                <textarea
-                    data-testid="monaco-textarea"
-                    value={value}
-                    onChange={(e) => onChange?.(e.target.value)}
-                />
-            </div>
-        );
-    },
+const { registeredActions } = vi.hoisted(() => ({
+    registeredActions: [] as Array<{ run: () => void }>,
 }));
+
+vi.mock("@monaco-editor/react", async () => {
+    const { useEffect } = await import("react");
+    return {
+        default: ({ value, onChange, onMount }: any) => {
+            useEffect(() => {
+                onMount?.({
+                    addAction: (action: any) => registeredActions.push(action),
+                    getValue: () => value,
+                    setValue: (v: string) => onChange?.(v),
+                    focus: () => {},
+                });
+                // eslint-disable-next-line react-hooks/exhaustive-deps
+            }, []);
+            return (
+                <div data-testid="monaco-editor">
+                    <textarea
+                        data-testid="monaco-textarea"
+                        value={value}
+                        onChange={(e) => onChange?.(e.target.value)}
+                    />
+                </div>
+            );
+        },
+    };
+});
 
 const mockQueryResult = {
     columns: [
@@ -204,6 +212,60 @@ describe("DbViewerScreen", () => {
         await waitFor(() => {
             expect((textarea as HTMLTextAreaElement).value).toMatch(/\n/);
         });
+    });
+
+    it("runs the current query when the Cmd+Enter action fires", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQuery")
+            .mockResolvedValue(mockQueryResult as any);
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        registeredActions.length = 0;
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        const textarea = await waitFor(() =>
+            screen.getByTestId("monaco-textarea"),
+        );
+        fireEvent.change(textarea, {
+            target: { value: "SELECT 42" },
+        });
+        expect(registeredActions).toHaveLength(1);
+        registeredActions[0].run();
+        await waitFor(() =>
+            expect(executeQuery).toHaveBeenCalledWith("c1", "SELECT 42", 1, 50),
+        );
+    });
+
+    it("shows the pulse while a query is running and hides it after", async () => {
+        let resolveRun!: (v: unknown) => void;
+        const pending = new Promise<unknown>((r) => {
+            resolveRun = r;
+        });
+        vi.spyOn(commands, "executeQuery").mockReturnValue(pending as any);
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        const textarea = await waitFor(() =>
+            screen.getByTestId("monaco-textarea"),
+        );
+        fireEvent.change(textarea, { target: { value: "SELECT 1" } });
+        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
+        await waitFor(() =>
+            expect(screen.getByTestId("query-run-pulse")).toBeInTheDocument(),
+        );
+        resolveRun(mockQueryResult);
+        await waitFor(() =>
+            expect(screen.queryByTestId("query-run-pulse")).toBeNull(),
+        );
     });
 
     it("re-fetches the active table and shows the refresh indicator when refresh is clicked", async () => {

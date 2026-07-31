@@ -1,5 +1,6 @@
 import { Play, Wand2 } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
+import { useDbViewerStore } from "../../stores/dbViewerStore";
 import type { DbType } from "../../lib/types";
 
 const DB_TYPE_LABELS: Record<DbType, string> = {
@@ -37,12 +38,24 @@ export function QueryToolbar({
   dbType,
   readOnly = false,
 }: QueryToolbarProps) {
+  const tabs = useDbViewerStore((s) => s.tabs);
+  const activeTabId = useDbViewerStore((s) => s.activeTabId);
+  const isRunning = tabs.find((t) => t.id === activeTabId)?.loading ?? false;
+
   const shortcut = queryShortcut(
     typeof navigator !== "undefined" ? navigator.platform : "",
   );
 
   return (
-    <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted">
+    <div className="relative flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted">
+      {/* run pulse: mirrors the table toolbar refresh pulse, absolutely positioned so it never shifts layout */}
+      {isRunning && (
+        <div
+          data-testid="query-run-pulse"
+          aria-hidden="true"
+          className="absolute inset-0 pointer-events-none animate-toolbar-pulse bg-accent"
+        />
+      )}
       <div className="flex items-center gap-1">
         {/* Run Query: outline play that fills on hover; tooltip (delayed) reveals the shortcut */}
         <Tooltip

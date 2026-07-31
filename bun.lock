@@ -20,6 +20,7 @@
         "dagre": "^0.8.5",
         "html-to-image": "^1.11.13",
         "lucide-react": "^1.26.0",
+        "monaco-editor": "^0.56.0",
         "motion": "^12.42.2",
         "react": "^19.1.0",
         "react-dom": "^19.1.0",

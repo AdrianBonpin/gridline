@@ -128,16 +128,20 @@ export function DbViewerScreen({
         }
     }
 
+    // Read the active tab from the store directly so the Monaco keybinding action
+    // (which keeps the first onRun closure) always sees the latest query text.
     const handleRunQuery = useCallback(() => {
-        if (!activeTab || activeTab.tabType !== "query") return;
-        const sql = activeTab.query?.trim() ?? "";
+        const state = useDbViewerStore.getState();
+        const tab = state.tabs.find((t) => t.id === state.activeTabId);
+        if (!tab || tab.tabType !== "query") return;
+        const sql = tab.query?.trim() ?? "";
         if (!sql) return;
         if (isDestructiveQuery(sql)) {
             setDestructiveQuery(sql);
         } else {
-            executeQueryForTab(activeTab.id, sql);
+            executeQueryForTab(tab.id, sql);
         }
-    }, [activeTab]);
+    }, []);
 
     // Auto-format the active query tab's SQL
     const handleFormatQuery = useCallback(() => {

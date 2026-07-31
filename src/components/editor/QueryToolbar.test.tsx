@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryToolbar, queryShortcut } from "./QueryToolbar";
+import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { TooltipProvider } from "../ui/Tooltip";
 
 function renderToolbar(props: {
@@ -67,6 +68,10 @@ describe("queryShortcut", () => {
 });
 
 describe("QueryToolbar", () => {
+  beforeEach(() => {
+    useDbViewerStore.getState().reset();
+  });
+
   it("renders Run Query and the format icon button", () => {
     renderToolbar({});
     expect(
@@ -109,6 +114,21 @@ describe("QueryToolbar", () => {
       .getByRole("button", { name: /run query/i })
       .querySelector("svg");
     expect(playSvg).toHaveAttribute("fill", "none");
+  });
+
+  it("shows the pulse while the active query tab is loading", () => {
+    useDbViewerStore.getState().openQueryTab();
+    useDbViewerStore.setState((s) => ({
+      tabs: s.tabs.map((t) => ({ ...t, loading: true })),
+    }));
+    renderToolbar({});
+    expect(screen.getByTestId("query-run-pulse")).toBeInTheDocument();
+  });
+
+  it("hides the pulse when the query is idle", () => {
+    useDbViewerStore.getState().openQueryTab();
+    renderToolbar({});
+    expect(screen.queryByTestId("query-run-pulse")).toBeNull();
   });
 
   it("renders the format action as an icon only (no text label)", () => {
