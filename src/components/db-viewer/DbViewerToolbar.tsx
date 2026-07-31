@@ -97,7 +97,7 @@ export function DbViewerToolbar({
     return (
         <div className="p-3 border-b border-border space-y-2">
             <div className="flex items-center justify-between">
-                <span className="text-xs font-normal text-text-muted">Tables</span>
+                <span className="text-sm font-normal text-text-muted">Tables</span>
                 <div className="flex items-center gap-1">
                     {onEdit && (
                         <Tooltip content="Edit Connection" side="bottom">
