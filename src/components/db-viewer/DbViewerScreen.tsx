@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar } from "./DbViewerSidebar";
@@ -604,10 +605,6 @@ export function DbViewerScreen({
                                                 onRun={handleRunQuery}
                                                 onFormat={handleFormatQuery}
                                                 dbType={currentConnection?.db_type}
-                                                resultsCollapsed={resultsCollapsed}
-                                                onToggleResults={() =>
-                                                    setResultsCollapsed((v) => !v)
-                                                }
                                             />
                                             <div className="flex-1 min-h-0 overflow-hidden">
                                                 <QueryEditor
@@ -631,7 +628,7 @@ export function DbViewerScreen({
                                                     onRun={handleRunQuery}
                                                 />
                                             </div>
-                                            {!resultsCollapsed && (
+                                            {!resultsCollapsed ? (
                                                 <>
                                                     <div
                                                         data-testid="query-results-resize"
@@ -651,8 +648,25 @@ export function DbViewerScreen({
                                                                 ),
                                                             )
                                                         }
-                                                        className="h-1 shrink-0 cursor-row-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50"
-                                                    />
+                                                        className="relative h-4 shrink-0 flex items-center justify-center cursor-row-resize bg-border/10 hover:bg-accent/10 active:bg-accent/20"
+                                                    >
+                                                        {/* centered collapse caret */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                setResultsCollapsed(
+                                                                    true,
+                                                                )
+                                                            }
+                                                            aria-label="Hide results"
+                                                            onMouseDown={(e) =>
+                                                                e.stopPropagation()
+                                                            }
+                                                            className="flex items-center justify-center rounded px-1.5 py-0.5 text-text-muted hover:text-text hover:bg-surface-raised transition-colors cursor-pointer"
+                                                        >
+                                                            <ChevronDown size={14} />
+                                                        </button>
+                                                    </div>
                                                     <div
                                                         data-testid="query-results"
                                                         style={{
@@ -777,6 +791,24 @@ export function DbViewerScreen({
                                                     }}
                                                 />
                                                     </div>
+                                                    </div>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    {/* collapsed caret pinned to the bottom of the editor */}
+                                                    <div className="flex shrink-0 justify-center py-0.5">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                setResultsCollapsed(
+                                                                    false,
+                                                                )
+                                                            }
+                                                            aria-label="Show results"
+                                                            className="flex items-center justify-center rounded px-2 py-0.5 text-text-muted hover:text-text hover:bg-surface-raised transition-colors cursor-pointer"
+                                                        >
+                                                            <ChevronUp size={14} />
+                                                        </button>
                                                     </div>
                                                 </>
                                             )}

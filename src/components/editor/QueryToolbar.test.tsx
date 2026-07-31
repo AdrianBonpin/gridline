@@ -8,8 +8,6 @@ function renderToolbar(props: {
   onRun?: () => void;
   onFormat?: () => void;
   dbType?: "postgresql" | "mysql" | "sqlite" | "redis";
-  resultsCollapsed?: boolean;
-  onToggleResults?: () => void;
 }) {
   return render(
     <TooltipProvider>
@@ -17,8 +15,6 @@ function renderToolbar(props: {
         onRun={props.onRun ?? (() => {})}
         onFormat={props.onFormat ?? (() => {})}
         dbType={props.dbType}
-        resultsCollapsed={props.resultsCollapsed ?? false}
-        onToggleResults={props.onToggleResults ?? (() => {})}
       />
     </TooltipProvider>,
   );
@@ -139,17 +135,5 @@ describe("QueryToolbar", () => {
     renderToolbar({});
     const button = screen.getByRole("button", { name: /auto format/i });
     expect(button.textContent?.trim()).toBe("");
-  });
-
-  it("toggles the results panel via the caret", () => {
-    const onToggleResults = vi.fn();
-    renderToolbar({ onToggleResults });
-    fireEvent.click(screen.getByLabelText(/hide results/i));
-    expect(onToggleResults).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows an expand caret when results are collapsed", () => {
-    renderToolbar({ resultsCollapsed: true, onToggleResults: () => {} });
-    expect(screen.getByLabelText(/show results/i)).toBeInTheDocument();
   });
 });

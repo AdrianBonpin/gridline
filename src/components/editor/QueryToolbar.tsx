@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Play, Wand2 } from "lucide-react";
+import { Play, Wand2 } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import type { DbType } from "../../lib/types";
@@ -30,10 +30,6 @@ interface QueryToolbarProps {
   onFormat: () => void;
   dbType?: DbType;
   readOnly?: boolean;
-  /** Whether the query results panel is currently collapsed (hidden). */
-  resultsCollapsed?: boolean;
-  /** Toggle the query results panel between collapsed and expanded. */
-  onToggleResults?: () => void;
 }
 
 export function QueryToolbar({
@@ -41,8 +37,6 @@ export function QueryToolbar({
   onFormat,
   dbType,
   readOnly = false,
-  resultsCollapsed = false,
-  onToggleResults,
 }: QueryToolbarProps) {
   const tabs = useDbViewerStore((s) => s.tabs);
   const activeTabId = useDbViewerStore((s) => s.activeTabId);
@@ -104,33 +98,13 @@ export function QueryToolbar({
         </Tooltip>
       </div>
 
-      {/* Right: results toggle + dialect badge */}
-      <div className="ml-auto flex items-center gap-1.5">
-        {onToggleResults && (
-          <Tooltip
-            content={resultsCollapsed ? "Show results" : "Hide results"}
-            side="bottom"
-          >
-            <button
-              type="button"
-              onClick={onToggleResults}
-              aria-label={resultsCollapsed ? "Show results" : "Hide results"}
-              className="flex items-center rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
-            >
-              {resultsCollapsed ? (
-                <ChevronUp size={14} />
-              ) : (
-                <ChevronDown size={14} />
-              )}
-            </button>
-          </Tooltip>
-        )}
-        {dbType && (
+      {dbType && (
+        <div className="ml-auto">
           <span className="rounded-md border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-text-muted">
             {DB_TYPE_LABELS[dbType]}
           </span>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
