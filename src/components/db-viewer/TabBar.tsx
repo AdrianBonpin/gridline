@@ -42,12 +42,12 @@ export function TabBar() {
                 {tab.tabType === "query" ? (
                   <Terminal
                     data-testid="tab-icon-query"
-                    className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-accent-muted"
+                    className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
                   />
                 ) : (
                   <Table2
                     data-testid="tab-icon-table"
-                    className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-text-muted"
+                    className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
                   />
                 )}
                 {tab.table}
