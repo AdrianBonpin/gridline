@@ -42,6 +42,7 @@ pub struct QueryResult {
     pub total_rows: i64,
     pub page: i64,
     pub page_size: i64,
+    pub execution_time_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +217,7 @@ mod tests {
             total_rows: 0,
             page: 1,
             page_size: 100,
+            execution_time_ms: None,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains(r#""rows":[]"#));

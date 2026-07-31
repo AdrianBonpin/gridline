@@ -55,7 +55,7 @@ pub(crate) async fn execute_query_inner(
     let history_id = Uuid::new_v4().to_string();
 
     // Try subquery-wrapped execution first; fall back to raw on failure.
-    let result = match pool_manager.get(connection_id) {
+    let mut result = match pool_manager.get(connection_id) {
         Some(DbHandle::Postgresql(client, _)) => {
             execute_pg_query(client, query, page, page_size).await
         }
@@ -80,6 +80,12 @@ pub(crate) async fn execute_query_inner(
     };
 
     let elapsed = start.elapsed().as_millis() as i64;
+
+    // Attach server-side execution time to the returned result so the UI can
+    // show "time taken" for query runs.
+    if let Ok(qr) = &mut result {
+        qr.execution_time_ms = Some(elapsed);
+    }
 
     match &result {
         Ok(qr) => {
@@ -222,6 +228,7 @@ async fn execute_pg_query(
         total_rows,
         page,
         page_size,
+        execution_time_ms: None,
     })
 }
 
@@ -307,6 +314,7 @@ async fn execute_pg_raw(
         total_rows,
         page,
         page_size,
+        execution_time_ms: None,
     })
 }
 
@@ -362,6 +370,7 @@ fn execute_sqlite_query(
         total_rows,
         page,
         page_size,
+        execution_time_ms: None,
     })
 }
 
@@ -438,6 +447,7 @@ fn execute_sqlite_raw(
         total_rows,
         page,
         page_size,
+        execution_time_ms: None,
     })
 }
 
