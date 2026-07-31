@@ -152,7 +152,7 @@ describe("TableControls query variant", () => {
     expect(screen.getByLabelText(/next page/i)).toBeInTheDocument();
   });
 
-  it("table variant keeps the queue and does not show execution time", () => {
+  it("table variant has no queue button (moved to tab bar) and no execution time", () => {
     seed(
       [
         makeTab({
@@ -170,8 +170,8 @@ describe("TableControls query variant", () => {
     );
     renderControls({});
     expect(
-      screen.getByRole("button", { name: /action queue/i }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: /action queue/i }),
+    ).toBeNull();
     expect(screen.getByLabelText(/toggle columns/i)).toBeInTheDocument();
     expect(screen.queryByText("15.00ms")).toBeNull();
   });
