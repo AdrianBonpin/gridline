@@ -487,6 +487,47 @@ export function DbViewerScreen({
         [tablePanelWidth],
     );
 
+    // Query results panel: collapsible + resizable (min 120px, max 80% of column)
+    const queryColumnRef = useRef<HTMLDivElement>(null);
+    const resultsResizeRef = useRef<{ startY: number; startH: number } | null>(
+        null,
+    );
+    const [resultsHeight, setResultsHeight] = useState(() =>
+        Math.round(
+            (typeof window !== "undefined" ? window.innerHeight : 800) * 0.4,
+        ),
+    );
+    const [resultsCollapsed, setResultsCollapsed] = useState(false);
+
+    const onResultsResizeStart = useCallback(
+        (e: React.MouseEvent) => {
+            e.preventDefault();
+            resultsResizeRef.current = {
+                startY: e.clientY,
+                startH: resultsHeight,
+            };
+            const columnH =
+                queryColumnRef.current?.clientHeight ||
+                (typeof window !== "undefined" ? window.innerHeight : 800);
+            const maxH = Math.max(120, Math.round(columnH * 0.8));
+            const onMove = (ev: MouseEvent) => {
+                if (!resultsResizeRef.current) return;
+                const h =
+                    resultsResizeRef.current.startH +
+                    (resultsResizeRef.current.startY - ev.clientY);
+                setResultsHeight(Math.max(120, Math.min(maxH, h)));
+            };
+            const onUp = () => {
+                resultsResizeRef.current = null;
+                document.removeEventListener("mousemove", onMove);
+                document.removeEventListener("mouseup", onUp);
+            };
+            document.addEventListener("mousemove", onMove);
+            document.addEventListener("mouseup", onUp);
+        },
+        [resultsHeight],
+    );
+
     const handleNavigate = useCallback(
         (view: string) => {
             if (view === "home") onHome();
@@ -558,13 +599,17 @@ export function DbViewerScreen({
                                             </div>
                                         }
                                     >
-                                        <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+                                        <div ref={queryColumnRef} className="flex flex-col flex-1 min-h-0 overflow-hidden">
                                             <QueryToolbar
                                                 onRun={handleRunQuery}
                                                 onFormat={handleFormatQuery}
                                                 dbType={currentConnection?.db_type}
+                                                resultsCollapsed={resultsCollapsed}
+                                                onToggleResults={() =>
+                                                    setResultsCollapsed((v) => !v)
+                                                }
                                             />
-                                            <div className="h-1/2 min-h-0 overflow-hidden border-b border-border">
+                                            <div className="flex-1 min-h-0 overflow-hidden">
                                                 <QueryEditor
                                                     value={activeTab.query ?? ""}
                                                     onChange={(value) =>
@@ -586,51 +631,100 @@ export function DbViewerScreen({
                                                     onRun={handleRunQuery}
                                                 />
                                             </div>
-                                            {activeTab?.data && (
-                                                <TableControls
-                                                    connectionId={connectionId}
-                                                    schema={activeSchema}
-                                                    table={activeTable}
-                                                    columns={columns}
-                                                    rows={rawRows}
-                                                    hiddenColumns={hiddenColumns}
-                                                    onToggleColumn={(col) =>
-                                                        toggleHiddenColumn(
-                                                            activeTab!.id,
-                                                            col,
-                                                        )
-                                                    }
-                                                    onRefresh={handleRefresh}
-                                                    filterRules={filterRules}
-                                                    onFilterChange={(rules) =>
-                                                        setFilterRules(
-                                                            activeTab!.id,
-                                                            rules,
-                                                        )
-                                                    }
-                                                    sortRules={sortRules}
-                                                    onSortChange={(rules) =>
-                                                        setSortRules(
-                                                            activeTab!.id,
-                                                            rules,
-                                                        )
-                                                    }
-                                                    defaultRefreshRate={
-                                                        settings?.table_refresh_rate ??
-                                                        0
-                                                    }
-                                                    selectedCount={selectedRows.size}
-                                                    selectedRows={processedRows.filter(
-                                                        (_, i) =>
-                                                            selectedRows.has(i),
-                                                    )}
-                                                    onClearSelection={() =>
-                                                        setSelectedRows(new Set())
-                                                    }
-                                                    variant="query"
-                                                />
-                                            )}
-                                            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                                            {!resultsCollapsed && (
+                                                <>
+                                                    <div
+                                                        data-testid="query-results-resize"
+                                                        aria-label="Resize results"
+                                                        onMouseDown={
+                                                            onResultsResizeStart
+                                                        }
+                                                        onDoubleClick={() =>
+                                                            setResultsHeight(
+                                                                Math.round(
+                                                                    (typeof window !==
+                                                                        "undefined"
+                                                                        ? window
+                                                                              .innerHeight
+                                                                        : 800) *
+                                                                        0.4,
+                                                                ),
+                                                            )
+                                                        }
+                                                        className="h-1 shrink-0 cursor-row-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50"
+                                                    />
+                                                    <div
+                                                        data-testid="query-results"
+                                                        style={{
+                                                            height: resultsHeight,
+                                                        }}
+                                                        className="flex flex-col min-h-0 shrink-0"
+                                                    >
+                                                        {activeTab?.data && (
+                                                            <TableControls
+                                                                connectionId={connectionId}
+                                                                schema={activeSchema}
+                                                                table={activeTable}
+                                                                columns={columns}
+                                                                rows={rawRows}
+                                                                hiddenColumns={
+                                                                    hiddenColumns
+                                                                }
+                                                                onToggleColumn={(
+                                                                    col,
+                                                                ) =>
+                                                                    toggleHiddenColumn(
+                                                                        activeTab!.id,
+                                                                        col,
+                                                                    )
+                                                                }
+                                                                onRefresh={
+                                                                    handleRefresh
+                                                                }
+                                                                filterRules={
+                                                                    filterRules
+                                                                }
+                                                                onFilterChange={(
+                                                                    rules,
+                                                                ) =>
+                                                                    setFilterRules(
+                                                                        activeTab!.id,
+                                                                        rules,
+                                                                    )
+                                                                }
+                                                                sortRules={
+                                                                    sortRules
+                                                                }
+                                                                onSortChange={(
+                                                                    rules,
+                                                                ) =>
+                                                                    setSortRules(
+                                                                        activeTab!.id,
+                                                                        rules,
+                                                                    )
+                                                                }
+                                                                defaultRefreshRate={
+                                                                    settings?.table_refresh_rate ??
+                                                                    0
+                                                                }
+                                                                selectedCount={
+                                                                    selectedRows.size
+                                                                }
+                                                                selectedRows={processedRows.filter(
+                                                                    (_, i) =>
+                                                                        selectedRows.has(
+                                                                            i,
+                                                                        ),
+                                                                )}
+                                                                onClearSelection={() =>
+                                                                    setSelectedRows(
+                                                                        new Set(),
+                                                                    )
+                                                                }
+                                                                variant="query"
+                                                            />
+                                                        )}
+                                                        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                                                 <VirtualDataGrid
                                                     connectionId={connectionId}
                                                     schema={activeSchema}
@@ -682,7 +776,10 @@ export function DbViewerScreen({
                                                         );
                                                     }}
                                                 />
-                                            </div>
+                                                    </div>
+                                                    </div>
+                                                </>
+                                            )}
                                             <DestructiveQueryDialog
                                                 open={destructiveQuery !== null}
                                                 query={destructiveQuery ?? ""}

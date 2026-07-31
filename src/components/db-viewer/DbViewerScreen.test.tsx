@@ -277,6 +277,73 @@ describe("DbViewerScreen", () => {
         );
     });
 
+    it("collapses and re-expands the query results via the caret", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQuery")
+            .mockResolvedValue(mockQueryResult as any);
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        const textarea = await waitFor(() =>
+            screen.getByTestId("monaco-textarea"),
+        );
+        fireEvent.change(textarea, { target: { value: "SELECT 1" } });
+        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
+        await waitFor(() => expect(screen.getByText("42.00ms")).toBeInTheDocument());
+        expect(screen.getByTestId("query-results")).toBeInTheDocument();
+
+        fireEvent.click(screen.getByLabelText(/hide results/i));
+        expect(screen.queryByTestId("query-results")).toBeNull();
+        expect(screen.queryByText("42.00ms")).toBeNull();
+
+        fireEvent.click(screen.getByLabelText(/show results/i));
+        expect(screen.getByTestId("query-results")).toBeInTheDocument();
+        expect(executeQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it("resizes the results panel with a drag handle, clamped to min/max", async () => {
+        vi.spyOn(commands, "executeQuery").mockResolvedValue(
+            mockQueryResult as any,
+        );
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        const textarea = await waitFor(() =>
+            screen.getByTestId("monaco-textarea"),
+        );
+        fireEvent.change(textarea, { target: { value: "SELECT 1" } });
+        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
+        await waitFor(() => expect(screen.getByText("42.00ms")).toBeInTheDocument());
+
+        const results = screen.getByTestId("query-results");
+        const initial = parseFloat(results.style.height);
+        const handle = screen.getByTestId("query-results-resize");
+
+        // Drag up: results grow
+        fireEvent.mouseDown(handle, { clientY: 200 });
+        fireEvent.mouseMove(document, { clientY: 100 });
+        fireEvent.mouseUp(document);
+        await waitFor(() =>
+            expect(parseFloat(results.style.height)).toBeGreaterThan(initial),
+        );
+
+        // Drag far down: clamps to the 120px minimum
+        fireEvent.mouseDown(handle, { clientY: 200 });
+        fireEvent.mouseMove(document, { clientY: 5000 });
+        fireEvent.mouseUp(document);
+        await waitFor(() => expect(parseFloat(results.style.height)).toBe(120));
+    });
+
     it("re-fetches the active table and shows the refresh indicator when refresh is clicked", async () => {
         let resolveFetch!: (v: unknown) => void;
         const pendingFetch = new Promise<unknown>((r) => {
