@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { TooltipProvider } from "../ui/Tooltip";
@@ -40,6 +40,38 @@ describe("DbViewerToolbar", () => {
       </TooltipProvider>,
     );
     expect(screen.getByText("mydb")).toBeInTheDocument();
+  });
+
+  it("omits bottom padding when nothing is rendered below the title row", () => {
+    const { container } = render(
+      <TooltipProvider>
+        <DbViewerToolbar {...defaultProps} />
+      </TooltipProvider>,
+    );
+    expect(container.firstElementChild!.className).not.toContain("pb-3");
+  });
+
+  it("keeps bottom padding when selectors are rendered below", () => {
+    const { container } = render(
+      <TooltipProvider>
+        <DbViewerToolbar
+          {...defaultProps}
+          databases={["mydb", "otherdb"]}
+          currentDatabase="mydb"
+        />
+      </TooltipProvider>,
+    );
+    expect(container.firstElementChild!.className).toContain("pb-3");
+  });
+
+  it("keeps bottom padding while the search input is open", () => {
+    const { container } = render(
+      <TooltipProvider>
+        <DbViewerToolbar {...defaultProps} />
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByLabelText(/search tables/i));
+    expect(container.firstElementChild!.className).toContain("pb-3");
   });
 
   it("renders refresh and create table buttons", () => {
