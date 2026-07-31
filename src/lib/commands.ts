@@ -147,3 +147,37 @@ export async function getSchemaGraph(
 ): Promise<SchemaGraph> {
   return invoke<SchemaGraph>("get_schema_graph", { connectionId, schema });
 }
+
+// ─── Query History ──────────────────────────────────────────────
+
+export interface QueryHistoryEntry {
+  id: string;
+  connection_id: string;
+  query_text: string;
+  execution_time_ms: number | null;
+  row_count: number | null;
+  status: string;
+  error_message: string | null;
+  executed_at: string;
+}
+
+export async function executeQuery(
+  connectionId: string,
+  query: string,
+  page: number,
+  pageSize: number,
+): Promise<QueryResult> {
+  return invoke<QueryResult>("execute_query", { connectionId, query, page, pageSize });
+}
+
+export async function getQueryHistory(
+  connectionId: string,
+  limit: number,
+  offset: number,
+): Promise<QueryHistoryEntry[]> {
+  return invoke<QueryHistoryEntry[]>("get_query_history", { connectionId, limit, offset });
+}
+
+export async function clearQueryHistory(connectionId: string): Promise<void> {
+  return invoke<void>("clear_query_history", { connectionId });
+}
