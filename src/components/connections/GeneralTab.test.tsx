@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { GeneralTab } from "./GeneralTab";
 import type { ConnectionFormData } from "./connectionFormData";
 
@@ -19,6 +19,18 @@ const BASE_FORM: ConnectionFormData = {
 };
 
 describe("GeneralTab", () => {
+  it("renders a Name input and passes value to onChange", () => {
+    const onChange = vi.fn();
+    render(<GeneralTab form={BASE_FORM} onChange={onChange} />);
+
+    const nameInput = screen.getByLabelText("Name");
+    expect(nameInput).toBeInTheDocument();
+    expect(nameInput).toHaveValue(BASE_FORM.name);
+
+    fireEvent.change(nameInput, { target: { value: "My New Name" } });
+    expect(onChange).toHaveBeenCalledWith({ name: "My New Name" });
+  });
+
   it("renders host, port, user, password, and database fields", () => {
     render(<GeneralTab form={BASE_FORM} onChange={() => {}} />);
 
