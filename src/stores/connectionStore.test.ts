@@ -147,4 +147,45 @@ describe("moveConnection", () => {
     await useConnectionStore.getState().moveConnection("c1", null); // c1 is already null
     expect(spy).not.toHaveBeenCalled();
   });
+
+  it("handles rapid successive drags without stale state", async () => {
+    const conn1 = makeConn({ id: "c1", folder_id: null });
+    const conn2 = makeConn({ id: "c2", folder_id: null, name: "Other" });
+    useConnectionStore.setState({
+      connections: [conn1, conn2],
+      folders: [{ id: "f1", name: "F1", parent_id: null, tag_ids: [], created_at: "", updated_at: "" }],
+    });
+
+    // First call hangs until we resolve it; second call resolves immediately
+    let resolveFirst: (v: Connection) => void;
+    const firstCall = new Promise<Connection>((r) => { resolveFirst = r; });
+    let callCount = 0;
+    vi.spyOn(commands, "updateConnection").mockImplementation(async (_id, input) => {
+      callCount++;
+      if (callCount === 1) {
+        return firstCall;
+      }
+      return { ...conn2, folder_id: (input as any).folder_id } as Connection;
+    });
+
+    // Start first drag (c1 → f1) — will be pending on updateConnection
+    const move1 = useConnectionStore.getState().moveConnection("c1", "f1");
+    // Immediately start second drag (c2 → f1) — should complete
+    await useConnectionStore.getState().moveConnection("c2", "f1");
+
+    // Second drag should have applied optimistically
+    expect(
+      useConnectionStore.getState().connections.find((c) => c.id === "c2")?.folder_id
+    ).toBe("f1");
+
+    // Resolve the first drag's network call
+    resolveFirst!({ ...conn1, folder_id: "f1" } as Connection);
+    await move1;
+
+    // Both should be in f1 after both complete
+    const state = useConnectionStore.getState();
+    expect(state.connections.find((c) => c.id === "c1")?.folder_id).toBe("f1");
+    expect(state.connections.find((c) => c.id === "c2")?.folder_id).toBe("f1");
+    expect(callCount).toBe(2);
+  });
 });
