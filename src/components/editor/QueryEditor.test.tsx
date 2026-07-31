@@ -6,9 +6,11 @@ import { QueryEditor } from "./QueryEditor";
 const { registeredActions } = vi.hoisted(() => ({
   registeredActions: [] as Array<{ id: string; keybindings: number[]; run: () => void }>,
 }));
+const { editorOptions } = vi.hoisted(() => ({ editorOptions: [] as Array<Record<string, unknown>> }));
 
 vi.mock("@monaco-editor/react", () => ({
-  default: ({ value, onChange, onMount }: any) => {
+  default: ({ value, onChange, onMount, options }: any) => {
+    editorOptions.push(options);
     if (onMount) {
       onMount({
         addAction: (action: any) => registeredActions.push(action),
@@ -59,6 +61,12 @@ describe("QueryEditor", () => {
     expect(registeredActions[0].keybindings).toEqual([2048 | 3]);
     registeredActions[0].run();
     expect(onRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a placeholder option to the editor", () => {
+    editorOptions.length = 0;
+    render(<QueryEditor value="" onChange={() => {}} onRun={() => {}} />);
+    expect(editorOptions[0]?.placeholder).toMatch(/Enter your SQL query/i);
   });
 
   it("wraps the editor without padding, border, or rounding", () => {

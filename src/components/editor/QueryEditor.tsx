@@ -61,6 +61,7 @@ export function QueryEditor({
           scrollBeyondLastLine: false,
           wordWrap: "off",
           readOnly,
+          placeholder: "Enter your SQL query…",
           automaticLayout: true,
         }}
       />
