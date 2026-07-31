@@ -23,6 +23,11 @@ const { registeredActions } = vi.hoisted(() => ({
     registeredActions: [] as Array<{ run: () => void }>,
 }));
 
+// monaco-editor's global font re-measure — stub so jsdom stays light
+vi.mock("monaco-editor", () => ({
+    editor: { remeasureFonts: vi.fn() },
+}));
+
 vi.mock("@monaco-editor/react", async () => {
     const { useEffect } = await import("react");
     return {

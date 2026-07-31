@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import Editor, { type OnMount, type BeforeMount } from "@monaco-editor/react";
+import * as monaco from "monaco-editor";
 
 interface QueryEditorProps {
   value: string;
@@ -23,6 +24,22 @@ export function QueryEditor({
         run: () => onRun(),
       });
       editor.focus();
+
+      // Custom fonts (@fontsource Space Mono) load asynchronously. Monaco
+      // measures glyph widths at creation, so if the font lands after that the
+      // cursor/selection drift rightward the further along the line you are.
+      // Re-measure now (fonts may already be ready) and again once fonts load.
+      const reMeasure = () => monaco.editor.remeasureFonts();
+      reMeasure();
+      try {
+        void document.fonts?.load('13px "Space Mono"').then(() => {
+          requestAnimationFrame(reMeasure);
+          // WebKit can settle a frame late; re-measure once more to be safe
+          setTimeout(reMeasure, 200);
+        });
+      } catch {
+        // fonts API unavailable — nothing more we can do
+      }
     },
     [onRun],
   );

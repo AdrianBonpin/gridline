@@ -1,12 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryEditor } from "./QueryEditor";
+import { editor as monacoEditor } from "monaco-editor";
 
 // Monaco editor loads from CDN — mock it for tests to avoid network dependency
 const { registeredActions } = vi.hoisted(() => ({
   registeredActions: [] as Array<{ id: string; keybindings: number[]; run: () => void }>,
 }));
 const { editorOptions } = vi.hoisted(() => ({ editorOptions: [] as Array<Record<string, unknown>> }));
+
+// monaco-editor's global re-measure (font metrics) — stub so tests stay light
+vi.mock("monaco-editor", () => ({
+  editor: { remeasureFonts: vi.fn() },
+}));
 
 vi.mock("@monaco-editor/react", () => ({
   default: ({ value, onChange, onMount, options }: any) => {
@@ -34,6 +40,7 @@ vi.mock("@monaco-editor/react", () => ({
 describe("QueryEditor", () => {
   beforeEach(() => {
     registeredActions.length = 0;
+    vi.mocked(monacoEditor.remeasureFonts).mockClear();
   });
 
   it("renders a textarea editor", () => {
@@ -67,6 +74,11 @@ describe("QueryEditor", () => {
     editorOptions.length = 0;
     render(<QueryEditor value="" onChange={() => {}} onRun={() => {}} />);
     expect(editorOptions[0]?.placeholder).toMatch(/Enter your SQL query/i);
+  });
+
+  it("re-measures fonts after mount so the cursor stays aligned", () => {
+    render(<QueryEditor value="" onChange={() => {}} onRun={() => {}} />);
+    expect(monacoEditor.remeasureFonts).toHaveBeenCalled();
   });
 
   it("wraps the editor without padding, border, or rounding", () => {
