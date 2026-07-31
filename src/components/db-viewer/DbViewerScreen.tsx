@@ -630,27 +630,28 @@ export function DbViewerScreen({
                                             </div>
                                             {!resultsCollapsed ? (
                                                 <>
-                                                    <div
-                                                        data-testid="query-results-resize"
-                                                        aria-label="Resize results"
-                                                        onMouseDown={
-                                                            onResultsResizeStart
-                                                        }
-                                                        onDoubleClick={() =>
-                                                            setResultsHeight(
-                                                                Math.round(
-                                                                    (typeof window !==
-                                                                        "undefined"
-                                                                        ? window
-                                                                              .innerHeight
-                                                                        : 800) *
-                                                                        0.4,
-                                                                ),
-                                                            )
-                                                        }
-                                                        className="relative h-4 shrink-0 flex items-center justify-center cursor-row-resize bg-border/10 hover:bg-accent/10 active:bg-accent/20"
-                                                    >
-                                                        {/* centered collapse caret */}
+                                                    <div className="relative shrink-0">
+                                                        <div
+                                                            data-testid="query-results-resize"
+                                                            aria-label="Resize results"
+                                                            onMouseDown={
+                                                                onResultsResizeStart
+                                                            }
+                                                            onDoubleClick={() =>
+                                                                setResultsHeight(
+                                                                    Math.round(
+                                                                        (typeof window !==
+                                                                            "undefined"
+                                                                            ? window
+                                                                                  .innerHeight
+                                                                            : 800) *
+                                                                            0.4,
+                                                                    ),
+                                                                )
+                                                            }
+                                                            className="h-1 cursor-row-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50"
+                                                        />
+                                                        {/* caret pill, centered on the drag strip */}
                                                         <button
                                                             type="button"
                                                             onClick={() =>
@@ -662,9 +663,9 @@ export function DbViewerScreen({
                                                             onMouseDown={(e) =>
                                                                 e.stopPropagation()
                                                             }
-                                                            className="flex items-center justify-center rounded px-1.5 py-0.5 text-text-muted hover:text-text hover:bg-surface-raised transition-colors cursor-pointer"
+                                                            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center rounded-full border border-border bg-surface px-2 py-0.5 text-text-muted hover:text-text hover:bg-surface-raised shadow-sm transition-colors cursor-pointer"
                                                         >
-                                                            <ChevronDown size={14} />
+                                                            <ChevronDown size={12} />
                                                         </button>
                                                     </div>
                                                     <div
@@ -795,8 +796,8 @@ export function DbViewerScreen({
                                                 </>
                                             ) : (
                                                 <>
-                                                    {/* collapsed caret pinned to the bottom of the editor */}
-                                                    <div className="flex shrink-0 justify-center py-0.5">
+                                                    {/* collapsed caret pill, pinned to the bottom of the editor */}
+                                                    <div className="flex shrink-0 justify-center py-1">
                                                         <button
                                                             type="button"
                                                             onClick={() =>
@@ -805,9 +806,9 @@ export function DbViewerScreen({
                                                                 )
                                                             }
                                                             aria-label="Show results"
-                                                            className="flex items-center justify-center rounded px-2 py-0.5 text-text-muted hover:text-text hover:bg-surface-raised transition-colors cursor-pointer"
+                                                            className="flex items-center justify-center rounded-full border border-border bg-surface px-2 py-0.5 text-text-muted hover:text-text hover:bg-surface-raised shadow-sm transition-colors cursor-pointer"
                                                         >
-                                                            <ChevronUp size={14} />
+                                                            <ChevronUp size={12} />
                                                         </button>
                                                     </div>
                                                 </>
