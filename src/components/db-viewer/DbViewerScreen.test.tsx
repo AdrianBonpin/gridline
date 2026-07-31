@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { DbViewerScreen } from "./DbViewerScreen";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import * as commands from "../../lib/commands";
@@ -182,6 +182,66 @@ describe("DbViewerScreen", () => {
                 1,
                 50,
             ),
+        );
+    });
+
+    it("re-fetches the active table and shows the refresh indicator when refresh is clicked", async () => {
+        let resolveFetch!: (v: unknown) => void;
+        const pendingFetch = new Promise<unknown>((r) => {
+            resolveFetch = r;
+        });
+        const getTableData = vi
+            .spyOn(commands, "getTableData")
+            .mockReturnValue(pendingFetch as any);
+
+        useDbViewerStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    schema: "public",
+                    table: "users",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    data: mockQueryResult,
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "table",
+                },
+            ],
+            activeTabId: "tab-1",
+        });
+
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+
+        // Tab already has data and is not loading → no fetch on mount
+        expect(getTableData).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByLabelText(/refresh table/i));
+
+        // Refetch triggered for the active tab
+        await waitFor(() => expect(getTableData).toHaveBeenCalledTimes(1));
+        // Indicator visible while the fetch is in flight
+        await waitFor(() =>
+            expect(screen.getByTestId("refresh-pulse")).toBeInTheDocument(),
+        );
+
+        act(() => {
+            resolveFetch({ ...mockQueryResult });
+        });
+        await waitFor(() =>
+            expect(
+                screen.queryByTestId("refresh-pulse"),
+            ).not.toBeInTheDocument(),
         );
     });
 });

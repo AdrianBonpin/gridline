@@ -503,6 +503,7 @@ export function TableControls({
   const cancelChange = useDbViewerStore((s) => s.cancelChange);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
+  const isRefreshing = activeTab?.loading ?? false;
 
   // local state
   const [filterOpen, setFilterOpen] = useState(false);
@@ -513,12 +514,14 @@ export function TableControls({
   const [autoRefresh, setAutoRefresh] = useState(defaultRefreshRate);
   const [autoRefreshOpen, setAutoRefreshOpen] = useState(false);
 
-  // auto-refresh timer
+  // auto-refresh timer. Resets whenever the active tab changes so a freshly
+  // opened/reopened tab is not immediately refetched (deferred until the
+  // next full interval).
   useEffect(() => {
     if (autoRefresh === 0) return;
     const id = setInterval(onRefresh, autoRefresh);
     return () => clearInterval(id);
-  }, [autoRefresh, onRefresh]);
+  }, [autoRefresh, onRefresh, activeTabId]);
 
   // pagination
   const totalRows = activeTab?.data?.total_rows ?? rows.length;
@@ -560,7 +563,15 @@ export function TableControls({
   };
 
   return (
-    <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted">
+    <div className="relative flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted">
+      {/* refresh pulse: absolutely positioned so it never causes layout shifts */}
+      {isRefreshing && (
+        <div
+          data-testid="refresh-pulse"
+          aria-hidden="true"
+          className="absolute inset-0 pointer-events-none animate-toolbar-pulse bg-accent"
+        />
+      )}
       {/* ── left side ──────────────────────────────── */}
       <div className="flex items-center gap-1">
         {/* Insert Row */}
@@ -576,14 +587,17 @@ export function TableControls({
         </Tooltip>
 
         {/* Refresh */}
-        <Tooltip content="Refresh" side="bottom">
+        <Tooltip content={isRefreshing ? "Refreshing…" : "Refresh"} side="bottom">
           <button
             type="button"
             onClick={onRefresh}
             className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
-            aria-label="Refresh"
+            aria-label="Refresh table"
           >
-            <RefreshCw size={14} />
+            <RefreshCw
+              size={14}
+              className={isRefreshing ? "animate-spin text-accent" : ""}
+            />
           </button>
         </Tooltip>
 
