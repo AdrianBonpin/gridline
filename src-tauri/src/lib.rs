@@ -19,7 +19,7 @@ pub struct AppState {
     pub ssh_manager: StdMutex<SshTunnelManager>,
 }
 
-use commands::{connections, db_viewer, folders, tags, settings, import_export, keychain, demo, backup, schema_graph};
+use commands::{connections, db_viewer, folders, tags, settings, import_export, keychain, demo, backup, schema_graph, query};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -95,6 +95,9 @@ pub fn run() {
             backup::pg_restore,
             backup::db_sync,
             schema_graph::get_schema_graph,
+            query::execute_query,
+            query::get_query_history,
+            query::clear_query_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

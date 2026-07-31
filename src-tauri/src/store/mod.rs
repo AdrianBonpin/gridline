@@ -447,6 +447,83 @@ impl Store {
         .map_err(|e| e.to_string())?;
         Ok(())
     }
+
+    /// Insert a row into the `query_history` table.
+    pub fn insert_query_history(
+        &self,
+        id: &str,
+        connection_id: &str,
+        query_text: &str,
+        execution_time_ms: Option<i64>,
+        row_count: Option<i64>,
+        status: &str,
+        error_message: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        conn.execute(
+            "INSERT INTO query_history (id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, connection_id, query_text, execution_time_ms, row_count, status, error_message, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Fetch query history rows, optionally filtered by `connection_id`.
+    /// Returns results ordered by `executed_at DESC`.
+    pub fn get_query_history(
+        &self,
+        connection_id: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<crate::commands::query::QueryHistoryEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(cid) = connection_id {
+                (
+                    "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at FROM query_history WHERE connection_id = ?1 ORDER BY executed_at DESC LIMIT ?2 OFFSET ?3".to_string(),
+                    vec![Box::new(cid.to_string()), Box::new(limit), Box::new(offset)],
+                )
+            } else {
+                (
+                    "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at FROM query_history ORDER BY executed_at DESC LIMIT ?1 OFFSET ?2".to_string(),
+                    vec![Box::new(limit), Box::new(offset)],
+                )
+            };
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(&refs), |row| {
+                Ok(crate::commands::query::QueryHistoryEntry {
+                    id: row.get(0)?,
+                    connection_id: row.get(1)?,
+                    query_text: row.get(2)?,
+                    execution_time_ms: row.get(3)?,
+                    row_count: row.get(4)?,
+                    status: row.get(5)?,
+                    error_message: row.get(6)?,
+                    executed_at: row.get(7)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// Delete all query history rows, optionally filtered by `connection_id`.
+    pub fn clear_query_history(&self, connection_id: Option<&str>) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        if let Some(cid) = connection_id {
+            conn.execute(
+                "DELETE FROM query_history WHERE connection_id = ?1",
+                params![cid],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute("DELETE FROM query_history", [])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -690,7 +767,7 @@ mod tests {
     #[test]
     fn ssh_ssl_fields_persist_and_retrieve() {
         let store = fresh_store();
-        let conn = store
+        let _conn = store
             .create_connection(ConnectionInput {
                 name: "SSH-Tunnel-DB".into(),
                 db_type: "postgresql".into(),
