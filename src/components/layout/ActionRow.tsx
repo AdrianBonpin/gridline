@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, Settings as SettingsIcon, Tag, Filter, FolderPlus, Trash2, Check, X, ChevronDown } from "lucide-react";
+import { Plus, Settings as SettingsIcon, FolderPlus, Trash2, Check, X, ChevronDown } from "lucide-react";
 import { Button } from "../ui/Button";
 import { useUiStore } from "../../stores/uiStore";
 import { ImportExportMenu } from "./ImportExportMenu";
+import { TagFilterDropdown } from "../tags/TagFilterDropdown";
+import { DbTypeFilterDropdown } from "./DbTypeFilterDropdown";
 
 interface ActionRowProps {
   onImport?: () => void;
@@ -13,7 +15,7 @@ interface ActionRowProps {
   visibleItemIds?: string[];
 }
 
-export function ActionRow({ onImport, onExport, onNewFolder, onFilters, onDeleteSelected, visibleItemIds = [] }: ActionRowProps) {
+export function ActionRow({ onImport, onExport, onNewFolder, onFilters: _onFilters, onDeleteSelected, visibleItemIds = [] }: ActionRowProps) {
   const setActiveView = useUiStore((s) => s.setActiveView);
   const selectedItemIds = useUiStore((s) => s.selectedItemIds);
   const selectAllItems = useUiStore((s) => s.selectAllItems);
@@ -44,12 +46,8 @@ export function ActionRow({ onImport, onExport, onNewFolder, onFilters, onDelete
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <Button variant="ghost" className="text-xs" onClick={() => setActiveView("settings")}>
-          <Tag size={14} /> Tags
-        </Button>
-        <Button variant="ghost" className="text-xs" onClick={onFilters ?? (() => {})}>
-          <Filter size={14} /> Filters
-        </Button>
+        <TagFilterDropdown />
+        <DbTypeFilterDropdown />
         <Button variant="ghost" className="text-xs border-0" onClick={onNewFolder ?? (() => {})}>
           <FolderPlus size={14} /> New Folder
         </Button>

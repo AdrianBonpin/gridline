@@ -14,6 +14,16 @@ export function GeneralTab({ form, onChange }: GeneralTabProps) {
 
   return (
     <div className="space-y-4">
+      <div>
+        <label className="block text-sm text-text mb-1.5">Name</label>
+        <Input
+          value={form.name}
+          onChange={(value) => onChange({ name: value })}
+          placeholder="My Production Database"
+          aria-label="Name"
+        />
+      </div>
+
       {!isSqlite && (
         <div className="flex gap-3">
           <div className="flex-1">

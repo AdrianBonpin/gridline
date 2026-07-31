@@ -6,6 +6,8 @@ import {
   filterConnections,
   getDescendantFolderIds,
   getFolderPathLabel,
+  isDestructiveQuery,
+  pickDefaultSchema,
 } from "./utils";
 import type { Connection, Folder, Tag } from "./types";
 
@@ -19,6 +21,7 @@ const makeConnection = (over: Partial<Connection> = {}): Connection => ({
   folder_id: null,
   keychain_ref: null,
   tag_ids: [],
+  environment: null,
   created_at: "2026-07-26T00:00:00Z",
   updated_at: "2026-07-26T00:00:00Z",
   ...over,
@@ -283,6 +286,39 @@ describe("filterConnections", () => {
   it("search matches tag name", () => {
     expect(filterConnections(conns, tags, { query: "cache" })).toEqual([conns[1]]);
   });
+
+  it("matches ANY selected tag (OR semantics)", () => {
+    // c1 has t1, c2 has t2. Selecting both t1+t2 should return BOTH connections.
+    const result = filterConnections(conns, tags, { query: "", activeTagIds: ["t1", "t2"] });
+    expect(result).toHaveLength(2);
+  });
+
+  it("matches when connection has only one of multiple selected tags", () => {
+    const c3 = makeConnection({ id: "c3", name: "Cache", host: "cache.local", db_type: "postgresql", tag_ids: ["t1"], folder_id: "f1", environment: "production" });
+    const result = filterConnections([...conns, c3], tags, { query: "", activeTagIds: ["t1", "t2"] });
+    // c3 only has t1 but should still show
+    expect(result.map((c) => c.id)).toContain("c3");
+  });
+
+  it("filters by environment", () => {
+    const c1 = makeConnection({ id: "c1", name: "Prod", db_type: "postgresql", tag_ids: [], environment: "production" });
+    const c2 = makeConnection({ id: "c2", name: "Dev", db_type: "postgresql", tag_ids: [], environment: "development" });
+    const result = filterConnections([c1, c2], tags, { query: "", activeEnvironment: "production" });
+    expect(result).toEqual([c1]);
+  });
+
+  it("activeEnvironment 'none' filters to connections without environment", () => {
+    const c1 = makeConnection({ id: "c1", name: "Prod", db_type: "postgresql", tag_ids: [], environment: "production" });
+    const c2 = makeConnection({ id: "c2", name: "NoEnv", db_type: "postgresql", tag_ids: [], environment: null });
+    const result = filterConnections([c1, c2], tags, { query: "", activeEnvironment: "none" });
+    expect(result).toEqual([c2]);
+  });
+
+  it("environment null/undefined means no filtering", () => {
+    const c1 = makeConnection({ id: "c1", name: "Prod", db_type: "postgresql", tag_ids: [], environment: "production" });
+    const result = filterConnections([c1], tags, { query: "" });
+    expect(result).toEqual([c1]);
+  });
 });
 
 describe("getFolderPathLabel", () => {
@@ -301,5 +337,81 @@ describe("getFolderPathLabel", () => {
 
   it("returns root label for non-existent folder", () => {
     expect(getFolderPathLabel(folders, "missing")).toBe("Root");
+  });
+});
+
+describe("isDestructiveQuery", () => {
+  it("returns true for INSERT", () => {
+    expect(isDestructiveQuery("INSERT INTO users VALUES (1)")).toBe(true);
+  });
+  it("returns true for UPDATE", () => {
+    expect(isDestructiveQuery("UPDATE users SET name = 'x'")).toBe(true);
+  });
+  it("returns true for DELETE", () => {
+    expect(isDestructiveQuery("DELETE FROM users")).toBe(true);
+  });
+  it("returns true for DROP", () => {
+    expect(isDestructiveQuery("DROP TABLE users")).toBe(true);
+  });
+  it("returns true for ALTER", () => {
+    expect(isDestructiveQuery("ALTER TABLE users ADD COLUMN age int")).toBe(true);
+  });
+  it("returns true for TRUNCATE", () => {
+    expect(isDestructiveQuery("TRUNCATE TABLE users")).toBe(true);
+  });
+  it("returns true for CREATE", () => {
+    expect(isDestructiveQuery("CREATE TABLE t (id int)")).toBe(true);
+  });
+  it("returns true for REPLACE", () => {
+    expect(isDestructiveQuery("REPLACE INTO users VALUES (1)")).toBe(true);
+  });
+  it("returns false for SELECT", () => {
+    expect(isDestructiveQuery("SELECT * FROM users")).toBe(false);
+  });
+  it("returns false for EXPLAIN", () => {
+    expect(isDestructiveQuery("EXPLAIN SELECT * FROM users")).toBe(false);
+  });
+  it("returns false for WITH (CTE SELECT)", () => {
+    expect(isDestructiveQuery("WITH cte AS (SELECT 1) SELECT * FROM cte")).toBe(false);
+  });
+  it("returns false for SHOW", () => {
+    expect(isDestructiveQuery("SHOW search_path")).toBe(false);
+  });
+  it("strips line comments before checking", () => {
+    expect(isDestructiveQuery("-- harmless comment\nDROP TABLE users")).toBe(true);
+  });
+  it("strips block comments before checking", () => {
+    expect(isDestructiveQuery("/* harmless */ DROP TABLE users")).toBe(true);
+  });
+  it("returns false for empty string", () => {
+    expect(isDestructiveQuery("")).toBe(false);
+  });
+  it("returns false for whitespace only", () => {
+    expect(isDestructiveQuery("   \n\t  ")).toBe(false);
+  });
+  it("is case-insensitive", () => {
+    expect(isDestructiveQuery("drop table users")).toBe(true);
+    expect(isDestructiveQuery("Drop Table users")).toBe(true);
+  });
+});
+
+describe("pickDefaultSchema", () => {
+  it("prefers the public schema when available", () => {
+    expect(pickDefaultSchema(["app", "public"])).toBe("public");
+    expect(pickDefaultSchema(["public"])).toBe("public");
+  });
+
+  it("prefers the main schema (SQLite) when available", () => {
+    expect(pickDefaultSchema(["main"])).toBe("main");
+    expect(pickDefaultSchema(["other", "main"])).toBe("main");
+  });
+
+  it("falls back to the first schema when no conventional one exists", () => {
+    expect(pickDefaultSchema(["analytics", "app"])).toBe("analytics");
+    expect(pickDefaultSchema(["zzz"])).toBe("zzz");
+  });
+
+  it("returns null for an empty list", () => {
+    expect(pickDefaultSchema([])).toBeNull();
   });
 });

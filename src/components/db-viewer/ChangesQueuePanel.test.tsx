@@ -28,6 +28,23 @@ describe("ChangesQueuePanel", () => {
     expect(screen.getByText(/users/i)).toBeInTheDocument();
   });
 
+  it("toggle button flips the store expanded state", async () => {
+    const user = userEvent.setup();
+    useDbViewerStore.getState().addChange({
+      type: "update",
+      schema: "public",
+      table: "users",
+      primaryKey: { id: 1 },
+      oldData: { name: "Bob" },
+      newData: { name: "Alice" },
+    });
+    render(<ChangesQueuePanel />);
+    await user.click(screen.getByText(/1 pending change/i));
+    expect(useDbViewerStore.getState().changesPanelExpanded).toBe(false);
+    await user.click(screen.getByText(/1 pending change/i));
+    expect(useDbViewerStore.getState().changesPanelExpanded).toBe(true);
+  });
+
   it("cancel button changes status", async () => {
     const user = userEvent.setup();
     useDbViewerStore.getState().addChange({

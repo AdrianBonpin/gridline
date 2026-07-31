@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useCallback } from "react";
 import { X, Check, ChevronUp, ChevronDown } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -58,7 +58,10 @@ export function ChangesQueuePanel() {
   const markChangeCommitted = useDbViewerStore((state) => state.markChangeCommitted);
   const markChangeFailed = useDbViewerStore((state) => state.markChangeFailed);
   const notify = useNotificationStore((state) => state.notify);
-  const [expanded, setExpanded] = useState(true);
+  const expanded = useDbViewerStore((state) => state.changesPanelExpanded);
+  const toggleChangesPanel = useDbViewerStore(
+    (state) => state.toggleChangesPanel,
+  );
 
   const handleCommitAll = useCallback(async () => {
     const connectionId = useUiStore.getState().activeConnectionId;
@@ -114,7 +117,7 @@ export function ChangesQueuePanel() {
     <div className="border-t border-border bg-surface">
       <button
         type="button"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => toggleChangesPanel()}
         className="flex w-full items-center justify-between px-4 py-2 text-sm text-text hover:bg-surface-raised/50 cursor-pointer"
       >
         <div className="flex items-center gap-2">

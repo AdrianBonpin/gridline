@@ -94,10 +94,15 @@ export function DbViewerToolbar({
         }
     }, [connectionId, refreshing, populate]);
 
+    const hasBelow =
+      searchOpen || databases.length > 1 || schemas.length > 1;
+
     return (
-        <div className="p-3 border-b border-border space-y-2">
+        <div
+            className={`px-3 pt-3 border-b border-border space-y-2 ${hasBelow ? "pb-3" : ""}`}
+        >
             <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold text-text">Tables</span>
+                <span className="text-sm font-normal text-text-muted">Tables</span>
                 <div className="flex items-center gap-1">
                     {onEdit && (
                         <Tooltip content="Edit Connection" side="bottom">

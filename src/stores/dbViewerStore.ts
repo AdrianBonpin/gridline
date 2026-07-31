@@ -49,6 +49,8 @@ export interface ViewerTab {
   sortRules: SortRule[];
   hiddenColumns: string[];
   smartSortApplied: boolean;
+  tabType: "table" | "query";
+  query?: string;
 }
 
 // ─── Auto-increment counters ───────────────────────────────────
@@ -69,6 +71,8 @@ const initialTab = (schema: string, table: string, defaultPageSize?: number): Vi
   sortRules: [],
   hiddenColumns: [],
   smartSortApplied: false,
+  tabType: "table",
+  query: undefined,
 });
 
 // ─── State interface ────────────────────────────────────────────
@@ -78,6 +82,7 @@ interface DbViewerState {
   activeTabId: string | null;
   defaultPageSize: number;
   changesQueue: QueueItem[];
+  changesPanelExpanded: boolean;
   databases: string[];
   schemas: string[];
   tables: TableInfo[];
@@ -91,6 +96,7 @@ interface DbViewerState {
 
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
+  openQueryTab: () => void;
   setDefaultPageSize: (size: number) => void;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
@@ -119,6 +125,7 @@ interface DbViewerState {
   cancelChange: (changeId: string) => void;
   markChangeCommitted: (changeId: string) => void;
   markChangeFailed: (changeId: string, error: string) => void;
+  toggleChangesPanel: () => void;
   setCurrentDatabase: (db: string | null) => void;
   setCurrentSchema: (schema: string | null) => void;
   setFunctions: (functions: FunctionInfo[]) => void;
@@ -141,6 +148,7 @@ const initialState = {
   activeTabId: null as string | null,
   defaultPageSize: 50,
   changesQueue: [] as QueueItem[],
+  changesPanelExpanded: true,
   databases: [] as string[],
   schemas: [] as string[],
   tables: [] as TableInfo[],
@@ -173,6 +181,28 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     }
 
     const tab = initialTab(schema, table, get().defaultPageSize);
+    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+  },
+
+  openQueryTab: () => {
+    const { tabs, currentSchema } = get();
+    const queryCount = tabs.filter((t) => t.tabType === "query").length;
+    const tab: ViewerTab = {
+      id: `tab-${++tabCounter}`,
+      schema: currentSchema ?? "public",
+      table: queryCount === 0 ? "Query" : `Query ${queryCount + 1}`,
+      page: 1,
+      pageSize: get().defaultPageSize,
+      loading: false,
+      error: null,
+      data: null,
+      filterRules: [],
+      sortRules: [],
+      hiddenColumns: [],
+      smartSortApplied: false,
+      tabType: "query",
+      query: "",
+    };
     set({ tabs: [...tabs, tab], activeTabId: tab.id });
   },
 
@@ -326,6 +356,9 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
           : c,
       ),
     })),
+
+  toggleChangesPanel: () =>
+    set((state) => ({ changesPanelExpanded: !state.changesPanelExpanded })),
 
   setCurrentDatabase: (db) => set({ currentDatabase: db }),
   setCurrentSchema: (schema) => set({ currentSchema: schema }),

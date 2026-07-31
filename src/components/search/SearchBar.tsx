@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Search, Command } from "lucide-react";
 import { Input } from "../ui/Input";
 import { useUiStore } from "../../stores/uiStore";
@@ -15,11 +15,17 @@ interface SearchBarProps {
 export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar({ onDetectUrl }, ref) {
   const [value, setValue] = useState("");
   const setSearchQuery = useUiStore((s) => s.setSearchQuery);
+  const searchQuery = useUiStore((s) => s.searchQuery);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useImperativeHandle(ref, () => ({
     focus: () => inputRef.current?.focus(),
   }));
+
+  // Keep local input in sync with store (e.g. when Clear button resets it)
+  useEffect(() => {
+    setValue(searchQuery);
+  }, [searchQuery]);
 
   return (
     <div className="flex items-center justify-center w-full">

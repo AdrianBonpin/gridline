@@ -31,43 +31,43 @@ export function DbViewerSidebar({
     onNavigate,
 }: DbViewerSidebarProps) {
     const topItems: NavItem[] = [
-        { id: "db-viewer", label: "Explorer", icon: <Database size={20} /> },
+        { id: "db-viewer", label: "Explorer", icon: <Database size={16} /> },
         {
             id: "schema-visualizer",
             label: "Schema Visualizer",
-            icon: <Grid2x2 size={20} />,
+            icon: <Grid2x2 size={16} />,
         },
         {
             id: "functions",
             label: "Functions",
-            icon: <FunctionSquare size={20} />,
+            icon: <FunctionSquare size={16} />,
         },
-        { id: "triggers", label: "Triggers", icon: <GitBranch size={20} /> },
+        { id: "triggers", label: "Triggers", icon: <GitBranch size={16} /> },
         {
             id: "sequences",
             label: "Sequences",
-            icon: <ListOrdered size={20} />,
+            icon: <ListOrdered size={16} />,
         },
-        { id: "enums", label: "Enums", icon: <Tag size={20} /> },
-        { id: "extensions", label: "Extensions", icon: <Puzzle size={20} /> },
-        { id: "backup", label: "Backup", icon: <Download size={20} /> },
-        { id: "restore", label: "Restore", icon: <Upload size={20} /> },
+        { id: "enums", label: "Enums", icon: <Tag size={16} /> },
+        { id: "extensions", label: "Extensions", icon: <Puzzle size={16} /> },
+        { id: "backup", label: "Backup", icon: <Download size={16} /> },
+        { id: "restore", label: "Restore", icon: <Upload size={16} /> },
         {
             id: "sync",
             label: "DB Sync",
-            icon: <ArrowLeftRight size={20} />,
+            icon: <ArrowLeftRight size={16} />,
         },
     ];
 
     const bottomItems: NavItem[] = [
-        { id: "home", label: "Home", icon: <Home size={20} /> },
-        { id: "settings", label: "Settings", icon: <Settings size={20} /> },
+        { id: "home", label: "Home", icon: <Home size={16} /> },
+        { id: "settings", label: "Settings", icon: <Settings size={16} /> },
     ];
 
     function renderItem(item: NavItem) {
         const isActive = currentView === item.id;
         const baseClass =
-            "w-10 h-10 flex items-center justify-center rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-accent/50";
+            "w-8 h-8 flex items-center justify-center rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-accent/50";
         const activeClass = "text-accent";
         const inactiveClass =
             "text-text-muted hover:text-text hover:bg-surface-raised";

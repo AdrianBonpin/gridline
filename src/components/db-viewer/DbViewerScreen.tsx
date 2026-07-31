@@ -1,7 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
+import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
+import { isDestructiveQuery } from "../../lib/utils";
+import { executeQuery } from "../../lib/commands";
+
+const QueryEditor = lazy(() => import("../editor/QueryEditor").then((m) => ({ default: m.QueryEditor })));
+import { QueryToolbar } from "../editor/QueryToolbar";
+const DestructiveQueryDialog = lazy(() =>
+  import("../editor/DestructiveQueryDialog").then((m) => ({ default: m.DestructiveQueryDialog })),
+);
 import { TableTree } from "./TableTree";
 import { ObjectExplorerPage } from "./ObjectExplorerPage";
 import { TabBar } from "./TabBar";
@@ -39,6 +49,7 @@ export function DbViewerScreen({
     const [searchQuery, setSearchQuery] = useState("");
     const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
     const [editModalOpen, setEditModalOpen] = useState(false);
+    const [destructiveQuery, setDestructiveQuery] = useState<string | null>(null);
     const connections = useConnectionStore((s) => s.connections);
     const currentConnection =
         connections.find((c) => c.id === connectionId) ?? null;
@@ -72,6 +83,7 @@ export function DbViewerScreen({
 
     const setTabData = useDbViewerStore((s) => s.setTabData);
     const setTabError = useDbViewerStore((s) => s.setTabError);
+    const setTabLoading = useDbViewerStore((s) => s.setTabLoading);
     const databases = useDbViewerStore((s) => s.databases);
     const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
     const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
@@ -105,6 +117,57 @@ export function DbViewerScreen({
         [connectionId, setTabData, setTabError],
     );
 
+    async function executeQueryForTab(tabId: string, sql: string) {
+        const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId);
+        if (!tab) return;
+        setTabLoading(tabId, true);
+        try {
+            const result = await executeQuery(connectionId, sql, tab.page, tab.pageSize);
+            setTabData(tabId, result);
+        } catch (e) {
+            setTabError(tabId, e instanceof Error ? e.message : String(e));
+        }
+    }
+
+    // Read the active tab from the store directly so the Monaco keybinding action
+    // (which keeps the first onRun closure) always sees the latest query text.
+    const handleRunQuery = useCallback(() => {
+        const state = useDbViewerStore.getState();
+        const tab = state.tabs.find((t) => t.id === state.activeTabId);
+        if (!tab || tab.tabType !== "query") return;
+        const sql = tab.query?.trim() ?? "";
+        if (!sql) return;
+        if (isDestructiveQuery(sql)) {
+            setDestructiveQuery(sql);
+        } else {
+            executeQueryForTab(tab.id, sql);
+        }
+    }, []);
+
+    // Auto-format the active query tab's SQL
+    const handleFormatQuery = useCallback(() => {
+        const state = useDbViewerStore.getState();
+        const tab = state.tabs.find((t) => t.id === state.activeTabId);
+        if (!tab || tab.tabType !== "query") return;
+        const dbType = currentConnection?.db_type ?? "postgresql";
+        const language =
+            dbType === "mysql"
+                ? "mysql"
+                : dbType === "sqlite"
+                  ? "sqlite"
+                  : "postgresql";
+        try {
+            const formatted = formatSql(tab.query ?? "", { language });
+            useDbViewerStore.setState((s) => ({
+                tabs: s.tabs.map((t) =>
+                    t.id === tab.id ? { ...t, query: formatted } : t,
+                ),
+            }));
+        } catch {
+            // leave the query untouched if formatting fails
+        }
+    }, [currentConnection?.db_type]);
+
     // Cmd+W / Ctrl+W: close current tab, or navigate home if no tabs (configurable in Settings → Shortcuts)
     useShortcut("close_tab", () => {
         const state = useDbViewerStore.getState();
@@ -116,6 +179,7 @@ export function DbViewerScreen({
     });
     useEffect(() => {
         if (!activeTab) return;
+        if (activeTab.tabType !== "table") return;
         if (!activeTab.loading) return;
         if (activeTab.error) return;
         fetchData(activeTab);
@@ -124,6 +188,7 @@ export function DbViewerScreen({
     // Smart default sort: apply once when data first loads for a tab
     useEffect(() => {
         if (!activeTab) return;
+        if (activeTab.tabType !== "table") return;
         if (activeTab.loading) return;
         if (!activeTab.data) return;
         if (activeTab.smartSortApplied) return;
@@ -370,10 +435,17 @@ export function DbViewerScreen({
         }
     }, [filterRules, activeTab, clearColumnFilter]);
 
-    // Refresh: clear data so auto-fetch effect re-fetches
+    // Refresh: clear data so auto-fetch effect re-fetches; for query tabs, re-run the stored query
     const handleRefresh = useCallback(() => {
         const tabId = useDbViewerStore.getState().activeTabId;
         if (!tabId) return;
+        const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId);
+        if (!tab) return;
+        if (tab.tabType === "query") {
+            const sql = tab.query?.trim() ?? "";
+            if (sql) executeQueryForTab(tabId, sql);
+            return;
+        }
         useDbViewerStore.setState((s) => ({
             tabs: s.tabs.map((t) =>
                 t.id === tabId ? { ...t, loading: true, error: null } : t,
@@ -414,6 +486,47 @@ export function DbViewerScreen({
             document.addEventListener("mouseup", onUp);
         },
         [tablePanelWidth],
+    );
+
+    // Query results panel: collapsible + resizable (min 120px, max 80% of column)
+    const queryColumnRef = useRef<HTMLDivElement>(null);
+    const resultsResizeRef = useRef<{ startY: number; startH: number } | null>(
+        null,
+    );
+    const [resultsHeight, setResultsHeight] = useState(() =>
+        Math.round(
+            (typeof window !== "undefined" ? window.innerHeight : 800) * 0.4,
+        ),
+    );
+    const [resultsCollapsed, setResultsCollapsed] = useState(false);
+
+    const onResultsResizeStart = useCallback(
+        (e: React.MouseEvent) => {
+            e.preventDefault();
+            resultsResizeRef.current = {
+                startY: e.clientY,
+                startH: resultsHeight,
+            };
+            const columnH =
+                queryColumnRef.current?.clientHeight ||
+                (typeof window !== "undefined" ? window.innerHeight : 800);
+            const maxH = Math.max(120, Math.round(columnH * 0.8));
+            const onMove = (ev: MouseEvent) => {
+                if (!resultsResizeRef.current) return;
+                const h =
+                    resultsResizeRef.current.startH +
+                    (resultsResizeRef.current.startY - ev.clientY);
+                setResultsHeight(Math.max(120, Math.min(maxH, h)));
+            };
+            const onUp = () => {
+                resultsResizeRef.current = null;
+                document.removeEventListener("mousemove", onMove);
+                document.removeEventListener("mouseup", onUp);
+            };
+            document.addEventListener("mousemove", onMove);
+            document.addEventListener("mouseup", onUp);
+        },
+        [resultsHeight],
     );
 
     const handleNavigate = useCallback(
@@ -479,73 +592,335 @@ export function DbViewerScreen({
                             />
                             <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
                                 <TabBar />
-                                {activeTab?.data && (
-                                    <TableControls
-                                        connectionId={connectionId}
-                                        schema={activeSchema}
-                                        table={activeTable}
-                                        columns={columns}
-                                        rows={rawRows}
-                                        hiddenColumns={hiddenColumns}
-                                        onToggleColumn={(col) =>
-                                            toggleHiddenColumn(activeTab!.id, col)
+                                {activeTab?.tabType === "query" ? (
+                                    <Suspense
+                                        fallback={
+                                            <div className="p-4 text-text-muted">
+                                                Loading editor...
+                                            </div>
                                         }
-                                        onRefresh={handleRefresh}
-                                        filterRules={filterRules}
-                                        onFilterChange={(rules) =>
-                                            setFilterRules(activeTab!.id, rules)
-                                        }
-                                        sortRules={sortRules}
-                                        onSortChange={(rules) =>
-                                            setSortRules(activeTab!.id, rules)
-                                        }
-                                        defaultRefreshRate={
-                                            settings?.table_refresh_rate ?? 0
-                                        }
-                                        selectedCount={selectedRows.size}
-                                        selectedRows={processedRows.filter(
-                                            (_, i) => selectedRows.has(i),
-                                        )}
-                                        onClearSelection={() =>
-                                            setSelectedRows(new Set())
-                                        }
-                                    />
-                                )}
-                                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                                    <VirtualDataGrid
-                                        connectionId={connectionId}
-                                        schema={activeSchema}
-                                        rows={processedRows}
-                                        columns={columns}
-                                        hiddenColumns={hiddenColumns}
-                                        selectedRows={selectedRows}
-                                        onToggleRow={(rowIndex) => {
-                                            setSelectedRows((prev) => {
-                                                const next = new Set(prev);
-                                                if (next.has(rowIndex))
-                                                    next.delete(rowIndex);
-                                                else next.add(rowIndex);
-                                                return next;
-                                            });
-                                        }}
-                                        onToggleAll={() => {
-                                            setSelectedRows((prev) => {
-                                                if (
-                                                    prev.size ===
-                                                        processedRows.length &&
-                                                    processedRows.length > 0
-                                                ) {
-                                                    return new Set();
+                                    >
+                                        <div ref={queryColumnRef} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+                                            <QueryToolbar
+                                                onRun={handleRunQuery}
+                                                onFormat={handleFormatQuery}
+                                                dbType={currentConnection?.db_type}
+                                            />
+                                            <div className="flex-1 min-h-0 overflow-hidden">
+                                                <QueryEditor
+                                                    value={activeTab.query ?? ""}
+                                                    onChange={(value) =>
+                                                        useDbViewerStore.setState(
+                                                            (s) => ({
+                                                                tabs: s.tabs.map(
+                                                                    (t) =>
+                                                                        t.id ===
+                                                                        activeTab.id
+                                                                            ? {
+                                                                                  ...t,
+                                                                                  query: value,
+                                                                              }
+                                                                            : t,
+                                                                ),
+                                                            }),
+                                                        )
+                                                    }
+                                                    onRun={handleRunQuery}
+                                                />
+                                            </div>
+                                            {!resultsCollapsed ? (
+                                                <>
+                                                    <div className="relative shrink-0">
+                                                        <div
+                                                            data-testid="query-results-resize"
+                                                            aria-label="Resize results"
+                                                            onMouseDown={
+                                                                onResultsResizeStart
+                                                            }
+                                                            onDoubleClick={() =>
+                                                                setResultsHeight(
+                                                                    Math.round(
+                                                                        (typeof window !==
+                                                                            "undefined"
+                                                                            ? window
+                                                                                  .innerHeight
+                                                                            : 800) *
+                                                                            0.4,
+                                                                    ),
+                                                                )
+                                                            }
+                                                            className="h-1 cursor-row-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50"
+                                                        />
+                                                        {/* caret pill, centered on the drag strip */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                setResultsCollapsed(
+                                                                    true,
+                                                                )
+                                                            }
+                                                            aria-label="Hide results"
+                                                            onMouseDown={(e) =>
+                                                                e.stopPropagation()
+                                                            }
+                                                            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center rounded-full border border-border bg-surface px-2 py-0.5 text-text-muted hover:text-text hover:bg-surface-raised shadow-sm transition-colors cursor-pointer"
+                                                        >
+                                                            <ChevronDown size={12} />
+                                                        </button>
+                                                    </div>
+                                                    <div
+                                                        data-testid="query-results"
+                                                        style={{
+                                                            height: resultsHeight,
+                                                        }}
+                                                        className="flex flex-col min-h-0 shrink-0"
+                                                    >
+                                                        {activeTab?.data && (
+                                                            <TableControls
+                                                                connectionId={connectionId}
+                                                                schema={activeSchema}
+                                                                table={activeTable}
+                                                                columns={columns}
+                                                                rows={rawRows}
+                                                                hiddenColumns={
+                                                                    hiddenColumns
+                                                                }
+                                                                onToggleColumn={(
+                                                                    col,
+                                                                ) =>
+                                                                    toggleHiddenColumn(
+                                                                        activeTab!.id,
+                                                                        col,
+                                                                    )
+                                                                }
+                                                                onRefresh={
+                                                                    handleRefresh
+                                                                }
+                                                                filterRules={
+                                                                    filterRules
+                                                                }
+                                                                onFilterChange={(
+                                                                    rules,
+                                                                ) =>
+                                                                    setFilterRules(
+                                                                        activeTab!.id,
+                                                                        rules,
+                                                                    )
+                                                                }
+                                                                sortRules={
+                                                                    sortRules
+                                                                }
+                                                                onSortChange={(
+                                                                    rules,
+                                                                ) =>
+                                                                    setSortRules(
+                                                                        activeTab!.id,
+                                                                        rules,
+                                                                    )
+                                                                }
+                                                                defaultRefreshRate={
+                                                                    settings?.table_refresh_rate ??
+                                                                    0
+                                                                }
+                                                                selectedCount={
+                                                                    selectedRows.size
+                                                                }
+                                                                selectedRows={processedRows.filter(
+                                                                    (_, i) =>
+                                                                        selectedRows.has(
+                                                                            i,
+                                                                        ),
+                                                                )}
+                                                                onClearSelection={() =>
+                                                                    setSelectedRows(
+                                                                        new Set(),
+                                                                    )
+                                                                }
+                                                                variant="query"
+                                                            />
+                                                        )}
+                                                        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                                                <VirtualDataGrid
+                                                    connectionId={connectionId}
+                                                    schema={activeSchema}
+                                                    rows={processedRows}
+                                                    columns={columns}
+                                                    hiddenColumns={hiddenColumns}
+                                                    selectedRows={selectedRows}
+                                                    onToggleRow={(rowIndex) => {
+                                                        setSelectedRows(
+                                                            (prev) => {
+                                                                const next =
+                                                                    new Set(
+                                                                        prev,
+                                                                    );
+                                                                if (
+                                                                    next.has(
+                                                                        rowIndex,
+                                                                    )
+                                                                )
+                                                                    next.delete(
+                                                                        rowIndex,
+                                                                    );
+                                                                else
+                                                                    next.add(
+                                                                        rowIndex,
+                                                                    );
+                                                                return next;
+                                                            },
+                                                        );
+                                                    }}
+                                                    onToggleAll={() => {
+                                                        setSelectedRows(
+                                                            (prev) => {
+                                                                if (
+                                                                    prev.size ===
+                                                                        processedRows.length &&
+                                                                    processedRows.length >
+                                                                        0
+                                                                ) {
+                                                                    return new Set();
+                                                                }
+                                                                return new Set(
+                                                                    processedRows.map(
+                                                                        (_, i) =>
+                                                                            i,
+                                                                    ),
+                                                                );
+                                                            },
+                                                        );
+                                                    }}
+                                                />
+                                                    </div>
+                                                    </div>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    {/* collapsed caret pill, pinned to the bottom of the editor */}
+                                                    <div className="flex shrink-0 justify-center py-1">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                setResultsCollapsed(
+                                                                    false,
+                                                                )
+                                                            }
+                                                            aria-label="Show results"
+                                                            className="flex items-center justify-center rounded-full border border-border bg-surface px-2 py-0.5 text-text-muted hover:text-text hover:bg-surface-raised shadow-sm transition-colors cursor-pointer"
+                                                        >
+                                                            <ChevronUp size={12} />
+                                                        </button>
+                                                    </div>
+                                                </>
+                                            )}
+                                            <DestructiveQueryDialog
+                                                open={destructiveQuery !== null}
+                                                query={destructiveQuery ?? ""}
+                                                onConfirm={() => {
+                                                    if (
+                                                        destructiveQuery &&
+                                                        activeTab
+                                                    ) {
+                                                        executeQueryForTab(
+                                                            activeTab.id,
+                                                            destructiveQuery,
+                                                        );
+                                                    }
+                                                    setDestructiveQuery(null);
+                                                }}
+                                                onCancel={() =>
+                                                    setDestructiveQuery(null)
                                                 }
-                                                return new Set(
-                                                    processedRows.map(
-                                                        (_, i) => i,
-                                                    ),
-                                                );
-                                            });
-                                        }}
-                                    />
-                                </div>
+                                            />
+                                        </div>
+                                    </Suspense>
+                                ) : (
+                                    <>
+                                        {activeTab?.data && (
+                                            <TableControls
+                                                connectionId={connectionId}
+                                                schema={activeSchema}
+                                                table={activeTable}
+                                                columns={columns}
+                                                rows={rawRows}
+                                                hiddenColumns={hiddenColumns}
+                                                onToggleColumn={(col) =>
+                                                    toggleHiddenColumn(
+                                                        activeTab!.id,
+                                                        col,
+                                                    )
+                                                }
+                                                onRefresh={handleRefresh}
+                                                filterRules={filterRules}
+                                                onFilterChange={(rules) =>
+                                                    setFilterRules(
+                                                        activeTab!.id,
+                                                        rules,
+                                                    )
+                                                }
+                                                sortRules={sortRules}
+                                                onSortChange={(rules) =>
+                                                    setSortRules(
+                                                        activeTab!.id,
+                                                        rules,
+                                                    )
+                                                }
+                                                defaultRefreshRate={
+                                                    settings?.table_refresh_rate ??
+                                                    0
+                                                }
+                                                selectedCount={selectedRows.size}
+                                                selectedRows={processedRows.filter(
+                                                    (_, i) =>
+                                                        selectedRows.has(i),
+                                                )}
+                                                onClearSelection={() =>
+                                                    setSelectedRows(new Set())
+                                                }
+                                            />
+                                        )}
+                                        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                                            <VirtualDataGrid
+                                                connectionId={connectionId}
+                                                schema={activeSchema}
+                                                rows={processedRows}
+                                                columns={columns}
+                                                hiddenColumns={hiddenColumns}
+                                                selectedRows={selectedRows}
+                                                onToggleRow={(rowIndex) => {
+                                                    setSelectedRows((prev) => {
+                                                        const next = new Set(
+                                                            prev,
+                                                        );
+                                                        if (next.has(rowIndex))
+                                                            next.delete(
+                                                                rowIndex,
+                                                            );
+                                                        else next.add(rowIndex);
+                                                        return next;
+                                                    });
+                                                }}
+                                                onToggleAll={() => {
+                                                    setSelectedRows((prev) => {
+                                                        if (
+                                                            prev.size ===
+                                                                processedRows.length &&
+                                                            processedRows.length >
+                                                                0
+                                                        ) {
+                                                            return new Set();
+                                                        }
+                                                        return new Set(
+                                                            processedRows.map(
+                                                                (_, i) => i,
+                                                            ),
+                                                        );
+                                                    });
+                                                }}
+                                            />
+                                        </div>
+                                    </>
+                                )}
                             </div>
                         </div>
                     ) : currentView === "functions" ? (

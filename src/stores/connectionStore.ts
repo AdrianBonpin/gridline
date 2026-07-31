@@ -123,14 +123,19 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     if (!conn) return;
     if (conn.folder_id === newFolderId) return;
 
-    const previousConnections = [...state.connections];
+    // Capture the snapshot atomically INSIDE the optimistic set()
+    // to avoid stale closure issues on rapid successive drags.
+    let previousState: { connections: Connection[] };
 
     // Optimistic update
-    set((s) => ({
-      connections: s.connections.map((c) =>
-        c.id === connectionId ? { ...c, folder_id: newFolderId } : c,
-      ),
-    }));
+    set((s) => {
+      previousState = { connections: [...s.connections] };
+      return {
+        connections: s.connections.map((c) =>
+          c.id === connectionId ? { ...c, folder_id: newFolderId } : c,
+        ),
+      };
+    });
 
     try {
       // Build a minimal ConnectionInput with only folder_id changed
@@ -156,7 +161,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       };
       await cmd.updateConnection(connectionId, input);
     } catch (e) {
-      set({ connections: previousConnections });
+      set({ connections: previousState!.connections });
       throw e;
     }
   },

@@ -112,16 +112,29 @@ export function getChildFolders(folders: Folder[], parentId: string | null): Fol
 export function filterConnections(
   connections: Connection[],
   tags: Tag[],
-  filter: { query: string; activeTagIds?: string[]; activeDbTypes?: DbType[] },
+  filter: {
+    query: string;
+    activeTagIds?: string[];
+    activeDbTypes?: DbType[];
+    activeEnvironment?: string | null;
+  },
 ): Connection[] {
   const q = filter.query.trim().toLowerCase();
   const tagIds = filter.activeTagIds ?? [];
   const dbTypes = filter.activeDbTypes ?? [];
+  const activeEnvironment = filter.activeEnvironment;
   const tagNameById = new Map(tags.map((t) => [t.id, t.name.toLowerCase()]));
 
   return connections.filter((c) => {
     if (dbTypes.length > 0 && !dbTypes.includes(c.db_type)) return false;
-    if (tagIds.length > 0 && !tagIds.every((id) => c.tag_ids.includes(id))) return false;
+    if (tagIds.length > 0 && !tagIds.some((id) => c.tag_ids.includes(id))) return false;
+    if (activeEnvironment !== undefined && activeEnvironment !== null && activeEnvironment !== "") {
+      if (activeEnvironment === "none") {
+        if (c.environment) return false;
+      } else if (c.environment !== activeEnvironment) {
+        return false;
+      }
+    }
     if (q.length > 0) {
       const tagNames = c.tag_ids.map((id) => tagNameById.get(id) ?? "").join(" ");
       const haystack = `${c.name} ${c.host} ${c.db_type} ${tagNames}`.toLowerCase();
@@ -129,4 +142,44 @@ export function filterConnections(
     }
     return true;
   });
+}
+
+const DESTRUCTIVE_KEYWORDS = new Set([
+  "INSERT", "UPDATE", "DELETE", "DROP", "ALTER",
+  "TRUNCATE", "CREATE", "REPLACE",
+]);
+
+/**
+ * Detect whether `sql` is a data-modifying statement by checking the
+ * first significant keyword after stripping comments and whitespace.
+ *
+ * This is a UX safety net, not a security boundary.  The user is already
+ * authenticated to their own database — the confirmation dialog prevents
+ * accidental data loss, not malicious access.
+ */
+export function isDestructiveQuery(sql: string): boolean {
+  // Strip block comments  /* ... */
+  let stripped = sql.replace(/\/\*[\s\S]*?\*\//g, " ");
+  // Strip line comments  -- ...
+  stripped = stripped.replace(/--[^\n]*/g, " ");
+  // Collapse whitespace
+  const tokens = stripped.trim().split(/\s+/);
+  if (tokens.length === 0 || tokens[0].length === 0) return false;
+  const first = tokens[0].toUpperCase();
+  return DESTRUCTIVE_KEYWORDS.has(first);
+}
+
+/**
+ * Pick the smart default schema for a freshly loaded database.
+ *
+ * Prefers conventional schemas (`public` for PostgreSQL, `main` for SQLite)
+ * and otherwise falls back to the first schema returned by the backend
+ * (which already excludes system schemas and is ordered alphabetically).
+ */
+export function pickDefaultSchema(schemas: string[]): string | null {
+  if (schemas.length === 0) return null;
+  for (const preferred of ["public", "main"]) {
+    if (schemas.includes(preferred)) return preferred;
+  }
+  return schemas[0];
 }

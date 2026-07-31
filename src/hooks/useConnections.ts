@@ -11,14 +11,22 @@ export function useFilteredConnections(): Connection[] {
   const activeFolderId = useUiStore((s) => s.activeFolderId);
   const activeTagIds = useUiStore((s) => s.activeTagIds);
   const activeDbTypes = useUiStore((s) => s.activeDbTypes);
+  const activeEnvironment = useUiStore((s) => s.activeEnvironment);
+
+  const hasFilters =
+    searchQuery.length > 0 ||
+    activeTagIds.length > 0 ||
+    activeDbTypes.length > 0 ||
+    (activeEnvironment !== null && activeEnvironment !== undefined);
 
   let filtered = filterConnections(connections, tags, {
     query: searchQuery,
     activeTagIds,
     activeDbTypes,
+    activeEnvironment,
   });
 
-  if (activeFolderId) {
+  if (!hasFilters && activeFolderId) {
     const allowed = new Set(getDescendantFolderIds(folders, activeFolderId));
     filtered = filtered.filter(
       (c) => c.folder_id !== null && allowed.has(c.folder_id),

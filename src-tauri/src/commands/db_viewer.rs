@@ -880,6 +880,7 @@ ORDER BY c.ordinal_position"#;
                 total_rows,
                 page: p,
                 page_size: ps,
+                execution_time_ms: None,
             })
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
@@ -990,6 +991,7 @@ ORDER BY c.ordinal_position"#;
                 total_rows,
                 page: p,
                 page_size: ps,
+                execution_time_ms: None,
             })
         }
         None => Err("Connection not found".to_string()),
@@ -1097,6 +1099,7 @@ ORDER BY c.ordinal_position"#;
                 total_rows: 1,
                 page: 1,
                 page_size: 1,
+                execution_time_ms: None,
             })
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
@@ -1178,6 +1181,7 @@ ORDER BY c.ordinal_position"#;
                 total_rows: 1,
                 page: 1,
                 page_size: 1,
+                execution_time_ms: None,
             })
         }
         None => Err("Connection not found".to_string()),

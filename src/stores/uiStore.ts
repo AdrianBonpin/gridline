@@ -6,6 +6,7 @@ interface UiState {
   activeFolderId: string | null;
   activeTagIds: string[];
   activeDbTypes: DbType[];
+  activeEnvironment: string | null;
   activeView: ActiveView;
   selectedItemIds: string[];
   prefilledConnectionString: string | null;
@@ -15,6 +16,7 @@ interface UiState {
   setActiveFolderId: (id: string | null) => void;
   toggleTag: (id: string) => void;
   toggleDbType: (type: DbType) => void;
+  setEnvironment: (env: string | null) => void;
   clearFilters: () => void;
   toggleItemSelection: (id: string) => void;
   selectAllItems: (ids: string[]) => void;
@@ -25,13 +27,14 @@ interface UiState {
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home", selectedItemIds: [], prefilledConnectionString: null, activeConnectionId: null,
+  searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeEnvironment: null, activeView: "home", selectedItemIds: [], prefilledConnectionString: null, activeConnectionId: null,
   setActiveView: (view) => set({ activeView: view }),
   setSearchQuery: (q) => set({ searchQuery: q }),
   setActiveFolderId: (id) => set({ activeFolderId: id, selectedItemIds: [] }),
   toggleTag: (id) => set((s) => ({ activeTagIds: s.activeTagIds.includes(id) ? s.activeTagIds.filter((t) => t !== id) : [...s.activeTagIds, id] })),
   toggleDbType: (type) => set((s) => ({ activeDbTypes: s.activeDbTypes.includes(type) ? s.activeDbTypes.filter((t) => t !== type) : [...s.activeDbTypes, type] })),
-  clearFilters: () => set({ searchQuery: "", activeTagIds: [], activeDbTypes: [], activeFolderId: null }),
+  setEnvironment: (env) => set({ activeEnvironment: env }),
+  clearFilters: () => set({ searchQuery: "", activeTagIds: [], activeDbTypes: [], activeFolderId: null, activeEnvironment: null }),
   toggleItemSelection: (id) => set((s) => ({
     selectedItemIds: s.selectedItemIds.includes(id)
       ? s.selectedItemIds.filter((i) => i !== id)

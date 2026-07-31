@@ -17,6 +17,13 @@
   --color-accent-muted: #60A5FA;
   --font-family-heading: "Space Mono", monospace;
   --font-family-sans: "Outfit", sans-serif;
+
+  --animate-toolbar-pulse: toolbar-pulse 1.6s ease-in-out infinite;
+
+  @keyframes toolbar-pulse {
+    0%, 100% { opacity: 0; }
+    50% { opacity: 0.12; }
+  }
 }
 
 :root {

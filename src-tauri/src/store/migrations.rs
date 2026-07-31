@@ -169,6 +169,31 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
 
+    // v5: query_history
+    if current_ver < 5 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS query_history (
+                id TEXT PRIMARY KEY,
+                connection_id TEXT NOT NULL,
+                query_text TEXT NOT NULL,
+                execution_time_ms INTEGER,
+                row_count INTEGER,
+                status TEXT NOT NULL CHECK(status IN ('success', 'error')),
+                error_message TEXT,
+                executed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (connection_id) REFERENCES connections(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_query_history_connection
+                ON query_history(connection_id, executed_at DESC);"
+        ).map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (5)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -219,6 +244,56 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 3);
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn v5_creates_query_history_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        // Verify the table exists
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM query_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        // Verify columns via PRAGMA
+        let columns: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(query_history)").unwrap();
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap();
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        assert!(columns.contains(&"id".to_string()));
+        assert!(columns.contains(&"connection_id".to_string()));
+        assert!(columns.contains(&"query_text".to_string()));
+        assert!(columns.contains(&"execution_time_ms".to_string()));
+        assert!(columns.contains(&"row_count".to_string()));
+        assert!(columns.contains(&"status".to_string()));
+        assert!(columns.contains(&"error_message".to_string()));
+        assert!(columns.contains(&"executed_at".to_string()));
+    }
+
+    #[test]
+    fn query_history_cascades_on_connection_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        // Insert a connection
+        let conn_id = "test-conn-id";
+        conn.execute(
+            "INSERT INTO connections (id, name, db_type, host, port, created_at, updated_at) VALUES (?1, 't', 'postgresql', 'h', 5432, datetime('now'), datetime('now'))",
+            rusqlite::params![conn_id],
+        ).unwrap();
+        // Insert query history entry
+        conn.execute(
+            "INSERT INTO query_history (id, connection_id, query_text, status, executed_at) VALUES ('qh1', ?1, 'SELECT 1', 'success', datetime('now'))",
+            rusqlite::params![conn_id],
+        ).unwrap();
+        // Delete connection — should cascade
+        conn.execute("DELETE FROM connections WHERE id = ?1", rusqlite::params![conn_id]).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM query_history WHERE connection_id = ?1", rusqlite::params![conn_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }

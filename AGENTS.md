@@ -203,11 +203,16 @@ cargo test               # Rust tests
 | Connection cards grid (by folder) | ✅ | Grouped display, single-click to open DB viewer |
 | Folders CRUD | ✅ | Nested folders, reparent on delete, breadcrumb nav |
 | Tags CRUD | ✅ | Colors, drag reorder, filter connections by tag |
-| DB type filter (Postgres/MySQL/SQLite/Redis) | ✅ | Toggle chips to filter connection grid |
-| Global search (Cmd+K) | ✅ | Connection URL detection auto-fills new-connection form |
+| Tag filter dropdown | ✅ | ActionRow Tags button → dropdown with checkboxes, active-count badge, Manage tags → Settings. **OR semantics** — a connection shows if it has ANY selected tag (not all) |
+| Folder tag matching | ✅ | When any filter is active, folder cards show only if the folder matches a selected tag OR contains matching connections (directly or in subfolders) |
+| DB type filter (Postgres/MySQL/SQLite/Redis) | ✅ | Dropdown with checkboxes + Clear all; folder cards hidden when their contents don't match the DB type |
+| Environment filter | ✅ | Select in Filters dropdown: All / Production / Staging / Development / None (unassigned); counts toward active badge |
+| Global search (Cmd+K) | ✅ | Connection URL detection auto-fills new-connection form; shows results from ALL folders as if at root (folder scope bypassed while searching); breadcrumb shows "Showing Search Results" with Clear button |
+| Connection name editing | ✅ | Name field in GeneralTab edit form |
 | Import/Export connections (JSON) | ✅ | Bulk import with validation, skipped-record reporting |
 | Bulk select + delete connections/folders | ✅ | Checkbox selection with confirmation dialog |
-| Drag-and-drop connections to folders | ❌ | Currently only via edit form |
+| Drag-and-drop connections to folders | ✅ | Optimistic update with atomic snapshot rollback (race-condition hardened) |
+| Inline tag creation | ✅ | "Create first tag" inline form (name + color) in SearchableTagPicker empty state |
 | Move-to-folder bulk action | ❌ | |
 | Favorites / Recent connections | ❌ | |
 | Connection status indicator on cards | ❌ | |
@@ -232,7 +237,7 @@ cargo test               # Rust tests
 | Row selection (checkboxes + select all) | ✅ | Bulk copy (JSON/CSV/SQL) and delete |
 | Export toolbar (JSON, CSV, SQL, Markdown) | ✅ | Client-side Blob download of visible rows |
 | Auto-refresh timer | ✅ | Configurable interval in settings |
-| Changes queue (INSERT, UPDATE, DELETE) | ✅ | Queue changes → Commit All; cancel individual changes |
+| Changes queue (INSERT, UPDATE, DELETE) | ✅ | Queue changes → Commit All; cancel individual changes. Tab bar shows a **Changes** icon button with a pending-count badge that toggles the bottom panel (the queue dropdown was removed from the table toolbar — one entry point only) |
 | Edit connection modal (from DB viewer) | ✅ | AnimatedModal with keychain password fetch on test |
 | Connection drop banner | ✅ | Auto-detects broken connections with reconnect prompt |
 | Inline cell editing | ❌ | Cells are read-only; changes via queue Insert button only |
@@ -258,11 +263,12 @@ cargo test               # Rust tests
 ### Query Editor
 | Feature | Status | Details |
 | :--- | :---: | :--- |
-| SQL text editor (Monaco) | ❌ | `src/components/editor/` does not exist yet |
-| SQL autocomplete (keywords, tables, columns) | ❌ | |
-| Custom query execution (arbitrary SQL) | ❌ | Only `SELECT * FROM table` via tab open |
+| SQL text editor (Monaco) | ✅ | Lazy-loaded Monaco SQL editor with Cmd/Ctrl+Enter to run (`src/components/editor/QueryEditor.tsx`) |
+| Custom query execution (arbitrary SQL) | ✅ | `execute_query` Rust command: subquery-wrapped pagination + raw fallback; PostgreSQL + SQLite; results in virtualized grid |
+| Destructive query guard | ✅ | Confirmation dialog for INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/REPLACE (`isDestructiveQuery` + `DestructiveQueryDialog`) |
+| Query history / recent queries | 🟡 | Backend + commands done (v5 `query_history` table, `get_query_history`/`clear_query_history`); UI dropdown to show history in the query editor is **not wired yet** |
+| SQL autocomplete (keywords, tables, columns) | ✅ | Completion provider in `src/lib/monacoSetup.ts` backed by `src/lib/sqlCompletion.ts` (pure, unit-tested): keywords (~60) + table names from the active schema; typing `table.` or `schema.table.` suggests that table's columns (introspected via `get_schema_graph`, cached per schema in memory, `incomplete: true` warm-up on first use) |
 | Multiple result sets | ❌ | |
-| Query history / recent queries | ❌ | No persistence or UI |
 | Saved queries (named, organized) | ❌ | No `queries` table in local SQLite |
 | Query favorites / pinning | ❌ | |
 | Editor settings (font, tab size, word wrap, minimap) | ❌ | Settings page has "Editor" tab with "coming soon" placeholder |
@@ -302,6 +308,11 @@ cargo test               # Rust tests
 | Re-add demo DB button | ✅ | Settings → Advanced |
 | Getting started / onboarding flow | ❌ | |
 | Welcome tooltips / tour | ❌ | |
+
+### AI Integration (Future Planning)
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| AI assistant (BYOK) | 🔮 | **Planned for future.** Bring-Your-Own-Key model (user supplies their own API key — no paywall, no bundling). Intended use cases: natural-language → SQL generation, query explanations, schema summaries, error message suggestions. No design decided yet — deliberate before implementation (privacy: SQL/text only sent to user's chosen provider, key stored in OS keychain like DB passwords). |
 
 ---
 
