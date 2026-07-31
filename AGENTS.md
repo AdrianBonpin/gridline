@@ -203,11 +203,14 @@ cargo test               # Rust tests
 | Connection cards grid (by folder) | ✅ | Grouped display, single-click to open DB viewer |
 | Folders CRUD | ✅ | Nested folders, reparent on delete, breadcrumb nav |
 | Tags CRUD | ✅ | Colors, drag reorder, filter connections by tag |
-| DB type filter (Postgres/MySQL/SQLite/Redis) | ✅ | Toggle chips to filter connection grid |
-| Global search (Cmd+K) | ✅ | Connection URL detection auto-fills new-connection form |
+| Tag filter dropdown | ✅ | ActionRow Tags button → dropdown with checkboxes, active-count badge, Manage tags → Settings |
+| DB type filter (Postgres/MySQL/SQLite/Redis) | ✅ | Dropdown with checkboxes + Clear all; replaces toggle chips |
+| Global search (Cmd+K) | ✅ | Connection URL detection auto-fills new-connection form; shows results from ALL folders when search/filters active |
+| Connection name editing | ✅ | Name field in GeneralTab edit form |
 | Import/Export connections (JSON) | ✅ | Bulk import with validation, skipped-record reporting |
 | Bulk select + delete connections/folders | ✅ | Checkbox selection with confirmation dialog |
-| Drag-and-drop connections to folders | ❌ | Currently only via edit form |
+| Drag-and-drop connections to folders | ✅ | Optimistic update with atomic snapshot rollback (race-condition hardened) |
+| Inline tag creation | ✅ | "Create first tag" inline form (name + color) in SearchableTagPicker empty state |
 | Move-to-folder bulk action | ❌ | |
 | Favorites / Recent connections | ❌ | |
 | Connection status indicator on cards | ❌ | |
@@ -258,11 +261,12 @@ cargo test               # Rust tests
 ### Query Editor
 | Feature | Status | Details |
 | :--- | :---: | :--- |
-| SQL text editor (Monaco) | ❌ | `src/components/editor/` does not exist yet |
+| SQL text editor (Monaco) | ✅ | Lazy-loaded Monaco SQL editor with Cmd/Ctrl+Enter to run (`src/components/editor/QueryEditor.tsx`) |
+| Custom query execution (arbitrary SQL) | ✅ | `execute_query` Rust command: subquery-wrapped pagination + raw fallback; PostgreSQL + SQLite; results in virtualized grid |
+| Destructive query guard | ✅ | Confirmation dialog for INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/REPLACE (`isDestructiveQuery` + `DestructiveQueryDialog`) |
+| Query history / recent queries | ✅ | Persisted to local SQLite `query_history` table (v5 migration) with per-connection history; `get_query_history`/`clear_query_history` commands |
 | SQL autocomplete (keywords, tables, columns) | ❌ | |
-| Custom query execution (arbitrary SQL) | ❌ | Only `SELECT * FROM table` via tab open |
 | Multiple result sets | ❌ | |
-| Query history / recent queries | ❌ | No persistence or UI |
 | Saved queries (named, organized) | ❌ | No `queries` table in local SQLite |
 | Query favorites / pinning | ❌ | |
 | Editor settings (font, tab size, word wrap, minimap) | ❌ | Settings page has "Editor" tab with "coming soon" placeholder |
