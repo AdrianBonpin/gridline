@@ -3,7 +3,8 @@ import { useConnectionStore } from "../stores/connectionStore";
 import { useDbViewerStore } from "../stores/dbViewerStore";
 import { useNotificationStore } from "../stores/notificationStore";
 import * as cmd from "../lib/commands";
-import type { ConnectionInput } from "../lib/types";
+import { pickDefaultSchema } from "../lib/utils";
+import type { ConnectionInput, TableInfo } from "../lib/types";
 
 export function useDbConnection(connectionId: string) {
   const reset = useDbViewerStore((s) => s.reset);
@@ -14,7 +15,10 @@ export function useDbConnection(connectionId: string) {
   const notify = useNotificationStore((s) => s.notify);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const inputRef = useRef<ConnectionInput | null>(null);
-  const initialDbRef = useRef<string | null>(null);
+  // The database the pool is currently connected to. Unlike the selected
+  // `currentDatabase`, this lets us reconnect whenever the selection drifts
+  // from the live connection (including switching back to the first DB).
+  const connectedDbRef = useRef<string | null>(null);
 
   const connect = useCallback(async () => {
     const conn = useConnectionStore
@@ -56,21 +60,34 @@ export function useDbConnection(connectionId: string) {
       await cmd.dbConnect(connectionId, input);
       setConnectionError(null);
       inputRef.current = input;
+      connectedDbRef.current =
+        input.db_type === "sqlite"
+          ? "main"
+          : (input.database ?? "postgres");
 
-      // Load initial data
+      // Load initial data, smart-selecting the default schema (e.g. `public`)
       const databases = await cmd
         .getDatabases(connectionId)
         .catch(() => [] as string[]);
       const schemas = await cmd
         .getSchemas(connectionId)
         .catch(() => [] as string[]);
-      const tables = await cmd.getTables(connectionId);
+      const defaultSchema = pickDefaultSchema(schemas);
+      const tables = await cmd.getTables(
+        connectionId,
+        defaultSchema ?? undefined,
+      );
       populate(databases, schemas, tables);
       if (databases.length > 0) {
-        setCurrentDatabase(databases[0]);
-        initialDbRef.current = databases[0];
+        // Prefer the connection's configured database, fall back to the first
+        // available one so the dropdown matches what the pool is connected to.
+        const preferred =
+          input.database && databases.includes(input.database)
+            ? input.database
+            : databases[0];
+        setCurrentDatabase(preferred);
       }
-      if (schemas.length > 0) setCurrentSchema(schemas[0]);
+      setCurrentSchema(defaultSchema);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setConnectionError(msg);
@@ -89,29 +106,42 @@ export function useDbConnection(connectionId: string) {
     };
   }, [connectionId, connect, reset]);
 
-  // Database switch effect: reconnect when user changes database from dropdown
+  // Database switch effect: whenever the selected database drifts from the
+  // pool's live connection, reconnect and refresh schemas/tables for that DB.
   useEffect(() => {
     if (!currentDatabase || !inputRef.current) return;
-    if (currentDatabase === initialDbRef.current) return;
+    if (currentDatabase === connectedDbRef.current) return;
 
+    let cancelled = false;
     const reconnect = async () => {
       const input = { ...inputRef.current!, database: currentDatabase };
       try {
         await cmd.dbConnect(connectionId, input);
-        const schemas = await cmd.getSchemas(connectionId);
-        const tables = await cmd.getTables(connectionId);
-        populate(
-          useDbViewerStore.getState().databases,
-          schemas,
-          tables,
-        );
-        if (schemas.length > 0) setCurrentSchema(schemas[0]);
-      } catch {
-        /* silent */
+        if (cancelled) return;
+        connectedDbRef.current = currentDatabase;
+        const schemas = await cmd
+          .getSchemas(connectionId)
+          .catch(() => [] as string[]);
+        if (cancelled) return;
+        const newSchema = pickDefaultSchema(schemas);
+        const tables = await cmd
+          .getTables(connectionId, newSchema ?? undefined)
+          .catch(() => [] as TableInfo[]);
+        if (cancelled) return;
+        populate(useDbViewerStore.getState().databases, schemas, tables);
+        setCurrentSchema(newSchema);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // Revert the selection so the dropdown matches the live connection
+        setCurrentDatabase(connectedDbRef.current);
+        notify(`Failed to switch database: ${msg}`, "error");
       }
     };
     reconnect();
-  }, [currentDatabase, connectionId, populate, setCurrentSchema]);
+    return () => {
+      cancelled = true;
+    };
+  }, [currentDatabase, connectionId, populate, setCurrentSchema, notify]);
 
   return { connectionError, connect };
 }

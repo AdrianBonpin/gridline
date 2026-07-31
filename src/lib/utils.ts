@@ -168,3 +168,18 @@ export function isDestructiveQuery(sql: string): boolean {
   const first = tokens[0].toUpperCase();
   return DESTRUCTIVE_KEYWORDS.has(first);
 }
+
+/**
+ * Pick the smart default schema for a freshly loaded database.
+ *
+ * Prefers conventional schemas (`public` for PostgreSQL, `main` for SQLite)
+ * and otherwise falls back to the first schema returned by the backend
+ * (which already excludes system schemas and is ordered alphabetically).
+ */
+export function pickDefaultSchema(schemas: string[]): string | null {
+  if (schemas.length === 0) return null;
+  for (const preferred of ["public", "main"]) {
+    if (schemas.includes(preferred)) return preferred;
+  }
+  return schemas[0];
+}

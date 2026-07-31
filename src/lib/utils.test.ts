@@ -7,6 +7,7 @@ import {
   getDescendantFolderIds,
   getFolderPathLabel,
   isDestructiveQuery,
+  pickDefaultSchema,
 } from "./utils";
 import type { Connection, Folder, Tag } from "./types";
 
@@ -391,5 +392,26 @@ describe("isDestructiveQuery", () => {
   it("is case-insensitive", () => {
     expect(isDestructiveQuery("drop table users")).toBe(true);
     expect(isDestructiveQuery("Drop Table users")).toBe(true);
+  });
+});
+
+describe("pickDefaultSchema", () => {
+  it("prefers the public schema when available", () => {
+    expect(pickDefaultSchema(["app", "public"])).toBe("public");
+    expect(pickDefaultSchema(["public"])).toBe("public");
+  });
+
+  it("prefers the main schema (SQLite) when available", () => {
+    expect(pickDefaultSchema(["main"])).toBe("main");
+    expect(pickDefaultSchema(["other", "main"])).toBe("main");
+  });
+
+  it("falls back to the first schema when no conventional one exists", () => {
+    expect(pickDefaultSchema(["analytics", "app"])).toBe("analytics");
+    expect(pickDefaultSchema(["zzz"])).toBe("zzz");
+  });
+
+  it("returns null for an empty list", () => {
+    expect(pickDefaultSchema([])).toBeNull();
   });
 });
