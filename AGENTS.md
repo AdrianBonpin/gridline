@@ -267,7 +267,7 @@ cargo test               # Rust tests
 | Custom query execution (arbitrary SQL) | ✅ | `execute_query` Rust command: subquery-wrapped pagination + raw fallback; PostgreSQL + SQLite; results in virtualized grid |
 | Destructive query guard | ✅ | Confirmation dialog for INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/REPLACE (`isDestructiveQuery` + `DestructiveQueryDialog`) |
 | Query history / recent queries | 🟡 | Backend + commands done (v5 `query_history` table, `get_query_history`/`clear_query_history`); UI dropdown to show history in the query editor is **not wired yet** |
-| SQL autocomplete (keywords, tables, columns) | ❌ | |
+| SQL autocomplete (keywords, tables, columns) | ✅ | Completion provider in `src/lib/monacoSetup.ts` backed by `src/lib/sqlCompletion.ts` (pure, unit-tested): keywords (~60) + table names from the active schema; typing `table.` or `schema.table.` suggests that table's columns (introspected via `get_schema_graph`, cached per schema in memory, `incomplete: true` warm-up on first use) |
 | Multiple result sets | ❌ | |
 | Saved queries (named, organized) | ❌ | No `queries` table in local SQLite |
 | Query favorites / pinning | ❌ | |

@@ -1,12 +1,114 @@
-import { describe, it, expect } from "vitest";
-import { buildSqlSuggestions, SQL_KEYWORDS } from "./sqlCompletion";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import {
+  buildSqlSuggestions,
+  SQL_KEYWORDS,
+  parseTableRef,
+  buildColumnSuggestions,
+  getColumnsForTable,
+  getCachedColumns,
+} from "./sqlCompletion";
 import type { TableInfo } from "./types";
+import { getSchemaGraph } from "./commands";
+
+vi.mock("./commands", () => ({
+  getSchemaGraph: vi.fn(),
+}));
+
+const mockGetSchemaGraph = vi.mocked(getSchemaGraph);
 
 const tables: TableInfo[] = [
   { name: "users", schema: "public", table_type: "TABLE" },
   { name: "orders", schema: "public", table_type: "TABLE" },
   { name: "audit_log", schema: "audit", table_type: "TABLE" },
 ];
+
+describe("parseTableRef", () => {
+  it("parses a bare table before the cursor dot", () => {
+    expect(parseTableRef("SELECT * FROM users.")).toEqual({
+      schema: null,
+      table: "users",
+    });
+  });
+
+  it("parses a schema-qualified table", () => {
+    expect(parseTableRef("SELECT * FROM public.users.")).toEqual({
+      schema: "public",
+      table: "users",
+    });
+  });
+
+  it("returns null when there is no trailing dot", () => {
+    expect(parseTableRef("SELECT * FROM users WHERE id")).toBeNull();
+    expect(parseTableRef("SELECT")).toBeNull();
+    expect(parseTableRef("")).toBeNull();
+  });
+});
+
+describe("buildColumnSuggestions", () => {
+  it("maps columns to column-kind suggestions", () => {
+    const suggestions = buildColumnSuggestions([
+      { name: "id" },
+      { name: "email" },
+    ]);
+    expect(suggestions).toEqual([
+      { label: "id", insertText: "id", kind: "column" },
+      { label: "email", insertText: "email", kind: "column" },
+    ]);
+  });
+});
+
+describe("getColumnsForTable", () => {
+  beforeEach(() => {
+    mockGetSchemaGraph.mockReset();
+  });
+
+  it("fetches columns from the schema graph and caches them", async () => {
+    mockGetSchemaGraph.mockResolvedValue({
+      tables: [
+        {
+          name: "users",
+          schema: "public",
+          table_type: "TABLE",
+          columns: [{ name: "id" } as never],
+        },
+      ],
+      relationships: [],
+    } as never);
+
+    const cols = await getColumnsForTable("c1", "public", "users");
+    expect(cols.map((c) => c.name)).toEqual(["id"]);
+    expect(mockGetSchemaGraph).toHaveBeenCalledTimes(1);
+
+    // cached: a second lookup does not refetch
+    await getColumnsForTable("c1", "public", "users");
+    expect(mockGetSchemaGraph).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns an empty list when the fetch fails", async () => {
+    mockGetSchemaGraph.mockRejectedValue(new Error("boom"));
+    const cols = await getColumnsForTable("c1", "public", "orders");
+    expect(cols).toEqual([]);
+  });
+
+  it("exposes cached columns synchronously", async () => {
+    mockGetSchemaGraph.mockResolvedValue({
+      tables: [
+        {
+          name: "users",
+          schema: "public",
+          table_type: "TABLE",
+          columns: [{ name: "id" } as never],
+        },
+      ],
+      relationships: [],
+    } as never);
+    await getColumnsForTable("c1", "public", "users");
+    expect(getCachedColumns("public", "users")?.map((c) => c.name)).toEqual([
+      "id",
+    ]);
+    expect(getCachedColumns("public", "missing")).toBeUndefined();
+  });
+});
 
 describe("buildSqlSuggestions", () => {
   it("includes core SQL keywords", () => {

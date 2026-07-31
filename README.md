@@ -100,10 +100,11 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 - **Custom Query Execution** — run arbitrary SQL on PostgreSQL + SQLite via the Rust `execute_query` command; subquery-wrapped pagination with automatic raw fallback for CTEs/multi-statement SQL
 - **Destructive Query Guard** — confirmation dialog for INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/REPLACE before execution
 - **Query Tabs** — dedicated query tabs alongside table tabs, results rendered in the same virtualized data grid, close with Cmd/Ctrl+W
+- **SQL Autocomplete** — keyword + table suggestions from the active schema; typing `table.` suggests that table's columns (schema introspection, cached per schema)
 - **Multi-Tab Workspace** — unlimited named tabs, session persistence across restarts
 - **Changes Queue** — queue INSERT/UPDATE/DELETE changes; preview before committing all
 - **Smart Default Sort** — auto-detects `updated_at`, `created_at`, `_id` columns for logical initial sorting
-- *(SQL autocomplete, query history UI dropdown, saved queries/snippets — upcoming)*
+- *(query history UI dropdown, saved queries/snippets — upcoming)*
 
 ### Data Grid & Schema Browser
 - **Virtualized Grid** — row-level virtualization via `@tanstack/react-virtual` handles 100k+ rows
@@ -233,7 +234,7 @@ gridline/
 - **Home Screen Filters** — Tag filter with OR semantics, folder cards matching tags or containing matching connections, DB type filter hiding empty folders, environment filter (All/Production/Staging/Development/None), global search across all folders with "Showing Search Results" breadcrumb + Clear
 
 ### 🟡 In Progress / Upcoming
-- **Query Editor (Polish)** — SQL autocomplete, query history UI dropdown, saved queries
+- **Query Editor (Polish)** — SQL autocomplete (keywords, tables, and per-table columns), query history UI dropdown, saved queries
 - **SSH/SSL Runtime** — SSH tunnel via `ssh2` crate, SSL/TLS config passed to `sqlx`/`tokio-postgres`
 - **Inline Cell Editing** — Edit cells directly in the data grid
 - **Data Import** — CSV, JSON import with column mapping
