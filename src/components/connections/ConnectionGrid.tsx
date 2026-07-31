@@ -127,14 +127,24 @@ export function ConnectionGrid({
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const toggleItemSelection = useUiStore((s) => s.toggleItemSelection);
     const clearSelection = useUiStore((s) => s.clearSelection);
+    const activeTagIds = useUiStore((s) => s.activeTagIds);
 
     const currentFolderId =
         activeFolderId !== null && folders.some((f) => f.id === activeFolderId)
             ? activeFolderId
             : null;
+    const hasTagFilter = activeTagIds.length > 0;
     const visibleFolders = hasSearch
         ? []
-        : getChildFolders(folders, currentFolderId);
+        : getChildFolders(folders, currentFolderId).filter((f) => {
+            if (!hasTagFilter) return true;
+            const folderMatchesTags = f.tag_ids.some((id) => activeTagIds.includes(id));
+            if (folderMatchesTags) return true;
+            const subIds = new Set(getDescendantFolderIds(folders, f.id));
+            return connections.some(
+                (c) => c.folder_id !== null && subIds.has(c.folder_id),
+            );
+        });
     const directConnections = connections.filter(
         (c) => c.folder_id === currentFolderId,
     );
