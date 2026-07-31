@@ -15,12 +15,15 @@ import "@xyflow/react/dist/style.css";
 import dagre from "dagre";
 import { RotateCcw, ChevronUp, ChevronDown, Download, Loader2 } from "lucide-react";
 import { toPng, toJpeg, toSvg } from "html-to-image";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeFile } from "@tauri-apps/plugin-fs";
 import { CrowsFootEdge } from "./CrowsFootEdge";
 import { SchemaVisualizerNode } from "./SchemaVisualizerNode";
 import { LEGEND_ITEMS } from "./legendHelpers";
 import { SelectDropdown } from "../ui/SelectDropdown";
 import { getSchemaGraph } from "../../lib/commands";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useNotificationStore } from "../../stores/notificationStore";
 import type { SchemaGraph, TableNode as TableNodeType } from "../../lib/types";
 
 const nodeTypes = { tableNode: SchemaVisualizerNode };
@@ -33,6 +36,16 @@ const HEADER_HEIGHT = 32;
 // Export size for "Entire Schema" renders
 const EXPORT_WIDTH = 1600;
 const EXPORT_HEIGHT = 1000;
+
+/**
+ * Decode an html-to-image data URL (base64 or URL-encoded) into bytes so it
+ * can be written to disk via the Tauri fs plugin.
+ */
+function dataUrlToBytes(dataUrl: string): Uint8Array {
+  const [meta, payload] = dataUrl.split(",");
+  const raw = /;base64/i.test(meta) ? atob(payload) : decodeURIComponent(payload);
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
 
 function getNodeHeight(colCount: number): number {
   return HEADER_HEIGHT + colCount * ROW_HEIGHT + 4;
@@ -167,6 +180,11 @@ export function SchemaVisualizerPage({
   );
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [exportBackground, setExportBackground] = useState<
+    "opaque" | "transparent"
+  >("opaque");
+  const transparent = exportBackground === "transparent";
+  const notify = useNotificationStore((s) => s.notify);
 
   // Close the export menu on outside click (ignoring the trigger button)
   useEffect(() => {
@@ -220,7 +238,10 @@ export function SchemaVisualizerPage({
         }
 
         const options = {
-          backgroundColor: "#0a0a0b",
+          // JPEG has no alpha channel; transparency only applies to PNG/SVG
+          ...(transparent && format !== "jpeg"
+            ? {}
+            : { backgroundColor: "#0a0a0b" }),
           width,
           height,
           style,
@@ -233,10 +254,39 @@ export function SchemaVisualizerPage({
               ? await toJpeg(element, { ...options, quality: 0.95 })
               : await toSvg(element, options);
 
-        const a = document.createElement("a");
-        a.href = dataUrl;
-        a.download = `${currentSchema ?? "schema"}-${scope}.${format === "jpeg" ? "jpg" : format}`;
-        a.click();
+        // Filename: <db name>-<locale timestamp>.<ext>
+        const dbName = currentDatabase ?? currentSchema ?? "schema";
+        const timestamp = new Date()
+          .toLocaleString()
+          .replace(/[\\/:*?"<>|]/g, "-")
+          .replace(/\s+/g, "-");
+        const ext = format === "jpeg" ? "jpg" : format;
+        const filename = `${dbName}-${timestamp}.${ext}`;
+
+        const bytes = dataUrlToBytes(dataUrl);
+        let savedPath: string | null = null;
+        try {
+          const path = await save({
+            defaultPath: filename,
+            filters: [
+              { name: format.toUpperCase(), extensions: [ext] },
+            ],
+          });
+          if (path) {
+            await writeFile(path, bytes);
+            savedPath = path;
+          }
+        } catch {
+          // Not running in Tauri (e.g. plain browser dev): fall back to the
+          // webview's default download handler.
+          const a = document.createElement("a");
+          a.href = dataUrl;
+          a.download = filename;
+          a.click();
+        }
+        if (savedPath) {
+          notify(`Schema exported to ${savedPath}`, "success");
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         setExportError(`Export failed: ${msg}`);
@@ -245,7 +295,7 @@ export function SchemaVisualizerPage({
         setExportOpen(false);
       }
     },
-    [nodes, currentSchema],
+    [nodes, currentSchema, currentDatabase, exportBackground, notify],
   );
 
   const fetchGraph = useCallback(async () => {
@@ -420,21 +470,38 @@ export function SchemaVisualizerPage({
                   aria-label="Export scope"
                   variant="pill"
                 />
+                <div className="px-1 pb-1.5 pt-1.5 text-[10px] text-text-muted uppercase tracking-wider">
+                  Background
+                </div>
+                <SelectDropdown
+                  value={exportBackground}
+                  onChange={(v) =>
+                    setExportBackground(v as "opaque" | "transparent")
+                  }
+                  options={[
+                    { value: "opaque", label: "Opaque" },
+                    { value: "transparent", label: "Transparent" },
+                  ]}
+                  aria-label="Export background"
+                  variant="pill"
+                />
                 <div className="border-t border-border my-1.5" />
                 {[
                   { format: "png" as const, label: "PNG" },
                   { format: "jpeg" as const, label: "JPEG" },
                   { format: "svg" as const, label: "SVG" },
-                ].map(({ format, label }) => (
-                  <button
-                    key={format}
-                    type="button"
-                    onClick={() => handleExport(exportScope, format)}
-                    className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
-                  >
-                    {label}
-                  </button>
-                ))}
+                ]
+                  .filter((f) => !(transparent && f.format === "jpeg"))
+                  .map(({ format, label }) => (
+                    <button
+                      key={format}
+                      type="button"
+                      onClick={() => handleExport(exportScope, format)}
+                      className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
+                    >
+                      {label}
+                    </button>
+                  ))}
               </div>
             )}
           </div>
