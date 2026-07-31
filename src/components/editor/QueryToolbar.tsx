@@ -48,8 +48,6 @@ export function QueryToolbar({
         <Tooltip
           content={
             <span className="inline-flex items-center gap-1">
-              Run query
-              <span className="text-text-muted">—</span>
               <kbd className="rounded border border-border bg-surface px-1 font-mono text-[10px] leading-none">
                 {shortcut.mod}
               </kbd>
