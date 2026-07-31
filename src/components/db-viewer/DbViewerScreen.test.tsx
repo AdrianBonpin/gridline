@@ -120,7 +120,7 @@ describe("DbViewerScreen", () => {
         await waitFor(() => {
             expect(screen.getByTestId("monaco-editor")).toBeInTheDocument();
         });
-        expect(screen.getByText("Run")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /run query/i })).toBeInTheDocument();
     });
 
     it("executes a non-destructive query when Run is clicked", async () => {
@@ -139,7 +139,7 @@ describe("DbViewerScreen", () => {
             screen.getByTestId("monaco-textarea"),
         );
         fireEvent.change(textarea, { target: { value: "SELECT 1" } });
-        fireEvent.click(screen.getByText("Run"));
+        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
         await waitFor(() =>
             expect(executeQuery).toHaveBeenCalledWith("c1", "SELECT 1", 1, 50),
         );
@@ -169,7 +169,7 @@ describe("DbViewerScreen", () => {
         fireEvent.change(textarea, {
             target: { value: "DELETE FROM users" },
         });
-        fireEvent.click(screen.getByText("Run"));
+        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
         await waitFor(() => {
             expect(screen.getByText("Destructive Query")).toBeInTheDocument();
         });
@@ -183,6 +183,27 @@ describe("DbViewerScreen", () => {
                 50,
             ),
         );
+    });
+
+    it("formats the query SQL when Auto format is clicked", async () => {
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        const textarea = await waitFor(() =>
+            screen.getByTestId("monaco-textarea"),
+        );
+        fireEvent.change(textarea, {
+            target: { value: "select * from users where id = 1" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: /auto format/i }));
+        await waitFor(() => {
+            expect((textarea as HTMLTextAreaElement).value).toMatch(/\n/);
+        });
     });
 
     it("re-fetches the active table and shows the refresh indicator when refresh is clicked", async () => {

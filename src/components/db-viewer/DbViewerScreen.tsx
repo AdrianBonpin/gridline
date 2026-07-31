@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
+import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
@@ -6,6 +7,7 @@ import { isDestructiveQuery } from "../../lib/utils";
 import { executeQuery } from "../../lib/commands";
 
 const QueryEditor = lazy(() => import("../editor/QueryEditor").then((m) => ({ default: m.QueryEditor })));
+import { QueryToolbar } from "../editor/QueryToolbar";
 const DestructiveQueryDialog = lazy(() =>
   import("../editor/DestructiveQueryDialog").then((m) => ({ default: m.DestructiveQueryDialog })),
 );
@@ -136,6 +138,30 @@ export function DbViewerScreen({
             executeQueryForTab(activeTab.id, sql);
         }
     }, [activeTab]);
+
+    // Auto-format the active query tab's SQL
+    const handleFormatQuery = useCallback(() => {
+        const state = useDbViewerStore.getState();
+        const tab = state.tabs.find((t) => t.id === state.activeTabId);
+        if (!tab || tab.tabType !== "query") return;
+        const dbType = currentConnection?.db_type ?? "postgresql";
+        const language =
+            dbType === "mysql"
+                ? "mysql"
+                : dbType === "sqlite"
+                  ? "sqlite"
+                  : "postgresql";
+        try {
+            const formatted = formatSql(tab.query ?? "", { language });
+            useDbViewerStore.setState((s) => ({
+                tabs: s.tabs.map((t) =>
+                    t.id === tab.id ? { ...t, query: formatted } : t,
+                ),
+            }));
+        } catch {
+            // leave the query untouched if formatting fails
+        }
+    }, [currentConnection?.db_type]);
 
     // Cmd+W / Ctrl+W: close current tab, or navigate home if no tabs (configurable in Settings → Shortcuts)
     useShortcut("close_tab", () => {
@@ -529,7 +555,12 @@ export function DbViewerScreen({
                                         }
                                     >
                                         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-                                            <div className="h-1/2 min-h-0 p-2 border-b border-border">
+                                            <QueryToolbar
+                                                onRun={handleRunQuery}
+                                                onFormat={handleFormatQuery}
+                                                dbType={currentConnection?.db_type}
+                                            />
+                                            <div className="h-1/2 min-h-0 overflow-hidden border-b border-border">
                                                 <QueryEditor
                                                     value={activeTab.query ?? ""}
                                                     onChange={(value) =>

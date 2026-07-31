@@ -1,13 +1,17 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryEditor } from "./QueryEditor";
 
 // Monaco editor loads from CDN — mock it for tests to avoid network dependency
+const { registeredActions } = vi.hoisted(() => ({
+  registeredActions: [] as Array<{ id: string; keybindings: number[]; run: () => void }>,
+}));
+
 vi.mock("@monaco-editor/react", () => ({
   default: ({ value, onChange, onMount }: any) => {
     if (onMount) {
       onMount({
-        addAction: vi.fn(),
+        addAction: (action: any) => registeredActions.push(action),
         getValue: () => value,
         setValue: (v: string) => onChange?.(v),
         focus: vi.fn(),
@@ -26,6 +30,10 @@ vi.mock("@monaco-editor/react", () => ({
 }));
 
 describe("QueryEditor", () => {
+  beforeEach(() => {
+    registeredActions.length = 0;
+  });
+
   it("renders a textarea editor", () => {
     render(<QueryEditor value="SELECT 1" onChange={() => {}} onRun={() => {}} />);
     expect(screen.getByTestId("monaco-editor")).toBeInTheDocument();
@@ -44,15 +52,18 @@ describe("QueryEditor", () => {
     expect(onChange).toHaveBeenCalledWith("SELECT 1");
   });
 
-  it("shows Run button", () => {
-    render(<QueryEditor value="" onChange={() => {}} onRun={() => {}} />);
-    expect(screen.getByText("Run")).toBeInTheDocument();
-  });
-
-  it("calls onRun when Run button is clicked", () => {
+  it("registers a Cmd+Enter action that runs the query", () => {
     const onRun = vi.fn();
     render(<QueryEditor value="SELECT 1" onChange={() => {}} onRun={onRun} />);
-    fireEvent.click(screen.getByText("Run"));
+    expect(registeredActions).toHaveLength(1);
+    expect(registeredActions[0].keybindings).toEqual([2048 | 3]);
+    registeredActions[0].run();
     expect(onRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("wraps the editor without padding, border, or rounding", () => {
+    render(<QueryEditor value="" onChange={() => {}} onRun={() => {}} />);
+    const wrapper = screen.getByTestId("query-editor");
+    expect(wrapper.className).not.toMatch(/rounded|border|p-\d/);
   });
 });
