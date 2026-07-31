@@ -105,7 +105,7 @@ describe("DbViewerScreen", () => {
             />,
         );
         fireEvent.click(screen.getByText(/New Query/i));
-        expect(screen.getByText("Query")).toBeInTheDocument();
+        expect(screen.getByRole("tab", { name: "Query" })).toBeInTheDocument();
     });
 
     it("renders the query editor inside a query tab", async () => {

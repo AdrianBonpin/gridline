@@ -82,6 +82,7 @@ interface DbViewerState {
   activeTabId: string | null;
   defaultPageSize: number;
   changesQueue: QueueItem[];
+  changesPanelExpanded: boolean;
   databases: string[];
   schemas: string[];
   tables: TableInfo[];
@@ -124,6 +125,7 @@ interface DbViewerState {
   cancelChange: (changeId: string) => void;
   markChangeCommitted: (changeId: string) => void;
   markChangeFailed: (changeId: string, error: string) => void;
+  toggleChangesPanel: () => void;
   setCurrentDatabase: (db: string | null) => void;
   setCurrentSchema: (schema: string | null) => void;
   setFunctions: (functions: FunctionInfo[]) => void;
@@ -146,6 +148,7 @@ const initialState = {
   activeTabId: null as string | null,
   defaultPageSize: 50,
   changesQueue: [] as QueueItem[],
+  changesPanelExpanded: true,
   databases: [] as string[],
   schemas: [] as string[],
   tables: [] as TableInfo[],
@@ -353,6 +356,9 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
           : c,
       ),
     })),
+
+  toggleChangesPanel: () =>
+    set((state) => ({ changesPanelExpanded: !state.changesPanelExpanded })),
 
   setCurrentDatabase: (db) => set({ currentDatabase: db }),
   setCurrentSchema: (schema) => set({ currentSchema: schema }),
