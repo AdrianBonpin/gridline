@@ -49,6 +49,8 @@ export interface ViewerTab {
   sortRules: SortRule[];
   hiddenColumns: string[];
   smartSortApplied: boolean;
+  tabType: "table" | "query";
+  query?: string;
 }
 
 // ─── Auto-increment counters ───────────────────────────────────
@@ -69,6 +71,8 @@ const initialTab = (schema: string, table: string, defaultPageSize?: number): Vi
   sortRules: [],
   hiddenColumns: [],
   smartSortApplied: false,
+  tabType: "table",
+  query: undefined,
 });
 
 // ─── State interface ────────────────────────────────────────────
@@ -91,6 +95,7 @@ interface DbViewerState {
 
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
+  openQueryTab: () => void;
   setDefaultPageSize: (size: number) => void;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
@@ -173,6 +178,28 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     }
 
     const tab = initialTab(schema, table, get().defaultPageSize);
+    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+  },
+
+  openQueryTab: () => {
+    const { tabs, currentSchema } = get();
+    const queryCount = tabs.filter((t) => t.tabType === "query").length;
+    const tab: ViewerTab = {
+      id: `tab-${++tabCounter}`,
+      schema: currentSchema ?? "public",
+      table: queryCount === 0 ? "Query" : `Query ${queryCount + 1}`,
+      page: 1,
+      pageSize: get().defaultPageSize,
+      loading: false,
+      error: null,
+      data: null,
+      filterRules: [],
+      sortRules: [],
+      hiddenColumns: [],
+      smartSortApplied: false,
+      tabType: "query",
+      query: "",
+    };
     set({ tabs: [...tabs, tab], activeTabId: tab.id });
   },
 

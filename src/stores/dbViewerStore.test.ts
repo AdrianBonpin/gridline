@@ -180,3 +180,45 @@ describe("dbViewerStore", () => {
     expect(state.tables).toEqual(tables);
   });
 });
+
+describe("tabType discriminator", () => {
+  beforeEach(() => {
+    useDbViewerStore.getState().reset();
+    useDbViewerStore.setState({
+      schemas: ["public"],
+      currentSchema: "public",
+      currentDatabase: "mydb",
+    });
+  });
+
+  it("openQueryTab creates a query-type tab with empty query", () => {
+    useDbViewerStore.getState().openQueryTab();
+    const state = useDbViewerStore.getState();
+    expect(state.tabs).toHaveLength(1);
+    const tab = state.tabs[0];
+    expect(tab.tabType).toBe("query");
+    expect(tab.query).toBe("");
+    expect(tab.schema).toBe("public");
+    expect(tab.table).toBe("Query");
+    expect(state.activeTabId).toBe(tab.id);
+  });
+
+  it("creates sequential query tabs with unique IDs", () => {
+    const store = useDbViewerStore.getState();
+    store.openQueryTab();
+    store.openQueryTab();
+    store.openQueryTab();
+    const tabs = useDbViewerStore.getState().tabs;
+    expect(tabs).toHaveLength(3);
+    const ids = tabs.map((t) => t.id);
+    const uniqueIds = new Set(ids);
+    expect(uniqueIds.size).toBe(3);
+    tabs.forEach((t) => expect(t.tabType).toBe("query"));
+  });
+
+  it("openTab creates table-type tabs by default (backward compat)", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    const tab = useDbViewerStore.getState().tabs[0];
+    expect(tab.tabType).toBe("table");
+  });
+});
