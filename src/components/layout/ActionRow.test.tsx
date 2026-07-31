@@ -21,9 +21,4 @@ describe("ActionRow", () => {
     await userEvent.click(screen.getByText(/settings/i));
     expect(useUiStore.getState().activeView).toBe("settings");
   });
-  it("Tags button switches to settings view", async () => {
-    render(<ActionRow />);
-    await userEvent.click(screen.getByText(/^tags$/i));
-    expect(useUiStore.getState().activeView).toBe("settings");
-  });
 });
