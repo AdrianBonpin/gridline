@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
-import { Plus } from "lucide-react";
 import { TooltipProvider } from "../ui/Tooltip";
-import { Button } from "../ui/Button";
 import { DbViewerSidebar } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { isDestructiveQuery } from "../../lib/utils";
@@ -83,7 +81,6 @@ export function DbViewerScreen({
     const setTabData = useDbViewerStore((s) => s.setTabData);
     const setTabError = useDbViewerStore((s) => s.setTabError);
     const setTabLoading = useDbViewerStore((s) => s.setTabLoading);
-    const openQueryTab = useDbViewerStore((s) => s.openQueryTab);
     const databases = useDbViewerStore((s) => s.databases);
     const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
     const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
@@ -508,11 +505,6 @@ export function DbViewerScreen({
                                     searchQuery={searchQuery}
                                     onSearchChange={setSearchQuery}
                                 />
-                                <div className="p-2 border-b border-border">
-                                    <Button onClick={openQueryTab} className="w-full">
-                                        <Plus size={14} /> New Query
-                                    </Button>
-                                </div>
                                 <div
                                     className="flex-1 overflow-y-auto"
                                     style={{ overscrollBehavior: "none" }}

@@ -93,7 +93,7 @@ describe("DbViewerScreen", () => {
                 onSettings={() => {}}
             />,
         );
-        expect(screen.getByText(/New Query/i)).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /new query/i })).toBeInTheDocument();
     });
 
     it("opens a query tab when New Query is clicked", () => {
@@ -104,7 +104,7 @@ describe("DbViewerScreen", () => {
                 onSettings={() => {}}
             />,
         );
-        fireEvent.click(screen.getByText(/New Query/i));
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
         expect(screen.getByRole("tab", { name: "Query" })).toBeInTheDocument();
     });
 
@@ -116,7 +116,7 @@ describe("DbViewerScreen", () => {
                 onSettings={() => {}}
             />,
         );
-        fireEvent.click(screen.getByText(/New Query/i));
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
         await waitFor(() => {
             expect(screen.getByTestId("monaco-editor")).toBeInTheDocument();
         });
@@ -134,7 +134,7 @@ describe("DbViewerScreen", () => {
                 onSettings={() => {}}
             />,
         );
-        fireEvent.click(screen.getByText(/New Query/i));
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
         const textarea = await waitFor(() =>
             screen.getByTestId("monaco-textarea"),
         );
@@ -162,7 +162,7 @@ describe("DbViewerScreen", () => {
                 onSettings={() => {}}
             />,
         );
-        fireEvent.click(screen.getByText(/New Query/i));
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
         const textarea = await waitFor(() =>
             screen.getByTestId("monaco-textarea"),
         );
