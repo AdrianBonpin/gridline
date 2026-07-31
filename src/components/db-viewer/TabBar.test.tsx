@@ -85,6 +85,35 @@ describe("TabBar", () => {
     expect(screen.queryByTestId("tab-icon-table")).not.toBeInTheDocument();
   });
 
+  it("shows the changes count as an icon with a badge", () => {
+    useDbViewerStore.getState().addChange({
+      type: "update",
+      schema: "public",
+      table: "users",
+      primaryKey: { id: 1 },
+      oldData: { name: "Bob" },
+      newData: { name: "Alice" },
+    });
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "posts",
+      newData: { title: "hi" },
+    });
+
+    render(<TabBar />);
+    const button = screen.getByRole("button", { name: /changes queue/i });
+    expect(button.querySelector("svg")).not.toBeNull();
+    expect(within(button).getByText("2")).toBeInTheDocument();
+    expect(screen.queryByText("Changes")).toBeNull();
+  });
+
+  it("hides the count badge when there are no pending changes", () => {
+    render(<TabBar />);
+    const button = screen.getByRole("button", { name: /changes queue/i });
+    expect(within(button).queryByText(/\d/)).toBeNull();
+  });
+
   it("closes tab when close button clicked", async () => {
     useDbViewerStore.getState().openTab("public", "users");
     useDbViewerStore.getState().openTab("public", "posts", true);

@@ -1,4 +1,4 @@
-import { Play, Table2, Terminal, X } from "lucide-react";
+import { ListChecks, Play, Table2, Terminal, X } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 
 export function TabBar() {
@@ -86,13 +86,13 @@ export function TabBar() {
           }}
           aria-label="Changes queue"
           className={[
-            "flex items-center gap-1.5 px-2.5 text-xs font-medium transition-colors cursor-pointer",
+            "flex items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer",
             pendingCount > 0
-              ? "text-amber-400 hover:bg-surface-raised"
+              ? "text-amber-400 border-amber-500/40 hover:bg-surface-raised"
               : "text-text-muted hover:text-text hover:bg-surface-raised",
           ].join(" ")}
         >
-          <span>Changes</span>
+          <ListChecks className="h-3.5 w-3.5" />
           {pendingCount > 0 && (
             <span className="inline-flex items-center justify-center min-w-[16px] h-4 rounded-full bg-amber-500 px-1 text-[10px] font-bold text-white">
               {pendingCount}
