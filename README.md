@@ -35,6 +35,49 @@ Most database GUI clients either lock essential productivity features behind pay
 
 ---
 
+## Screenshots
+
+<div align="center">
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <a href="./screenshots/home.png">
+        <img src="./screenshots/home.png" alt="Saved connections home screen" width="100%" style="border-radius: 10px;" />
+      </a>
+      <br />
+      <sub><b>Home Screen</b> — organized folders, tags, and quick search</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="./screenshots/data-grid.png">
+        <img src="./screenshots/data-grid.png" alt="Data grid with FK preview" width="100%" style="border-radius: 10px;" />
+      </a>
+      <br />
+      <sub><b>Data Grid</b> — virtualized rows, column controls, and FK preview</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <a href="./screenshots/er-diagram.png">
+        <img src="./screenshots/er-diagram.png" alt="Interactive ER diagram" width="100%" style="border-radius: 10px;" />
+      </a>
+      <br />
+      <sub><b>Schema Visualizer</b> — interactive ER diagram with cardinality legend</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="./screenshots/enums.png">
+        <img src="./screenshots/enums.png" alt="Enum detail view" width="100%" style="border-radius: 10px;" />
+      </a>
+      <br />
+      <sub><b>Object Explorer</b> — deep PostgreSQL objects like enums, functions, and triggers</sub>
+    </td>
+  </tr>
+</table>
+
+</div>
+
+---
+
 ## Features
 
 ### Connection & Workspace Management
