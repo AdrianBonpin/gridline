@@ -130,3 +130,28 @@ export function filterConnections(
     return true;
   });
 }
+
+const DESTRUCTIVE_KEYWORDS = new Set([
+  "INSERT", "UPDATE", "DELETE", "DROP", "ALTER",
+  "TRUNCATE", "CREATE", "REPLACE",
+]);
+
+/**
+ * Detect whether `sql` is a data-modifying statement by checking the
+ * first significant keyword after stripping comments and whitespace.
+ *
+ * This is a UX safety net, not a security boundary.  The user is already
+ * authenticated to their own database — the confirmation dialog prevents
+ * accidental data loss, not malicious access.
+ */
+export function isDestructiveQuery(sql: string): boolean {
+  // Strip block comments  /* ... */
+  let stripped = sql.replace(/\/\*[\s\S]*?\*\//g, " ");
+  // Strip line comments  -- ...
+  stripped = stripped.replace(/--[^\n]*/g, " ");
+  // Collapse whitespace
+  const tokens = stripped.trim().split(/\s+/);
+  if (tokens.length === 0 || tokens[0].length === 0) return false;
+  const first = tokens[0].toUpperCase();
+  return DESTRUCTIVE_KEYWORDS.has(first);
+}

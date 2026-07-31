@@ -6,6 +6,7 @@ import {
   filterConnections,
   getDescendantFolderIds,
   getFolderPathLabel,
+  isDestructiveQuery,
 } from "./utils";
 import type { Connection, Folder, Tag } from "./types";
 
@@ -301,5 +302,60 @@ describe("getFolderPathLabel", () => {
 
   it("returns root label for non-existent folder", () => {
     expect(getFolderPathLabel(folders, "missing")).toBe("Root");
+  });
+});
+
+describe("isDestructiveQuery", () => {
+  it("returns true for INSERT", () => {
+    expect(isDestructiveQuery("INSERT INTO users VALUES (1)")).toBe(true);
+  });
+  it("returns true for UPDATE", () => {
+    expect(isDestructiveQuery("UPDATE users SET name = 'x'")).toBe(true);
+  });
+  it("returns true for DELETE", () => {
+    expect(isDestructiveQuery("DELETE FROM users")).toBe(true);
+  });
+  it("returns true for DROP", () => {
+    expect(isDestructiveQuery("DROP TABLE users")).toBe(true);
+  });
+  it("returns true for ALTER", () => {
+    expect(isDestructiveQuery("ALTER TABLE users ADD COLUMN age int")).toBe(true);
+  });
+  it("returns true for TRUNCATE", () => {
+    expect(isDestructiveQuery("TRUNCATE TABLE users")).toBe(true);
+  });
+  it("returns true for CREATE", () => {
+    expect(isDestructiveQuery("CREATE TABLE t (id int)")).toBe(true);
+  });
+  it("returns true for REPLACE", () => {
+    expect(isDestructiveQuery("REPLACE INTO users VALUES (1)")).toBe(true);
+  });
+  it("returns false for SELECT", () => {
+    expect(isDestructiveQuery("SELECT * FROM users")).toBe(false);
+  });
+  it("returns false for EXPLAIN", () => {
+    expect(isDestructiveQuery("EXPLAIN SELECT * FROM users")).toBe(false);
+  });
+  it("returns false for WITH (CTE SELECT)", () => {
+    expect(isDestructiveQuery("WITH cte AS (SELECT 1) SELECT * FROM cte")).toBe(false);
+  });
+  it("returns false for SHOW", () => {
+    expect(isDestructiveQuery("SHOW search_path")).toBe(false);
+  });
+  it("strips line comments before checking", () => {
+    expect(isDestructiveQuery("-- harmless comment\nDROP TABLE users")).toBe(true);
+  });
+  it("strips block comments before checking", () => {
+    expect(isDestructiveQuery("/* harmless */ DROP TABLE users")).toBe(true);
+  });
+  it("returns false for empty string", () => {
+    expect(isDestructiveQuery("")).toBe(false);
+  });
+  it("returns false for whitespace only", () => {
+    expect(isDestructiveQuery("   \n\t  ")).toBe(false);
+  });
+  it("is case-insensitive", () => {
+    expect(isDestructiveQuery("drop table users")).toBe(true);
+    expect(isDestructiveQuery("Drop Table users")).toBe(true);
   });
 });
