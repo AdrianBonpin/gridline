@@ -71,6 +71,20 @@ describe("TabBar", () => {
     expect(useDbViewerStore.getState().changesPanelExpanded).toBe(false);
   });
 
+  it("renders a table icon on table tabs", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    render(<TabBar />);
+    expect(screen.getByTestId("tab-icon-table")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-icon-query")).not.toBeInTheDocument();
+  });
+
+  it("renders a query icon on query tabs", () => {
+    useDbViewerStore.getState().openQueryTab();
+    render(<TabBar />);
+    expect(screen.getByTestId("tab-icon-query")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-icon-table")).not.toBeInTheDocument();
+  });
+
   it("closes tab when close button clicked", async () => {
     useDbViewerStore.getState().openTab("public", "users");
     useDbViewerStore.getState().openTab("public", "posts", true);

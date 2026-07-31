@@ -1,4 +1,4 @@
-import { Play, X } from "lucide-react";
+import { Play, Table2, Terminal, X } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 
 export function TabBar() {
@@ -39,6 +39,17 @@ export function TabBar() {
               ].join(" ")}
             >
               <span className="flex-1 text-left select-none">
+                {tab.tabType === "query" ? (
+                  <Terminal
+                    data-testid="tab-icon-query"
+                    className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-accent-muted"
+                  />
+                ) : (
+                  <Table2
+                    data-testid="tab-icon-table"
+                    className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-text-muted"
+                  />
+                )}
                 {tab.table}
               </span>
               <button
