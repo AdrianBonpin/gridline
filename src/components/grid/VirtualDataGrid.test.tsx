@@ -186,6 +186,37 @@ describe("VirtualDataGrid", () => {
     expect(screen.getByText(/2 keys/)).toBeInTheDocument();
   });
 
+  it("keeps header width to content and borders the last column", () => {
+    mockGetTotalSize.mockReturnValue(0);
+    mockGetVirtualItems.mockReturnValue([]);
+
+    const { container } = render(
+      <VirtualDataGrid
+        connectionId="conn-1"
+        schema="public"
+        rows={[]}
+        columns={mockColumns}
+        hiddenColumns={new Set()}
+        selectedRows={new Set()}
+        onToggleRow={() => {}}
+        onToggleAll={() => {}}
+      />,
+    );
+
+    // Header must span exactly the total column width (40 checkbox + 2 × 200),
+    // not stretch across the empty area to the right of the last column.
+    const header = container.querySelector(".sticky > div");
+    expect(header).not.toBeNull();
+    expect((header as HTMLElement).style.width).toBe("440px");
+    expect((header as HTMLElement).style.minWidth).toBe("");
+
+    // The last column header keeps a right border, matching body cells.
+    const headerCells = container.querySelectorAll(".sticky > div:first-child > div");
+    const lastCol = headerCells[headerCells.length - 1];
+    expect(lastCol.className).toContain("border-r");
+    expect(lastCol.className).not.toContain("border-r-0");
+  });
+
   it("has resize handles on column headers", () => {
     mockGetTotalSize.mockReturnValue(0);
     mockGetVirtualItems.mockReturnValue([]);

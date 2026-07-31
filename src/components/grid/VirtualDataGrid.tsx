@@ -213,7 +213,7 @@ export function VirtualDataGrid({
     <div ref={parentRef} className="overflow-auto h-full" style={{ overscrollBehavior: "none" }}>
       {/* ── sticky header ── */}
       <div className="sticky top-0 z-10">
-        <div className="flex items-center border-b border-border bg-canvas" style={{ minWidth: totalWidth }}>
+        <div className="flex items-center border-b border-border bg-canvas" style={{ width: totalWidth }}>
           <div style={{ width: 40, minWidth: 40 }} className="px-2 py-2 flex items-center justify-center border-r border-border self-stretch">
             <input
               ref={selectAllRef}
@@ -226,7 +226,7 @@ export function VirtualDataGrid({
           {visibleColumns.map((col) => (
             <div
               key={col.name}
-              className="group relative px-3 py-2 font-heading text-text-muted border-r border-border last:border-r-0 self-stretch"
+              className="group relative px-3 py-2 font-heading text-text-muted border-r border-border self-stretch"
               style={{ width: getWidth(col.name), flexShrink: 0 }}
             >
               <div className="truncate flex items-center gap-1">
