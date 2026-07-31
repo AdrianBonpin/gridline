@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   MiniMap,
@@ -6,12 +6,15 @@ import {
   Background,
   useNodesState,
   useEdgesState,
+  getNodesBounds,
+  getViewportForBounds,
   type Node,
   type Edge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import dagre from "dagre";
-import { RotateCcw, ChevronUp, ChevronDown } from "lucide-react";
+import { RotateCcw, ChevronUp, ChevronDown, Download, Loader2 } from "lucide-react";
+import { toPng, toJpeg, toSvg } from "html-to-image";
 import { CrowsFootEdge } from "./CrowsFootEdge";
 import { SchemaVisualizerNode } from "./SchemaVisualizerNode";
 import { LEGEND_ITEMS } from "./legendHelpers";
@@ -26,6 +29,10 @@ const edgeTypes = { crowsfoot: CrowsFootEdge };
 const CARD_WIDTH = 240;
 const ROW_HEIGHT = 28;
 const HEADER_HEIGHT = 32;
+
+// Export size for "Entire Schema" renders
+const EXPORT_WIDTH = 1600;
+const EXPORT_HEIGHT = 1000;
 
 function getNodeHeight(colCount: number): number {
   return HEADER_HEIGHT + colCount * ROW_HEIGHT + 4;
@@ -59,6 +66,8 @@ function layoutGraph(
       position: { x: 0, y: 0 },
       data: { table, isExternal: false },
       style: { width: CARD_WIDTH },
+      width: CARD_WIDTH,
+      height,
     });
   }
 
@@ -147,6 +156,97 @@ export function SchemaVisualizerPage({
   const [tableCount, setTableCount] = useState(0);
   const [legendOpen, setLegendOpen] = useState(true);
   const [highlightedEdge, setHighlightedEdge] = useState<string | null>(null);
+
+  // Export state
+  const containerRef = useRef<HTMLDivElement>(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const exportButtonRef = useRef<HTMLButtonElement>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportScope, setExportScope] = useState<"schema" | "viewport">(
+    "schema",
+  );
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  // Close the export menu on outside click (ignoring the trigger button)
+  useEffect(() => {
+    if (!exportOpen) return;
+    const close = (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      if (exportButtonRef.current?.contains(target)) return;
+      if (exportMenuRef.current?.contains(target)) return;
+      setExportOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [exportOpen]);
+
+  const handleExport = useCallback(
+    async (scope: "schema" | "viewport", format: "png" | "jpeg" | "svg") => {
+      const element = document.querySelector<HTMLElement>(
+        ".react-flow__viewport",
+      );
+      if (!element) return;
+      setExporting(true);
+      setExportError(null);
+      try {
+        let width: number;
+        let height: number;
+        let style: Partial<CSSStyleDeclaration> | undefined;
+        if (scope === "viewport") {
+          const container = containerRef.current;
+          width = container?.clientWidth || 1024;
+          height = container?.clientHeight || 768;
+        } else {
+          width = EXPORT_WIDTH;
+          height = EXPORT_HEIGHT;
+          const bounds = getNodesBounds(nodes);
+          if (bounds.width === 0 && bounds.height === 0) {
+            throw new Error("Nothing to export");
+          }
+          const viewport = getViewportForBounds(
+            bounds,
+            width,
+            height,
+            0.5,
+            2,
+            0.05,
+          );
+          style = {
+            width: `${width}px`,
+            height: `${height}px`,
+            transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
+          };
+        }
+
+        const options = {
+          backgroundColor: "#0a0a0b",
+          width,
+          height,
+          style,
+          pixelRatio: 2,
+        };
+        const dataUrl =
+          format === "png"
+            ? await toPng(element, options)
+            : format === "jpeg"
+              ? await toJpeg(element, { ...options, quality: 0.95 })
+              : await toSvg(element, options);
+
+        const a = document.createElement("a");
+        a.href = dataUrl;
+        a.download = `${currentSchema ?? "schema"}-${scope}.${format === "jpeg" ? "jpg" : format}`;
+        a.click();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setExportError(`Export failed: ${msg}`);
+      } finally {
+        setExporting(false);
+        setExportOpen(false);
+      }
+    },
+    [nodes, currentSchema],
+  );
 
   const fetchGraph = useCallback(async () => {
     if (!currentSchema) return;
@@ -276,10 +376,73 @@ export function SchemaVisualizerPage({
           <RotateCcw size={12} />
           Reset Layout
         </button>
+
+        {/* Export */}
+        <div className="flex items-center gap-2">
+          {exportError && (
+            <span className="text-[11px] text-red-400 max-w-56 truncate">
+              {exportError}
+            </span>
+          )}
+          <div className="relative">
+            <button
+              type="button"
+              ref={exportButtonRef}
+              onClick={() => setExportOpen((v) => !v)}
+              disabled={exporting}
+              className="flex items-center gap-1 px-2 py-1 text-xs rounded-md bg-surface border border-border text-text-muted hover:text-text hover:bg-surface-raised disabled:opacity-50"
+            >
+              {exporting ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Download size={12} />
+              )}
+              {exporting ? "Exporting…" : "Export"}
+              <ChevronDown size={12} />
+            </button>
+            {exportOpen && !exporting && (
+              <div
+                ref={exportMenuRef}
+                className="absolute right-0 top-full mt-1 z-30 w-52 rounded-lg bg-surface border border-border shadow-lg py-2 px-2"
+              >
+                <div className="px-1 pb-1.5 text-[10px] text-text-muted uppercase tracking-wider">
+                  Scope
+                </div>
+                <SelectDropdown
+                  value={exportScope}
+                  onChange={(v) =>
+                    setExportScope(v as "schema" | "viewport")
+                  }
+                  options={[
+                    { value: "schema", label: "Entire Schema" },
+                    { value: "viewport", label: "Viewport" },
+                  ]}
+                  aria-label="Export scope"
+                  variant="pill"
+                />
+                <div className="border-t border-border my-1.5" />
+                {[
+                  { format: "png" as const, label: "PNG" },
+                  { format: "jpeg" as const, label: "JPEG" },
+                  { format: "svg" as const, label: "SVG" },
+                ].map(({ format, label }) => (
+                  <button
+                    key={format}
+                    type="button"
+                    onClick={() => handleExport(exportScope, format)}
+                    className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Canvas */}
-      <div className="flex-1 min-h-0 relative">
+      <div className="flex-1 min-h-0 relative" ref={containerRef}>
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center z-10 bg-canvas/80">
             <p className="text-text-muted text-sm">Loading schema...</p>
