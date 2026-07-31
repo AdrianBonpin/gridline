@@ -9,6 +9,21 @@ const DB_TYPE_LABELS: Record<DbType, string> = {
   redis: "Redis",
 };
 
+/**
+ * Resolve the run-query modifier key for the given platform string
+ * (from `navigator.platform`). Mac platforms show ⌘ + the return glyph,
+ * everything else shows Ctrl + Enter.
+ */
+export function queryShortcut(platform: string): {
+  mod: string;
+  enter: string;
+} {
+  const isMac = /Mac|iPhone|iPad/.test(platform);
+  return isMac
+    ? { mod: "⌘", enter: "⏎" }
+    : { mod: "Ctrl", enter: "Enter" };
+}
+
 interface QueryToolbarProps {
   onRun: () => void;
   onFormat: () => void;
@@ -22,11 +37,30 @@ export function QueryToolbar({
   dbType,
   readOnly = false,
 }: QueryToolbarProps) {
+  const shortcut = queryShortcut(
+    typeof navigator !== "undefined" ? navigator.platform : "",
+  );
+
   return (
     <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted">
       <div className="flex items-center gap-1">
         {/* Run Query: outline play that fills on hover; tooltip (delayed) reveals the shortcut */}
-        <Tooltip content="Run query — Cmd/Ctrl+Enter" side="bottom">
+        <Tooltip
+          content={
+            <span className="inline-flex items-center gap-1">
+              Run query
+              <span className="text-text-muted">—</span>
+              <kbd className="rounded border border-border bg-surface px-1 font-mono text-[10px] leading-none">
+                {shortcut.mod}
+              </kbd>
+              <span className="text-text-muted">+</span>
+              <kbd className="rounded border border-border bg-surface px-1 font-mono text-[10px] leading-none">
+                {shortcut.enter}
+              </kbd>
+            </span>
+          }
+          side="bottom"
+        >
           <button
             type="button"
             onClick={onRun}

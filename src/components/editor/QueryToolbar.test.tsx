@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { QueryToolbar } from "./QueryToolbar";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryToolbar, queryShortcut } from "./QueryToolbar";
 import { TooltipProvider } from "../ui/Tooltip";
 
 function renderToolbar(props: {
@@ -18,6 +18,53 @@ function renderToolbar(props: {
     </TooltipProvider>,
   );
 }
+
+describe("queryShortcut", () => {
+  afterEach(() => {
+    Object.defineProperty(navigator, "platform", {
+      value: "",
+      configurable: true,
+    });
+  });
+
+  it("uses the command symbol and enter glyph on mac", () => {
+    expect(queryShortcut("MacIntel")).toEqual({ mod: "⌘", enter: "⏎" });
+  });
+
+  it("uses Ctrl + Enter on other platforms", () => {
+    expect(queryShortcut("Win32")).toEqual({ mod: "Ctrl", enter: "Enter" });
+    expect(queryShortcut("Linux x86_64")).toEqual({
+      mod: "Ctrl",
+      enter: "Enter",
+    });
+  });
+
+  it("renders the mac shortcut in the run tooltip", async () => {
+    Object.defineProperty(navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+    renderToolbar({});
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: /run query/i }).parentElement!,
+    );
+    await waitFor(() => expect(screen.getByText("⌘")).toBeInTheDocument());
+    expect(screen.getByText("⏎")).toBeInTheDocument();
+  });
+
+  it("renders Ctrl + Enter in the run tooltip on non-mac", async () => {
+    Object.defineProperty(navigator, "platform", {
+      value: "Linux x86_64",
+      configurable: true,
+    });
+    renderToolbar({});
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: /run query/i }).parentElement!,
+    );
+    await waitFor(() => expect(screen.getByText("Ctrl")).toBeInTheDocument());
+    expect(screen.getByText("Enter")).toBeInTheDocument();
+  });
+});
 
 describe("QueryToolbar", () => {
   it("renders Run Query and the format icon button", () => {
