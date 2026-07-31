@@ -134,7 +134,7 @@ describe("ConnectionGrid", () => {
   });
 
   it("shows search results from all folders as if at root", () => {
-    useUiStore.setState({ activeFolderId: "f1" });
+    useUiStore.setState({ activeFolderId: "f1", searchQuery: "conn" });
     const searchFolders: Folder[] = [
       { id: "f1", name: "Folder 1", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
       { id: "f2", name: "Folder 2", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
@@ -152,5 +152,6 @@ describe("ConnectionGrid", () => {
     expect(screen.getByText("Conn c2")).toBeInTheDocument();
     expect(screen.queryByText("Folder 1")).not.toBeInTheDocument();
     expect(screen.queryByText("Folder 2")).not.toBeInTheDocument();
+    expect(screen.getByText("Showing Search Results")).toBeInTheDocument();
   });
 });

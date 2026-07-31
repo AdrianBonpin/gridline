@@ -200,6 +200,8 @@ export function ConnectionGrid({
                     folders={folders}
                     activeFolderId={currentFolderId}
                     onNavigate={handleBreadcrumbNavigate}
+                    hasSearch={hasSearch}
+                    onClearSearch={() => useUiStore.getState().clearFilters()}
                 />
                 {activeFolder && (
                     <div className="flex items-center gap-1">

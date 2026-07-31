@@ -34,4 +34,17 @@ describe("FolderBreadcrumb", () => {
     await userEvent.click(screen.getByText("All Connections"));
     expect(fn).toHaveBeenCalledWith(null);
   });
+
+  it("shows 'Showing Search Results' when hasSearch is true", () => {
+    render(<FolderBreadcrumb folders={folders} activeFolderId={null} onNavigate={() => {}} hasSearch />);
+    expect(screen.getByText("Showing Search Results")).toBeInTheDocument();
+    expect(screen.queryByText("All Connections")).not.toBeInTheDocument();
+  });
+
+  it("calls onClearSearch when Clear is clicked", async () => {
+    const fn = vi.fn();
+    render(<FolderBreadcrumb folders={folders} activeFolderId={null} onNavigate={() => {}} hasSearch onClearSearch={fn} />);
+    await userEvent.click(screen.getByText("Clear"));
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
 });
