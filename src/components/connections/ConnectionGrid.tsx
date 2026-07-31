@@ -1,5 +1,4 @@
 import type { Connection, Folder, Tag } from "../../lib/types";
-import { useMemo } from "react";
 import { Folder as FolderIcon, Check, Pencil, Trash2 } from "lucide-react";
 import { useDroppable } from "@dnd-kit/core";
 import { ConnectionCard } from "./ConnectionCard";
@@ -128,26 +127,46 @@ export function ConnectionGrid({
     const toggleItemSelection = useUiStore((s) => s.toggleItemSelection);
     const clearSelection = useUiStore((s) => s.clearSelection);
     const activeTagIds = useUiStore((s) => s.activeTagIds);
+    const activeDbTypes = useUiStore((s) => s.activeDbTypes);
+    const activeEnvironment = useUiStore((s) => s.activeEnvironment);
 
-    const currentFolderId =
-        activeFolderId !== null && folders.some((f) => f.id === activeFolderId)
+    const currentFolderId = hasSearch
+        ? null
+        : activeFolderId !== null && folders.some((f) => f.id === activeFolderId)
             ? activeFolderId
             : null;
-    const hasTagFilter = activeTagIds.length > 0;
+    const hasActiveFilters =
+        activeTagIds.length > 0 ||
+        activeDbTypes.length > 0 ||
+        (activeEnvironment !== null && activeEnvironment !== undefined);
+
+    const connectionMatchesFilters = (c: Connection) => {
+        if (activeTagIds.length > 0 && !c.tag_ids.some((id) => activeTagIds.includes(id))) {
+            return false;
+        }
+        if (activeDbTypes.length > 0 && !activeDbTypes.includes(c.db_type)) {
+            return false;
+        }
+        if (activeEnvironment !== null && activeEnvironment !== undefined && c.environment !== activeEnvironment) {
+            return false;
+        }
+        return true;
+    };
+
     const visibleFolders = hasSearch
         ? []
         : getChildFolders(folders, currentFolderId).filter((f) => {
-            if (!hasTagFilter) return true;
+            if (!hasActiveFilters) return true;
             const folderMatchesTags = f.tag_ids.some((id) => activeTagIds.includes(id));
             if (folderMatchesTags) return true;
             const subIds = new Set(getDescendantFolderIds(folders, f.id));
             return connections.some(
-                (c) => c.folder_id !== null && subIds.has(c.folder_id),
+                (c) => c.folder_id !== null && subIds.has(c.folder_id) && connectionMatchesFilters(c),
             );
         });
-    const directConnections = connections.filter(
-        (c) => c.folder_id === currentFolderId,
-    );
+    const directConnections = hasSearch
+        ? connections
+        : connections.filter((c) => c.folder_id === currentFolderId);
     const allStoreConnections = useConnectionStore((s) => s.connections);
     const allStoreFolders = useConnectionStore((s) => s.folders);
     // Check if any direct connections OR any subfolder has connections anywhere below

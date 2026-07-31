@@ -8,7 +8,7 @@ import type { Connection, Folder, Tag } from "../../lib/types";
 const makeConn = (id: string, folder_id: string | null = null): Connection => ({
   id, name: `Conn ${id}`, db_type: "postgresql", host: "h", port: 5432,
   username: null, folder_id, keychain_ref: null, tag_ids: [],
-  created_at: "", updated_at: "",
+  created_at: "", updated_at: "", environment: null,
 });
 
 const folders: Folder[] = [
@@ -19,7 +19,7 @@ const folders: Folder[] = [
 
 describe("ConnectionGrid", () => {
   beforeEach(() => {
-    useUiStore.setState({ activeTagIds: [] });
+    useUiStore.setState({ activeTagIds: [], activeDbTypes: [], activeEnvironment: null });
   });
 
   it("renders empty state when no connections and no folders", () => {
@@ -101,5 +101,56 @@ describe("ConnectionGrid", () => {
     render(<ConnectionGrid connections={[]} tags={[]} folders={folders} />);
     expect(screen.getByText("Work")).toBeInTheDocument();
     expect(screen.getByText("Personal")).toBeInTheDocument();
+  });
+
+  it("hides folders whose connections don't match the DB type filter", () => {
+    useUiStore.setState({ activeDbTypes: ["sqlite"] });
+    const typedFolders: Folder[] = [
+      { id: "f1", name: "PG Folder", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
+      { id: "f2", name: "SQLite Folder", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
+    ];
+    const conns: Connection[] = [
+      { ...makeConn("c1", "f1"), db_type: "postgresql" },
+      { ...makeConn("c2", "f2"), db_type: "sqlite" },
+    ];
+    render(<ConnectionGrid connections={conns} tags={[]} folders={typedFolders} />);
+    expect(screen.queryByText("PG Folder")).not.toBeInTheDocument();
+    expect(screen.getByText("SQLite Folder")).toBeInTheDocument();
+  });
+
+  it("hides folders whose connections don't match the environment filter", () => {
+    useUiStore.setState({ activeEnvironment: "production" });
+    const envFolders: Folder[] = [
+      { id: "f1", name: "Prod Folder", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
+      { id: "f2", name: "Dev Folder", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
+    ];
+    const conns: Connection[] = [
+      { ...makeConn("c1", "f1"), environment: "production" },
+      { ...makeConn("c2", "f2"), environment: "development" },
+    ];
+    render(<ConnectionGrid connections={conns} tags={[]} folders={envFolders} />);
+    expect(screen.getByText("Prod Folder")).toBeInTheDocument();
+    expect(screen.queryByText("Dev Folder")).not.toBeInTheDocument();
+  });
+
+  it("shows search results from all folders as if at root", () => {
+    useUiStore.setState({ activeFolderId: "f1" });
+    const searchFolders: Folder[] = [
+      { id: "f1", name: "Folder 1", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
+      { id: "f2", name: "Folder 2", parent_id: null, tag_ids: [], created_at: "", updated_at: "" },
+    ];
+    const conns = [makeConn("c1", "f1"), makeConn("c2", "f2")];
+    render(
+      <ConnectionGrid
+        connections={conns}
+        tags={[]}
+        folders={searchFolders}
+        activeFolderId="f1"
+        hasSearch
+      />
+    );
+    expect(screen.getByText("Conn c2")).toBeInTheDocument();
+    expect(screen.queryByText("Folder 1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Folder 2")).not.toBeInTheDocument();
   });
 });
