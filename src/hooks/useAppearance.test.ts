@@ -116,17 +116,16 @@ describe("useAppearance helpers", () => {
 
     it("syncs the native window (theme + background) for light", async () => {
         applyTheme("light");
-        await vi.waitFor(() => {
-            expect(windowMocks.setTheme).toHaveBeenCalledWith("light");
-            expect(windowMocks.setBackgroundColor).toHaveBeenCalledWith("#FAFAFA");
-        });
+        // Allow the fire-and-forget dynamic import + invoke to settle.
+        await new Promise((r) => setTimeout(r, 0));
+        expect(windowMocks.setTheme).toHaveBeenCalledWith("light");
+        expect(windowMocks.setBackgroundColor).toHaveBeenCalledWith("#FAFAFA");
     });
 
     it("syncs the native window (theme + background) for dark", async () => {
         applyTheme("dark");
-        await vi.waitFor(() => {
-            expect(windowMocks.setTheme).toHaveBeenCalledWith("dark");
-            expect(windowMocks.setBackgroundColor).toHaveBeenCalledWith("#0A0A0B");
-        });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(windowMocks.setTheme).toHaveBeenCalledWith("dark");
+        expect(windowMocks.setBackgroundColor).toHaveBeenCalledWith("#0A0A0B");
     });
 });
