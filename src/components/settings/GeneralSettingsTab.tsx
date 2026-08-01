@@ -58,10 +58,6 @@ export function GeneralSettingsTab() {
             onChange={(theme) => updateSetting("theme", theme)}
           />
         </SettingsRow>
-      </section>
-
-      <section>
-        <h2 className="text-sm font-medium text-text mb-3">Interface</h2>
         <SettingsRow title="Font size" description="Adjust the application font size.">
           <Select
             value={settings.font_size}
