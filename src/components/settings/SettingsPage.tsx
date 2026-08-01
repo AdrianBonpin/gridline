@@ -70,7 +70,7 @@ export function SettingsPage() {
         <div className="h-screen bg-canvas flex border-t border-border overflow-hidden">
             {/* Left sidebar — icon + text, Back at top */}
             <div className="w-48 h-full bg-canvas border-r border-border flex flex-col py-3 shrink-0">
-                <div className="px-2 pb-3 mb-3">
+                <div className="flex flex-col gap-1 px-2 flex-1">
                     <button
                         type="button"
                         aria-label="Back"
@@ -79,12 +79,11 @@ export function SettingsPage() {
                     >
                         <ChevronLeft size={16} /> Back
                     </button>
-                </div>
-                <nav
-                    role="tablist"
-                    aria-label="Settings sections"
-                    className="flex flex-col gap-1 px-2 flex-1"
-                >
+                    <nav
+                        role="tablist"
+                        aria-label="Settings sections"
+                        className="flex flex-col gap-1"
+                    >
                     {TABS.map((tab) => {
                         const Icon = tab.icon;
                         const isActive = activeTab === tab.id;
@@ -111,6 +110,7 @@ export function SettingsPage() {
                     })}
                 </nav>
             </div>
+        </div>
 
                 {/* Content */}
                 <div className="flex-1 flex flex-col min-h-0">
