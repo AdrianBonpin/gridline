@@ -110,13 +110,6 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
         <div className="flex items-center justify-between">
           <span className="text-sm font-normal text-text-muted">Queries</span>
           <div className="flex items-center gap-1">
-            <SelectDropdown
-              value={mode}
-              onChange={(v) => setMode(v as "history" | "saved")}
-              options={MODE_OPTIONS}
-              variant="ghost"
-              aria-label="History/Saved"
-            />
             {mode === "history" && (
               <>
                 <Tooltip
@@ -163,6 +156,16 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
               </button>
             </Tooltip>
           </div>
+        </div>
+        {/* Mode dropdown — its own row, Explorer-style */}
+        <div className="flex items-center">
+          <SelectDropdown
+            value={mode}
+            onChange={(v) => setMode(v as "history" | "saved")}
+            options={MODE_OPTIONS}
+            variant="ghost"
+            aria-label="History/Saved"
+          />
         </div>
         {/* Animated search input */}
         <div
