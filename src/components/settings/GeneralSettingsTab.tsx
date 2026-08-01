@@ -3,7 +3,6 @@ import { useConnectionStore } from "../../stores/connectionStore";
 import { Select } from "../ui/Select";
 import { ThemePicker } from "../ui/ThemePicker";
 import { SettingsRow } from "../ui/SettingsRow";
-import { SettingsSection } from "../ui/SettingsSection";
 import * as cmd from "../../lib/commands";
 import type { FontSize } from "../../lib/types";
 
@@ -50,17 +49,19 @@ export function GeneralSettingsTab() {
   };
 
   return (
-    <>
-      <SettingsSection title="Appearance">
+    <div className="space-y-6">
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">Appearance</h2>
         <SettingsRow title="Theme" description="Choose your preferred appearance.">
           <ThemePicker
             value={settings.theme}
             onChange={(theme) => updateSetting("theme", theme)}
           />
         </SettingsRow>
-      </SettingsSection>
+      </section>
 
-      <SettingsSection title="Interface">
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">Interface</h2>
         <SettingsRow title="Font size" description="Adjust the application font size.">
           <Select
             value={settings.font_size}
@@ -69,9 +70,10 @@ export function GeneralSettingsTab() {
             label="Font size"
           />
         </SettingsRow>
-      </SettingsSection>
+      </section>
 
-      <SettingsSection title="Workspace">
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">Workspace</h2>
         <SettingsRow
           title="Default folder"
           description="Select the folder to show on startup."
@@ -83,9 +85,10 @@ export function GeneralSettingsTab() {
             label="Default folder"
           />
         </SettingsRow>
-      </SettingsSection>
+      </section>
 
-      <SettingsSection title="Table defaults">
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">Table defaults</h2>
         <SettingsRow
           title="Auto-refresh rate"
           description="How often tables auto-refresh by default."
@@ -108,9 +111,10 @@ export function GeneralSettingsTab() {
             label="Rows per page"
           />
         </SettingsRow>
-      </SettingsSection>
+      </section>
 
-      <SettingsSection title="Demo">
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">Demo</h2>
         <SettingsRow
           title="Re-add demo database"
           description="Re-create the demo SQLite connection if it was deleted."
@@ -123,7 +127,7 @@ export function GeneralSettingsTab() {
             Re-add demo
           </button>
         </SettingsRow>
-      </SettingsSection>
-    </>
+      </section>
+    </div>
   );
 }
