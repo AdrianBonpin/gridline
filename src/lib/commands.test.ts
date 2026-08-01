@@ -108,6 +108,24 @@ describe("query commands", () => {
     await clearQueryHistory("conn-1");
     expect(invoke).toHaveBeenCalledWith("clear_query_history", { connectionId: "conn-1" });
   });
+
+  it("getQueryHistory with null calls invoke with null connectionId", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([]);
+    await getQueryHistory(null, 50, 0);
+    expect(invoke).toHaveBeenCalledWith("get_query_history", {
+      connectionId: null,
+      limit: 50,
+      offset: 0,
+    });
+  });
+
+  it("clearQueryHistory with null clears all", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    await clearQueryHistory(null);
+    expect(invoke).toHaveBeenCalledWith("clear_query_history", {
+      connectionId: null,
+    });
+  });
 });
 
 describe("Query History — v6", () => {

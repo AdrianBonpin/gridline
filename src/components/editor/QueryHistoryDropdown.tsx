@@ -19,6 +19,7 @@ export function QueryHistoryDropdown({
 
   const history = useQueryStore((s) => s.history);
   const loading = useQueryStore((s) => s.historyLoading);
+  const historyError = useQueryStore((s) => s.historyError);
   const stale = useQueryStore((s) => s.historyStale);
   const loadHistory = useQueryStore((s) => s.loadHistory);
   const clearHistory = useQueryStore((s) => s.clearHistory);
@@ -67,17 +68,27 @@ export function QueryHistoryDropdown({
 
       {open && (
         <div className="absolute left-0 top-full mt-1 rounded-xl bg-surface border border-border py-1 z-20 w-80 shadow-lg max-h-80 overflow-y-auto">
-          {loading && (
-            <div className="px-3 py-4 text-center text-sm text-text-muted">
+          {loading && history === null && (
+            <div className="flex items-center justify-center gap-2 px-3 py-4 text-center text-sm text-text-muted">
+              <span
+                data-testid="query-history-spinner"
+                aria-hidden="true"
+                className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-text-muted/30 border-t-text-muted"
+              />
               Loading...
             </div>
           )}
-          {!loading && (!history || history.length === 0) && (
+          {historyError && !loading && (
+            <div className="px-3 py-4 text-center text-sm text-red-400">
+              {historyError}
+            </div>
+          )}
+          {!loading && !historyError && (!history || history.length === 0) && (
             <div className="px-3 py-4 text-center text-sm text-text-muted">
               No queries yet
             </div>
           )}
-          {!loading && history && history.length > 0 && (
+          {!loading && !historyError && history && history.length > 0 && (
             <>
               {history.slice(0, 50).map((entry) => (
                 <div

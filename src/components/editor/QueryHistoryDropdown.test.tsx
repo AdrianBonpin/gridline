@@ -152,6 +152,35 @@ describe("QueryHistoryDropdown", () => {
     expect(onRun).toHaveBeenCalledWith("SELECT 1");
   });
 
+  it("shows loading spinner while fetching", async () => {
+    const user = userEvent.setup();
+    setStoreState({ history: null, historyLoading: true, historyStale: true });
+    renderDropdown({ connectionId: "conn-1" });
+
+    await user.click(screen.getByLabelText("Query history"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("query-history-spinner")).toBeInTheDocument();
+    });
+  });
+
+  it("shows error state on fetch failure", async () => {
+    const user = userEvent.setup();
+    setStoreState({
+      history: null,
+      historyLoading: false,
+      historyError: "Fetch failed",
+      historyStale: false,
+    });
+    renderDropdown({ connectionId: "conn-1" });
+
+    await user.click(screen.getByLabelText("Query history"));
+
+    await waitFor(() => {
+      expect(screen.getByText(/fetch failed/i)).toBeInTheDocument();
+    });
+  });
+
   it("closes on Escape key", async () => {
     const user = userEvent.setup();
     renderDropdown({ connectionId: "conn-1" });

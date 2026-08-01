@@ -77,6 +77,21 @@ describe("queryStore — history", () => {
     expect(state.historyStale).toBe(false);
   });
 
+  it('loadHistory("") maps the All-connections sentinel to null (global scope)', async () => {
+    await useQueryStore.getState().loadHistory("");
+    expect(commands.getQueryHistory).toHaveBeenCalledWith(null, 200, 0);
+  });
+
+  it("loadHistory(undefined) maps to null (global scope)", async () => {
+    await useQueryStore.getState().loadHistory(undefined);
+    expect(commands.getQueryHistory).toHaveBeenCalledWith(null, 200, 0);
+  });
+
+  it('clearHistory("") maps the All-connections sentinel to null (global scope)', async () => {
+    await useQueryStore.getState().clearHistory("");
+    expect(commands.clearQueryHistory).toHaveBeenCalledWith(null);
+  });
+
   it("toggleFavorite optimistic-updates then refetches on failure", async () => {
     const mockEntries = [
       { id: "h1", connection_id: "c1", query_text: "X", execution_time_ms: null, row_count: null, status: "success", error_message: null, executed_at: "", favorite: false },

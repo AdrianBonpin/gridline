@@ -195,14 +195,14 @@ export async function executeQuery(
 }
 
 export async function getQueryHistory(
-  connectionId: string,
+  connectionId: string | null,
   limit: number,
   offset: number,
 ): Promise<QueryHistoryEntry[]> {
   return invoke<QueryHistoryEntry[]>("get_query_history", { connectionId, limit, offset });
 }
 
-export async function clearQueryHistory(connectionId: string): Promise<void> {
+export async function clearQueryHistory(connectionId: string | null): Promise<void> {
   return invoke<void>("clear_query_history", { connectionId });
 }
 

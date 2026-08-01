@@ -56,7 +56,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   loadHistory: async (connectionId) => {
     set({ historyLoading: true, historyError: null });
     try {
-      const rows = await getQueryHistory(connectionId ?? "", 200, 0);
+      const rows = await getQueryHistory(connectionId || null, 200, 0);
       set({ history: rows, historyStale: false, historyLoading: false });
     } catch (e) {
       set({ historyError: e instanceof Error ? e.message : String(e), historyLoading: false });
@@ -64,7 +64,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   },
 
   clearHistory: async (connectionId) => {
-    await clearQueryHistory(connectionId ?? "");
+    await clearQueryHistory(connectionId || null);
     set({ history: [], historyStale: false });
   },
 
