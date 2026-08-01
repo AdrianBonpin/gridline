@@ -29,6 +29,8 @@ import { BackupPage } from "./BackupPage";
 import { RestorePage } from "./RestorePage";
 import { SyncPage } from "./SyncPage";
 import { SchemaVisualizerPage } from "./SchemaVisualizerPage";
+import { QueriesPanel } from "../queries/QueriesPanel";
+import { useQueryStore } from "../../stores/queryStore";
 import * as cmd from "../../lib/commands";
 
 export interface DbViewerScreenProps {
@@ -124,8 +126,10 @@ export function DbViewerScreen({
         try {
             const result = await executeQuery(connectionId, sql, tab.page, tab.pageSize);
             setTabData(tabId, result);
+            useQueryStore.getState().invalidateHistory(connectionId);
         } catch (e) {
             setTabError(tabId, e instanceof Error ? e.message : String(e));
+            useQueryStore.getState().invalidateHistory(connectionId);
         }
     }
 
@@ -167,6 +171,54 @@ export function DbViewerScreen({
             // leave the query untouched if formatting fails
         }
     }, [currentConnection?.db_type]);
+
+    // Restore SQL from history/saved panel: fill active query tab or open a new one
+    const handleRestoreSql = useCallback((sql: string) => {
+        const state = useDbViewerStore.getState();
+        const tab = state.tabs.find((t) => t.id === state.activeTabId);
+        if (tab && tab.tabType === "query") {
+            useDbViewerStore.setState((s) => ({
+                tabs: s.tabs.map((t) =>
+                    t.id === tab.id ? { ...t, query: sql } : t,
+                ),
+            }));
+        } else {
+            state.openQueryTab();
+            requestAnimationFrame(() => {
+                const ns = useDbViewerStore.getState();
+                const nt = ns.tabs.find((t) => t.id === ns.activeTabId);
+                if (nt) {
+                    useDbViewerStore.setState((s) => ({
+                        tabs: s.tabs.map((t) =>
+                            t.id === nt.id ? { ...t, query: sql } : t,
+                        ),
+                    }));
+                }
+            });
+        }
+    }, []);
+
+    // Run SQL from history/saved panel: always open a new tab and execute
+    const handleRunFromHistory = useCallback((sql: string) => {
+        const state = useDbViewerStore.getState();
+        state.openQueryTab();
+        requestAnimationFrame(() => {
+            const ns = useDbViewerStore.getState();
+            const nt = ns.tabs.find((t) => t.id === ns.activeTabId);
+            if (nt) {
+                useDbViewerStore.setState((s) => ({
+                    tabs: s.tabs.map((t) =>
+                        t.id === nt.id ? { ...t, query: sql } : t,
+                    ),
+                }));
+                if (isDestructiveQuery(sql)) {
+                    setDestructiveQuery(sql);
+                } else {
+                    executeQueryForTab(nt.id, sql);
+                }
+            }
+        });
+    }, [connectionId]);
 
     // Cmd+W / Ctrl+W: close current tab, or navigate home if no tabs (configurable in Settings → Shortcuts)
     useShortcut("close_tab", () => {
@@ -605,27 +657,8 @@ export function DbViewerScreen({
                                                 onRun={handleRunQuery}
                                                 onFormat={handleFormatQuery}
                                                 connectionId={connectionId}
-                                                onRestore={(sql) => {
-                                                    const state = useDbViewerStore.getState();
-                                                    const tab = state.tabs.find((t) => t.id === state.activeTabId);
-                                                    if (!tab || tab.tabType !== "query") return;
-                                                    useDbViewerStore.setState((s) => ({
-                                                        tabs: s.tabs.map((t) =>
-                                                            t.id === tab.id ? { ...t, query: sql } : t
-                                                        ),
-                                                    }));
-                                                }}
-                                                onRunFromHistory={(sql) => {
-                                                    const state = useDbViewerStore.getState();
-                                                    const tab = state.tabs.find((t) => t.id === state.activeTabId);
-                                                    if (!tab || tab.tabType !== "query") return;
-                                                    useDbViewerStore.setState((s) => ({
-                                                        tabs: s.tabs.map((t) =>
-                                                            t.id === tab.id ? { ...t, query: sql } : t
-                                                        ),
-                                                    }));
-                                                    handleRunQuery();
-                                                }}
+                                                onRestore={handleRestoreSql}
+                                                onRunFromHistory={handleRunFromHistory}
                                                 dbType={currentConnection?.db_type}
                                             />
                                             <div className="flex-1 min-h-0 overflow-hidden">
@@ -977,6 +1010,12 @@ export function DbViewerScreen({
                         <RestorePage connectionId={connectionId} />
                     ) : currentView === "sync" ? (
                         <SyncPage />
+                    ) : currentView === "queries" ? (
+                        <QueriesPanel
+                            connectionId={connectionId}
+                            onRestore={handleRestoreSql}
+                            onRun={handleRunFromHistory}
+                        />
                     ) : currentView === "schema-visualizer" ? (
                         <SchemaVisualizerPage
                             connectionId={connectionId}

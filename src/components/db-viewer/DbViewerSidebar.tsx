@@ -1,5 +1,6 @@
 import {
     ArrowLeftRight,
+    Clock,
     Database,
     Download,
     FunctionSquare,
@@ -56,6 +57,11 @@ export function DbViewerSidebar({
             id: "sync",
             label: "DB Sync",
             icon: <ArrowLeftRight size={16} />,
+        },
+        {
+            id: "queries",
+            label: "Queries",
+            icon: <Clock size={16} />,
         },
     ];
 
