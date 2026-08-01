@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, Terminal } from "lucide-react";
 import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar } from "./DbViewerSidebar";
@@ -48,6 +48,7 @@ export function DbViewerScreen({
     const [dismissedError, setDismissedError] = useState<string | null>(null);
     const [currentView, setCurrentView] = useState<string>("db-viewer");
     const [tablePanelWidth, setTablePanelWidth] = useState(280);
+    const [queriesPanelWidth, setQueriesPanelWidth] = useState(320);
     const [searchQuery, setSearchQuery] = useState("");
     const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
     const [editModalOpen, setEditModalOpen] = useState(false);
@@ -72,6 +73,10 @@ export function DbViewerScreen({
     const panelResizeRef = useRef<{ startX: number; startW: number } | null>(
         null,
     );
+    const queriesPanelResizeRef = useRef<{
+        startX: number;
+        startW: number;
+    } | null>(null);
 
     const activeTab = useDbViewerStore((s) => {
         if (!s.activeTabId) return null;
@@ -540,6 +545,36 @@ export function DbViewerScreen({
         [tablePanelWidth],
     );
 
+const onQueriesPanelResizeStart = useCallback(
+        (e: React.MouseEvent) => {
+            e.preventDefault();
+            queriesPanelResizeRef.current = {
+                startX: e.clientX,
+                startW: queriesPanelWidth,
+            };
+            const onMove = (ev: MouseEvent) => {
+                if (!queriesPanelResizeRef.current) return;
+                const w = Math.max(
+                    240,
+                    Math.min(
+                        560,
+                        queriesPanelResizeRef.current.startW +
+                            (ev.clientX - queriesPanelResizeRef.current.startX),
+                    ),
+                );
+                setQueriesPanelWidth(w);
+            };
+            const onUp = () => {
+                queriesPanelResizeRef.current = null;
+                document.removeEventListener("mousemove", onMove);
+                document.removeEventListener("mouseup", onUp);
+            };
+            document.addEventListener("mousemove", onMove);
+            document.addEventListener("mouseup", onUp);
+        },
+        [queriesPanelWidth],
+    );
+
     // Query results panel: collapsible + resizable (min 120px, max 80% of column)
     const queryColumnRef = useRef<HTMLDivElement>(null);
     const resultsResizeRef = useRef<{ startY: number; startH: number } | null>(
@@ -593,58 +628,16 @@ export function DbViewerScreen({
     const activeSchema = activeTab?.schema ?? "";
     const activeTable = activeTab?.table ?? "";
 
-    return (
-        <TooltipProvider>
-            <div className="h-screen bg-canvas flex border-t border-border">
-                <DbViewerSidebar
-                    currentView={currentView}
-                    onNavigate={handleNavigate}
-                />
-                <div className="flex-1 flex flex-col min-h-0">
-                    {connectionError && connectionError !== dismissedError && (
-                        <ConnectionDropBanner
-                            error={connectionError}
-                            onRetry={() => {
-                                setDismissedError(null);
-                                connect();
-                            }}
-                            onDismiss={() => setDismissedError(connectionError)}
-                        />
-                    )}
-                    {currentView === "db-viewer" ? (
-                        <div className="flex flex-1 min-h-0 overflow-hidden">
-                            <div
-                                className="border-r border-border flex flex-col shrink-0"
-                                style={{ width: tablePanelWidth }}
-                            >
-                                <DbViewerToolbar
-                                    databases={databases}
-                                    currentDatabase={currentDatabase}
-                                    setCurrentDatabase={setCurrentDatabase}
-                                    schemas={schemas}
-                                    currentSchema={currentSchema}
-                                    setCurrentSchema={setCurrentSchema}
-                                    onEdit={() => setEditModalOpen(true)}
-                                    connectionId={connectionId}
-                                    searchQuery={searchQuery}
-                                    onSearchChange={setSearchQuery}
-                                />
-                                <div
-                                    className="flex-1 overflow-y-auto"
-                                    style={{ overscrollBehavior: "none" }}
-                                >
-                                    <TableTree searchQuery={searchQuery} />
-                                </div>
-                            </div>
-                            {/* panel resize handle */}
-                            <div
-                                className="w-1 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0 border-r border-border"
-                                onMouseDown={onPanelResizeStart}
-                                onDoubleClick={() => setTablePanelWidth(280)}
-                            />
+    function renderQueryWorkspace() {
+        return (
                             <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
                                 <TabBar />
-                                {activeTab?.tabType === "query" ? (
+                                {!activeTab ? (
+                                    <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
+                                        <Terminal size={32} />
+                                        <span>Open a new query tab or run a query from the history</span>
+                                    </div>
+                                ) : activeTab?.tabType === "query" ? (
                                     <Suspense
                                         fallback={
                                             <div className="p-4 text-text-muted">
@@ -977,6 +970,59 @@ export function DbViewerScreen({
                                     </>
                                 )}
                             </div>
+        );
+    }
+
+    return (
+        <TooltipProvider>
+            <div className="h-screen bg-canvas flex border-t border-border">
+                <DbViewerSidebar
+                    currentView={currentView}
+                    onNavigate={handleNavigate}
+                />
+                <div className="flex-1 flex flex-col min-h-0">
+                    {connectionError && connectionError !== dismissedError && (
+                        <ConnectionDropBanner
+                            error={connectionError}
+                            onRetry={() => {
+                                setDismissedError(null);
+                                connect();
+                            }}
+                            onDismiss={() => setDismissedError(connectionError)}
+                        />
+                    )}
+                    {currentView === "db-viewer" ? (
+                        <div className="flex flex-1 min-h-0 overflow-hidden">
+                            <div
+                                className="border-r border-border flex flex-col shrink-0"
+                                style={{ width: tablePanelWidth }}
+                            >
+                                <DbViewerToolbar
+                                    databases={databases}
+                                    currentDatabase={currentDatabase}
+                                    setCurrentDatabase={setCurrentDatabase}
+                                    schemas={schemas}
+                                    currentSchema={currentSchema}
+                                    setCurrentSchema={setCurrentSchema}
+                                    onEdit={() => setEditModalOpen(true)}
+                                    connectionId={connectionId}
+                                    searchQuery={searchQuery}
+                                    onSearchChange={setSearchQuery}
+                                />
+                                <div
+                                    className="flex-1 overflow-y-auto"
+                                    style={{ overscrollBehavior: "none" }}
+                                >
+                                    <TableTree searchQuery={searchQuery} />
+                                </div>
+                            </div>
+                            {/* panel resize handle */}
+                            <div
+                                className="w-1 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0 border-r border-border"
+                                onMouseDown={onPanelResizeStart}
+                                onDoubleClick={() => setTablePanelWidth(280)}
+                            />
+                            {renderQueryWorkspace()}
                         </div>
                     ) : currentView === "functions" ? (
                         <ObjectExplorerPage
@@ -1011,11 +1057,20 @@ export function DbViewerScreen({
                     ) : currentView === "sync" ? (
                         <SyncPage />
                     ) : currentView === "queries" ? (
-                        <QueriesPanel
-                            connectionId={connectionId}
-                            onRestore={handleRestoreSql}
-                            onRun={handleRunFromHistory}
-                        />
+                        <div className="flex flex-1 min-h-0 overflow-hidden">
+                            <QueriesPanel
+                                connectionId={connectionId}
+                                onRestore={handleRestoreSql}
+                                onRun={handleRunFromHistory}
+                                style={{ width: queriesPanelWidth }}
+                            />
+                            <div
+                                className="w-1 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0 border-r border-border"
+                                onMouseDown={onQueriesPanelResizeStart}
+                                onDoubleClick={() => setQueriesPanelWidth(320)}
+                            />
+                            {renderQueryWorkspace()}
+                        </div>
                     ) : currentView === "schema-visualizer" ? (
                         <SchemaVisualizerPage
                             connectionId={connectionId}
@@ -1024,7 +1079,7 @@ export function DbViewerScreen({
                             }}
                         />
                     ) : null}
-                    {currentView === "db-viewer" && <ChangesQueuePanel />}
+                    {(currentView === "db-viewer" || currentView === "queries") && <ChangesQueuePanel />}
                 </div>
                 {currentConnection && (
                     <EditConnectionModal

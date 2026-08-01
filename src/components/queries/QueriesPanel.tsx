@@ -10,9 +10,10 @@ interface QueriesPanelProps {
   connectionId: string;
   onRestore: (sql: string) => void;
   onRun: (sql: string) => void;
+  style?: React.CSSProperties;
 }
 
-export function QueriesPanel({ connectionId, onRestore, onRun }: QueriesPanelProps) {
+export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesPanelProps) {
   const [activeTab, setActiveTab] = useState<"history" | "saved">("history");
 
   // History state
@@ -63,7 +64,7 @@ export function QueriesPanel({ connectionId, onRestore, onRun }: QueriesPanelPro
   ];
 
   return (
-    <div className="flex flex-col h-full" data-testid="queries-panel">
+    <div className="flex flex-col h-full border-r border-border shrink-0" data-testid="queries-panel" style={style}>
       {/* Tab bar */}
       <div className="flex h-9 items-stretch border-b border-border shrink-0">
         {(["history", "saved"] as const).map((tab) => (

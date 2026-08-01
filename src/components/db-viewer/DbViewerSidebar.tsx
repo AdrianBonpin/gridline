@@ -34,6 +34,11 @@ export function DbViewerSidebar({
     const topItems: NavItem[] = [
         { id: "db-viewer", label: "Explorer", icon: <Database size={16} /> },
         {
+            id: "queries",
+            label: "Queries",
+            icon: <Clock size={16} />,
+        },
+        {
             id: "schema-visualizer",
             label: "Schema Visualizer",
             icon: <Grid2x2 size={16} />,
@@ -57,11 +62,6 @@ export function DbViewerSidebar({
             id: "sync",
             label: "DB Sync",
             icon: <ArrowLeftRight size={16} />,
-        },
-        {
-            id: "queries",
-            label: "Queries",
-            icon: <Clock size={16} />,
         },
     ];
 
