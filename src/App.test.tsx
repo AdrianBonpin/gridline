@@ -52,7 +52,8 @@ describe("App", () => {
   it("renders settings page when activeView is settings", async () => {
     useUiStore.setState({ activeView: "settings" });
     render(<App />);
-    expect(screen.getByText("Settings")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /general/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /back/i })).toBeInTheDocument();
   });
 
   it("renders new connection form when activeView is new-connection", async () => {
