@@ -43,6 +43,16 @@ export default function App() {
         useBackupStore.getState().initListener().catch(() => {});
     }, [loadConnections, loadSettings]);
 
+    // If the user hasn't navigated anywhere yet, start in the configured default folder
+    const setActiveFolderId = useUiStore((s) => s.setActiveFolderId);
+    const defaultFolderId = settings?.default_folder_id;
+
+    useEffect(() => {
+        if (defaultFolderId && useUiStore.getState().activeFolderId === null) {
+            setActiveFolderId(defaultFolderId);
+        }
+    }, [defaultFolderId, setActiveFolderId]);
+
     useEffect(() => {
         let title = VIEW_TITLES[activeView] ?? "Gridline";
         if (activeView === "db-viewer") {
