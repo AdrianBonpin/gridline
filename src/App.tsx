@@ -9,6 +9,7 @@ import { NewConnectionScreen } from "./components/connections/NewConnectionScree
 import { ErrorBanner } from "./components/ui/ErrorBanner";
 import { ToastContainer } from "./components/ui/Toast";
 import { DbViewerScreen } from "./components/db-viewer/DbViewerScreen";
+import { useAppearance } from "./hooks/useAppearance";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const VIEW_TITLES: Record<string, string> = {
@@ -25,12 +26,15 @@ export default function App() {
     const openSettings = useUiStore((s) => s.openSettings);
     const loadConnections = useConnectionStore((s) => s.loadAll);
     const loadSettings = useSettingsStore((s) => s.load);
+    const settings = useSettingsStore((s) => s.settings);
     const connectionError = useConnectionStore((s) => s.error);
     const activeFolderId = useUiStore((s) => s.activeFolderId);
     const folders = useConnectionStore((s) => s.folders);
     const tags = useConnectionStore((s) => s.tags);
     const prefilledConnectionString = useUiStore((s) => s.prefilledConnectionString);
     const clearPrefilledConnectionString = useUiStore((s) => s.clearPrefilledConnectionString);
+
+    useAppearance(settings?.theme ?? "system", settings?.font_size ?? "medium");
 
     useEffect(() => {
         loadConnections();
