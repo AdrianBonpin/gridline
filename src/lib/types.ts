@@ -97,6 +97,7 @@ export interface Settings {
   table_refresh_rate: number;
   table_page_size: number;
   shortcuts: Record<string, string>;
+  accent_color: string;
 }
 
 export type ActiveView = "home" | "settings" | "new-connection" | "db-viewer";

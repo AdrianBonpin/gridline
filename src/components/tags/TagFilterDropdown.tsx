@@ -9,7 +9,7 @@ export function TagFilterDropdown() {
   const tags = useSortedTags();
   const activeTagIds = useUiStore((s) => s.activeTagIds);
   const toggleTag = useUiStore((s) => s.toggleTag);
-  const setActiveView = useUiStore((s) => s.setActiveView);
+  const openSettings = useUiStore((s) => s.openSettings);
 
   const activeCount = activeTagIds.length;
   const hasActiveFilters = activeCount > 0;
@@ -26,7 +26,7 @@ export function TagFilterDropdown() {
   }, [open]);
 
   const handleManageTags = () => {
-    setActiveView("settings");
+    openSettings();
     setOpen(false);
   };
 

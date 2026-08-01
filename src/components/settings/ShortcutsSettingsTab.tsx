@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from "react";
 import { Pencil } from "lucide-react";
-import { SettingsSection } from "../ui/SettingsSection";
 import { useSettingsStore } from "../../stores/settingsStore";
 
 type ShortcutDef = {
@@ -100,12 +99,15 @@ export function ShortcutsSettingsTab() {
   };
 
   return (
-    <>
-      <SettingsSection title="Customizable Shortcuts">
+    <div className="space-y-6">
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">
+          Customizable Shortcuts
+        </h2>
         <p className="text-xs text-text-muted mb-3">
           Click the pencil icon to record a new key combination. Click the shortcut to reset to default.
         </p>
-        <div className="space-y-1">
+        <div className="flex flex-col gap-1">
           {SHORTCUTS.map((s) => {
             const custom = customShortcuts[s.id];
             const isRecording = recording === s.id;
@@ -148,13 +150,14 @@ export function ShortcutsSettingsTab() {
             );
           })}
         </div>
-      </SettingsSection>
+      </section>
 
-      <SettingsSection title="System Shortcuts">
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">System Shortcuts</h2>
         <p className="text-xs text-text-muted mb-3">
           These shortcuts are standard across all applications and cannot be changed.
         </p>
-        <div className="space-y-2">
+        <div className="flex flex-col gap-2">
           {STATIC_SHORTCUTS.map((s) => (
             <div key={s.description} className="flex items-center justify-between py-1">
               <span className="text-sm text-text">{s.description}</span>
@@ -166,7 +169,7 @@ export function ShortcutsSettingsTab() {
             </div>
           ))}
         </div>
-      </SettingsSection>
-    </>
+      </section>
+    </div>
   );
 }

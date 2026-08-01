@@ -4,7 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsPage } from "./SettingsPage";
 import { GeneralSettingsTab } from "./GeneralSettingsTab";
-import { TagsSettingsTab } from "./TagsSettingsTab";
+import { TagsSettingsTab, reorderTagIds } from "./TagsSettingsTab";
 import { AdvancedSettingsTab } from "./AdvancedSettingsTab";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useConnectionStore } from "../../stores/connectionStore";
@@ -29,6 +29,10 @@ vi.mock("../../lib/commands", () => ({
     confirm_before_delete: true,
     default_ports: { postgresql: 5432, mysql: 3306, sqlite: null, redis: 6379 },
     tag_order: null,
+    table_refresh_rate: 0,
+    table_page_size: 50,
+    shortcuts: {},
+    accent_color: "#2563EB",
   }),
   updateSetting: vi.fn().mockResolvedValue(undefined),
   getConnections: vi.fn().mockResolvedValue([]),
@@ -63,6 +67,7 @@ const baseSettings = {
   table_refresh_rate: 0,
   table_page_size: 50,
   shortcuts: {} as Record<string, string>,
+  accent_color: "#2563EB",
 };
 
 describe("SettingsPage", () => {
@@ -83,12 +88,12 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("renders settings header with back button and title", async () => {
+  it("renders settings header with back button and active tab title", async () => {
     render(<SettingsPage />);
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: /settings/i })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: /general/i })).toBeInTheDocument();
     });
-    expect(screen.getByText(/back/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /back/i })).toBeInTheDocument();
   });
 
   it("renders all five sidebar tabs with proper ARIA roles", async () => {
@@ -131,7 +136,6 @@ describe("SettingsPage", () => {
       expect(screen.getByRole("tab", { name: /tags/i })).toBeInTheDocument();
     });
     await user.click(screen.getByRole("tab", { name: /tags/i }));
-    expect(screen.getByText(/create tag/i)).toBeInTheDocument();
     expect(screen.getByText(/manage tags/i)).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /tags/i })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "settings-tab-tags");
@@ -196,6 +200,17 @@ describe("GeneralSettingsTab", () => {
     expect(screen.getByLabelText(/font size/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/default folder/i)).toBeInTheDocument();
   });
+
+  it("renders the accent color picker and persists a selection", async () => {
+    const user = userEvent.setup();
+    render(<GeneralSettingsTab />);
+    const accentGroup = screen.getByRole("radiogroup", { name: /accent color/i });
+    expect(accentGroup).toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: /accent #22c55e/i }));
+    await waitFor(() => {
+      expect(commands.updateSetting).toHaveBeenCalledWith("accent_color", "#22C55E");
+    });
+  });
 });
 
 describe("TagsSettingsTab", () => {
@@ -223,6 +238,22 @@ describe("TagsSettingsTab", () => {
     expect(moveUpButtons.length).toBeGreaterThanOrEqual(2);
     const moveDownButtons = screen.getAllByRole("button", { name: /move tag down/i });
     expect(moveDownButtons.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders a drag handle for each tag", () => {
+    render(<TagsSettingsTab />);
+    expect(screen.getAllByRole("button", { name: /drag to reorder/i })).toHaveLength(2);
+  });
+
+  it("reorderTagIds moves the active id to the over id position", () => {
+    expect(reorderTagIds(["a", "b", "c"], "a", "c")).toEqual(["b", "c", "a"]);
+    expect(reorderTagIds(["a", "b", "c"], "b", "a")).toEqual(["b", "a", "c"]);
+  });
+
+  it("reorderTagIds leaves the order unchanged for same or unknown ids", () => {
+    expect(reorderTagIds(["a", "b", "c"], "a", "a")).toEqual(["a", "b", "c"]);
+    expect(reorderTagIds(["a", "b", "c"], "a", "zzz")).toEqual(["a", "b", "c"]);
+    expect(reorderTagIds(["a", "b", "c"], "zzz", "c")).toEqual(["a", "b", "c"]);
   });
 });
 

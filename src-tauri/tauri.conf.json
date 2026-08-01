@@ -16,7 +16,7 @@
         "width": 1200,
         "height": 800,
         "backgroundColor": "#0A0A0B",
-        "titleBarStyle": "Transparent"
+        "titleBarStyle": "Overlay"
       }
     ],
     "security": {

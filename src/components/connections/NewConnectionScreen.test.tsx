@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { NewConnectionScreen } from "./NewConnectionScreen";
+import { useSettingsStore } from "../../stores/settingsStore";
 
 const { createConnection, notify, testConnection } = vi.hoisted(() => ({
   createConnection: vi.fn().mockResolvedValue({}),
@@ -28,6 +29,39 @@ vi.mock("../../lib/commands", () => ({
 describe("NewConnectionScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useSettingsStore.setState({ settings: null, loading: false, error: null });
+  });
+
+  it("prefills the port from the default_ports setting", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.setState({
+      settings: {
+        confirm_before_delete: true,
+        default_folder_id: null,
+        theme: "dark",
+        font_size: "medium",
+        default_ports: { postgresql: 6543, mysql: 3306, sqlite: null, redis: 6379 },
+        tag_order: null,
+        table_refresh_rate: 30,
+        table_page_size: 50,
+        shortcuts: {},
+        accent_color: "#2563EB",
+      },
+    });
+    render(<NewConnectionScreen folders={[]} tags={[]} />);
+
+    await user.click(screen.getByText(/configure manually instead/i));
+
+    expect(screen.getByLabelText("Port")).toHaveValue(6543);
+  });
+
+  it("falls back to 5432 when no default port is configured", async () => {
+    const user = userEvent.setup();
+    render(<NewConnectionScreen folders={[]} tags={[]} />);
+
+    await user.click(screen.getByText(/configure manually instead/i));
+
+    expect(screen.getByLabelText("Port")).toHaveValue(5432);
   });
 
   it("switches to detailed mode and back", async () => {

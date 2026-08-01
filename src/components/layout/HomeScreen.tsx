@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DndContext, DragOverlay, closestCenter, type DragEndEvent } from "@dnd-kit/core";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { useFilteredConnections } from "../../hooks/useConnections";
 import { useSortedTags } from "../../hooks/useSortedTags";
 import { SearchBar } from "../search/SearchBar";
@@ -32,6 +33,8 @@ export function HomeScreen() {
     const loadAll = useConnectionStore((s) => s.loadAll);
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const clearSelection = useUiStore((s) => s.clearSelection);
+    const confirmBeforeDelete =
+        useSettingsStore((s) => s.settings?.confirm_before_delete ?? true);
     const [folderDialogOpen, setFolderDialogOpen] = useState(false);
     const [editFolder, setEditFolder] = useState<Folder | null>(null);
     const [confirmDelete, setConfirmDelete] = useState<{
@@ -146,7 +149,7 @@ export function HomeScreen() {
     };
 
     return (
-        <main className="min-h-screen p-6 bg-canvas select-none max-w-7xl mx-auto">
+        <main className="min-h-full p-6 bg-canvas select-none max-w-7xl mx-auto">
             <div className="mb-6">
                 <SearchBar ref={searchRef} onDetectUrl={handleSearchUrl} />
             </div>
@@ -161,7 +164,9 @@ export function HomeScreen() {
                         await handleExport();
                     }}
                     onDeleteSelected={() =>
-                        setConfirmDelete({ type: "selected" })
+                        confirmBeforeDelete
+                            ? setConfirmDelete({ type: "selected" })
+                            : executeDeleteSelected()
                     }
                     visibleItemIds={visibleItemIds}
                 />
@@ -185,7 +190,9 @@ export function HomeScreen() {
                     onOpenDbViewer={handleOpenDbViewer}
                     onEditFolder={(f) => setEditFolder(f)}
                     onDeleteFolder={(f) =>
-                        setConfirmDelete({ type: "folder", folder: f })
+                        confirmBeforeDelete
+                            ? setConfirmDelete({ type: "folder", folder: f })
+                            : executeDeleteFolder(f)
                     }
                 />
                 <DragOverlay dropAnimation={null}>

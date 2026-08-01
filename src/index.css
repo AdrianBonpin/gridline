@@ -28,11 +28,30 @@
 
 :root {
   color-scheme: dark;
+  /* Derive hover/muted from the runtime accent so a custom accent flows through */
+  --color-accent-hover: color-mix(in srgb, var(--color-accent) 88%, black);
+  --color-accent-muted: color-mix(in srgb, var(--color-accent) 70%, white);
 }
+
+/* Light theme overrides — the app is dark-first; `.light` is toggled on the root */
+:root.light {
+  --color-canvas: #FAFAFA;
+  --color-surface: #FFFFFF;
+  --color-surface-raised: #F4F4F5;
+  --color-border: #E4E4E7;
+  --color-border-hover: #D4D4D8;
+  --color-text: #18181B;
+  --color-text-muted: #71717A;
+  color-scheme: light;
+}
+
+/* Font size scale — rem-based text sizes scale with html font-size */
+:root[data-font-size="small"] { font-size: 15px; }
+:root[data-font-size="large"] { font-size: 17px; }
 
 html, body {
   background-color: var(--color-canvas);
-  color: white;
+  color: var(--color-text);
   font-family: var(--font-family-sans);
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;

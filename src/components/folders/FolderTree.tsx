@@ -27,7 +27,7 @@ export function FolderTree({ folders, activeFolderId, onSelect }: FolderTreeProp
           ref={setDropRef}
           onClick={() => onSelect(folder.id)}
           className={`flex items-center gap-1 w-full text-left px-2 py-1 rounded text-sm ${
-            isActive ? "bg-accent/20 text-white" : "text-white/70 hover:text-white"
+            isActive ? "bg-accent/20 text-text" : "text-text-muted hover:text-text"
           } ${isOver ? "ring-1 ring-accent bg-accent/10" : ""}`}
           style={{ paddingLeft: `${depth * 12 + 8}px` }}
         >
@@ -46,7 +46,7 @@ export function FolderTree({ folders, activeFolderId, onSelect }: FolderTreeProp
         ref={setRootRef}
         onClick={() => onSelect(null)}
         className={`flex items-center gap-1 w-full text-left px-2 py-1 rounded text-sm ${
-          activeFolderId === null ? "bg-accent/20 text-white" : "text-white/70 hover:text-white"
+          activeFolderId === null ? "bg-accent/20 text-text" : "text-text-muted hover:text-text"
         } ${isRootOver ? "ring-1 ring-accent bg-accent/10" : ""}`}
       >
         <ChevronRight size={14} /> All Connections

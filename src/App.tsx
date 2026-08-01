@@ -9,6 +9,7 @@ import { NewConnectionScreen } from "./components/connections/NewConnectionScree
 import { ErrorBanner } from "./components/ui/ErrorBanner";
 import { ToastContainer } from "./components/ui/Toast";
 import { DbViewerScreen } from "./components/db-viewer/DbViewerScreen";
+import { useAppearance } from "./hooks/useAppearance";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const VIEW_TITLES: Record<string, string> = {
@@ -21,8 +22,11 @@ const VIEW_TITLES: Record<string, string> = {
 export default function App() {
     const activeView = useUiStore((s) => s.activeView);
     const setActiveView = useUiStore((s) => s.setActiveView);
+    const settingsReturnView = useUiStore((s) => s.settingsReturnView);
+    const openSettings = useUiStore((s) => s.openSettings);
     const loadConnections = useConnectionStore((s) => s.loadAll);
     const loadSettings = useSettingsStore((s) => s.load);
+    const settings = useSettingsStore((s) => s.settings);
     const connectionError = useConnectionStore((s) => s.error);
     const activeFolderId = useUiStore((s) => s.activeFolderId);
     const folders = useConnectionStore((s) => s.folders);
@@ -30,12 +34,24 @@ export default function App() {
     const prefilledConnectionString = useUiStore((s) => s.prefilledConnectionString);
     const clearPrefilledConnectionString = useUiStore((s) => s.clearPrefilledConnectionString);
 
+    useAppearance(settings?.theme ?? "system", settings?.font_size ?? "medium", settings?.accent_color ?? "#2563EB");
+
     useEffect(() => {
         loadConnections();
         loadSettings();
         // Init backup event listener (noop outside Tauri)
         useBackupStore.getState().initListener().catch(() => {});
     }, [loadConnections, loadSettings]);
+
+    // If the user hasn't navigated anywhere yet, start in the configured default folder
+    const setActiveFolderId = useUiStore((s) => s.setActiveFolderId);
+    const defaultFolderId = settings?.default_folder_id;
+
+    useEffect(() => {
+        if (defaultFolderId && useUiStore.getState().activeFolderId === null) {
+            setActiveFolderId(defaultFolderId);
+        }
+    }, [defaultFolderId, setActiveFolderId]);
 
     useEffect(() => {
         let title = VIEW_TITLES[activeView] ?? "Gridline";
@@ -55,41 +71,60 @@ export default function App() {
         }
     }, [activeView]);
 
+    const keepDbViewerMounted =
+        activeView === "db-viewer" ||
+        (activeView === "settings" && settingsReturnView === "db-viewer");
+    const dbViewerVisible = activeView === "db-viewer";
+
     return (
-        <div className="min-h-svh select-none">
-            {connectionError && (
-                <div className="px-6 pt-4">
-                    <ErrorBanner
-                        error={connectionError}
-                        onRetry={loadConnections}
+        <div className="h-svh bg-canvas select-none flex flex-col overflow-hidden">
+            {typeof window !== "undefined" &&
+                "__TAURI_INTERNALS__" in window && (
+                    // macOS "Overlay" title bar: in-flow strip the window can be
+                    // dragged by; traffic lights float over it. Only in Tauri.
+                    <div
+                        data-tauri-drag-region
+                        aria-hidden
+                        className="h-7 shrink-0 bg-canvas select-none"
                     />
-                </div>
-            )}
-            {activeView === "settings" && <SettingsPage />}
-            {activeView === "new-connection" && (
-                <NewConnectionScreen
-                    defaultFolderId={activeFolderId}
-                    prefilledConnectionString={prefilledConnectionString ?? ""}
-                    folders={folders}
-                    tags={tags}
-                    onSaved={() => {
-                        clearPrefilledConnectionString();
-                        setActiveView("home");
-                    }}
-                    onCancel={() => {
-                        clearPrefilledConnectionString();
-                        setActiveView("home");
-                    }}
-                />
-            )}
-            {activeView === "home" && <HomeScreen />}
-            {activeView === "db-viewer" && (
-                <DbViewerScreen
-                    connectionId={useUiStore.getState().activeConnectionId ?? ""}
-                    onHome={() => setActiveView("home")}
-                    onSettings={() => setActiveView("settings")}
-                />
-            )}
+                )}
+            <div className="flex-1 min-h-0">
+                {connectionError && (
+                    <div className="px-6 pt-4">
+                        <ErrorBanner
+                            error={connectionError}
+                            onRetry={loadConnections}
+                        />
+                    </div>
+                )}
+                {activeView === "settings" && <SettingsPage />}
+                {activeView === "new-connection" && (
+                    <NewConnectionScreen
+                        defaultFolderId={activeFolderId}
+                        prefilledConnectionString={prefilledConnectionString ?? ""}
+                        folders={folders}
+                        tags={tags}
+                        onSaved={() => {
+                            clearPrefilledConnectionString();
+                            setActiveView("home");
+                        }}
+                        onCancel={() => {
+                            clearPrefilledConnectionString();
+                            setActiveView("home");
+                        }}
+                    />
+                )}
+                {activeView === "home" && <HomeScreen />}
+                {keepDbViewerMounted && (
+                    <div className={dbViewerVisible ? "contents" : "hidden"}>
+                        <DbViewerScreen
+                            connectionId={useUiStore.getState().activeConnectionId ?? ""}
+                            onHome={() => setActiveView("home")}
+                            onSettings={openSettings}
+                        />
+                    </div>
+                )}
+            </div>
             <ToastContainer />
         </div>
     );

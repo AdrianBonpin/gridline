@@ -2,8 +2,6 @@ import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useUiStore } from "../../stores/uiStore";
-import { Button } from "../ui/Button";
-import { SettingsSection } from "../ui/SettingsSection";
 import { GeneralSettingsTab } from "./GeneralSettingsTab";
 import { TagsSettingsTab } from "./TagsSettingsTab";
 import { ShortcutsSettingsTab } from "./ShortcutsSettingsTab";
@@ -35,7 +33,7 @@ const TABS: TabDefinition[] = [
 ];
 
 export function SettingsPage() {
-    const setActiveView = useUiStore((s) => s.setActiveView);
+    const closeSettings = useUiStore((s) => s.closeSettings);
     const { load } = useSettingsStore();
 
     const [activeTab, setActiveTab] = useState<SettingsTab>("general");
@@ -45,11 +43,12 @@ export function SettingsPage() {
     }, [load]);
 
     const renderEditor = () => (
-        <SettingsSection title="Editor">
+        <section>
+            <h2 className="text-sm font-medium text-text mb-3">Editor</h2>
             <div className="py-8 text-center text-sm text-text-muted">
                 Editor settings are coming soon.
             </div>
-        </SettingsSection>
+        </section>
     );
 
     const renderTabContent = () => {
@@ -68,70 +67,75 @@ export function SettingsPage() {
     };
 
     return (
-        <div className="min-h-screen bg-canvas">
-            <div className="flex gap-6 px-6 py-6">
-                {/* Sidebar */}
-                <aside className="w-48 shrink-0 space-y-1">
-                    <Button
-                        variant="ghost"
-                        onClick={() => setActiveView("home")}
-                        className="w-full justify-start gap-1 px-3 py-2 mb-4"
+        <div className="h-full bg-canvas flex border-t border-border overflow-hidden">
+            {/* Left sidebar — icon + text, Back at top */}
+            <div className="w-48 h-full bg-canvas border-r border-border flex flex-col py-3 shrink-0">
+                <div className="flex flex-col gap-1 px-2 flex-1">
+                    <button
+                        type="button"
+                        aria-label="Back"
+                        onClick={closeSettings}
+                        className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors cursor-pointer bg-accent text-white hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-accent/50"
                     >
                         <ChevronLeft size={16} /> Back
-                    </Button>
-
+                    </button>
                     <nav
-                        className="space-y-1"
                         role="tablist"
                         aria-label="Settings sections"
+                        className="flex flex-col gap-1"
                     >
-                        {TABS.map((tab) => {
-                            const Icon = tab.icon;
-                            const isActive = activeTab === tab.id;
-                            return (
-                                <button
-                                    key={tab.id}
-                                    id={`settings-tab-${tab.id}`}
-                                    type="button"
-                                    role="tab"
-                                    aria-selected={isActive}
-                                    aria-controls="settings-tabpanel"
-                                    onClick={() => setActiveTab(tab.id)}
-                                    className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors cursor-pointer ${
-                                        isActive
-                                            ? "bg-surface-raised text-text"
-                                            : "text-text-muted hover:text-text hover:bg-surface-raised"
-                                    }`}
-                                >
-                                    <Icon size={16} />
-                                    {tab.label}
-                                </button>
-                            );
-                        })}
-                    </nav>
-                </aside>
-
-                {/* Main content */}
-                <main className="flex-1 min-w-0 pt-1">
-                    <h1 className="font-heading text-xl text-text mb-6">
-                        Settings
-                    </h1>
-                    <AnimatePresence mode="wait">
-                        <motion.div
-                            key={activeTab}
-                            id="settings-tabpanel"
-                            role="tabpanel"
-                            aria-labelledby={`settings-tab-${activeTab}`}
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            transition={{ duration: 0.15 }}
-                        >
-                            {renderTabContent()}
-                        </motion.div>
-                    </AnimatePresence>
-                </main>
+                    {TABS.map((tab) => {
+                        const Icon = tab.icon;
+                        const isActive = activeTab === tab.id;
+                        return (
+                            <button
+                                key={tab.id}
+                                id={`settings-tab-${tab.id}`}
+                                type="button"
+                                role="tab"
+                                aria-selected={isActive}
+                                aria-controls="settings-tabpanel"
+                                aria-label={tab.label}
+                                onClick={() => setActiveTab(tab.id)}
+                                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/50 ${
+                                    isActive
+                                        ? "text-accent"
+                                        : "text-text-muted hover:text-text hover:bg-surface-raised"
+                                }`}
+                            >
+                                <Icon size={16} />
+                                {tab.label}
+                            </button>
+                        );
+                    })}
+                </nav>
             </div>
         </div>
+
+                {/* Content */}
+                <div className="flex-1 flex flex-col min-h-0">
+                    <header className="px-3 pt-3 pb-3 border-b border-border shrink-0 flex items-center gap-3">
+                        <h1 className="font-heading text-lg text-text">
+                            {TABS.find((t) => t.id === activeTab)?.label}
+                        </h1>
+                    </header>
+                    <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
+                        <AnimatePresence mode="wait">
+                            <motion.div
+                                key={activeTab}
+                                id="settings-tabpanel"
+                                role="tabpanel"
+                                aria-labelledby={`settings-tab-${activeTab}`}
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                transition={{ duration: 0.15 }}
+                            >
+                                {renderTabContent()}
+                            </motion.div>
+                        </AnimatePresence>
+                    </div>
+                </div>
+            </div>
     );
 }

@@ -2,7 +2,6 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { Input } from "../ui/Input";
 import { Toggle } from "../ui/Toggle";
 import { SettingsRow } from "../ui/SettingsRow";
-import { SettingsSection } from "../ui/SettingsSection";
 import type { DbType } from "../../lib/types";
 
 const DB_TYPES: { id: DbType; label: string }[] = [
@@ -31,39 +30,45 @@ export function AdvancedSettingsTab() {
   };
 
   return (
-    <>
-      <SettingsSection title="Safety">
-        <SettingsRow
-          title="Confirm before delete"
-          description="Show a confirmation dialog before deleting connections or folders."
-        >
-          <Toggle
-            checked={settings.confirm_before_delete}
-            onChange={(checked) =>
-              updateSetting("confirm_before_delete", checked ? "true" : "false")
-            }
-            label="Confirm before delete"
-          />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title="Default ports">
-        {DB_TYPES.map((db) => (
+    <div className="space-y-6">
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">Safety</h2>
+        <div className="flex flex-col gap-4">
           <SettingsRow
-            key={db.id}
-            title={db.label}
-            description={`Default port for new ${db.label} connections.`}
+            title="Confirm before delete"
+            description="Show a confirmation dialog before deleting connections or folders."
           >
-            <Input
-              type="number"
-              value={defaultPorts[db.id]?.toString() ?? ""}
-              onChange={(value) => updatePort(db.id, value)}
-              className="w-24"
-              aria-label={`Default port for ${db.label}`}
+            <Toggle
+              checked={settings.confirm_before_delete}
+              onChange={(checked) =>
+                updateSetting("confirm_before_delete", checked ? "true" : "false")
+              }
+              label="Confirm before delete"
             />
           </SettingsRow>
-        ))}
-      </SettingsSection>
-    </>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">Default ports</h2>
+        <div className="flex flex-col gap-4">
+          {DB_TYPES.map((db) => (
+            <SettingsRow
+              key={db.id}
+              title={db.label}
+              description={`Default port for new ${db.label} connections.`}
+            >
+              <Input
+                type="number"
+                value={defaultPorts[db.id]?.toString() ?? ""}
+                onChange={(value) => updatePort(db.id, value)}
+                className="w-24"
+                aria-label={`Default port for ${db.label}`}
+              />
+            </SettingsRow>
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }

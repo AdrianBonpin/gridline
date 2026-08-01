@@ -238,6 +238,7 @@ gridline/
 - **Home Screen Filters** — Tag filter with OR semantics, folder cards matching tags or containing matching connections, DB type filter hiding empty folders, environment filter (All/Production/Staging/Development/None), global search across all folders with "Showing Search Results" breadcrumb + Clear
 - **Query History & Saved Queries** — toolbar history dropdown (load / run / favorite / clear), favorites, consecutive-identical dedup + 500-retention pruning, SaveQueryDialog, and a two-pane Queries view (History / Saved Queries sidebar scoped per connection + tabbed query workspace)
 - **Consolidated Navigation** — merged Functions/Triggers/Sequences/Enums/Extensions into a single Objects view (object-type dropdown) and Backup/Restore/DB Sync into a single Tools view (operation dropdown)
+- **Settings (Redesigned & Fully Wired)** — DB-viewer-styled settings screen (icon+text sidebar, tab-titled header, border-sharp no-card sections, Back returns to origin view); all settings functional: theme (light/dark/system, applied live + native macOS Overlay titlebar sync), font size, **accent color** (circle palette), default folder on startup, confirm-before-delete toggle, default ports prefill; drag-and-drop tag reorder
 
 ### 🟡 In Progress / Upcoming
 - **Editor Settings** — font, tab size, word wrap, minimap options
