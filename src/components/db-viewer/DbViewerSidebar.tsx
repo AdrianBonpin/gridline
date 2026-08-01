@@ -1,16 +1,12 @@
 import {
     ArrowLeftRight,
+    Boxes,
     Clock,
     Database,
     Download,
-    FunctionSquare,
-    GitBranch,
     Grid2x2,
     Home,
-    ListOrdered,
-    Puzzle,
     Settings,
-    Tag,
     Upload,
 } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
@@ -43,19 +39,7 @@ export function DbViewerSidebar({
             label: "Schema Visualizer",
             icon: <Grid2x2 size={16} />,
         },
-        {
-            id: "functions",
-            label: "Functions",
-            icon: <FunctionSquare size={16} />,
-        },
-        { id: "triggers", label: "Triggers", icon: <GitBranch size={16} /> },
-        {
-            id: "sequences",
-            label: "Sequences",
-            icon: <ListOrdered size={16} />,
-        },
-        { id: "enums", label: "Enums", icon: <Tag size={16} /> },
-        { id: "extensions", label: "Extensions", icon: <Puzzle size={16} /> },
+        { id: "objects", label: "Objects", icon: <Boxes size={16} /> },
         { id: "backup", label: "Backup", icon: <Download size={16} /> },
         { id: "restore", label: "Restore", icon: <Upload size={16} /> },
         {

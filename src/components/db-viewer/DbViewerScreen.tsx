@@ -1032,32 +1032,8 @@ const onQueriesPanelResizeStart = useCallback(
                             />
                             {renderQueryWorkspace()}
                         </div>
-                    ) : currentView === "functions" ? (
-                        <ObjectExplorerPage
-                            key="functions"
-                            type="functions"
-                            connectionId={connectionId}
-                        />
-                    ) : currentView === "triggers" ? (
-                        <ObjectExplorerPage
-                            key="triggers"
-                            type="triggers"
-                            connectionId={connectionId}
-                        />
-                    ) : currentView === "sequences" ? (
-                        <ObjectExplorerPage
-                            key="sequences"
-                            type="sequences"
-                            connectionId={connectionId}
-                        />
-                    ) : currentView === "enums" ? (
-                        <ObjectExplorerPage key="enums" type="enums" connectionId={connectionId} />
-                    ) : currentView === "extensions" ? (
-                        <ObjectExplorerPage
-                            key="extensions"
-                            type="extensions"
-                            connectionId={connectionId}
-                        />
+                    ) : currentView === "objects" ? (
+                        <ObjectExplorerPage connectionId={connectionId} />
                     ) : currentView === "backup" ? (
                         <BackupPage connectionId={connectionId} />
                     ) : currentView === "restore" ? (

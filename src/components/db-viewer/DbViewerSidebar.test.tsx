@@ -59,4 +59,13 @@ describe("DbViewerSidebar", () => {
     );
     expect(screen.getByLabelText("Queries")).toBeInTheDocument();
   });
+
+  it("renders Objects nav item", () => {
+    render(
+      <TooltipProvider>
+        <DbViewerSidebar currentView="db-viewer" onNavigate={() => {}} />
+      </TooltipProvider>
+    );
+    expect(screen.getByLabelText("Objects")).toBeInTheDocument();
+  });
 });
