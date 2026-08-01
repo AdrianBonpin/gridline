@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useUiStore } from "./uiStore";
 
-beforeEach(() => useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeEnvironment: null, activeView: "home", prefilledConnectionString: null, activeConnectionId: null }));
+beforeEach(() => useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeEnvironment: null, activeView: "home", prefilledConnectionString: null, activeConnectionId: null, settingsReturnView: null }));
 
 describe("uiStore", () => {
   it("starts on home view", () => expect(useUiStore.getState().activeView).toBe("home"));
@@ -57,5 +57,41 @@ describe("uiStore", () => {
     expect(useUiStore.getState().activeConnectionId).toBe("c1");
     useUiStore.getState().setActiveConnectionId(null);
     expect(useUiStore.getState().activeConnectionId).toBeNull();
+  });
+
+  it("openSettings from home records home and closeSettings returns to home", () => {
+    useUiStore.getState().openSettings();
+    expect(useUiStore.getState().settingsReturnView).toBe("home");
+    expect(useUiStore.getState().activeView).toBe("settings");
+    useUiStore.getState().closeSettings();
+    expect(useUiStore.getState().activeView).toBe("home");
+    expect(useUiStore.getState().settingsReturnView).toBeNull();
+  });
+
+  it("openSettings from db-viewer records db-viewer and closeSettings returns to it", () => {
+    useUiStore.getState().setActiveView("db-viewer");
+    useUiStore.getState().openSettings();
+    expect(useUiStore.getState().settingsReturnView).toBe("db-viewer");
+    expect(useUiStore.getState().activeView).toBe("settings");
+    useUiStore.getState().closeSettings();
+    expect(useUiStore.getState().activeView).toBe("db-viewer");
+    expect(useUiStore.getState().settingsReturnView).toBeNull();
+  });
+
+  it("double openSettings keeps the original return view", () => {
+    useUiStore.getState().setActiveView("db-viewer");
+    useUiStore.getState().openSettings();
+    useUiStore.getState().openSettings();
+    expect(useUiStore.getState().settingsReturnView).toBe("db-viewer");
+    expect(useUiStore.getState().activeView).toBe("settings");
+    useUiStore.getState().closeSettings();
+    expect(useUiStore.getState().activeView).toBe("db-viewer");
+  });
+
+  it("closeSettings falls back to home when no return view is recorded", () => {
+    useUiStore.getState().setActiveView("settings");
+    useUiStore.getState().closeSettings();
+    expect(useUiStore.getState().activeView).toBe("home");
+    expect(useUiStore.getState().settingsReturnView).toBeNull();
   });
 });

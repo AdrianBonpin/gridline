@@ -35,7 +35,7 @@ const TABS: TabDefinition[] = [
 ];
 
 export function SettingsPage() {
-    const setActiveView = useUiStore((s) => s.setActiveView);
+    const closeSettings = useUiStore((s) => s.closeSettings);
     const { load } = useSettingsStore();
 
     const [activeTab, setActiveTab] = useState<SettingsTab>("general");
@@ -74,7 +74,7 @@ export function SettingsPage() {
                 <aside className="w-48 shrink-0 space-y-1">
                     <Button
                         variant="ghost"
-                        onClick={() => setActiveView("home")}
+                        onClick={closeSettings}
                         className="w-full justify-start gap-1 px-3 py-2 mb-4"
                     >
                         <ChevronLeft size={16} /> Back

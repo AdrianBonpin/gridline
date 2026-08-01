@@ -21,6 +21,8 @@ const VIEW_TITLES: Record<string, string> = {
 export default function App() {
     const activeView = useUiStore((s) => s.activeView);
     const setActiveView = useUiStore((s) => s.setActiveView);
+    const settingsReturnView = useUiStore((s) => s.settingsReturnView);
+    const openSettings = useUiStore((s) => s.openSettings);
     const loadConnections = useConnectionStore((s) => s.loadAll);
     const loadSettings = useSettingsStore((s) => s.load);
     const connectionError = useConnectionStore((s) => s.error);
@@ -55,6 +57,11 @@ export default function App() {
         }
     }, [activeView]);
 
+    const keepDbViewerMounted =
+        activeView === "db-viewer" ||
+        (activeView === "settings" && settingsReturnView === "db-viewer");
+    const dbViewerVisible = activeView === "db-viewer";
+
     return (
         <div className="min-h-svh select-none">
             {connectionError && (
@@ -83,12 +90,14 @@ export default function App() {
                 />
             )}
             {activeView === "home" && <HomeScreen />}
-            {activeView === "db-viewer" && (
-                <DbViewerScreen
-                    connectionId={useUiStore.getState().activeConnectionId ?? ""}
-                    onHome={() => setActiveView("home")}
-                    onSettings={() => setActiveView("settings")}
-                />
+            {keepDbViewerMounted && (
+                <div className={dbViewerVisible ? "contents" : "hidden"}>
+                    <DbViewerScreen
+                        connectionId={useUiStore.getState().activeConnectionId ?? ""}
+                        onHome={() => setActiveView("home")}
+                        onSettings={openSettings}
+                    />
+                </div>
             )}
             <ToastContainer />
         </div>

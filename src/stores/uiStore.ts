@@ -11,7 +11,10 @@ interface UiState {
   selectedItemIds: string[];
   prefilledConnectionString: string | null;
   activeConnectionId: string | null;
+  settingsReturnView: Exclude<ActiveView, "settings"> | null;
   setActiveView: (view: ActiveView) => void;
+  openSettings: () => void;
+  closeSettings: () => void;
   setSearchQuery: (q: string) => void;
   setActiveFolderId: (id: string | null) => void;
   toggleTag: (id: string) => void;
@@ -27,8 +30,21 @@ interface UiState {
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeEnvironment: null, activeView: "home", selectedItemIds: [], prefilledConnectionString: null, activeConnectionId: null,
+  searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeEnvironment: null, activeView: "home", selectedItemIds: [], prefilledConnectionString: null, activeConnectionId: null, settingsReturnView: null,
   setActiveView: (view) => set({ activeView: view }),
+  openSettings: () => set((s) => ({
+    settingsReturnView:
+      s.activeView === "settings"
+        ? s.settingsReturnView
+        : s.activeView === "home" || s.activeView === "db-viewer" || s.activeView === "new-connection"
+          ? s.activeView
+          : null,
+    activeView: "settings",
+  })),
+  closeSettings: () => set((s) => ({
+    activeView: s.settingsReturnView ?? "home",
+    settingsReturnView: null,
+  })),
   setSearchQuery: (q) => set({ searchQuery: q }),
   setActiveFolderId: (id) => set({ activeFolderId: id, selectedItemIds: [] }),
   toggleTag: (id) => set((s) => ({ activeTagIds: s.activeTagIds.includes(id) ? s.activeTagIds.filter((t) => t !== id) : [...s.activeTagIds, id] })),

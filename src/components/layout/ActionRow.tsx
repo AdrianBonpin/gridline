@@ -17,6 +17,7 @@ interface ActionRowProps {
 
 export function ActionRow({ onImport, onExport, onNewFolder, onFilters: _onFilters, onDeleteSelected, visibleItemIds = [] }: ActionRowProps) {
   const setActiveView = useUiStore((s) => s.setActiveView);
+  const openSettings = useUiStore((s) => s.openSettings);
   const selectedItemIds = useUiStore((s) => s.selectedItemIds);
   const selectAllItems = useUiStore((s) => s.selectAllItems);
   const clearSelection = useUiStore((s) => s.clearSelection);
@@ -84,7 +85,7 @@ export function ActionRow({ onImport, onExport, onNewFolder, onFilters: _onFilte
       </div>
       <div className="flex items-center gap-2 ml-auto">
         <ImportExportMenu onImport={onImport ?? (() => {})} onExport={onExport ?? (() => {})} />
-        <Button variant="ghost" className="text-xs" onClick={() => setActiveView("settings")}>
+        <Button variant="ghost" className="text-xs" onClick={openSettings}>
           <SettingsIcon size={14} /> Settings
         </Button>
       </div>
