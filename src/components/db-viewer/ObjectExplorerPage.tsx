@@ -1161,7 +1161,9 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                 ) : (
                     <div className="flex items-center justify-center h-full text-text-muted">
                         <div className="text-center space-y-2">
-                            {cloneElement(icon as React.ReactElement<{ size?: number }>, { size: 20 })}
+                            <div className="flex justify-center">
+                                {cloneElement(icon as React.ReactElement<{ size?: number }>, { size: 20 })}
+                            </div>
                             <p className="text-sm">
                                 Select a {singular} to view details
                             </p>
