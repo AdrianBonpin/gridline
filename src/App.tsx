@@ -77,7 +77,7 @@ export default function App() {
     const dbViewerVisible = activeView === "db-viewer";
 
     return (
-        <div className="min-h-svh select-none">
+        <div className="min-h-svh bg-canvas select-none">
             {connectionError && (
                 <div className="px-6 pt-4">
                     <ErrorBanner
