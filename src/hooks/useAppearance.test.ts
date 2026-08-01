@@ -1,6 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { applyTheme, applyFontSize, resolveTheme } from "./useAppearance";
 
+const windowMocks = vi.hoisted(() => ({
+    setTheme: vi.fn().mockResolvedValue(undefined),
+    setBackgroundColor: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@tauri-apps/api/window", () => ({
+    getCurrentWindow: () => ({
+        setTheme: windowMocks.setTheme,
+        setBackgroundColor: windowMocks.setBackgroundColor,
+    }),
+}));
+
 describe("useAppearance helpers", () => {
     const getRoot = () => document.documentElement;
 
@@ -23,6 +35,8 @@ describe("useAppearance helpers", () => {
     beforeEach(() => {
         getRoot().classList.remove("light");
         delete getRoot().dataset.fontSize;
+        windowMocks.setTheme.mockClear();
+        windowMocks.setBackgroundColor.mockClear();
     });
 
     afterEach(() => {
@@ -98,5 +112,21 @@ describe("useAppearance helpers", () => {
         getRoot().dataset.fontSize = "large";
         applyFontSize("medium");
         expect(getRoot().dataset.fontSize).toBeUndefined();
+    });
+
+    it("syncs the native window (theme + background) for light", async () => {
+        applyTheme("light");
+        await vi.waitFor(() => {
+            expect(windowMocks.setTheme).toHaveBeenCalledWith("light");
+            expect(windowMocks.setBackgroundColor).toHaveBeenCalledWith("#FAFAFA");
+        });
+    });
+
+    it("syncs the native window (theme + background) for dark", async () => {
+        applyTheme("dark");
+        await vi.waitFor(() => {
+            expect(windowMocks.setTheme).toHaveBeenCalledWith("dark");
+            expect(windowMocks.setBackgroundColor).toHaveBeenCalledWith("#0A0A0B");
+        });
     });
 });

@@ -21,7 +21,13 @@ async function syncWindowTheme(theme: Theme): Promise<void> {
         // Dynamic import keeps the Tauri API out of the hot path for
         // non-Tauri bundles and non-Tauri test environments.
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        await getCurrentWindow().setTheme(resolveTheme(theme));
+        const effective = resolveTheme(theme);
+        const win = getCurrentWindow();
+        await win.setTheme(effective);
+        // macOS "Transparent" title bar paints the WINDOW background color in the
+        // title bar strip (the webview does not extend under it). Keep that color
+        // in sync with the theme so the title bar / window edges follow the app.
+        await win.setBackgroundColor(effective === "light" ? "#FAFAFA" : "#0A0A0B");
     } catch {
         // Outside Tauri — nothing to sync.
     }
