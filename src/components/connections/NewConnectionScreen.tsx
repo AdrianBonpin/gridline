@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useNotificationStore } from "../../stores/notificationStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { ConnectionFormShell } from "./ConnectionFormShell";
 import { SimpleConnectionForm } from "./SimpleConnectionForm";
 import { DetailedConnectionForm } from "./DetailedConnectionForm";
@@ -26,6 +27,7 @@ interface NewConnectionScreenProps {
 
 function createEmptyForm(
     defaultFolderId: string | null = null,
+    defaultPorts?: Record<string, number | null>,
 ): ConnectionFormData {
     return {
         name: "",
@@ -35,12 +37,18 @@ function createEmptyForm(
         connection_string: "",
         db_type: "postgresql",
         host: "",
-        port: 5432,
+        port: defaultPorts?.postgresql ?? 5432,
         username: null,
         password: null,
         database: null,
         use_keychain: false,
     };
+}
+
+function getDefaultPort(dbType: string): number {
+    return (
+        useSettingsStore.getState().settings?.default_ports?.[dbType] ?? 5432
+    );
 }
 
 export function NewConnectionScreen({
@@ -53,7 +61,10 @@ export function NewConnectionScreen({
 }: NewConnectionScreenProps) {
     const [mode, setMode] = useState<NewConnectionMode>("simple");
     const [form, setForm] = useState<ConnectionFormData>(() =>
-        createEmptyForm(defaultFolderId),
+        createEmptyForm(
+            defaultFolderId,
+            useSettingsStore.getState().settings?.default_ports,
+        ),
     );
     const [testLoading, setTestLoading] = useState(false);
     const [saveLoading, setSaveLoading] = useState(false);
@@ -69,7 +80,7 @@ export function NewConnectionScreen({
                 connection_string: value,
                 db_type: parsed.db_type,
                 host: parsed.host,
-                port: parsed.port,
+                port: parsed.port ?? getDefaultPort(parsed.db_type),
                 username: parsed.username,
                 password: parsed.password,
                 database: parsed.database,
