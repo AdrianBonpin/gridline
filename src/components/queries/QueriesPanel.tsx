@@ -106,7 +106,7 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
   return (
     <div className="flex flex-col h-full border-r border-border shrink-0" data-testid="queries-panel" style={style}>
       {/* Header row */}
-      <div className="px-3 pt-3 pb-3 border-b border-border">
+      <div className="px-3 pt-3 pb-3 border-b border-border space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-sm font-normal text-text-muted">Queries</span>
           <div className="flex items-center gap-1">
