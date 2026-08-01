@@ -965,9 +965,13 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
             >
                 <div className="p-3 border-b border-border space-y-2">
                     <div className="flex items-center justify-between">
-                        <span className="text-sm font-semibold text-text">
-                            Objects
-                        </span>
+                        <SelectDropdown
+                            value={type}
+                            onChange={(v) => handleTypeChange(v as ObjectType)}
+                            options={OBJECT_TYPE_OPTIONS}
+                            variant="ghost"
+                            aria-label="Object type"
+                        />
                         <div className="flex items-center gap-1">
                             <button
                                 aria-label="Refresh"
@@ -1018,17 +1022,6 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                                 </button>
                             )}
                         </div>
-                    </div>
-
-                    {/* Object type dropdown */}
-                    <div className="flex items-center">
-                        <SelectDropdown
-                            value={type}
-                            onChange={(v) => handleTypeChange(v as ObjectType)}
-                            options={OBJECT_TYPE_OPTIONS}
-                            variant="ghost"
-                            aria-label="Object type"
-                        />
                     </div>
 
                     {/* Database/Schema dropdowns */}
