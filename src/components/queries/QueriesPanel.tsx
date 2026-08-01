@@ -108,8 +108,8 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
       {/* Header row */}
       <div className={`px-3 pt-3 border-b border-border space-y-2 ${searchOpen ? "pb-3" : ""}`}>
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-normal text-text-muted">Queries</span>
+          <span className="text-sm font-normal text-text-muted">Queries</span>
+          <div className="flex items-center gap-1">
             <SelectDropdown
               value={mode}
               onChange={(v) => setMode(v as "history" | "saved")}
@@ -117,8 +117,6 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
               variant="ghost"
               aria-label="History/Saved"
             />
-          </div>
-          <div className="flex items-center gap-1">
             {mode === "history" && (
               <>
                 <Tooltip
