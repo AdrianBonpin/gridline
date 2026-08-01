@@ -78,48 +78,49 @@ function WindowMock({ preview }: { preview: PreviewPalette }) {
 
 export function ThemePicker({ value, onChange }: ThemePickerProps) {
   return (
-    <div className="flex gap-3" role="radiogroup" aria-label="Theme">
+    <div className="flex gap-4" role="radiogroup" aria-label="Theme">
       {THEMES.map((theme) => {
         const preview = PREVIEWS[theme.value];
         return (
-          <button
-            key={theme.value}
-            type="button"
-            role="radio"
-            aria-checked={value === theme.value}
-            aria-label={theme.label}
-            onClick={() => onChange(theme.value)}
-            className={`group relative w-[76px] h-[52px] rounded-md border-2 overflow-hidden transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas ${
-              value === theme.value
-                ? "border-accent"
-                : "border-border hover:border-border-hover"
-            }`}
-          >
-            <WindowMock preview={preview} />
-            {/* System: overlay a light right half so the preview reads "follows the OS" */}
-            {theme.value === "system" && (
-              <div
-                aria-hidden="true"
-                className="absolute right-0 top-0 bottom-0 w-1/2 border-l"
-                style={{ background: PREVIEWS.light.canvas, borderColor: PREVIEWS.dark.sidebar }}
-              >
+          <div key={theme.value} className="flex flex-col items-center gap-1.5">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={value === theme.value}
+              aria-label={theme.label}
+              onClick={() => onChange(theme.value)}
+              className={`relative w-[76px] h-[52px] rounded-md border-2 overflow-hidden transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas ${
+                value === theme.value
+                  ? "border-accent"
+                  : "border-border hover:border-border-hover"
+              }`}
+            >
+              <WindowMock preview={preview} />
+              {/* System: overlay a light right half so the preview reads "follows the OS" */}
+              {theme.value === "system" && (
                 <div
-                  className="h-3 flex items-center px-1 gap-0.5"
-                  style={{
-                    background: PREVIEWS.light.surface,
-                    borderBottom: "1px solid color-mix(in srgb, currentColor 10%, transparent)",
-                  }}
+                  aria-hidden="true"
+                  className="absolute right-0 top-0 bottom-0 w-1/2 border-l"
+                  style={{ background: PREVIEWS.light.canvas, borderColor: PREVIEWS.dark.sidebar }}
                 >
-                  <span className="w-1 h-1 rounded-full" style={{ background: PREVIEWS.light.accent }} />
-                  <span className="w-1 h-1 rounded-full" style={{ background: PREVIEWS.light.textMuted }} />
-                  <span className="w-1 h-1 rounded-full" style={{ background: PREVIEWS.light.textMuted }} />
+                  <div
+                    className="h-3 flex items-center px-1 gap-0.5"
+                    style={{
+                      background: PREVIEWS.light.surface,
+                      borderBottom: "1px solid color-mix(in srgb, currentColor 10%, transparent)",
+                    }}
+                  >
+                    <span className="w-1 h-1 rounded-full" style={{ background: PREVIEWS.light.accent }} />
+                    <span className="w-1 h-1 rounded-full" style={{ background: PREVIEWS.light.textMuted }} />
+                    <span className="w-1 h-1 rounded-full" style={{ background: PREVIEWS.light.textMuted }} />
+                  </div>
                 </div>
-              </div>
-            )}
-            <span className="absolute bottom-1 right-1 rounded bg-canvas/60 px-0.5 text-[9px] font-medium text-text-muted opacity-70 group-hover:opacity-100">
+              )}
+            </button>
+            <span className="text-xs font-medium text-text-muted">
               {theme.label}
             </span>
-          </button>
+          </div>
         );
       })}
     </div>
