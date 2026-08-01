@@ -2,7 +2,6 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { Input } from "../ui/Input";
 import { Toggle } from "../ui/Toggle";
 import { SettingsRow } from "../ui/SettingsRow";
-import { SettingsSection } from "../ui/SettingsSection";
 import type { DbType } from "../../lib/types";
 
 const DB_TYPES: { id: DbType; label: string }[] = [
@@ -31,8 +30,9 @@ export function AdvancedSettingsTab() {
   };
 
   return (
-    <>
-      <SettingsSection title="Safety">
+    <div className="space-y-6">
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">Safety</h2>
         <div className="flex flex-col gap-4">
           <SettingsRow
             title="Confirm before delete"
@@ -47,9 +47,10 @@ export function AdvancedSettingsTab() {
             />
           </SettingsRow>
         </div>
-      </SettingsSection>
+      </section>
 
-      <SettingsSection title="Default ports">
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">Default ports</h2>
         <div className="flex flex-col gap-4">
           {DB_TYPES.map((db) => (
             <SettingsRow
@@ -67,7 +68,7 @@ export function AdvancedSettingsTab() {
             </SettingsRow>
           ))}
         </div>
-      </SettingsSection>
-    </>
+      </section>
+    </div>
   );
 }

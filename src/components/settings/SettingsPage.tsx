@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useUiStore } from "../../stores/uiStore";
-import { SettingsSection } from "../ui/SettingsSection";
 import { GeneralSettingsTab } from "./GeneralSettingsTab";
 import { TagsSettingsTab } from "./TagsSettingsTab";
 import { ShortcutsSettingsTab } from "./ShortcutsSettingsTab";
@@ -44,11 +43,12 @@ export function SettingsPage() {
     }, [load]);
 
     const renderEditor = () => (
-        <SettingsSection title="Editor">
+        <section>
+            <h2 className="text-sm font-medium text-text mb-3">Editor</h2>
             <div className="py-8 text-center text-sm text-text-muted">
                 Editor settings are coming soon.
             </div>
-        </SettingsSection>
+        </section>
     );
 
     const renderTabContent = () => {
