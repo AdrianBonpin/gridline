@@ -3,7 +3,12 @@ import type { Theme, FontSize } from "../lib/types";
 
 const LIGHT_COLOR_SCHEME_QUERY = "(prefers-color-scheme: light)";
 
-/** Resolves a Theme setting to the concrete color scheme it maps to. */
+/**
+ * Resolves a Theme setting to the concrete color scheme it maps to (pure).
+ * For "system" this reads the webview's prefers-color-scheme, which correctly
+ * mirrors the OS only while the native window is NOT forced to a specific
+ * theme (see applyTheme's system handling).
+ */
 export function resolveTheme(theme: Theme): "light" | "dark" {
     if (theme === "dark") return "dark";
     if (theme === "light") return "light";
@@ -13,20 +18,24 @@ export function resolveTheme(theme: Theme): "light" | "dark" {
 }
 
 /**
- * Best-effort: sync the native window chrome (title bar, traffic lights) to the
- * effective theme. Noop outside a Tauri runtime — any failure is swallowed.
+ * Syncs the native window chrome. Pass null to reset the window to follow the
+ * OS theme — required for the "system" setting, because forcing the window
+ * theme changes the webview's prefers-color-scheme (WKWebView follows the
+ * window appearance), which would otherwise pollute matchMedia.
  */
-async function syncWindowTheme(theme: Theme): Promise<void> {
+async function syncWindowTheme(effective: "light" | "dark" | null): Promise<void> {
     try {
         // Dynamic import keeps the Tauri API out of the hot path for
         // non-Tauri bundles and non-Tauri test environments.
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        const effective = resolveTheme(theme);
         const win = getCurrentWindow();
+        if (effective === null) {
+            await win.setTheme(null);
+            return;
+        }
         await win.setTheme(effective);
-        // macOS "Transparent" title bar paints the WINDOW background color in the
-        // title bar strip (the webview does not extend under it). Keep that color
-        // in sync with the theme so the title bar / window edges follow the app.
+        // macOS "Overlay" title bar paints the WINDOW background color in the
+        // title bar strip; keep it in sync with the theme.
         await win.setBackgroundColor(effective === "light" ? "#FAFAFA" : "#0A0A0B");
     } catch {
         // Outside Tauri — nothing to sync.
@@ -41,32 +50,36 @@ async function syncWindowTheme(theme: Theme): Promise<void> {
 export function applyTheme(theme: Theme): () => void {
     const root = document.documentElement;
 
-    // Fire-and-forget: keep the native window chrome in sync with the theme.
-    void syncWindowTheme(theme);
-
     if (theme === "dark") {
         root.classList.remove("light");
+        void syncWindowTheme("dark");
         return () => {};
     }
     if (theme === "light") {
         root.classList.add("light");
+        void syncWindowTheme("light");
         return () => {};
     }
 
     // "system" — follow the OS preference and keep it in sync.
     // Guard for environments without matchMedia (e.g. jsdom).
     if (typeof window.matchMedia !== "function") {
+        root.classList.remove("light");
+        void syncWindowTheme(null);
         return () => {};
     }
     const mq = window.matchMedia(LIGHT_COLOR_SCHEME_QUERY);
-    const apply = () => {
+    const applySystem = () => {
         root.classList.toggle("light", mq.matches);
-        // OS preference changed — keep the native window chrome in sync too.
-        void syncWindowTheme("system");
+        void syncWindowTheme(null);
     };
-    apply();
-    mq.addEventListener("change", apply);
-    return () => mq.removeEventListener("change", apply);
+    applySystem();
+    // Reset the native window to follow the OS first, then re-read matchMedia
+    // once it actually mirrors the OS — the immediate applySystem above may be
+    // stale if the window was previously forced to the other theme.
+    void syncWindowTheme(null).then(applySystem);
+    mq.addEventListener("change", applySystem);
+    return () => mq.removeEventListener("change", applySystem);
 }
 
 /** Applies the font-size scale by toggling a data attribute on the root. */

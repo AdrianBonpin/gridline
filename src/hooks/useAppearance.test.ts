@@ -128,4 +128,11 @@ describe("useAppearance helpers", () => {
         expect(windowMocks.setTheme).toHaveBeenCalledWith("dark");
         expect(windowMocks.setBackgroundColor).toHaveBeenCalledWith("#0A0A0B");
     });
+
+    it("resets the window to follow the OS when switching to system", async () => {
+        stubMatchMedia(false, vi.fn(), vi.fn());
+        applyTheme("system");
+        await new Promise((r) => setTimeout(r, 0));
+        expect(windowMocks.setTheme).toHaveBeenCalledWith(null);
+    });
 });
