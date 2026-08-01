@@ -290,15 +290,17 @@ cargo test               # Rust tests
 ### Settings
 | Feature | Status | Details |
 | :--- | :---: | :--- |
-| Theme (dark/light/system) | ✅ | Tailwind dark-first with ThemePicker |
-| Font size | ✅ | |
-| Default folder for new connections | ✅ | |
+| Settings screen (redesigned) | ✅ | DB-viewer-styled shell: icon+text sidebar (Back on top, accent background), header shows the active tab, border-sharp sections with gap-spaced rows (no cards), Back returns to the view it was opened from (push/pop in `uiStore`) |
+| Theme (dark/light/system) | ✅ | Applied live via a `.light` class on the document root (dark-first base palette); "system" follows the OS via `matchMedia` and live-updates; native window chrome synced through Tauri `setTheme`/`setBackgroundColor` with a macOS **Overlay** titlebar (in-flow drag strip) |
+| Font size | ✅ | rem scale via `data-font-size` on the root (`small`/`medium`/`large`) |
+| Accent color | ✅ | 10-preset circle palette in General → Appearance; applied via `--color-accent` on the root; hover/muted shades derive from it via `color-mix` |
+| Default folder for new connections | ✅ | Honored on startup — Home opens into `default_folder_id` unless the user has already navigated |
 | Table page size default | ✅ | |
 | Auto-refresh rate | ✅ | |
-| Tags management | ✅ | Full CRUD with color picker, drag reorder |
+| Tags management | ✅ | Full CRUD with color picker, **drag-and-drop reorder** (`@dnd-kit/sortable`, GripVertical handle; chevron fallback), plain no-card layout |
 | Shortcuts (2 configurable) | ✅ | Open command palette, Close tab |
-| Confirm-before-delete toggle | ✅ | |
-| Default ports per DB type | ✅ | |
+| Confirm-before-delete toggle | ✅ | When off, folder/bulk deletes execute without a confirmation dialog |
+| Default ports per DB type | ✅ | New-connection forms prefill the port from `default_ports` per DB type (custom ports in pasted URLs still win) |
 | More keyboard shortcuts | ❌ | Only 2 configurable actions |
 | Editor settings | ❌ | Placeholder tab |
 | SSH key management | ❌ | Only path inputs, no key file reading |
