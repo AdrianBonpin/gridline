@@ -6,6 +6,8 @@
   "permissions": [
     "core:default",
     "core:window:allow-set-title",
+    "core:window:allow-set-theme",
+    "core:window:allow-set-background-color",
     "opener:default",
     "dialog:default",
     "fs:default",
