@@ -77,54 +77,54 @@ export default function App() {
     const dbViewerVisible = activeView === "db-viewer";
 
     return (
-        <div className="min-h-svh bg-canvas select-none">
+        <div className="h-svh bg-canvas select-none flex flex-col overflow-hidden">
             {typeof window !== "undefined" &&
                 "__TAURI_INTERNALS__" in window && (
-                    // macOS "Overlay" title bar: traffic lights float here and the
-                    // webview paints under them — this strip is the titlebar
-                    // (draggable via data-tauri-drag-region) with a bottom border
-                    // separating it from the app content below.
+                    // macOS "Overlay" title bar: in-flow strip the window can be
+                    // dragged by; traffic lights float over it. Only in Tauri.
                     <div
                         data-tauri-drag-region
                         aria-hidden
-                        className="fixed inset-x-0 top-0 h-7 z-50 bg-canvas border-b border-border"
+                        className="h-7 shrink-0 bg-canvas border-b border-border select-none"
                     />
                 )}
-            {connectionError && (
-                <div className="px-6 pt-7">
-                    <ErrorBanner
-                        error={connectionError}
-                        onRetry={loadConnections}
+            <div className="flex-1 min-h-0">
+                {connectionError && (
+                    <div className="px-6 pt-4">
+                        <ErrorBanner
+                            error={connectionError}
+                            onRetry={loadConnections}
+                        />
+                    </div>
+                )}
+                {activeView === "settings" && <SettingsPage />}
+                {activeView === "new-connection" && (
+                    <NewConnectionScreen
+                        defaultFolderId={activeFolderId}
+                        prefilledConnectionString={prefilledConnectionString ?? ""}
+                        folders={folders}
+                        tags={tags}
+                        onSaved={() => {
+                            clearPrefilledConnectionString();
+                            setActiveView("home");
+                        }}
+                        onCancel={() => {
+                            clearPrefilledConnectionString();
+                            setActiveView("home");
+                        }}
                     />
-                </div>
-            )}
-            {activeView === "settings" && <SettingsPage />}
-            {activeView === "new-connection" && (
-                <NewConnectionScreen
-                    defaultFolderId={activeFolderId}
-                    prefilledConnectionString={prefilledConnectionString ?? ""}
-                    folders={folders}
-                    tags={tags}
-                    onSaved={() => {
-                        clearPrefilledConnectionString();
-                        setActiveView("home");
-                    }}
-                    onCancel={() => {
-                        clearPrefilledConnectionString();
-                        setActiveView("home");
-                    }}
-                />
-            )}
-            {activeView === "home" && <HomeScreen />}
-            {keepDbViewerMounted && (
-                <div className={dbViewerVisible ? "contents" : "hidden"}>
-                    <DbViewerScreen
-                        connectionId={useUiStore.getState().activeConnectionId ?? ""}
-                        onHome={() => setActiveView("home")}
-                        onSettings={openSettings}
-                    />
-                </div>
-            )}
+                )}
+                {activeView === "home" && <HomeScreen />}
+                {keepDbViewerMounted && (
+                    <div className={dbViewerVisible ? "contents" : "hidden"}>
+                        <DbViewerScreen
+                            connectionId={useUiStore.getState().activeConnectionId ?? ""}
+                            onHome={() => setActiveView("home")}
+                            onSettings={openSettings}
+                        />
+                    </div>
+                )}
+            </div>
             <ToastContainer />
         </div>
     );
