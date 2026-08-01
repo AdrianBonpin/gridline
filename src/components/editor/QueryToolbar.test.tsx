@@ -153,15 +153,15 @@ describe("QueryToolbar", () => {
     expect(screen.getByLabelText("Save query")).toBeInTheDocument();
   });
 
-  it("history + save icons are left of Run button", () => {
+  it("orders toolbar actions: Run, History, Format, Save", () => {
     renderToolbar({});
     const container = screen.getByLabelText("Query toolbar actions");
     const buttons = Array.from(container.querySelectorAll("button"));
     const btnLabels = buttons.map((b) => b.getAttribute("aria-label"));
-    // History should be first, then Save, then Run, then Format
-    expect(btnLabels[0]).toBe("Query history");
-    expect(btnLabels[1]).toBe("Save query");
-    expect(btnLabels[2]).toBe("Run query");
-    expect(btnLabels[3]).toBe("Auto format query");
+    // Run Query first, then History, then Auto Format, then Save
+    expect(btnLabels[0]).toBe("Run query");
+    expect(btnLabels[1]).toBe("Query history");
+    expect(btnLabels[2]).toBe("Auto format query");
+    expect(btnLabels[3]).toBe("Save query");
   });
 });

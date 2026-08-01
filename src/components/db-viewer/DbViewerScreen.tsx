@@ -635,7 +635,11 @@ const onQueriesPanelResizeStart = useCallback(
                                 {!activeTab ? (
                                     <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
                                         <Terminal size={32} />
-                                        <span>Open a new query tab or run a query from the history</span>
+                                        <span>
+                                            {currentView === "queries"
+                                                ? "Open a new query tab or run a query from the history"
+                                                : "Select a table from the tree to browse its data, or open a new query tab"}
+                                        </span>
                                     </div>
                                 ) : activeTab?.tabType === "query" ? (
                                     <Suspense

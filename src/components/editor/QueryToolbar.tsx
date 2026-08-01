@@ -73,30 +73,6 @@ export function QueryToolbar({
         className="flex items-center gap-1"
         aria-label="Query toolbar actions"
       >
-        {/* History dropdown — leftmost action */}
-        <QueryHistoryDropdown
-          connectionId={connectionId}
-          onRestore={onRestore}
-          onRun={onRunFromHistory}
-        />
-
-        {/* Save Query icon — left of Run */}
-        <Tooltip content="Save query" side="bottom">
-          <button
-            type="button"
-            aria-label="Save query"
-            onClick={() => {
-              if (currentQueryText.trim()) {
-                setSaveDialogOpen(true);
-              }
-            }}
-            disabled={readOnly || !currentQueryText.trim()}
-            className="flex items-center rounded px-2 py-1.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Save className="h-3.5 w-3.5" />
-          </button>
-        </Tooltip>
-
         {/* Run Query: outline play that fills on hover; tooltip (delayed) reveals the shortcut */}
         <Tooltip
           content={
@@ -124,6 +100,13 @@ export function QueryToolbar({
           </button>
         </Tooltip>
 
+        {/* History dropdown */}
+        <QueryHistoryDropdown
+          connectionId={connectionId}
+          onRestore={onRestore}
+          onRun={onRunFromHistory}
+        />
+
         {/* Auto format: icon only with tooltip */}
         <Tooltip content="Auto format query" side="bottom">
           <button
@@ -134,6 +117,23 @@ export function QueryToolbar({
             aria-label="Auto format query"
           >
             <Wand2 className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+
+        {/* Save Query icon */}
+        <Tooltip content="Save query" side="bottom">
+          <button
+            type="button"
+            aria-label="Save query"
+            onClick={() => {
+              if (currentQueryText.trim()) {
+                setSaveDialogOpen(true);
+              }
+            }}
+            disabled={readOnly || !currentQueryText.trim()}
+            className="flex items-center rounded px-2 py-1.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Save className="h-3.5 w-3.5" />
           </button>
         </Tooltip>
       </div>
