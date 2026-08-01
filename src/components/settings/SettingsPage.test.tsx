@@ -29,6 +29,10 @@ vi.mock("../../lib/commands", () => ({
     confirm_before_delete: true,
     default_ports: { postgresql: 5432, mysql: 3306, sqlite: null, redis: 6379 },
     tag_order: null,
+    table_refresh_rate: 0,
+    table_page_size: 50,
+    shortcuts: {},
+    accent_color: "#2563EB",
   }),
   updateSetting: vi.fn().mockResolvedValue(undefined),
   getConnections: vi.fn().mockResolvedValue([]),
@@ -63,6 +67,7 @@ const baseSettings = {
   table_refresh_rate: 0,
   table_page_size: 50,
   shortcuts: {} as Record<string, string>,
+  accent_color: "#2563EB",
 };
 
 describe("SettingsPage", () => {
@@ -194,6 +199,17 @@ describe("GeneralSettingsTab", () => {
     expect(screen.getByRole("radiogroup", { name: /theme/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/font size/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/default folder/i)).toBeInTheDocument();
+  });
+
+  it("renders the accent color picker and persists a selection", async () => {
+    const user = userEvent.setup();
+    render(<GeneralSettingsTab />);
+    const accentGroup = screen.getByRole("radiogroup", { name: /accent color/i });
+    expect(accentGroup).toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: /accent #22c55e/i }));
+    await waitFor(() => {
+      expect(commands.updateSetting).toHaveBeenCalledWith("accent_color", "#22C55E");
+    });
   });
 });
 

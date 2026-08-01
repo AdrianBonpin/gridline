@@ -451,6 +451,10 @@ impl Store {
                 .get("shortcuts")
                 .and_then(|v| serde_json::from_str(v).ok())
                 .unwrap_or_default(),
+            accent_color: map
+                .get("accent_color")
+                .cloned()
+                .unwrap_or_else(|| "#2563EB".to_string()),
         })
     }
 
@@ -977,6 +981,7 @@ mod tests {
         assert_eq!(settings.theme, "system");
         assert_eq!(settings.font_size, "medium");
         assert!(settings.confirm_before_delete);
+        assert_eq!(settings.accent_color, "#2563EB");
         assert_eq!(
             settings.default_ports.get("postgresql"),
             Some(&Some(5432))
@@ -989,6 +994,14 @@ mod tests {
         store.update_setting("theme", "light").unwrap();
         let settings = store.get_settings().unwrap();
         assert_eq!(settings.theme, "light");
+    }
+
+    #[test]
+    fn settings_accent_color_persists() {
+        let store = fresh_store();
+        store.update_setting("accent_color", "#22C55E").unwrap();
+        let settings = store.get_settings().unwrap();
+        assert_eq!(settings.accent_color, "#22C55E");
     }
 
     #[test]

@@ -34,7 +34,7 @@ export default function App() {
     const prefilledConnectionString = useUiStore((s) => s.prefilledConnectionString);
     const clearPrefilledConnectionString = useUiStore((s) => s.clearPrefilledConnectionString);
 
-    useAppearance(settings?.theme ?? "system", settings?.font_size ?? "medium");
+    useAppearance(settings?.theme ?? "system", settings?.font_size ?? "medium", settings?.accent_color ?? "#2563EB");
 
     useEffect(() => {
         loadConnections();

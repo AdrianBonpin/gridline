@@ -12,4 +12,5 @@ pub struct Settings {
     pub table_refresh_rate: i64,
     pub table_page_size: i64,
     pub shortcuts: HashMap<String, String>,
+    pub accent_color: String,
 }

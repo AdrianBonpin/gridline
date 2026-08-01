@@ -2,6 +2,7 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { Select } from "../ui/Select";
 import { ThemePicker } from "../ui/ThemePicker";
+import { AccentPicker } from "../ui/AccentPicker";
 import { SettingsRow } from "../ui/SettingsRow";
 import * as cmd from "../../lib/commands";
 import type { FontSize } from "../../lib/types";
@@ -65,6 +66,15 @@ export function GeneralSettingsTab() {
               onChange={(value) => updateSetting("font_size", value)}
               options={FONT_SIZE_OPTIONS}
               label="Font size"
+            />
+          </SettingsRow>
+          <SettingsRow
+            title="Accent color"
+            description="Used for buttons, active states, and highlights."
+          >
+            <AccentPicker
+              value={settings.accent_color}
+              onChange={(color) => updateSetting("accent_color", color)}
             />
           </SettingsRow>
         </div>

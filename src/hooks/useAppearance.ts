@@ -92,11 +92,25 @@ export function applyFontSize(fontSize: FontSize): void {
     }
 }
 
+/**
+ * Applies the accent color as a CSS custom property on the root. Invalid or
+ * non-hex values fall back to the theme default (via removal).
+ */
+export function applyAccentColor(accent: string): void {
+    const root = document.documentElement;
+    if (/^#[0-9a-fA-F]{6}$/.test(accent)) {
+        root.style.setProperty("--color-accent", accent);
+    } else {
+        root.style.removeProperty("--color-accent");
+    }
+}
+
 /** Keeps the document appearance in sync with the theme/font-size settings. */
-export function useAppearance(theme: Theme, fontSize: FontSize): void {
+export function useAppearance(theme: Theme, fontSize: FontSize, accentColor: string): void {
     useEffect(() => {
         const cleanupTheme = applyTheme(theme);
         applyFontSize(fontSize);
+        applyAccentColor(accentColor);
         return cleanupTheme;
-    }, [theme, fontSize]);
+    }, [theme, fontSize, accentColor]);
 }

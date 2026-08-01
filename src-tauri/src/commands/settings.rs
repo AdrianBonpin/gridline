@@ -39,6 +39,7 @@ mod tests {
         let s = get_settings_inner(&st).unwrap();
         assert_eq!(s.theme, "system");
         assert_eq!(s.font_size, "medium");
+        assert_eq!(s.accent_color, "#2563EB");
     }
 
     #[test]
@@ -46,5 +47,12 @@ mod tests {
         let st = state();
         update_setting_inner(&st, "theme", "light").unwrap();
         assert_eq!(get_settings_inner(&st).unwrap().theme, "light");
+    }
+
+    #[test]
+    fn update_accent_color_persists() {
+        let st = state();
+        update_setting_inner(&st, "accent_color", "#EF4444").unwrap();
+        assert_eq!(get_settings_inner(&st).unwrap().accent_color, "#EF4444");
     }
 }

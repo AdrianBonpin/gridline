@@ -20,6 +20,7 @@ vi.mock("./lib/commands", () => ({
     table_refresh_rate: 30,
     table_page_size: 50,
     shortcuts: {},
+    accent_color: "#2563EB",
   } satisfies Settings),
   testConnection: vi.fn().mockResolvedValue({ ok: true }),
 }));
@@ -110,6 +111,7 @@ describe("App", () => {
       table_refresh_rate: 30,
       table_page_size: 50,
       shortcuts: {},
+      accent_color: "#2563EB",
     });
     await waitFor(() => {
       expect(useUiStore.getState().activeFolderId).toBe("folder-1");

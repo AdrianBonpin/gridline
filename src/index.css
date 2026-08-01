@@ -28,6 +28,9 @@
 
 :root {
   color-scheme: dark;
+  /* Derive hover/muted from the runtime accent so a custom accent flows through */
+  --color-accent-hover: color-mix(in srgb, var(--color-accent) 88%, black);
+  --color-accent-muted: color-mix(in srgb, var(--color-accent) 70%, white);
 }
 
 /* Light theme overrides — the app is dark-first; `.light` is toggled on the root */

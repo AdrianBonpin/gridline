@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { applyTheme, applyFontSize, resolveTheme } from "./useAppearance";
+import { applyTheme, applyFontSize, applyAccentColor, resolveTheme } from "./useAppearance";
 
 const windowMocks = vi.hoisted(() => ({
     setTheme: vi.fn().mockResolvedValue(undefined),
@@ -35,6 +35,7 @@ describe("useAppearance helpers", () => {
     beforeEach(() => {
         getRoot().classList.remove("light");
         delete getRoot().dataset.fontSize;
+        getRoot().style.removeProperty("--color-accent");
         windowMocks.setTheme.mockClear();
         windowMocks.setBackgroundColor.mockClear();
     });
@@ -42,6 +43,7 @@ describe("useAppearance helpers", () => {
     afterEach(() => {
         getRoot().classList.remove("light");
         delete getRoot().dataset.fontSize;
+        getRoot().style.removeProperty("--color-accent");
         delete (window as unknown as { matchMedia?: unknown }).matchMedia;
     });
 
@@ -112,6 +114,31 @@ describe("useAppearance helpers", () => {
         getRoot().dataset.fontSize = "large";
         applyFontSize("medium");
         expect(getRoot().dataset.fontSize).toBeUndefined();
+    });
+
+    it('applyAccentColor sets the custom property for a valid hex', () => {
+        applyAccentColor("#22C55E");
+        expect(
+            getRoot().style.getPropertyValue("--color-accent").toLowerCase()
+        ).toBe("#22c55e");
+    });
+
+    it('applyAccentColor accepts lowercase hex', () => {
+        applyAccentColor("#2563eb");
+        expect(
+            getRoot().style.getPropertyValue("--color-accent").toLowerCase()
+        ).toBe("#2563eb");
+    });
+
+    it('applyAccentColor removes the custom property for an invalid value', () => {
+        getRoot().style.setProperty("--color-accent", "#22C55E");
+        applyAccentColor("blue");
+        expect(getRoot().style.getPropertyValue("--color-accent")).toBe("");
+    });
+
+    it('applyAccentColor rejects malformed hex', () => {
+        applyAccentColor("#22C5");
+        expect(getRoot().style.getPropertyValue("--color-accent")).toBe("");
     });
 
     it("syncs the native window (theme + background) for light", async () => {

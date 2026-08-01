@@ -165,5 +165,6 @@ function baseSettings() {
     table_refresh_rate: 30,
     table_page_size: 50,
     shortcuts: {},
+    accent_color: "#2563EB",
   };
 }
