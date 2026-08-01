@@ -83,10 +83,10 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("renders settings header with back button and title", async () => {
+  it("renders settings header with back button and active tab title", async () => {
     render(<SettingsPage />);
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: /settings/i })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: /general/i })).toBeInTheDocument();
     });
     expect(screen.getByRole("button", { name: /back/i })).toBeInTheDocument();
   });

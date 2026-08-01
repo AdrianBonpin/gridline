@@ -114,13 +114,10 @@ export function SettingsPage() {
 
                 {/* Content */}
                 <div className="flex-1 flex flex-col min-h-0">
-                    <header className="px-3 pt-3 pb-3 border-b border-border shrink-0 flex items-center justify-between gap-3">
+                    <header className="px-3 pt-3 pb-3 border-b border-border shrink-0 flex items-center gap-3">
                         <h1 className="font-heading text-lg text-text">
-                            Settings
-                        </h1>
-                        <span className="text-sm text-text-muted truncate">
                             {TABS.find((t) => t.id === activeTab)?.label}
-                        </span>
+                        </h1>
                     </header>
                     <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
                         <AnimatePresence mode="wait">
