@@ -94,6 +94,7 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 - **Sequences & Enums** — current values, increments, cycle flags; enum labels in bordered list view
 - **Extensions** — installed extensions with version, schema, and comment
 - **Schema Visualizer (ER Diagram)** — interactive React Flow graph with dagre auto-layout, crow's foot notation (1:1, 1:N, N:M), color-coded relationships, schema selector, zoom controls, collapsible columns (PK/FK/unique-only), cross-schema FK support for PostgreSQL + SQLite
+- **Unified Objects View** — Functions, Triggers, Sequences, Enums, and Extensions share a single sidebar with an object-type dropdown switcher (title position), refresh/search, and db/schema selectors
 
 ### SQL Editor & Query Workbench
 - **Monaco SQL Editor** — lazy-loaded [Monaco Editor](https://microsoft.github.io/monaco-editor/) with SQL syntax highlighting, Cmd/Ctrl+Enter to run
@@ -104,7 +105,9 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 - **Multi-Tab Workspace** — unlimited named tabs, session persistence across restarts
 - **Changes Queue** — queue INSERT/UPDATE/DELETE changes; preview before committing all. The tab bar's **Changes** button (checklist icon + pending-count badge) toggles the bottom Commit All panel — the single entry point
 - **Smart Default Sort** — auto-detects `updated_at`, `created_at`, `_id` columns for logical initial sorting
-- *(query history UI dropdown, saved queries/snippets — upcoming)*
+- **Query History** — recent queries per connection in a toolbar dropdown (load / run / favorite / clear), consecutive-identical dedup, retention pruned to 500 per connection
+- **Saved Queries** — save the current query with a name + folder from the toolbar; manage them in the Queries view
+- **Queries View** — two-pane workspace: an Explorer-styled sidebar with History / Saved Queries (per-connection scope, favorites filter, animated search) beside the tabbed query editor; click any row to load it into the editor
 
 ### Data Grid & Schema Browser
 - **Virtualized Grid** — row-level virtualization via `@tanstack/react-virtual` handles 100k+ rows
@@ -120,6 +123,7 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 - **Visual Backup** — `pg_dump` wrapper with format selector (Plain SQL, Custom, Tar, Directory), file browser, schema filter, no-owner toggle, real-time progress bar
 - **Visual Restore** — `pg_restore` wrapper with file browser, format, clean toggle, destructive confirmation checkbox
 - **DB-to-DB Sync** — pipe `pg_dump` → `pg_restore` between two connections with source/target pickers, schema filter, flow indicator
+- **Unified Tools View** — Backup, Restore, and DB-to-DB Sync grouped under one **Tools** view with an operation-switcher dropdown
 
 ### App Portability
 - **Export** — save all workspaces, folders, saved queries, tags, and non-sensitive metadata to a single JSON archive
@@ -232,18 +236,19 @@ gridline/
 - **Home Screen & Organization** — Connection cards by folder, folders CRUD, tags CRUD with colors, global search (Cmd+K), import/export connections (JSON), bulk select/delete, DB type filter, demo SQLite database
 - **Query Editor (Core)** — Monaco SQL editor with Cmd+Enter execution, `execute_query` Rust command (PostgreSQL + SQLite, subquery pagination with raw fallback), query tabs in the DB viewer, destructive query confirmation dialog, `query_history` persistence backend
 - **Home Screen Filters** — Tag filter with OR semantics, folder cards matching tags or containing matching connections, DB type filter hiding empty folders, environment filter (All/Production/Staging/Development/None), global search across all folders with "Showing Search Results" breadcrumb + Clear
+- **Query History & Saved Queries** — toolbar history dropdown (load / run / favorite / clear), favorites, consecutive-identical dedup + 500-retention pruning, SaveQueryDialog, and a two-pane Queries view (History / Saved Queries sidebar scoped per connection + tabbed query workspace)
+- **Consolidated Navigation** — merged Functions/Triggers/Sequences/Enums/Extensions into a single Objects view (object-type dropdown) and Backup/Restore/DB Sync into a single Tools view (operation dropdown)
 
 ### 🟡 In Progress / Upcoming
-- **Query Editor (Polish)** — SQL autocomplete (keywords, tables, and per-table columns), query history UI dropdown, saved queries
+- **Editor Settings** — font, tab size, word wrap, minimap options
 - **SSH/SSL Runtime** — SSH tunnel via `ssh2` crate, SSL/TLS config passed to `sqlx`/`tokio-postgres`
 - **Inline Cell Editing** — Edit cells directly in the data grid
 - **Data Import** — CSV, JSON import with column mapping
 
 ### 🔮 Future
 - **Multi-DB Support** — MySQL browsing, Redis key browser, full MySQL/SQLite/Redis parity with PostgreSQL
-- **Query Workbench** — Multiple result sets, query favorites/pinning, visual query builder
+- **Query Workbench** — Multiple result sets, visual query builder
 - **Deeper PostgreSQL** — Indexes, constraints, materialized views, stored procedure view, user/role management
-- **Collaboration** — Team workspaces, shared connections, query sharing
 - **Notebook Reports** — SQL-backed markdown reports with embedded results
 - **AI Integration (BYOK)** — Bring-Your-Own-Key AI assistant: natural-language → SQL generation, query explanations, schema summaries, error suggestions. Key stored in OS keychain; only user's chosen provider sees SQL/text.
 

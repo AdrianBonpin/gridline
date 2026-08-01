@@ -11,6 +11,22 @@ pub struct Store {
     conn: Mutex<SqliteConnection>,
 }
 
+/// A saved query row (returned from the store).
+#[derive(Debug, Clone)]
+pub struct SavedQueryRow {
+    pub id: String,
+    pub connection_id: Option<String>,
+    pub name: String,
+    pub query_text: String,
+    pub folder: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+const MAX_NAME_LEN: usize = 200;
+const MAX_FOLDER_LEN: usize = 100;
+const MAX_QUERY_TEXT_LEN: usize = 1_048_576; // 1 MB
+
 impl Store {
     pub fn from_connection(conn: SqliteConnection) -> Self {
         Self {
@@ -449,6 +465,8 @@ impl Store {
     }
 
     /// Insert a row into the `query_history` table.
+    /// Dedups consecutive identical queries per connection (UPDATE the last row
+    /// instead of INSERTing a new one) and prunes to at most 500 rows per connection.
     pub fn insert_query_history(
         &self,
         id: &str,
@@ -461,11 +479,46 @@ impl Store {
     ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = Self::now();
+
+        // DEDUP: check last row for this connection
+        let last: Option<(String, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, query_text FROM query_history
+                     WHERE connection_id = ?1
+                     ORDER BY executed_at DESC LIMIT 1",
+                )
+                .map_err(|e| e.to_string())?;
+            stmt.query_row(params![connection_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .ok()
+        };
+
+        if let Some((existing_id, existing_text)) = last {
+            if existing_text == query_text {
+                // Consecutive identical — UPDATE the existing row
+                conn.execute(
+                    "UPDATE query_history SET execution_time_ms = ?1, row_count = ?2, status = ?3, error_message = ?4, executed_at = ?5 WHERE id = ?6",
+                    params![execution_time_ms, row_count, status, error_message, now, existing_id],
+                )
+                .map_err(|e| e.to_string())?;
+                // Still run pruning in case updates shifted retention needs
+                prune_query_history(&conn, connection_id, 500)?;
+                return Ok(());
+            }
+        }
+
+        // INSERT new row
         conn.execute(
             "INSERT INTO query_history (id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![id, connection_id, query_text, execution_time_ms, row_count, status, error_message, now],
         )
         .map_err(|e| e.to_string())?;
+
+        // PRUNING: keep at most `max_rows` per connection
+        prune_query_history(&conn, connection_id, 500)?;
+
         Ok(())
     }
 
@@ -481,12 +534,12 @@ impl Store {
         let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
             if let Some(cid) = connection_id {
                 (
-                    "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at FROM query_history WHERE connection_id = ?1 ORDER BY executed_at DESC LIMIT ?2 OFFSET ?3".to_string(),
+                    "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at, favorite FROM query_history WHERE connection_id = ?1 ORDER BY executed_at DESC LIMIT ?2 OFFSET ?3".to_string(),
                     vec![Box::new(cid.to_string()), Box::new(limit), Box::new(offset)],
                 )
             } else {
                 (
-                    "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at FROM query_history ORDER BY executed_at DESC LIMIT ?1 OFFSET ?2".to_string(),
+                    "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at, favorite FROM query_history ORDER BY executed_at DESC LIMIT ?1 OFFSET ?2".to_string(),
                     vec![Box::new(limit), Box::new(offset)],
                 )
             };
@@ -503,6 +556,7 @@ impl Store {
                     status: row.get(5)?,
                     error_message: row.get(6)?,
                     executed_at: row.get(7)?,
+                    favorite: row.get::<_, i64>(8)? != 0, // convert INTEGER to bool
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -524,6 +578,179 @@ impl Store {
         }
         Ok(())
     }
+
+    /// Toggle the `favorite` flag for a query history entry.
+    /// Returns an error if no row with the given id + connection_id exists.
+    pub fn set_history_favorite(&self, id: &str, connection_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let affected = conn
+            .execute(
+                "UPDATE query_history SET favorite = 1 - favorite WHERE id = ?1 AND connection_id = ?2",
+                params![id, connection_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if affected == 0 {
+            return Err("History entry not found".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn save_query(
+        &self,
+        connection_id: Option<&str>,
+        name: &str,
+        query_text: &str,
+        folder: &str,
+    ) -> Result<SavedQueryRow, String> {
+        if name.is_empty() || name.len() > MAX_NAME_LEN {
+            return Err("Name must be 1–200 characters".to_string());
+        }
+        if folder.len() > MAX_FOLDER_LEN {
+            return Err("Folder must be ≤100 characters".to_string());
+        }
+        if query_text.len() > MAX_QUERY_TEXT_LEN {
+            return Err("Query text must be ≤1 MB".to_string());
+        }
+
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Self::now();
+        conn.execute(
+            "INSERT INTO queries (id, connection_id, name, query_text, folder, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, connection_id, name, query_text, folder, now, now],
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(SavedQueryRow {
+            id,
+            connection_id: connection_id.map(|s| s.to_string()),
+            name: name.to_string(),
+            query_text: query_text.to_string(),
+            folder: folder.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn list_saved_queries(
+        &self,
+        connection_id: Option<&str>,
+    ) -> Result<Vec<SavedQueryRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(cid) = connection_id {
+                (
+                    "SELECT id, connection_id, name, query_text, folder, created_at, updated_at FROM queries WHERE connection_id = ?1 ORDER BY updated_at DESC".to_string(),
+                    vec![Box::new(cid.to_string())],
+                )
+            } else {
+                (
+                    "SELECT id, connection_id, name, query_text, folder, created_at, updated_at FROM queries ORDER BY updated_at DESC".to_string(),
+                    vec![],
+                )
+            };
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(&refs), |row| {
+                Ok(SavedQueryRow {
+                    id: row.get(0)?,
+                    connection_id: row.get(1)?,
+                    name: row.get(2)?,
+                    query_text: row.get(3)?,
+                    folder: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn update_saved_query(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        query_text: Option<&str>,
+        folder: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        // Build dynamic SET clauses
+        let mut sets: Vec<String> = vec!["updated_at = ?1".to_string()];
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now)];
+        let mut idx = 2i32; // next param index (after ?1 for updated_at)
+
+        if let Some(n) = name {
+            if n.is_empty() || n.len() > MAX_NAME_LEN {
+                return Err("Name must be 1–200 characters".to_string());
+            }
+            sets.push(format!("name = ?{idx}"));
+            params.push(Box::new(n.to_string()));
+            idx += 1;
+        }
+        if let Some(qt) = query_text {
+            if qt.len() > MAX_QUERY_TEXT_LEN {
+                return Err("Query text must be ≤1 MB".to_string());
+            }
+            sets.push(format!("query_text = ?{idx}"));
+            params.push(Box::new(qt.to_string()));
+            idx += 1;
+        }
+        if let Some(f) = folder {
+            if f.len() > MAX_FOLDER_LEN {
+                return Err("Folder must be ≤100 characters".to_string());
+            }
+            sets.push(format!("folder = ?{idx}"));
+            params.push(Box::new(f.to_string()));
+            idx += 1;
+        }
+
+        let sql = format!(
+            "UPDATE queries SET {} WHERE id = ?{idx}",
+            sets.join(", "),
+        );
+        let mut all_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let id_param: Box<dyn rusqlite::types::ToSql> = Box::new(id.to_string());
+        all_refs.push(id_param.as_ref());
+
+        conn.execute(&sql, rusqlite::params_from_iter(&all_refs))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_saved_query(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM queries WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+/// Delete oldest rows for a connection, keeping at most `max_rows`.
+fn prune_query_history(
+    conn: &rusqlite::Connection,
+    connection_id: &str,
+    max_rows: i64,
+) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM query_history WHERE connection_id = ?1",
+            params![connection_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if count > max_rows {
+        conn.execute(
+            "DELETE FROM query_history WHERE connection_id = ?1 AND id NOT IN (
+                SELECT id FROM query_history WHERE connection_id = ?1
+                ORDER BY executed_at DESC LIMIT ?2
+            )",
+            params![connection_id, max_rows],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -815,5 +1042,299 @@ mod tests {
             got[0].ssl_key_path.as_deref(),
             Some("/etc/ssl/private/client-key.pem")
         );
+    }
+
+    #[test]
+    fn insert_query_history_dedups_consecutive_identical() {
+        let store = fresh_store();
+        // Insert connection needed for FK
+        let conn = store
+            .create_connection(ConnectionInput {
+                name: "dedup-conn".into(),
+                db_type: "postgresql".into(),
+                host: "localhost".into(),
+                port: Some(5432),
+                username: None,
+                folder_id: None,
+                password: None,
+                database: Some("public".into()),
+                ssh_host: None,
+                ssh_port: None,
+                ssh_user: None,
+                ssh_auth_method: None,
+                ssh_private_key_path: None,
+                ssh_passphrase: None,
+                ssl_mode: None,
+                ssl_ca_path: None,
+                ssl_cert_path: None,
+                ssl_key_path: None,
+                environment: None,
+                tag_ids: vec![],
+            })
+            .unwrap();
+
+        // First insert
+        store
+            .insert_query_history("h1", &conn.id, "SELECT 1", Some(10), Some(5), "success", None)
+            .unwrap();
+        // Consecutive identical — should UPDATE, not INSERT
+        store
+            .insert_query_history("h2", &conn.id, "SELECT 1", Some(20), Some(8), "success", None)
+            .unwrap();
+        // There should still be 1 row (not 2), with updated stats
+        let rows = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
+        assert_eq!(rows.len(), 1, "Consecutive identical queries should dedup to one row");
+        assert_eq!(rows[0].execution_time_ms, Some(20), "Stats should update after dedup");
+        assert_eq!(rows[0].id, "h1", "Original ID should persist after dedup");
+
+        // Different query — should INSERT a new row
+        store
+            .insert_query_history("h3", &conn.id, "SELECT 2", Some(5), Some(0), "success", None)
+            .unwrap();
+        let rows2 = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
+        assert_eq!(rows2.len(), 2, "Different query should create a new row");
+        assert_eq!(rows2[0].id, "h3", "Most recent row should be the new one");
+    }
+
+    #[test]
+    fn insert_query_history_prunes_oldest_beyond_500() {
+        let store = fresh_store();
+        let conn = store
+            .create_connection(ConnectionInput {
+                name: "prune-conn".into(),
+                db_type: "postgresql".into(),
+                host: "localhost".into(),
+                port: Some(5432),
+                username: None,
+                folder_id: None,
+                password: None,
+                database: Some("public".into()),
+                ssh_host: None,
+                ssh_port: None,
+                ssh_user: None,
+                ssh_auth_method: None,
+                ssh_private_key_path: None,
+                ssh_passphrase: None,
+                ssl_mode: None,
+                ssl_ca_path: None,
+                ssl_cert_path: None,
+                ssl_key_path: None,
+                environment: None,
+                tag_ids: vec![],
+            })
+            .unwrap();
+        // Insert 510 rows — should trigger pruning beyond 500
+        for i in 0..510 {
+            store
+                .insert_query_history(
+                    &format!("ph{}", i),
+                    &conn.id,
+                    &format!("SELECT {}", i),
+                    Some(1),
+                    Some(1),
+                    "success",
+                    None,
+                )
+                .unwrap();
+        }
+        let rows = store.get_query_history(Some(&conn.id), 1000, 0).unwrap();
+        assert_eq!(rows.len(), 500, "Should be pruned to 500 rows");
+        // Oldest rows (ph0..ph9) should be pruned; most recent (ph509) kept
+        let all_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        assert!(!all_ids.contains(&"ph0".to_string()), "Oldest rows should be pruned");
+        assert!(all_ids.contains(&"ph509".to_string()), "Most recent rows should be kept");
+    }
+
+    #[test]
+    fn get_query_history_includes_favorite_column() {
+        let store = fresh_store();
+        let conn = store
+            .create_connection(ConnectionInput {
+                name: "fav-conn".into(),
+                db_type: "postgresql".into(),
+                host: "h".into(),
+                port: Some(5432),
+                username: None,
+                folder_id: None,
+                password: None,
+                database: None,
+                ssh_host: None,
+                ssh_port: None,
+                ssh_user: None,
+                ssh_auth_method: None,
+                ssh_private_key_path: None,
+                ssh_passphrase: None,
+                ssl_mode: None,
+                ssl_ca_path: None,
+                ssl_cert_path: None,
+                ssl_key_path: None,
+                environment: None,
+                tag_ids: vec![],
+            })
+            .unwrap();
+        store
+            .insert_query_history("fh1", &conn.id, "SELECT 1", Some(5), Some(1), "success", None)
+            .unwrap();
+        let rows = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].favorite, false, "Default favorite should be false");
+    }
+
+    #[test]
+    fn set_history_favorite_toggles() {
+        let store = fresh_store();
+        let conn = store
+            .create_connection(ConnectionInput {
+                name: "ft-conn".into(),
+                db_type: "postgresql".into(),
+                host: "h".into(),
+                port: Some(5432),
+                username: None,
+                folder_id: None,
+                password: None,
+                database: None,
+                ssh_host: None,
+                ssh_port: None,
+                ssh_user: None,
+                ssh_auth_method: None,
+                ssh_private_key_path: None,
+                ssh_passphrase: None,
+                ssl_mode: None,
+                ssl_ca_path: None,
+                ssl_cert_path: None,
+                ssl_key_path: None,
+                environment: None,
+                tag_ids: vec![],
+            })
+            .unwrap();
+        store
+            .insert_query_history("ft1", &conn.id, "SELECT 1", Some(5), Some(1), "success", None)
+            .unwrap();
+
+        // Toggle on
+        store.set_history_favorite("ft1", &conn.id).unwrap();
+        let rows = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
+        assert_eq!(rows[0].favorite, true);
+
+        // Toggle off
+        store.set_history_favorite("ft1", &conn.id).unwrap();
+        let rows2 = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
+        assert_eq!(rows2[0].favorite, false);
+    }
+
+    #[test]
+    fn set_history_favorite_unknown_id_returns_error() {
+        let store = fresh_store();
+        let result = store.set_history_favorite("nonexistent", "any-conn");
+        assert!(result.is_err(), "Unknown id should be an error");
+    }
+
+    fn create_test_connection(store: &Store, name: &str) -> crate::models::Connection {
+        store
+            .create_connection(ConnectionInput {
+                name: name.into(),
+                db_type: "postgresql".into(),
+                host: "h".into(),
+                port: Some(5432),
+                username: None,
+                folder_id: None,
+                password: None,
+                database: None,
+                ssh_host: None,
+                ssh_port: None,
+                ssh_user: None,
+                ssh_auth_method: None,
+                ssh_private_key_path: None,
+                ssh_passphrase: None,
+                ssl_mode: None,
+                ssl_ca_path: None,
+                ssl_cert_path: None,
+                ssl_key_path: None,
+                environment: None,
+                tag_ids: vec![],
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn save_and_list_saved_queries() {
+        let store = fresh_store();
+        let conn = create_test_connection(&store, "sq-conn");
+
+        let saved = store
+            .save_query(Some(&conn.id), "My Query", "SELECT 1", "reports")
+            .unwrap();
+        assert_eq!(saved.name, "My Query");
+        assert_eq!(saved.query_text, "SELECT 1");
+        assert_eq!(saved.folder, "reports");
+        assert_eq!(saved.connection_id, Some(conn.id.clone()));
+
+        let list = store.list_saved_queries(Some(&conn.id)).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, saved.id);
+    }
+
+    #[test]
+    fn save_global_saved_query() {
+        let store = fresh_store();
+        let saved = store
+            .save_query(None, "Global Query", "SELECT version()", "")
+            .unwrap();
+        assert_eq!(saved.connection_id, None);
+        let list = store.list_saved_queries(None).unwrap();
+        assert!(list.iter().any(|q| q.id == saved.id));
+    }
+
+    #[test]
+    fn update_and_delete_saved_query() {
+        let store = fresh_store();
+        let conn = create_test_connection(&store, "ud-conn");
+        let saved = store
+            .save_query(Some(&conn.id), "Original", "SELECT 1", "")
+            .unwrap();
+
+        // Update name
+        store
+            .update_saved_query(&saved.id, Some("Renamed"), None, None)
+            .unwrap();
+        let after = store.list_saved_queries(Some(&conn.id)).unwrap();
+        assert_eq!(after[0].name, "Renamed");
+
+        // Update query text
+        store
+            .update_saved_query(&saved.id, None, Some("SELECT 2"), None)
+            .unwrap();
+        let after2 = store.list_saved_queries(Some(&conn.id)).unwrap();
+        assert_eq!(after2[0].query_text, "SELECT 2");
+
+        // Delete
+        store.delete_saved_query(&saved.id).unwrap();
+        let empty = store.list_saved_queries(Some(&conn.id)).unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn saved_query_name_validated() {
+        let store = fresh_store();
+        // Name > 200 chars should fail
+        let long_name = "a".repeat(201);
+        let result = store.save_query(None, &long_name, "SELECT 1", "");
+        assert!(result.is_err(), "Over-long name should be rejected");
+    }
+
+    #[test]
+    fn saved_query_folder_validated() {
+        let store = fresh_store();
+        let long_folder = "b".repeat(101);
+        let result = store.save_query(None, "ok", "SELECT 1", &long_folder);
+        assert!(result.is_err(), "Over-long folder should be rejected");
+    }
+
+    #[test]
+    fn saved_query_text_size_validated() {
+        let store = fresh_store();
+        let huge_text = "x".repeat(1_048_577); // 1MB + 1 byte
+        let result = store.save_query(None, "ok", &huge_text, "");
+        assert!(result.is_err(), "Over-size query text should be rejected");
     }
 }

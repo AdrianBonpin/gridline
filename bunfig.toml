@@ -1,0 +1,5 @@
+# Bun test runner configuration. `bun test` uses Bun's native runner (it does
+# not read vite.config.ts), so the jsdom/DOM preload lives here. The canonical
+# test command is `bun run test` (vitest run), which uses vite.config.ts.
+[test]
+preload = ["./src/test/bun-dom.ts", "./src/test/bun-setup.ts"]

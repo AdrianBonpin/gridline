@@ -4,6 +4,7 @@ import {
   MiniMap,
   Controls,
   Background,
+  BackgroundVariant,
   useNodesState,
   useEdgesState,
   getNodesBounds,
@@ -107,7 +108,7 @@ function layoutGraph(
             labelStyle: { fill: "#9ca3af", fontSize: 9 },
             labelBgStyle: { fill: "#1f2937", fillOpacity: 0.85 },
             labelBgPadding: [3, 1],
-            labelBorderRadius: 0,
+            labelBgBorderRadius: 0,
           });
         }
       }
@@ -162,8 +163,8 @@ export function SchemaVisualizerPage({
   const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
   const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tableCount, setTableCount] = useState(0);
@@ -552,7 +553,11 @@ export function SchemaVisualizerPage({
           className="bg-canvas"
           proOptions={{ hideAttribution: true }}
         >
-          <Background variant="dots" gap={20} color="var(--color-border)" />
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={20}
+            color="var(--color-border)"
+          />
           <MiniMap
             position="bottom-right"
             nodeStrokeWidth={2}

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef, cloneElement } from "react";
 import {
     ChevronRight,
     FunctionSquare,
@@ -29,7 +29,6 @@ export type ObjectType =
     | "extensions";
 
 interface ObjectExplorerPageProps {
-    type: ObjectType;
     connectionId: string;
 }
 
@@ -40,6 +39,10 @@ const TYPE_LABELS: Record<ObjectType, string> = {
     enums: "Enums",
     extensions: "Extensions",
 };
+
+const OBJECT_TYPE_OPTIONS = (Object.keys(TYPE_LABELS) as ObjectType[]).map(
+    (t) => ({ value: t, label: TYPE_LABELS[t] }),
+);
 
 const SINGULAR_LABELS: Record<ObjectType, string> = {
     functions: "function",
@@ -805,10 +808,8 @@ function renderDetail(type: ObjectType, item: AnyObject) {
     }
 }
 
-export function ObjectExplorerPage({
-    type,
-    connectionId,
-}: ObjectExplorerPageProps) {
+export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
+    const [type, setType] = useState<ObjectType>("functions");
     const [panelWidth, setPanelWidth] = useState(280);
     const panelResizeRef = useRef<{ startX: number; startW: number } | null>(
         null,
@@ -943,6 +944,18 @@ export function ObjectExplorerPage({
     const label = TYPE_LABELS[type];
     const singular = SINGULAR_LABELS[type];
 
+    // Switching object type: reset selection/search, clear the stale list so
+    // the loading state renders (no flash of the previous type's objects), and
+    // reset the last-fetched-schema marker so the fetch effect re-runs.
+    const handleTypeChange = (next: ObjectType) => {
+        setType(next);
+        setSearchQuery("");
+        setSelectedItem(null);
+        setItems(null);
+        setLoading(true);
+        lastSchemaRef.current = undefined;
+    };
+
     return (
         <div className="flex flex-1 min-h-0 overflow-hidden">
             {/* Left panel: toolbar + object list */}
@@ -952,9 +965,13 @@ export function ObjectExplorerPage({
             >
                 <div className="p-3 border-b border-border space-y-2">
                     <div className="flex items-center justify-between">
-                        <span className="text-sm font-semibold text-text">
-                            {label}
-                        </span>
+                        <SelectDropdown
+                            value={type}
+                            onChange={(v) => handleTypeChange(v as ObjectType)}
+                            options={OBJECT_TYPE_OPTIONS}
+                            variant="ghost"
+                            aria-label="Object type"
+                        />
                         <div className="flex items-center gap-1">
                             <button
                                 aria-label="Refresh"
@@ -1144,8 +1161,8 @@ export function ObjectExplorerPage({
                 ) : (
                     <div className="flex items-center justify-center h-full text-text-muted">
                         <div className="text-center space-y-2">
-                            <div className="w-12 h-12 mx-auto rounded-full bg-surface flex items-center justify-center">
-                                {icon}
+                            <div className="flex justify-center">
+                                {cloneElement(icon as React.ReactElement<{ size?: number }>, { size: 20 })}
                             </div>
                             <p className="text-sm">
                                 Select a {singular} to view details

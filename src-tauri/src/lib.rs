@@ -98,6 +98,11 @@ pub fn run() {
             query::execute_query,
             query::get_query_history,
             query::clear_query_history,
+            query::set_history_favorite,
+            query::save_query,
+            query::get_saved_queries,
+            query::update_saved_query,
+            query::delete_saved_query,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

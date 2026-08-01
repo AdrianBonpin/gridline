@@ -1,16 +1,11 @@
 import {
-    ArrowLeftRight,
+    Boxes,
+    Clock,
     Database,
-    Download,
-    FunctionSquare,
-    GitBranch,
-    Grid2x2,
+    DatabaseBackup,
     Home,
-    ListOrdered,
-    Puzzle,
     Settings,
-    Tag,
-    Upload,
+    Share2,
 } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
 
@@ -33,30 +28,17 @@ export function DbViewerSidebar({
     const topItems: NavItem[] = [
         { id: "db-viewer", label: "Explorer", icon: <Database size={16} /> },
         {
+            id: "queries",
+            label: "Queries",
+            icon: <Clock size={16} />,
+        },
+        {
             id: "schema-visualizer",
             label: "Schema Visualizer",
-            icon: <Grid2x2 size={16} />,
+            icon: <Share2 size={16} />,
         },
-        {
-            id: "functions",
-            label: "Functions",
-            icon: <FunctionSquare size={16} />,
-        },
-        { id: "triggers", label: "Triggers", icon: <GitBranch size={16} /> },
-        {
-            id: "sequences",
-            label: "Sequences",
-            icon: <ListOrdered size={16} />,
-        },
-        { id: "enums", label: "Enums", icon: <Tag size={16} /> },
-        { id: "extensions", label: "Extensions", icon: <Puzzle size={16} /> },
-        { id: "backup", label: "Backup", icon: <Download size={16} /> },
-        { id: "restore", label: "Restore", icon: <Upload size={16} /> },
-        {
-            id: "sync",
-            label: "DB Sync",
-            icon: <ArrowLeftRight size={16} />,
-        },
+        { id: "objects", label: "Objects", icon: <Boxes size={16} /> },
+        { id: "tools", label: "Tools", icon: <DatabaseBackup size={16} /> },
     ];
 
     const bottomItems: NavItem[] = [

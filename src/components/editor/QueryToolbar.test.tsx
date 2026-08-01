@@ -8,6 +8,9 @@ function renderToolbar(props: {
   onRun?: () => void;
   onFormat?: () => void;
   dbType?: "postgresql" | "mysql" | "sqlite" | "redis";
+  connectionId?: string;
+  onRestore?: (sql: string) => void;
+  onRunFromHistory?: (sql: string) => void;
 }) {
   return render(
     <TooltipProvider>
@@ -15,6 +18,9 @@ function renderToolbar(props: {
         onRun={props.onRun ?? (() => {})}
         onFormat={props.onFormat ?? (() => {})}
         dbType={props.dbType}
+        connectionId={props.connectionId ?? "conn-1"}
+        onRestore={props.onRestore ?? (() => {})}
+        onRunFromHistory={props.onRunFromHistory ?? (() => {})}
       />
     </TooltipProvider>,
   );
@@ -135,5 +141,27 @@ describe("QueryToolbar", () => {
     renderToolbar({});
     const button = screen.getByRole("button", { name: /auto format/i });
     expect(button.textContent?.trim()).toBe("");
+  });
+
+  it("renders History icon button", () => {
+    renderToolbar({});
+    expect(screen.getByLabelText("Query history")).toBeInTheDocument();
+  });
+
+  it("renders Save Query icon button", () => {
+    renderToolbar({});
+    expect(screen.getByLabelText("Save query")).toBeInTheDocument();
+  });
+
+  it("orders toolbar actions: Run, History, Format, Save", () => {
+    renderToolbar({});
+    const container = screen.getByLabelText("Query toolbar actions");
+    const buttons = Array.from(container.querySelectorAll("button"));
+    const btnLabels = buttons.map((b) => b.getAttribute("aria-label"));
+    // Run Query first, then History, then Auto Format, then Save
+    expect(btnLabels[0]).toBe("Run query");
+    expect(btnLabels[1]).toBe("Query history");
+    expect(btnLabels[2]).toBe("Auto format query");
+    expect(btnLabels[3]).toBe("Save query");
   });
 });

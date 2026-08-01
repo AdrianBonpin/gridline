@@ -249,6 +249,7 @@ cargo test               # Rust tests
 ### Object Explorer (non-table objects)
 | Feature | Status | Details |
 | :--- | :---: | :--- |
+| Unified Objects view | ✅ | Functions/Triggers/Sequences/Enums/Extensions merged into a single **Objects** nav item; sidebar header leads with an object-type dropdown (title position) + refresh/search icons, animated search, db/schema switchers; switching type resets selection and refetches |
 | Functions | ✅ | Full detail view: signature, arguments with mode/type, syntax-highlighted line-numbered source. Overloads disambiguated by argument signature. Schema-filtered via pg_proc query. |
 | Triggers | ✅ | Full detail view: table, event, timing, orientation, status (color-coded), definition. tgtype bitmask corrected. Schema-filtered. |
 | Sequences | ✅ | Full detail view: current value, increment, start, min/max, cycle flag. Schema-filtered via information_schema.sequences. |
@@ -266,11 +267,12 @@ cargo test               # Rust tests
 | SQL text editor (Monaco) | ✅ | Lazy-loaded Monaco SQL editor with Cmd/Ctrl+Enter to run (`src/components/editor/QueryEditor.tsx`) |
 | Custom query execution (arbitrary SQL) | ✅ | `execute_query` Rust command: subquery-wrapped pagination + raw fallback; PostgreSQL + SQLite; results in virtualized grid |
 | Destructive query guard | ✅ | Confirmation dialog for INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/REPLACE (`isDestructiveQuery` + `DestructiveQueryDialog`) |
-| Query history / recent queries | 🟡 | Backend + commands done (v5 `query_history` table, `get_query_history`/`clear_query_history`); UI dropdown to show history in the query editor is **not wired yet** |
+| Query history / recent queries | ✅ | v5 `query_history` table + v6 `favorite` column; consecutive-identical dedup + retention pruning (500/connection); `get_query_history`/`clear_query_history`/`set_history_favorite` commands; **QueryHistoryDropdown** in the query toolbar (load / run / favorite / clear, lazy fetch, loading + error states) |
 | SQL autocomplete (keywords, tables, columns) | ✅ | Completion provider in `src/lib/monacoSetup.ts` backed by `src/lib/sqlCompletion.ts` (pure, unit-tested): keywords (~60) + table names from the active schema; typing `table.` or `schema.table.` suggests that table's columns (introspected via `get_schema_graph`, cached per schema in memory, `incomplete: true` warm-up on first use) |
 | Multiple result sets | ❌ | |
-| Saved queries (named, organized) | ❌ | No `queries` table in local SQLite |
-| Query favorites / pinning | ❌ | |
+| Saved queries (named, organized) | ✅ | v6 `queries` table (nullable `connection_id` for global queries, `folder` field, `ON DELETE CASCADE`); `save_query`/`get_saved_queries`/`update_saved_query`/`delete_saved_query` commands with validation (name ≤200, folder ≤100, text ≤1MB); **SaveQueryDialog** (name + folder, empty-name guard); managed in the Queries view Saved tab |
+| Query favorites / pinning | ✅ | Star toggle per history entry via `set_history_favorite`; favorites-only filter in the Queries view History tab |
+| Queries view | ✅ | Two-pane layout following Explorer: left sidebar (Explorer-styled header — Queries title, History/Saved dropdown, favorites/clear/search icons, animated search) scoped to the **current connection**, right side reuses the shared tabbed query workspace (TabBar + toolbar + editor + results); clicking a history/saved row loads it into the editor |
 | Editor settings (font, tab size, word wrap, minimap) | ❌ | Settings page has "Editor" tab with "coming soon" placeholder |
 
 ### Backup & Restore
@@ -281,6 +283,7 @@ cargo test               # Rust tests
 | Backup UI | ✅ | In-page view: format selector, file browse (Tauri dialog), schema dropdown, no-owner toggle, progress bar with event-driven status |
 | Restore UI | ✅ | In-page view: file browse, format, clean toggle, destructive confirmation checkbox, progress bar |
 | DB-to-DB sync | ✅ | In-page view: source/target connection pickers, schema dropdown, pipe-based pg_dump → pg_restore |
+| Unified Tools view | ✅ | Backup / Restore / DB Sync merged into a single **Tools** nav item; operation-switcher dropdown in the view toolbar, existing forms rendered below |
 | SQLite .dump | ❌ | |
 | Table structure export (DDL) | ❌ | |
 
