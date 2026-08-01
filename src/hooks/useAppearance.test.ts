@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { applyTheme, applyFontSize } from "./useAppearance";
+import { applyTheme, applyFontSize, resolveTheme } from "./useAppearance";
 
 describe("useAppearance helpers", () => {
     const getRoot = () => document.documentElement;
@@ -57,6 +57,31 @@ describe("useAppearance helpers", () => {
         stubMatchMedia(true, vi.fn(), vi.fn());
         applyTheme("system");
         expect(getRoot().classList.contains("light")).toBe(true);
+    });
+
+    describe("resolveTheme", () => {
+        it('resolveTheme("light") is "light"', () => {
+            expect(resolveTheme("light")).toBe("light");
+        });
+
+        it('resolveTheme("dark") is "dark"', () => {
+            expect(resolveTheme("dark")).toBe("dark");
+        });
+
+        it('resolveTheme("system") is "dark" when the OS does not prefer light', () => {
+            stubMatchMedia(false, vi.fn(), vi.fn());
+            expect(resolveTheme("system")).toBe("dark");
+        });
+
+        it('resolveTheme("system") is "light" when the OS prefers light', () => {
+            stubMatchMedia(true, vi.fn(), vi.fn());
+            expect(resolveTheme("system")).toBe("light");
+        });
+
+        it('resolveTheme("system") falls back to "dark" without matchMedia', () => {
+            delete (window as unknown as { matchMedia?: unknown }).matchMedia;
+            expect(resolveTheme("system")).toBe("dark");
+        });
     });
 
     it('applyFontSize("small") sets the data attribute', () => {

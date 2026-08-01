@@ -48,7 +48,7 @@
 
 html, body {
   background-color: var(--color-canvas);
-  color: white;
+  color: var(--color-text);
   font-family: var(--font-family-sans);
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
