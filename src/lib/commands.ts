@@ -159,6 +159,30 @@ export interface QueryHistoryEntry {
   status: string;
   error_message: string | null;
   executed_at: string;
+  favorite: boolean; // NEW — v6
+}
+
+export interface SavedQuery {
+  id: string;
+  connection_id: string | null;
+  name: string;
+  query_text: string;
+  folder: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SaveQueryInput {
+  connectionId: string | null;
+  name: string;
+  queryText: string;
+  folder: string;
+}
+
+export interface UpdateSavedQueryPatch {
+  name?: string;
+  queryText?: string;
+  folder?: string;
 }
 
 export async function executeQuery(
@@ -180,4 +204,37 @@ export async function getQueryHistory(
 
 export async function clearQueryHistory(connectionId: string): Promise<void> {
   return invoke<void>("clear_query_history", { connectionId });
+}
+
+export async function setHistoryFavorite(
+  id: string,
+  connectionId: string,
+): Promise<void> {
+  return invoke<void>("set_history_favorite", { id, connectionId });
+}
+
+export async function saveQuery(input: SaveQueryInput): Promise<SavedQuery> {
+  return invoke<SavedQuery>("save_query", {
+    connectionId: input.connectionId,
+    name: input.name,
+    queryText: input.queryText,
+    folder: input.folder,
+  });
+}
+
+export async function getSavedQueries(
+  connectionId: string | null,
+): Promise<SavedQuery[]> {
+  return invoke<SavedQuery[]>("get_saved_queries", { connectionId });
+}
+
+export async function updateSavedQuery(
+  id: string,
+  patch: UpdateSavedQueryPatch,
+): Promise<void> {
+  return invoke<void>("update_saved_query", { id, patch });
+}
+
+export async function deleteSavedQuery(id: string): Promise<void> {
+  return invoke<void>("delete_saved_query", { id });
 }
