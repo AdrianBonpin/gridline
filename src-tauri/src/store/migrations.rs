@@ -194,6 +194,31 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
 
+    // v6: query history favorites + saved queries
+    if current_ver < 6 {
+        conn.execute_batch(
+            "ALTER TABLE query_history ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
+            CREATE TABLE IF NOT EXISTS queries (
+                id TEXT PRIMARY KEY,
+                connection_id TEXT,
+                name TEXT NOT NULL,
+                query_text TEXT NOT NULL,
+                folder TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (connection_id) REFERENCES connections(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_queries_connection ON queries(connection_id);
+            CREATE INDEX IF NOT EXISTS idx_queries_folder ON queries(folder);"
+        ).map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (6)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -244,7 +269,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 4);
+        assert_eq!(count, 5);
     }
 
     #[test]
@@ -295,5 +320,101 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM query_history WHERE connection_id = ?1", rusqlite::params![conn_id], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn v6_adds_favorite_column_to_query_history() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        // Verify the favorite column exists via PRAGMA
+        let columns: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(query_history)").unwrap();
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap();
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        assert!(
+            columns.contains(&"favorite".to_string()),
+            "Expected query_history to have a 'favorite' column after v6 migration"
+        );
+        // Existing rows default to 0
+        let fav: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM query_history WHERE favorite != 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fav, 0);
+    }
+
+    #[test]
+    fn v6_creates_queries_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        // Table exists
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM queries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        // Column check
+        let columns: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(queries)").unwrap();
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap();
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        for c in &["id", "connection_id", "name", "query_text", "folder", "created_at", "updated_at"] {
+            assert!(columns.contains(&c.to_string()), "Expected queries table to have column: {}", c);
+        }
+    }
+
+    #[test]
+    fn v6_queries_cascade_on_connection_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        // Insert a connection
+        let conn_id = "test-qc-conn";
+        conn.execute(
+            "INSERT INTO connections (id, name, db_type, host, port, created_at, updated_at) VALUES (?1, 't', 'postgresql', 'h', 5432, datetime('now'), datetime('now'))",
+            rusqlite::params![conn_id],
+        ).unwrap();
+        // Insert a saved query for that connection
+        conn.execute(
+            "INSERT INTO queries (id, connection_id, name, query_text, folder) VALUES ('q1', ?1, 'my query', 'SELECT 1', '')",
+            rusqlite::params![conn_id],
+        ).unwrap();
+        // Insert a global saved query (connection_id NULL)
+        conn.execute(
+            "INSERT INTO queries (id, connection_id, name, query_text, folder) VALUES ('q2', NULL, 'global query', 'SELECT 2', '')",
+            [],
+        ).unwrap();
+        // Delete connection — should cascade the non-NULL row
+        conn.execute("DELETE FROM connections WHERE id = ?1", rusqlite::params![conn_id]).unwrap();
+        let count_scoped: i64 = conn
+            .query_row("SELECT COUNT(*) FROM queries WHERE connection_id = ?1", rusqlite::params![conn_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_scoped, 0, "Scoped saved query should be cascade-deleted");
+        // NULL-saved query survives
+        let count_global: i64 = conn
+            .query_row("SELECT COUNT(*) FROM queries WHERE id = 'q2'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_global, 1, "Global saved query (connection_id NULL) should survive");
+    }
+
+    #[test]
+    fn v6_bumps_schema_version_to_6() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let ver: i64 = conn
+            .query_row(
+                "SELECT MAX(version) FROM schema_version",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ver, 6, "Schema version should be 6 after v6 migration");
     }
 }
