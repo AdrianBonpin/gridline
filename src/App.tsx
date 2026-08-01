@@ -85,7 +85,7 @@ export default function App() {
                     <div
                         data-tauri-drag-region
                         aria-hidden
-                        className="h-7 shrink-0 bg-canvas border-b border-border select-none"
+                        className="h-7 shrink-0 bg-canvas select-none"
                     />
                 )}
             <div className="flex-1 min-h-0">

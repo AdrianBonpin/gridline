@@ -67,7 +67,7 @@ export function SettingsPage() {
     };
 
     return (
-        <div className="h-full bg-canvas flex overflow-hidden">
+        <div className="h-full bg-canvas flex border-t border-border overflow-hidden">
             {/* Left sidebar — icon + text, Back at top */}
             <div className="w-48 h-full bg-canvas border-r border-border flex flex-col py-3 shrink-0">
                 <div className="flex flex-col gap-1 px-2 flex-1">
