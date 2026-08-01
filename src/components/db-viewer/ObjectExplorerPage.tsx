@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef, cloneElement } from "react";
 import {
     ChevronRight,
     FunctionSquare,
@@ -1161,9 +1161,7 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                 ) : (
                     <div className="flex items-center justify-center h-full text-text-muted">
                         <div className="text-center space-y-2">
-                            <div className="w-12 h-12 mx-auto rounded-full bg-surface flex items-center justify-center">
-                                {icon}
-                            </div>
+                            {cloneElement(icon as React.ReactElement<{ size?: number }>, { size: 20 })}
                             <p className="text-sm">
                                 Select a {singular} to view details
                             </p>
