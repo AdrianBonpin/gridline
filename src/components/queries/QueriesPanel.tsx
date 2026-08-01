@@ -157,17 +157,7 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
             </Tooltip>
           </div>
         </div>
-        {/* Mode dropdown — its own row, Explorer-style */}
-        <div className="flex items-center">
-          <SelectDropdown
-            value={mode}
-            onChange={(v) => setMode(v as "history" | "saved")}
-            options={MODE_OPTIONS}
-            variant="ghost"
-            aria-label="History/Saved"
-          />
-        </div>
-        {/* Animated search input */}
+        {/* Animated search input — row 2 */}
         <div
           className={`overflow-hidden transition-all duration-200 ease-out ${searchOpen ? "max-h-10 opacity-100" : "max-h-0 opacity-0"}`}
         >
@@ -194,6 +184,16 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
               </button>
             )}
           </div>
+        </div>
+        {/* Mode dropdown — its own row, below the search */}
+        <div className="flex items-center">
+          <SelectDropdown
+            value={mode}
+            onChange={(v) => setMode(v as "history" | "saved")}
+            options={MODE_OPTIONS}
+            variant="ghost"
+            aria-label="History/Saved"
+          />
         </div>
       </div>
 

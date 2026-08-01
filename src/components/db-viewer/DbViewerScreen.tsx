@@ -48,7 +48,7 @@ export function DbViewerScreen({
     const [dismissedError, setDismissedError] = useState<string | null>(null);
     const [currentView, setCurrentView] = useState<string>("db-viewer");
     const [tablePanelWidth, setTablePanelWidth] = useState(280);
-    const [queriesPanelWidth, setQueriesPanelWidth] = useState(320);
+    const [queriesPanelWidth, setQueriesPanelWidth] = useState(280);
     const [searchQuery, setSearchQuery] = useState("");
     const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
     const [editModalOpen, setEditModalOpen] = useState(false);
@@ -555,9 +555,9 @@ const onQueriesPanelResizeStart = useCallback(
             const onMove = (ev: MouseEvent) => {
                 if (!queriesPanelResizeRef.current) return;
                 const w = Math.max(
-                    240,
+                    180,
                     Math.min(
-                        560,
+                        600,
                         queriesPanelResizeRef.current.startW +
                             (ev.clientX - queriesPanelResizeRef.current.startX),
                     ),
@@ -1075,7 +1075,7 @@ const onQueriesPanelResizeStart = useCallback(
                             <div
                                 className="w-1 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0 border-r border-border"
                                 onMouseDown={onQueriesPanelResizeStart}
-                                onDoubleClick={() => setQueriesPanelWidth(320)}
+                                onDoubleClick={() => setQueriesPanelWidth(280)}
                             />
                             {renderQueryWorkspace()}
                         </div>
