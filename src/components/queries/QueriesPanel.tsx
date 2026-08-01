@@ -1,9 +1,8 @@
-import { useState, useEffect } from "react";
-import { Trash2, Download, Play, Star, Clock, Save } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Trash2, Download, Play, Star, Search, X } from "lucide-react";
 import { useQueryStore } from "../../stores/queryStore";
-import { useConnectionStore } from "../../stores/connectionStore";
 import { SelectDropdown } from "../ui/SelectDropdown";
-import { Input } from "../ui/Input";
+import { Tooltip } from "../ui/Tooltip";
 import { ErrorBanner } from "../ui/ErrorBanner";
 
 interface QueriesPanelProps {
@@ -13,8 +12,15 @@ interface QueriesPanelProps {
   style?: React.CSSProperties;
 }
 
+const MODE_OPTIONS = [
+  { value: "history", label: "History" },
+  { value: "saved", label: "Saved Queries" },
+];
+
 export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesPanelProps) {
-  const [activeTab, setActiveTab] = useState<"history" | "saved">("history");
+  const [mode, setMode] = useState<"history" | "saved">("history");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // History state
   const history = useQueryStore((s) => s.history);
@@ -36,109 +42,173 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
   const loadSavedQueries = useQueryStore((s) => s.loadSavedQueries);
   const deleteSavedQuery = useQueryStore((s) => s.deleteSavedQuery);
 
-  // Connections for filter dropdown
-  const connections = useConnectionStore((s) => s.connections);
-  const [scopeConn, setScopeConn] = useState<string>(connectionId);
+  // Shared local search state; history mode also syncs to the store
+  const [searchQuery, setSearchQuery] = useState(historySearch);
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      setSearchQuery(value);
+      setHistorySearch(value);
+    },
+    [setHistorySearch],
+  );
 
-  // Fetch on mount / scope change
+  // Fetch scoped to this connection only
   useEffect(() => {
-    if (historyStale) loadHistory(scopeConn);
-  }, [historyStale, scopeConn, loadHistory]);
+    if (historyStale) loadHistory(connectionId);
+  }, [historyStale, connectionId, loadHistory]);
 
   useEffect(() => {
-    loadSavedQueries(scopeConn || null);
-  }, [scopeConn, loadSavedQueries]);
+    loadSavedQueries(connectionId);
+  }, [connectionId, loadSavedQueries]);
 
-  // Client-side filtering
+  // Focus input when search opens
+  useEffect(() => {
+    if (searchOpen && searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, [searchOpen]);
+
+  // Auto-hide on blur when empty
+  const handleSearchBlur = useCallback(() => {
+    // Small delay to allow clicks on clear button / search icon
+    setTimeout(() => {
+      if (!searchQuery.trim()) {
+        setSearchOpen(false);
+      }
+    }, 150);
+  }, [searchQuery]);
+
+  const toggleSearch = useCallback(() => {
+    setSearchOpen((prev) => {
+      const next = !prev;
+      if (!next) handleSearchChange(""); // clear when closing
+      return next;
+    });
+  }, [handleSearchChange]);
+
+  // Client-side filtering for the active mode
   const filteredHistory = (history ?? []).filter((e) => {
     if (favoritesOnly && !e.favorite) return false;
-    if (historySearch) {
-      return e.query_text.toLowerCase().includes(historySearch.toLowerCase());
+    if (searchQuery) {
+      return e.query_text.toLowerCase().includes(searchQuery.toLowerCase());
     }
     return true;
   });
 
-  const scopeOptions = [
-    { value: "", label: "All connections" },
-    ...connections.map((c) => ({ value: c.id, label: c.name })),
-  ];
+  const filteredSaved = (savedQueries ?? []).filter((q) => {
+    if (!searchQuery) return true;
+    const haystack = [q.name, q.folder ?? "", q.query_text]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(searchQuery.toLowerCase());
+  });
 
   return (
     <div className="flex flex-col h-full border-r border-border shrink-0" data-testid="queries-panel" style={style}>
-      {/* Tab bar */}
-      <div className="flex h-9 items-stretch border-b border-border shrink-0">
-        {(["history", "saved"] as const).map((tab) => (
-          <div
-            key={tab}
-            role="tab"
-            aria-selected={activeTab === tab}
-            onClick={() => setActiveTab(tab)}
-            className={[
-              "group flex shrink-0 items-center gap-2 border-r border-border px-3 text-sm transition-colors cursor-pointer",
-              activeTab === tab
-                ? "bg-canvas text-text"
-                : "text-text-muted hover:text-text",
-            ].join(" ")}
-          >
-            {tab === "history" ? <Clock className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
-            <span className="select-none">{tab === "history" ? "History" : "Saved Queries"}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Toolbar: scope filter + search */}
-      <div className="flex items-center gap-3 px-4 py-2 border-b border-border shrink-0">
-        <SelectDropdown
-          value={scopeConn}
-          onChange={setScopeConn}
-          options={scopeOptions}
-          variant="ghost"
-          aria-label="Filter by connection"
-        />
-        {activeTab === "history" && (
-          <>
-            <Input
-              value={historySearch}
-              onChange={setHistorySearch}
-              placeholder="Search queries..."
-              className="!rounded-md !py-1 !text-xs !w-48"
-              aria-label="Search history"
+      {/* Header row */}
+      <div className={`px-3 pt-3 border-b border-border space-y-2 ${searchOpen ? "pb-3" : ""}`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-normal text-text-muted">Queries</span>
+            <SelectDropdown
+              value={mode}
+              onChange={(v) => setMode(v as "history" | "saved")}
+              options={MODE_OPTIONS}
+              variant="ghost"
+              aria-label="History/Saved"
             />
-            <label className="flex items-center gap-1.5 text-xs text-text-muted cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={favoritesOnly}
-                onChange={(e) => setFavoritesOnly(e.target.checked)}
-                className="rounded border-border bg-surface cursor-pointer"
-              />
-              <Star className="h-3 w-3" fill={favoritesOnly ? "currentColor" : "none"} />
-              Favorites
-            </label>
-            <button
-              type="button"
-              onClick={() => clearHistory(scopeConn || undefined)}
-              className="ml-auto flex items-center gap-1 text-xs text-text-muted hover:text-red-400 transition-colors cursor-pointer"
-            >
-              <Trash2 className="h-3 w-3" />
-              Clear
-            </button>
-          </>
-        )}
+          </div>
+          <div className="flex items-center gap-1">
+            {mode === "history" && (
+              <>
+                <Tooltip
+                  content={favoritesOnly ? "Show all queries" : "Show favorites only"}
+                  side="bottom"
+                >
+                  <button
+                    type="button"
+                    aria-label="Show favorites only"
+                    onClick={() => setFavoritesOnly(!favoritesOnly)}
+                    className={`w-7 h-7 rounded-md flex items-center justify-center cursor-pointer ${
+                      favoritesOnly
+                        ? "text-accent bg-accent/10"
+                        : "text-text-muted hover:text-text hover:bg-surface-raised"
+                    }`}
+                  >
+                    <Star size={14} fill={favoritesOnly ? "currentColor" : "none"} />
+                  </button>
+                </Tooltip>
+                <Tooltip content="Clear history" side="bottom">
+                  <button
+                    type="button"
+                    aria-label="Clear history"
+                    onClick={() => clearHistory(connectionId)}
+                    className="w-7 h-7 rounded-md flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised cursor-pointer"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </Tooltip>
+              </>
+            )}
+            <Tooltip content="Search queries" side="bottom">
+              <button
+                type="button"
+                aria-label="Search queries"
+                onClick={toggleSearch}
+                className={`w-7 h-7 rounded-md flex items-center justify-center cursor-pointer ${
+                  searchOpen
+                    ? "text-accent bg-accent/10"
+                    : "text-text-muted hover:text-text hover:bg-surface-raised"
+                }`}
+              >
+                <Search size={14} />
+              </button>
+            </Tooltip>
+          </div>
+        </div>
+        {/* Animated search input */}
+        <div
+          className={`overflow-hidden transition-all duration-200 ease-out ${searchOpen ? "max-h-10 opacity-100" : "max-h-0 opacity-0"}`}
+        >
+          <div className="relative flex items-center">
+            <Search
+              size={12}
+              className="absolute left-2.5 text-text-muted pointer-events-none"
+            />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              onBlur={handleSearchBlur}
+              placeholder="Filter queries…"
+              className="w-full bg-transparent border-0 border-b border-border pl-8 pr-7 py-1.5 text-xs text-text placeholder:text-text-muted/60 outline-none focus:border-accent/50 transition-colors"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => handleSearchChange("")}
+                className="absolute right-1 flex items-center justify-center w-5 h-5 rounded text-text-muted hover:text-text cursor-pointer"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Content area */}
       <div className="flex-1 overflow-y-auto">
-        {activeTab === "history" && (
+        {mode === "history" && (
           <>
             {historyLoading && (
               <div className="px-4 py-8 text-center text-sm text-text-muted">Loading...</div>
             )}
             {historyError && (
-              <ErrorBanner error={historyError} onRetry={() => loadHistory(scopeConn)} />
+              <ErrorBanner error={historyError} onRetry={() => loadHistory(connectionId)} />
             )}
             {!historyLoading && !historyError && filteredHistory.length === 0 && (
               <div className="px-4 py-8 text-center text-sm text-text-muted">
-                {historySearch || favoritesOnly ? "No matching queries" : "No queries yet"}
+                {searchQuery || favoritesOnly ? "No matching queries" : "No queries yet"}
               </div>
             )}
             {filteredHistory.map((entry) => (
@@ -159,9 +229,6 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
                 <div className="flex-1 min-w-0">
                   <div className="text-xs text-text font-mono truncate">{entry.query_text}</div>
                   <div className="flex items-center gap-2 mt-0.5 text-[10px] text-text-muted">
-                    {scopeConn === "" && (
-                      <span>{connections.find((c) => c.id === entry.connection_id)?.name ?? entry.connection_id}</span>
-                    )}
                     {entry.status === "error" ? (
                       <span className="text-red-400">Error</span>
                     ) : (
@@ -197,20 +264,20 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
           </>
         )}
 
-        {activeTab === "saved" && (
+        {mode === "saved" && (
           <>
             {savedLoading && (
               <div className="px-4 py-8 text-center text-sm text-text-muted">Loading...</div>
             )}
             {savedError && (
-              <ErrorBanner error={savedError} onRetry={() => loadSavedQueries(scopeConn || null)} />
+              <ErrorBanner error={savedError} onRetry={() => loadSavedQueries(connectionId)} />
             )}
             {!savedLoading && !savedError && savedQueries && savedQueries.length === 0 && (
               <div className="px-4 py-8 text-center text-sm text-text-muted">
                 No saved queries yet
               </div>
             )}
-            {(savedQueries ?? []).map((q) => (
+            {filteredSaved.map((q) => (
               <div
                 key={q.id}
                 className="group flex items-start gap-3 px-4 py-3 hover:bg-surface-raised border-b border-border/50 transition-colors"
