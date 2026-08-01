@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
-import { ChevronDown, ChevronUp, Terminal } from "lucide-react";
+import { ChevronDown, ChevronUp, Table2, Terminal } from "lucide-react";
 import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar } from "./DbViewerSidebar";
@@ -634,7 +634,11 @@ const onQueriesPanelResizeStart = useCallback(
                                 <TabBar />
                                 {!activeTab ? (
                                     <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
-                                        <Terminal size={32} />
+                                        {currentView === "queries" ? (
+                                            <Terminal size={32} />
+                                        ) : (
+                                            <Table2 size={32} />
+                                        )}
                                         <span>
                                             {currentView === "queries"
                                                 ? "Open a new query tab or run a query from the history"
