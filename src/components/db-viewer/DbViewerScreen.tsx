@@ -604,6 +604,28 @@ export function DbViewerScreen({
                                             <QueryToolbar
                                                 onRun={handleRunQuery}
                                                 onFormat={handleFormatQuery}
+                                                connectionId={connectionId}
+                                                onRestore={(sql) => {
+                                                    const state = useDbViewerStore.getState();
+                                                    const tab = state.tabs.find((t) => t.id === state.activeTabId);
+                                                    if (!tab || tab.tabType !== "query") return;
+                                                    useDbViewerStore.setState((s) => ({
+                                                        tabs: s.tabs.map((t) =>
+                                                            t.id === tab.id ? { ...t, query: sql } : t
+                                                        ),
+                                                    }));
+                                                }}
+                                                onRunFromHistory={(sql) => {
+                                                    const state = useDbViewerStore.getState();
+                                                    const tab = state.tabs.find((t) => t.id === state.activeTabId);
+                                                    if (!tab || tab.tabType !== "query") return;
+                                                    useDbViewerStore.setState((s) => ({
+                                                        tabs: s.tabs.map((t) =>
+                                                            t.id === tab.id ? { ...t, query: sql } : t
+                                                        ),
+                                                    }));
+                                                    handleRunQuery();
+                                                }}
                                                 dbType={currentConnection?.db_type}
                                             />
                                             <div className="flex-1 min-h-0 overflow-hidden">
