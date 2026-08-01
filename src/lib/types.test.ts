@@ -372,6 +372,7 @@ describe("Schema graph types", () => {
       is_pk: false,
       is_fk: true,
       is_unique: false,
+      is_nullable: false,
       fk_ref: ["public", "users", "id"],
     };
     expect(col.name).toBe("user_id");
@@ -385,8 +386,8 @@ describe("Schema graph types", () => {
       schema: "public",
       table_type: "TABLE",
       columns: [
-        { name: "id", data_type: "integer", is_pk: true, is_fk: false, is_unique: true, fk_ref: null },
-        { name: "user_id", data_type: "integer", is_pk: false, is_fk: true, is_unique: false, fk_ref: ["public", "users", "id"] },
+        { name: "id", data_type: "integer", is_pk: true, is_fk: false, is_unique: true, is_nullable: false, fk_ref: null },
+        { name: "user_id", data_type: "integer", is_pk: false, is_fk: true, is_unique: false, is_nullable: false, fk_ref: ["public", "users", "id"] },
       ],
     };
     expect(node.name).toBe("orders");
@@ -424,6 +425,7 @@ describe("Schema graph types", () => {
       is_pk: false,
       is_fk: false,
       is_unique: false,
+      is_nullable: true,
       fk_ref: null,
     };
     expect(col.fk_ref).toBeNull();

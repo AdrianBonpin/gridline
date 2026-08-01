@@ -14,9 +14,9 @@ const sampleTable: TableNode = {
   schema: "public",
   table_type: "TABLE",
   columns: [
-    { name: "id", data_type: "integer", is_pk: true, is_fk: false, is_unique: true, fk_ref: null },
-    { name: "name", data_type: "text", is_pk: false, is_fk: false, is_unique: false, fk_ref: null },
-    { name: "email", data_type: "text", is_pk: false, is_fk: false, is_unique: true, fk_ref: null },
+    { name: "id", data_type: "integer", is_pk: true, is_fk: false, is_unique: true, is_nullable: false, fk_ref: null },
+    { name: "name", data_type: "text", is_pk: false, is_fk: false, is_unique: false, is_nullable: true, fk_ref: null },
+    { name: "email", data_type: "text", is_pk: false, is_fk: false, is_unique: true, is_nullable: false, fk_ref: null },
   ],
 };
 
