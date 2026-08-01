@@ -25,9 +25,7 @@ import { useConnectionStore } from "../../stores/connectionStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useShortcut } from "../../hooks/useShortcut";
 import { ConnectionDropBanner } from "./ConnectionDropBanner";
-import { BackupPage } from "./BackupPage";
-import { RestorePage } from "./RestorePage";
-import { SyncPage } from "./SyncPage";
+import { ToolsPage } from "./ToolsPage";
 import { SchemaVisualizerPage } from "./SchemaVisualizerPage";
 import { QueriesPanel } from "../queries/QueriesPanel";
 import { useQueryStore } from "../../stores/queryStore";
@@ -1034,12 +1032,8 @@ const onQueriesPanelResizeStart = useCallback(
                         </div>
                     ) : currentView === "objects" ? (
                         <ObjectExplorerPage connectionId={connectionId} />
-                    ) : currentView === "backup" ? (
-                        <BackupPage connectionId={connectionId} />
-                    ) : currentView === "restore" ? (
-                        <RestorePage connectionId={connectionId} />
-                    ) : currentView === "sync" ? (
-                        <SyncPage />
+                    ) : currentView === "tools" ? (
+                        <ToolsPage connectionId={connectionId} />
                     ) : currentView === "queries" ? (
                         <div className="flex flex-1 min-h-0 overflow-hidden">
                             <QueriesPanel

@@ -1,13 +1,11 @@
 import {
-    ArrowLeftRight,
     Boxes,
     Clock,
     Database,
-    Download,
+    DatabaseBackup,
     Home,
     Settings,
     Share2,
-    Upload,
 } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
 
@@ -40,13 +38,7 @@ export function DbViewerSidebar({
             icon: <Share2 size={16} />,
         },
         { id: "objects", label: "Objects", icon: <Boxes size={16} /> },
-        { id: "backup", label: "Backup", icon: <Download size={16} /> },
-        { id: "restore", label: "Restore", icon: <Upload size={16} /> },
-        {
-            id: "sync",
-            label: "DB Sync",
-            icon: <ArrowLeftRight size={16} />,
-        },
+        { id: "tools", label: "Tools", icon: <DatabaseBackup size={16} /> },
     ];
 
     const bottomItems: NavItem[] = [
