@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useUiStore } from "../../stores/uiStore";
-import { Tooltip, TooltipProvider } from "../ui/Tooltip";
 import { SettingsSection } from "../ui/SettingsSection";
 import { GeneralSettingsTab } from "./GeneralSettingsTab";
 import { TagsSettingsTab } from "./TagsSettingsTab";
@@ -68,57 +67,50 @@ export function SettingsPage() {
     };
 
     return (
-        <TooltipProvider>
-            <div className="h-screen bg-canvas flex overflow-hidden">
-                {/* Left icon rail — mirrors DbViewerSidebar */}
-                <div className="w-14 h-full bg-canvas border-r border-border flex flex-col items-center py-3 gap-2 shrink-0">
-                    <nav
-                        role="tablist"
-                        aria-label="Settings sections"
-                        className="flex flex-col gap-2 flex-1"
+        <div className="h-screen bg-canvas flex border-t border-border overflow-hidden">
+            {/* Left sidebar — icon + text, Back at top */}
+            <div className="w-48 h-full bg-canvas border-r border-border flex flex-col py-3 shrink-0">
+                <div className="px-2 pb-3 mb-3">
+                    <button
+                        type="button"
+                        aria-label="Back"
+                        onClick={closeSettings}
+                        className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors cursor-pointer text-text-muted hover:text-text hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/50"
                     >
-                        {TABS.map((tab) => {
-                            const Icon = tab.icon;
-                            const isActive = activeTab === tab.id;
-                            return (
-                                <Tooltip
-                                    key={tab.id}
-                                    content={tab.label}
-                                    side="right"
-                                >
-                                    <button
-                                        id={`settings-tab-${tab.id}`}
-                                        type="button"
-                                        role="tab"
-                                        aria-selected={isActive}
-                                        aria-controls="settings-tabpanel"
-                                        aria-label={tab.label}
-                                        onClick={() => setActiveTab(tab.id)}
-                                        className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-accent/50 ${
-                                            isActive
-                                                ? "text-accent"
-                                                : "text-text-muted hover:text-text hover:bg-surface-raised"
-                                        }`}
-                                    >
-                                        <Icon size={16} />
-                                    </button>
-                                </Tooltip>
-                            );
-                        })}
-                    </nav>
-                    <div className="flex flex-col gap-2">
-                        <Tooltip content="Back" side="right">
-                            <button
-                                type="button"
-                                aria-label="Back"
-                                onClick={closeSettings}
-                                className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors text-text-muted hover:text-text hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/50"
-                            >
-                                <ChevronLeft size={16} />
-                            </button>
-                        </Tooltip>
-                    </div>
+                        <ChevronLeft size={16} /> Back
+                    </button>
                 </div>
+                <nav
+                    role="tablist"
+                    aria-label="Settings sections"
+                    className="flex flex-col gap-1 px-2 flex-1"
+                >
+                    {TABS.map((tab) => {
+                        const Icon = tab.icon;
+                        const isActive = activeTab === tab.id;
+                        return (
+                            <button
+                                key={tab.id}
+                                id={`settings-tab-${tab.id}`}
+                                type="button"
+                                role="tab"
+                                aria-selected={isActive}
+                                aria-controls="settings-tabpanel"
+                                aria-label={tab.label}
+                                onClick={() => setActiveTab(tab.id)}
+                                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/50 ${
+                                    isActive
+                                        ? "text-accent"
+                                        : "text-text-muted hover:text-text hover:bg-surface-raised"
+                                }`}
+                            >
+                                <Icon size={16} />
+                                {tab.label}
+                            </button>
+                        );
+                    })}
+                </nav>
+            </div>
 
                 {/* Content */}
                 <div className="flex-1 flex flex-col min-h-0">
@@ -148,6 +140,5 @@ export function SettingsPage() {
                     </div>
                 </div>
             </div>
-        </TooltipProvider>
     );
 }
