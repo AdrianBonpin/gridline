@@ -4,7 +4,6 @@ import { useNotificationStore } from "../../stores/notificationStore";
 import { useSortedTags } from "../../hooks/useSortedTags";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
-import { SettingsSection } from "../ui/SettingsSection";
 import { Plus, Trash2, Check, X, ChevronUp, ChevronDown } from "lucide-react";
 import type { Tag } from "../../lib/types";
 
@@ -94,43 +93,44 @@ export function TagsSettingsTab() {
   };
 
   return (
-    <>
-      <SettingsSection title="Create tag">
-        <div className="py-4 flex items-center gap-3">
-          <Input
-            placeholder="Tag name"
-            value={newName}
-            onChange={setNewName}
-            className="flex-1"
-            aria-label="New tag name"
-          />
-          <div className="flex items-center gap-1">
-            {TAG_COLORS.map((color) => (
-              <button
-                key={color}
-                type="button"
-                onClick={() => setNewColor(color)}
-                className={`w-6 h-6 rounded-full border-2 transition-all cursor-pointer ${
-                  newColor === color ? "border-text scale-110" : "border-transparent"
-                }`}
-                style={{ backgroundColor: color }}
-                aria-label={`Select color ${color}`}
-              />
-            ))}
-          </div>
-          <Button onClick={handleCreateTag}>
-            <Plus size={14} /> Add
-          </Button>
+    <div className="space-y-6">
+      {/* Create — no section label */}
+      <div className="flex items-center gap-3">
+        <Input
+          placeholder="Tag name"
+          value={newName}
+          onChange={setNewName}
+          className="flex-1"
+          aria-label="New tag name"
+        />
+        <div className="flex items-center gap-1">
+          {TAG_COLORS.map((color) => (
+            <button
+              key={color}
+              type="button"
+              onClick={() => setNewColor(color)}
+              className={`w-6 h-6 rounded-full border-2 transition-all cursor-pointer ${
+                newColor === color ? "border-text scale-110" : "border-transparent"
+              }`}
+              style={{ backgroundColor: color }}
+              aria-label={`Select color ${color}`}
+            />
+          ))}
         </div>
-      </SettingsSection>
+        <Button onClick={handleCreateTag}>
+          <Plus size={14} /> Add
+        </Button>
+      </div>
 
-      <SettingsSection title="Manage tags">
+      {/* Manage tags — plain section, no card */}
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">Manage tags</h2>
         {tags.length === 0 ? (
           <div className="text-center py-12 text-text-muted text-sm">
             No tags yet. Create one above.
           </div>
         ) : (
-          <div className="space-y-2 py-2">
+          <div className="space-y-2">
             {tags.map((tag, index) => {
               const isEditing = editingId === tag.id;
               return (
@@ -217,7 +217,7 @@ export function TagsSettingsTab() {
             })}
           </div>
         )}
-      </SettingsSection>
-    </>
+      </section>
+    </div>
   );
 }

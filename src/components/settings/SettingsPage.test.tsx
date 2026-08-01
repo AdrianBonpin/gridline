@@ -131,7 +131,6 @@ describe("SettingsPage", () => {
       expect(screen.getByRole("tab", { name: /tags/i })).toBeInTheDocument();
     });
     await user.click(screen.getByRole("tab", { name: /tags/i }));
-    expect(screen.getByText(/create tag/i)).toBeInTheDocument();
     expect(screen.getByText(/manage tags/i)).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /tags/i })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "settings-tab-tags");
