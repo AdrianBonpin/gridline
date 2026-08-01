@@ -36,6 +36,45 @@ pub struct QueryHistoryEntry {
 }
 
 // ---------------------------------------------------------------------------
+// SavedQueryCommand
+// ---------------------------------------------------------------------------
+
+/// A saved query, returned to the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedQueryCommand {
+    pub id: String,
+    pub connection_id: Option<String>,
+    pub name: String,
+    pub query_text: String,
+    pub folder: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Patch body for `update_saved_query` — all fields optional.
+#[derive(Debug, Deserialize)]
+pub struct UpdateSavedQueryPatch {
+    pub name: Option<String>,
+    #[serde(rename = "queryText")]
+    pub query_text: Option<String>,
+    pub folder: Option<String>,
+}
+
+impl From<crate::store::SavedQueryRow> for SavedQueryCommand {
+    fn from(r: crate::store::SavedQueryRow) -> Self {
+        Self {
+            id: r.id,
+            connection_id: r.connection_id,
+            name: r.name,
+            query_text: r.query_text,
+            folder: r.folder,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Core executor (not a Tauri command itself — called by the command wrapper)
 // ---------------------------------------------------------------------------
 
@@ -504,6 +543,48 @@ pub(crate) fn set_history_favorite_inner(
     store.set_history_favorite(id, connection_id)
 }
 
+pub(crate) fn save_query_inner(
+    db_store: &std::sync::Mutex<crate::store::Store>,
+    connection_id: Option<String>,
+    name: String,
+    query_text: String,
+    folder: String,
+) -> Result<SavedQueryCommand, String> {
+    let store = db_store.lock().map_err(|e| e.to_string())?;
+    store
+        .save_query(connection_id.as_deref(), &name, &query_text, &folder)
+        .map(SavedQueryCommand::from)
+}
+
+pub(crate) fn get_saved_queries_inner(
+    db_store: &std::sync::Mutex<crate::store::Store>,
+    connection_id: Option<String>,
+) -> Result<Vec<SavedQueryCommand>, String> {
+    let store = db_store.lock().map_err(|e| e.to_string())?;
+    store
+        .list_saved_queries(connection_id.as_deref())
+        .map(|rows| rows.into_iter().map(SavedQueryCommand::from).collect())
+}
+
+pub(crate) fn update_saved_query_inner(
+    db_store: &std::sync::Mutex<crate::store::Store>,
+    id: String,
+    name: Option<String>,
+    query_text: Option<String>,
+    folder: Option<String>,
+) -> Result<(), String> {
+    let store = db_store.lock().map_err(|e| e.to_string())?;
+    store.update_saved_query(&id, name.as_deref(), query_text.as_deref(), folder.as_deref())
+}
+
+pub(crate) fn delete_saved_query_inner(
+    db_store: &std::sync::Mutex<crate::store::Store>,
+    id: String,
+) -> Result<(), String> {
+    let store = db_store.lock().map_err(|e| e.to_string())?;
+    store.delete_saved_query(&id)
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
@@ -551,6 +632,48 @@ pub async fn set_history_favorite(
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
     set_history_favorite_inner(&state.db_store, &id, &connection_id)
+}
+
+#[tauri::command]
+pub async fn save_query(
+    connection_id: Option<String>,
+    name: String,
+    query_text: String,
+    folder: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<SavedQueryCommand, String> {
+    save_query_inner(
+        &state.db_store,
+        connection_id,
+        name,
+        query_text,
+        folder.unwrap_or_default(),
+    )
+}
+
+#[tauri::command]
+pub async fn get_saved_queries(
+    connection_id: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<SavedQueryCommand>, String> {
+    get_saved_queries_inner(&state.db_store, connection_id)
+}
+
+#[tauri::command]
+pub async fn update_saved_query(
+    id: String,
+    patch: UpdateSavedQueryPatch,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    update_saved_query_inner(&state.db_store, id, patch.name, patch.query_text, patch.folder)
+}
+
+#[tauri::command]
+pub async fn delete_saved_query(
+    id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    delete_saved_query_inner(&state.db_store, id)
 }
 
 // ---------------------------------------------------------------------------
@@ -752,6 +875,75 @@ mod tests {
             let history = s.get_query_history(Some("test-conn"), 10, 0).unwrap();
             assert_eq!(history.len(), 0);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Test 5: Saved query command roundtrip (save → list → update → delete)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn save_query_command_roundtrip() {
+        use crate::models::ConnectionInput;
+        let conn = SqliteConnection::open_in_memory().unwrap();
+        crate::store::migrations::run_migrations(&conn).unwrap();
+        let store = Mutex::new(Store::from_connection(conn));
+        let sc2 = store
+            .lock()
+            .unwrap()
+            .create_connection(ConnectionInput {
+                name: "sc2".into(),
+                db_type: "postgresql".into(),
+                host: "h".into(),
+                port: Some(5432),
+                username: None,
+                folder_id: None,
+                tag_ids: vec![],
+                password: None,
+                database: None,
+                environment: None,
+                ssh_host: None,
+                ssh_port: None,
+                ssh_user: None,
+                ssh_auth_method: None,
+                ssh_private_key_path: None,
+                ssh_passphrase: None,
+                ssl_mode: None,
+                ssl_ca_path: None,
+                ssl_cert_path: None,
+                ssl_key_path: None,
+            })
+            .unwrap();
+
+        // save
+        let result = save_query_inner(
+            &store,
+            Some(sc2.id.clone()),
+            "Q1".to_string(),
+            "SELECT 1".to_string(),
+            "r".to_string(),
+        )
+        .unwrap();
+        assert_eq!(result.name, "Q1");
+        assert_eq!(result.connection_id, Some(sc2.id.clone()));
+
+        // list
+        let list = get_saved_queries_inner(&store, Some(sc2.id.clone())).unwrap();
+        assert_eq!(list.len(), 1);
+
+        // update (bogus id "update" — no-op, exercises the code path)
+        update_saved_query_inner(
+            &store,
+            "update".to_string(),
+            Some("Renamed".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // delete
+        delete_saved_query_inner(&store, result.id).unwrap();
+        let after = get_saved_queries_inner(&store, Some(sc2.id.clone())).unwrap();
+        assert!(after.is_empty());
     }
 
     // ------------------------------------------------------------------
