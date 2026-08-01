@@ -32,6 +32,7 @@ pub struct QueryHistoryEntry {
     pub status: String,
     pub error_message: Option<String>,
     pub executed_at: String,
+    pub favorite: bool, // NEW — v6
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +495,15 @@ pub(crate) fn clear_query_history_inner(
     store.clear_query_history(connection_id)
 }
 
+pub(crate) fn set_history_favorite_inner(
+    db_store: &std::sync::Mutex<crate::store::Store>,
+    id: &str,
+    connection_id: &str,
+) -> Result<(), String> {
+    let store = db_store.lock().map_err(|e| e.to_string())?;
+    store.set_history_favorite(id, connection_id)
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
@@ -532,6 +542,15 @@ pub async fn clear_query_history(
 ) -> Result<(), String> {
     let store = state.db_store.lock().map_err(|e| e.to_string())?;
     store.clear_query_history(connection_id.as_deref())
+}
+
+#[tauri::command]
+pub async fn set_history_favorite(
+    id: String,
+    connection_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    set_history_favorite_inner(&state.db_store, &id, &connection_id)
 }
 
 // ---------------------------------------------------------------------------

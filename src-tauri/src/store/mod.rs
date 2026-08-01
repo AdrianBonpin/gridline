@@ -518,12 +518,12 @@ impl Store {
         let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
             if let Some(cid) = connection_id {
                 (
-                    "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at FROM query_history WHERE connection_id = ?1 ORDER BY executed_at DESC LIMIT ?2 OFFSET ?3".to_string(),
+                    "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at, favorite FROM query_history WHERE connection_id = ?1 ORDER BY executed_at DESC LIMIT ?2 OFFSET ?3".to_string(),
                     vec![Box::new(cid.to_string()), Box::new(limit), Box::new(offset)],
                 )
             } else {
                 (
-                    "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at FROM query_history ORDER BY executed_at DESC LIMIT ?1 OFFSET ?2".to_string(),
+                    "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at, favorite FROM query_history ORDER BY executed_at DESC LIMIT ?1 OFFSET ?2".to_string(),
                     vec![Box::new(limit), Box::new(offset)],
                 )
             };
@@ -540,6 +540,7 @@ impl Store {
                     status: row.get(5)?,
                     error_message: row.get(6)?,
                     executed_at: row.get(7)?,
+                    favorite: row.get::<_, i64>(8)? != 0, // convert INTEGER to bool
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -558,6 +559,22 @@ impl Store {
         } else {
             conn.execute("DELETE FROM query_history", [])
                 .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Toggle the `favorite` flag for a query history entry.
+    /// Returns an error if no row with the given id + connection_id exists.
+    pub fn set_history_favorite(&self, id: &str, connection_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let affected = conn
+            .execute(
+                "UPDATE query_history SET favorite = 1 - favorite WHERE id = ?1 AND connection_id = ?2",
+                params![id, connection_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if affected == 0 {
+            return Err("History entry not found".to_string());
         }
         Ok(())
     }
@@ -979,5 +996,89 @@ mod tests {
         let all_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
         assert!(!all_ids.contains(&"ph0".to_string()), "Oldest rows should be pruned");
         assert!(all_ids.contains(&"ph509".to_string()), "Most recent rows should be kept");
+    }
+
+    #[test]
+    fn get_query_history_includes_favorite_column() {
+        let store = fresh_store();
+        let conn = store
+            .create_connection(ConnectionInput {
+                name: "fav-conn".into(),
+                db_type: "postgresql".into(),
+                host: "h".into(),
+                port: Some(5432),
+                username: None,
+                folder_id: None,
+                password: None,
+                database: None,
+                ssh_host: None,
+                ssh_port: None,
+                ssh_user: None,
+                ssh_auth_method: None,
+                ssh_private_key_path: None,
+                ssh_passphrase: None,
+                ssl_mode: None,
+                ssl_ca_path: None,
+                ssl_cert_path: None,
+                ssl_key_path: None,
+                environment: None,
+                tag_ids: vec![],
+            })
+            .unwrap();
+        store
+            .insert_query_history("fh1", &conn.id, "SELECT 1", Some(5), Some(1), "success", None)
+            .unwrap();
+        let rows = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].favorite, false, "Default favorite should be false");
+    }
+
+    #[test]
+    fn set_history_favorite_toggles() {
+        let store = fresh_store();
+        let conn = store
+            .create_connection(ConnectionInput {
+                name: "ft-conn".into(),
+                db_type: "postgresql".into(),
+                host: "h".into(),
+                port: Some(5432),
+                username: None,
+                folder_id: None,
+                password: None,
+                database: None,
+                ssh_host: None,
+                ssh_port: None,
+                ssh_user: None,
+                ssh_auth_method: None,
+                ssh_private_key_path: None,
+                ssh_passphrase: None,
+                ssl_mode: None,
+                ssl_ca_path: None,
+                ssl_cert_path: None,
+                ssl_key_path: None,
+                environment: None,
+                tag_ids: vec![],
+            })
+            .unwrap();
+        store
+            .insert_query_history("ft1", &conn.id, "SELECT 1", Some(5), Some(1), "success", None)
+            .unwrap();
+
+        // Toggle on
+        store.set_history_favorite("ft1", &conn.id).unwrap();
+        let rows = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
+        assert_eq!(rows[0].favorite, true);
+
+        // Toggle off
+        store.set_history_favorite("ft1", &conn.id).unwrap();
+        let rows2 = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
+        assert_eq!(rows2[0].favorite, false);
+    }
+
+    #[test]
+    fn set_history_favorite_unknown_id_returns_error() {
+        let store = fresh_store();
+        let result = store.set_history_favorite("nonexistent", "any-conn");
+        assert!(result.is_err(), "Unknown id should be an error");
     }
 }
