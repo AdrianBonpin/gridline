@@ -4,7 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsPage } from "./SettingsPage";
 import { GeneralSettingsTab } from "./GeneralSettingsTab";
-import { TagsSettingsTab } from "./TagsSettingsTab";
+import { TagsSettingsTab, reorderTagIds } from "./TagsSettingsTab";
 import { AdvancedSettingsTab } from "./AdvancedSettingsTab";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useConnectionStore } from "../../stores/connectionStore";
@@ -222,6 +222,22 @@ describe("TagsSettingsTab", () => {
     expect(moveUpButtons.length).toBeGreaterThanOrEqual(2);
     const moveDownButtons = screen.getAllByRole("button", { name: /move tag down/i });
     expect(moveDownButtons.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders a drag handle for each tag", () => {
+    render(<TagsSettingsTab />);
+    expect(screen.getAllByRole("button", { name: /drag to reorder/i })).toHaveLength(2);
+  });
+
+  it("reorderTagIds moves the active id to the over id position", () => {
+    expect(reorderTagIds(["a", "b", "c"], "a", "c")).toEqual(["b", "c", "a"]);
+    expect(reorderTagIds(["a", "b", "c"], "b", "a")).toEqual(["b", "a", "c"]);
+  });
+
+  it("reorderTagIds leaves the order unchanged for same or unknown ids", () => {
+    expect(reorderTagIds(["a", "b", "c"], "a", "a")).toEqual(["a", "b", "c"]);
+    expect(reorderTagIds(["a", "b", "c"], "a", "zzz")).toEqual(["a", "b", "c"]);
+    expect(reorderTagIds(["a", "b", "c"], "zzz", "c")).toEqual(["a", "b", "c"]);
   });
 });
 
