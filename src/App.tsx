@@ -81,17 +81,17 @@ export default function App() {
             {typeof window !== "undefined" &&
                 "__TAURI_INTERNALS__" in window && (
                     // macOS "Overlay" title bar: traffic lights float here and the
-                    // webview paints under them — this strip makes the window
-                    // draggable. Invisible: the screen roots below carry the canvas
-                    // background + pt-9 clearance.
+                    // webview paints under them — this strip is the titlebar
+                    // (draggable via data-tauri-drag-region) with a bottom border
+                    // separating it from the app content below.
                     <div
                         data-tauri-drag-region
                         aria-hidden
-                        className="fixed inset-x-0 top-0 h-9 z-50"
+                        className="fixed inset-x-0 top-0 h-7 z-50 bg-canvas border-b border-border"
                     />
                 )}
             {connectionError && (
-                <div className="px-6 pt-4">
+                <div className="px-6 pt-7">
                     <ErrorBanner
                         error={connectionError}
                         onRetry={loadConnections}

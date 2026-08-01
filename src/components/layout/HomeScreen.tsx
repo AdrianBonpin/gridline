@@ -149,7 +149,7 @@ export function HomeScreen() {
     };
 
     return (
-        <main className="min-h-screen pt-9 px-6 pb-6 bg-canvas select-none max-w-7xl mx-auto">
+        <main className="min-h-screen pt-7 px-6 pb-6 bg-canvas select-none max-w-7xl mx-auto">
             <div className="mb-6">
                 <SearchBar ref={searchRef} onDetectUrl={handleSearchUrl} />
             </div>

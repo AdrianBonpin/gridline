@@ -981,7 +981,7 @@ const onQueriesPanelResizeStart = useCallback(
 
     return (
         <TooltipProvider>
-            <div className="h-screen pt-9 bg-canvas flex border-t border-border">
+            <div className="h-screen pt-7 bg-canvas flex border-t border-border">
                 <DbViewerSidebar
                     currentView={currentView}
                     onNavigate={handleNavigate}

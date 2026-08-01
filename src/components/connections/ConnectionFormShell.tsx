@@ -25,7 +25,7 @@ export function ConnectionFormShell({
     children,
 }: ConnectionFormShellProps) {
     return (
-        <div className="min-h-screen pt-9 bg-canvas">
+        <div className="min-h-screen pt-7 bg-canvas">
             <div className="max-w-lg mx-auto p-8">
                 <Button
                     variant="ghost"
