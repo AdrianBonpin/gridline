@@ -4,9 +4,9 @@ import {
     Clock,
     Database,
     Download,
-    Grid2x2,
     Home,
     Settings,
+    Share2,
     Upload,
 } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
@@ -37,7 +37,7 @@ export function DbViewerSidebar({
         {
             id: "schema-visualizer",
             label: "Schema Visualizer",
-            icon: <Grid2x2 size={16} />,
+            icon: <Share2 size={16} />,
         },
         { id: "objects", label: "Objects", icon: <Boxes size={16} /> },
         { id: "backup", label: "Backup", icon: <Download size={16} /> },
