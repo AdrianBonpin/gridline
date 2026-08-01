@@ -88,7 +88,7 @@ describe("SettingsPage", () => {
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: /settings/i })).toBeInTheDocument();
     });
-    expect(screen.getByText(/back/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /back/i })).toBeInTheDocument();
   });
 
   it("renders all five sidebar tabs with proper ARIA roles", async () => {
