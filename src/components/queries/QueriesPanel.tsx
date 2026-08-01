@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Trash2, Download, Play, Star, Search, X } from "lucide-react";
+import { Trash2, Star, Search, X } from "lucide-react";
 import { useQueryStore } from "../../stores/queryStore";
 import { SelectDropdown } from "../ui/SelectDropdown";
 import { Tooltip } from "../ui/Tooltip";
@@ -8,7 +8,6 @@ import { ErrorBanner } from "../ui/ErrorBanner";
 interface QueriesPanelProps {
   connectionId: string;
   onRestore: (sql: string) => void;
-  onRun: (sql: string) => void;
   style?: React.CSSProperties;
 }
 
@@ -17,7 +16,7 @@ const MODE_OPTIONS = [
   { value: "saved", label: "Saved Queries" },
 ];
 
-export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesPanelProps) {
+export function QueriesPanel({ connectionId, onRestore, style }: QueriesPanelProps) {
   const [mode, setMode] = useState<"history" | "saved">("history");
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -215,12 +214,23 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
             {filteredHistory.map((entry) => (
               <div
                 key={entry.id}
-                className="group flex items-start gap-3 px-4 py-3 hover:bg-surface-raised border-b border-border/50 transition-colors"
+                role="button"
+                tabIndex={0}
+                onClick={() => onRestore(entry.query_text)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && e.target === e.currentTarget) {
+                    onRestore(entry.query_text);
+                  }
+                }}
+                className="group flex items-start gap-3 px-4 py-3 hover:bg-surface-raised border-b border-border/50 transition-colors cursor-pointer"
               >
                 <button
                   type="button"
                   aria-label={entry.favorite ? "Unfavorite" : "Favorite"}
-                  onClick={() => toggleFavorite(entry.id, entry.connection_id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleFavorite(entry.id, entry.connection_id);
+                  }}
                   className={`shrink-0 mt-0.5 cursor-pointer ${
                     entry.favorite ? "text-amber-400" : "text-text-muted opacity-40 group-hover:opacity-80"
                   }`}
@@ -239,26 +249,6 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
                       </>
                     )}
                   </div>
-                </div>
-                <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    type="button"
-                    aria-label="Load query into editor"
-                    title="Load into editor"
-                    onClick={() => onRestore(entry.query_text)}
-                    className="rounded p-1 text-text-muted hover:text-text cursor-pointer"
-                  >
-                    <Download className="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Run query from history"
-                    title="Run"
-                    onClick={() => onRun(entry.query_text)}
-                    className="rounded p-1 text-text-muted hover:text-text cursor-pointer"
-                  >
-                    <Play className="h-3 w-3" />
-                  </button>
                 </div>
               </div>
             ))}
@@ -281,7 +271,15 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
             {filteredSaved.map((q) => (
               <div
                 key={q.id}
-                className="group flex items-start gap-3 px-4 py-3 hover:bg-surface-raised border-b border-border/50 transition-colors"
+                role="button"
+                tabIndex={0}
+                onClick={() => onRestore(q.query_text)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && e.target === e.currentTarget) {
+                    onRestore(q.query_text);
+                  }
+                }}
+                className="group flex items-start gap-3 px-4 py-3 hover:bg-surface-raised border-b border-border/50 transition-colors cursor-pointer"
               >
                 <div className="flex-1 min-w-0">
                   <div className="text-sm text-text font-medium">{q.name}</div>
@@ -293,24 +291,11 @@ export function QueriesPanel({ connectionId, onRestore, onRun, style }: QueriesP
                 <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
                     type="button"
-                    aria-label="Load saved query"
-                    onClick={() => onRestore(q.query_text)}
-                    className="rounded p-1 text-text-muted hover:text-text cursor-pointer"
-                  >
-                    <Download className="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Run saved query"
-                    onClick={() => onRun(q.query_text)}
-                    className="rounded p-1 text-text-muted hover:text-text cursor-pointer"
-                  >
-                    <Play className="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
                     aria-label="Delete saved query"
-                    onClick={() => deleteSavedQuery(q.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteSavedQuery(q.id);
+                    }}
                     className="rounded p-1 text-text-muted hover:text-red-400 cursor-pointer"
                   >
                     <Trash2 className="h-3 w-3" />

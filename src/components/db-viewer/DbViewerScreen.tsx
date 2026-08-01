@@ -1069,7 +1069,6 @@ const onQueriesPanelResizeStart = useCallback(
                             <QueriesPanel
                                 connectionId={connectionId}
                                 onRestore={handleRestoreSql}
-                                onRun={handleRunFromHistory}
                                 style={{ width: queriesPanelWidth }}
                             />
                             <div
