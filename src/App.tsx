@@ -78,6 +78,18 @@ export default function App() {
 
     return (
         <div className="min-h-svh bg-canvas select-none">
+            {typeof window !== "undefined" &&
+                "__TAURI_INTERNALS__" in window && (
+                    // macOS "Overlay" title bar: traffic lights float here and the
+                    // webview paints under them — this strip makes the window
+                    // draggable. Invisible: the screen roots below carry the canvas
+                    // background + pt-9 clearance.
+                    <div
+                        data-tauri-drag-region
+                        aria-hidden
+                        className="fixed inset-x-0 top-0 h-9 z-50"
+                    />
+                )}
             {connectionError && (
                 <div className="px-6 pt-4">
                     <ErrorBanner
