@@ -52,77 +52,85 @@ export function GeneralSettingsTab() {
     <div className="space-y-6">
       <section>
         <h2 className="text-sm font-medium text-text mb-3">Appearance</h2>
-        <SettingsRow title="Theme" description="Choose your preferred appearance.">
-          <ThemePicker
-            value={settings.theme}
-            onChange={(theme) => updateSetting("theme", theme)}
-          />
-        </SettingsRow>
-        <SettingsRow title="Font size" description="Adjust the application font size.">
-          <Select
-            value={settings.font_size}
-            onChange={(value) => updateSetting("font_size", value)}
-            options={FONT_SIZE_OPTIONS}
-            label="Font size"
-          />
-        </SettingsRow>
+        <div className="flex flex-col gap-4">
+          <SettingsRow title="Theme" description="Choose your preferred appearance.">
+            <ThemePicker
+              value={settings.theme}
+              onChange={(theme) => updateSetting("theme", theme)}
+            />
+          </SettingsRow>
+          <SettingsRow title="Font size" description="Adjust the application font size.">
+            <Select
+              value={settings.font_size}
+              onChange={(value) => updateSetting("font_size", value)}
+              options={FONT_SIZE_OPTIONS}
+              label="Font size"
+            />
+          </SettingsRow>
+        </div>
       </section>
 
       <section>
         <h2 className="text-sm font-medium text-text mb-3">Workspace</h2>
-        <SettingsRow
-          title="Default folder"
-          description="Select the folder to show on startup."
-        >
-          <Select
-            value={settings.default_folder_id ?? ""}
-            onChange={(value) => updateSetting("default_folder_id", value)}
-            options={folderOptions}
-            label="Default folder"
-          />
-        </SettingsRow>
+        <div className="flex flex-col gap-4">
+          <SettingsRow
+            title="Default folder"
+            description="Select the folder to show on startup."
+          >
+            <Select
+              value={settings.default_folder_id ?? ""}
+              onChange={(value) => updateSetting("default_folder_id", value)}
+              options={folderOptions}
+              label="Default folder"
+            />
+          </SettingsRow>
+        </div>
       </section>
 
       <section>
         <h2 className="text-sm font-medium text-text mb-3">Table defaults</h2>
-        <SettingsRow
-          title="Auto-refresh rate"
-          description="How often tables auto-refresh by default."
-        >
-          <Select
-            value={String(settings.table_refresh_rate ?? 0)}
-            onChange={(value) => updateSetting("table_refresh_rate", value)}
-            options={REFRESH_RATE_OPTIONS}
-            label="Auto-refresh rate"
-          />
-        </SettingsRow>
-        <SettingsRow
-          title="Rows per page"
-          description="Default number of rows shown per page."
-        >
-          <Select
-            value={String(settings.table_page_size ?? 50)}
-            onChange={(value) => updateSetting("table_page_size", value)}
-            options={PAGE_SIZE_OPTIONS}
-            label="Rows per page"
-          />
-        </SettingsRow>
+        <div className="flex flex-col gap-4">
+          <SettingsRow
+            title="Auto-refresh rate"
+            description="How often tables auto-refresh by default."
+          >
+            <Select
+              value={String(settings.table_refresh_rate ?? 0)}
+              onChange={(value) => updateSetting("table_refresh_rate", value)}
+              options={REFRESH_RATE_OPTIONS}
+              label="Auto-refresh rate"
+            />
+          </SettingsRow>
+          <SettingsRow
+            title="Rows per page"
+            description="Default number of rows shown per page."
+          >
+            <Select
+              value={String(settings.table_page_size ?? 50)}
+              onChange={(value) => updateSetting("table_page_size", value)}
+              options={PAGE_SIZE_OPTIONS}
+              label="Rows per page"
+            />
+          </SettingsRow>
+        </div>
       </section>
 
       <section>
         <h2 className="text-sm font-medium text-text mb-3">Demo</h2>
-        <SettingsRow
-          title="Re-add demo database"
-          description="Re-create the demo SQLite connection if it was deleted."
-        >
-          <button
-            type="button"
-            onClick={handleReAddDemo}
-            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-raised transition-colors"
+        <div className="flex flex-col gap-4">
+          <SettingsRow
+            title="Re-add demo database"
+            description="Re-create the demo SQLite connection if it was deleted."
           >
-            Re-add demo
-          </button>
-        </SettingsRow>
+            <button
+              type="button"
+              onClick={handleReAddDemo}
+              className="rounded-lg border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-raised transition-colors"
+            >
+              Re-add demo
+            </button>
+          </SettingsRow>
+        </div>
       </section>
     </div>
   );

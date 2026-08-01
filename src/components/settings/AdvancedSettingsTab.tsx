@@ -33,36 +33,40 @@ export function AdvancedSettingsTab() {
   return (
     <>
       <SettingsSection title="Safety">
-        <SettingsRow
-          title="Confirm before delete"
-          description="Show a confirmation dialog before deleting connections or folders."
-        >
-          <Toggle
-            checked={settings.confirm_before_delete}
-            onChange={(checked) =>
-              updateSetting("confirm_before_delete", checked ? "true" : "false")
-            }
-            label="Confirm before delete"
-          />
-        </SettingsRow>
+        <div className="flex flex-col gap-4">
+          <SettingsRow
+            title="Confirm before delete"
+            description="Show a confirmation dialog before deleting connections or folders."
+          >
+            <Toggle
+              checked={settings.confirm_before_delete}
+              onChange={(checked) =>
+                updateSetting("confirm_before_delete", checked ? "true" : "false")
+              }
+              label="Confirm before delete"
+            />
+          </SettingsRow>
+        </div>
       </SettingsSection>
 
       <SettingsSection title="Default ports">
-        {DB_TYPES.map((db) => (
-          <SettingsRow
-            key={db.id}
-            title={db.label}
-            description={`Default port for new ${db.label} connections.`}
-          >
-            <Input
-              type="number"
-              value={defaultPorts[db.id]?.toString() ?? ""}
-              onChange={(value) => updatePort(db.id, value)}
-              className="w-24"
-              aria-label={`Default port for ${db.label}`}
-            />
-          </SettingsRow>
-        ))}
+        <div className="flex flex-col gap-4">
+          {DB_TYPES.map((db) => (
+            <SettingsRow
+              key={db.id}
+              title={db.label}
+              description={`Default port for new ${db.label} connections.`}
+            >
+              <Input
+                type="number"
+                value={defaultPorts[db.id]?.toString() ?? ""}
+                onChange={(value) => updatePort(db.id, value)}
+                className="w-24"
+                aria-label={`Default port for ${db.label}`}
+              />
+            </SettingsRow>
+          ))}
+        </div>
       </SettingsSection>
     </>
   );

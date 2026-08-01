@@ -8,7 +8,7 @@ interface SettingsRowProps {
 
 export function SettingsRow({ title, description, children }: SettingsRowProps) {
   return (
-    <div className="flex items-center justify-between gap-6 py-4">
+    <div className="flex items-center justify-between gap-6">
       <div className="min-w-0 overflow-hidden">
         <div className="text-sm font-medium text-text truncate">{title}</div>
         {description && (
