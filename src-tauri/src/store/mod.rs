@@ -449,6 +449,8 @@ impl Store {
     }
 
     /// Insert a row into the `query_history` table.
+    /// Dedups consecutive identical queries per connection (UPDATE the last row
+    /// instead of INSERTing a new one) and prunes to at most 500 rows per connection.
     pub fn insert_query_history(
         &self,
         id: &str,
@@ -461,11 +463,46 @@ impl Store {
     ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = Self::now();
+
+        // DEDUP: check last row for this connection
+        let last: Option<(String, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, query_text FROM query_history
+                     WHERE connection_id = ?1
+                     ORDER BY executed_at DESC LIMIT 1",
+                )
+                .map_err(|e| e.to_string())?;
+            stmt.query_row(params![connection_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .ok()
+        };
+
+        if let Some((existing_id, existing_text)) = last {
+            if existing_text == query_text {
+                // Consecutive identical — UPDATE the existing row
+                conn.execute(
+                    "UPDATE query_history SET execution_time_ms = ?1, row_count = ?2, status = ?3, error_message = ?4, executed_at = ?5 WHERE id = ?6",
+                    params![execution_time_ms, row_count, status, error_message, now, existing_id],
+                )
+                .map_err(|e| e.to_string())?;
+                // Still run pruning in case updates shifted retention needs
+                prune_query_history(&conn, connection_id, 500)?;
+                return Ok(());
+            }
+        }
+
+        // INSERT new row
         conn.execute(
             "INSERT INTO query_history (id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![id, connection_id, query_text, execution_time_ms, row_count, status, error_message, now],
         )
         .map_err(|e| e.to_string())?;
+
+        // PRUNING: keep at most `max_rows` per connection
+        prune_query_history(&conn, connection_id, 500)?;
+
         Ok(())
     }
 
@@ -524,6 +561,32 @@ impl Store {
         }
         Ok(())
     }
+}
+
+/// Delete oldest rows for a connection, keeping at most `max_rows`.
+fn prune_query_history(
+    conn: &rusqlite::Connection,
+    connection_id: &str,
+    max_rows: i64,
+) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM query_history WHERE connection_id = ?1",
+            params![connection_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if count > max_rows {
+        conn.execute(
+            "DELETE FROM query_history WHERE connection_id = ?1 AND id NOT IN (
+                SELECT id FROM query_history WHERE connection_id = ?1
+                ORDER BY executed_at DESC LIMIT ?2
+            )",
+            params![connection_id, max_rows],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -815,5 +878,106 @@ mod tests {
             got[0].ssl_key_path.as_deref(),
             Some("/etc/ssl/private/client-key.pem")
         );
+    }
+
+    #[test]
+    fn insert_query_history_dedups_consecutive_identical() {
+        let store = fresh_store();
+        // Insert connection needed for FK
+        let conn = store
+            .create_connection(ConnectionInput {
+                name: "dedup-conn".into(),
+                db_type: "postgresql".into(),
+                host: "localhost".into(),
+                port: Some(5432),
+                username: None,
+                folder_id: None,
+                password: None,
+                database: Some("public".into()),
+                ssh_host: None,
+                ssh_port: None,
+                ssh_user: None,
+                ssh_auth_method: None,
+                ssh_private_key_path: None,
+                ssh_passphrase: None,
+                ssl_mode: None,
+                ssl_ca_path: None,
+                ssl_cert_path: None,
+                ssl_key_path: None,
+                environment: None,
+                tag_ids: vec![],
+            })
+            .unwrap();
+
+        // First insert
+        store
+            .insert_query_history("h1", &conn.id, "SELECT 1", Some(10), Some(5), "success", None)
+            .unwrap();
+        // Consecutive identical — should UPDATE, not INSERT
+        store
+            .insert_query_history("h2", &conn.id, "SELECT 1", Some(20), Some(8), "success", None)
+            .unwrap();
+        // There should still be 1 row (not 2), with updated stats
+        let rows = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
+        assert_eq!(rows.len(), 1, "Consecutive identical queries should dedup to one row");
+        assert_eq!(rows[0].execution_time_ms, Some(20), "Stats should update after dedup");
+        assert_eq!(rows[0].id, "h1", "Original ID should persist after dedup");
+
+        // Different query — should INSERT a new row
+        store
+            .insert_query_history("h3", &conn.id, "SELECT 2", Some(5), Some(0), "success", None)
+            .unwrap();
+        let rows2 = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
+        assert_eq!(rows2.len(), 2, "Different query should create a new row");
+        assert_eq!(rows2[0].id, "h3", "Most recent row should be the new one");
+    }
+
+    #[test]
+    fn insert_query_history_prunes_oldest_beyond_500() {
+        let store = fresh_store();
+        let conn = store
+            .create_connection(ConnectionInput {
+                name: "prune-conn".into(),
+                db_type: "postgresql".into(),
+                host: "localhost".into(),
+                port: Some(5432),
+                username: None,
+                folder_id: None,
+                password: None,
+                database: Some("public".into()),
+                ssh_host: None,
+                ssh_port: None,
+                ssh_user: None,
+                ssh_auth_method: None,
+                ssh_private_key_path: None,
+                ssh_passphrase: None,
+                ssl_mode: None,
+                ssl_ca_path: None,
+                ssl_cert_path: None,
+                ssl_key_path: None,
+                environment: None,
+                tag_ids: vec![],
+            })
+            .unwrap();
+        // Insert 510 rows — should trigger pruning beyond 500
+        for i in 0..510 {
+            store
+                .insert_query_history(
+                    &format!("ph{}", i),
+                    &conn.id,
+                    &format!("SELECT {}", i),
+                    Some(1),
+                    Some(1),
+                    "success",
+                    None,
+                )
+                .unwrap();
+        }
+        let rows = store.get_query_history(Some(&conn.id), 1000, 0).unwrap();
+        assert_eq!(rows.len(), 500, "Should be pruned to 500 rows");
+        // Oldest rows (ph0..ph9) should be pruned; most recent (ph509) kept
+        let all_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        assert!(!all_ids.contains(&"ph0".to_string()), "Oldest rows should be pruned");
+        assert!(all_ids.contains(&"ph509".to_string()), "Most recent rows should be kept");
     }
 }
