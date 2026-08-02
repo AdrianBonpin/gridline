@@ -339,7 +339,10 @@ pub fn build_update_sql(
     table: &str,
     primary_key: &[(String, serde_json::Value)],
     new_data: &[(String, serde_json::Value)],
-) -> String {
+) -> Result<(String, Vec<serde_json::Value>), String> {
+    if primary_key.is_empty() {
+        return Err("cannot update a row without a primary key or row locator".to_string());
+    }
     let set_clause: Vec<String> = new_data
         .iter()
         .map(|(col, _)| format!("\"{}\" = ?", col))
@@ -348,13 +351,22 @@ pub fn build_update_sql(
         .iter()
         .map(|(col, _)| format!("\"{}\" = ?", col))
         .collect();
-    format!(
-        "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
-        schema,
-        table,
-        set_clause.join(", "),
-        where_clause.join(" AND ")
-    )
+    // Params must follow placeholder order: SET values first, then WHERE.
+    let params: Vec<serde_json::Value> = new_data
+        .iter()
+        .chain(primary_key.iter())
+        .map(|(_, v)| v.clone())
+        .collect();
+    Ok((
+        format!(
+            "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
+            schema,
+            table,
+            set_clause.join(", "),
+            where_clause.join(" AND ")
+        ),
+        params,
+    ))
 }
 
 /// Build a parameterized DELETE SQL statement.
@@ -367,17 +379,23 @@ pub fn build_delete_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
-) -> String {
+) -> Result<(String, Vec<serde_json::Value>), String> {
+    if primary_key.is_empty() {
+        return Err("cannot delete a row without a primary key or row locator".to_string());
+    }
     let where_clause: Vec<String> = primary_key
         .iter()
         .map(|(col, _)| format!("\"{}\" = ?", col))
         .collect();
-    format!(
-        "DELETE FROM \"{}\".\"{}\" WHERE {}",
-        schema,
-        table,
-        where_clause.join(" AND ")
-    )
+    Ok((
+        format!(
+            "DELETE FROM \"{}\".\"{}\" WHERE {}",
+            schema,
+            table,
+            where_clause.join(" AND ")
+        ),
+        primary_key.iter().map(|(_, v)| v.clone()).collect(),
+    ))
 }
 
 /// Build a parameterized INSERT SQL statement.
@@ -417,7 +435,10 @@ pub fn build_pg_update_sql(
     table: &str,
     primary_key: &[(String, serde_json::Value)],
     new_data: &[(String, serde_json::Value)],
-) -> (String, Vec<serde_json::Value>) {
+) -> Result<(String, Vec<serde_json::Value>), String> {
+    if primary_key.is_empty() {
+        return Err("cannot update a row without a primary key or row locator".to_string());
+    }
     let mut params: Vec<serde_json::Value> = Vec::new();
     let set_clause: Vec<String> = new_data
         .iter()
@@ -433,7 +454,7 @@ pub fn build_pg_update_sql(
             format!("\"{}\" = ${}", col, params.len())
         })
         .collect();
-    (
+    Ok((
         format!(
             "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
             schema,
@@ -442,7 +463,7 @@ pub fn build_pg_update_sql(
             where_clause.join(" AND ")
         ),
         params,
-    )
+    ))
 }
 
 /// Build a PostgreSQL DELETE statement.
@@ -450,7 +471,10 @@ pub fn build_pg_delete_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
-) -> (String, Vec<serde_json::Value>) {
+) -> Result<(String, Vec<serde_json::Value>), String> {
+    if primary_key.is_empty() {
+        return Err("cannot delete a row without a primary key or row locator".to_string());
+    }
     let mut params: Vec<serde_json::Value> = Vec::new();
     let where_clause: Vec<String> = primary_key
         .iter()
@@ -459,7 +483,7 @@ pub fn build_pg_delete_sql(
             format!("\"{}\" = ${}", col, params.len())
         })
         .collect();
-    (
+    Ok((
         format!(
             "DELETE FROM \"{}\".\"{}\" WHERE {}",
             schema,
@@ -467,7 +491,7 @@ pub fn build_pg_delete_sql(
             where_clause.join(" AND ")
         ),
         params,
-    )
+    ))
 }
 
 /// Build a PostgreSQL INSERT statement.
@@ -1523,6 +1547,16 @@ ORDER BY c.ordinal_position"#;
     }
 }
 
+/// Map a tokio_postgres/rusqlite affected-row count to a friendly error.
+/// Exactly 1 -> Ok (None). 0 -> stale; >1 -> ambiguous.
+pub(crate) fn affected_count_error(n: u64) -> Option<String> {
+    match n {
+        0 => Some("row was modified or removed by another session".to_string()),
+        1 => None,
+        _ => Some("ambiguous row match".to_string()),
+    }
+}
+
 #[tauri::command]
 pub async fn execute_change(
     connection_id: String,
@@ -1543,7 +1577,7 @@ pub async fn execute_change(
                 } => {
                     let pk = parse_json_pairs(primary_key)?;
                     let data = parse_json_pairs(new_data)?;
-                    build_pg_update_sql(schema, table, &pk, &data)
+                    build_pg_update_sql(schema, table, &pk, &data)?
                 }
                 Change::Insert {
                     schema,
@@ -1561,7 +1595,7 @@ pub async fn execute_change(
                     ..
                 } => {
                     let pk = parse_json_pairs(primary_key)?;
-                    build_pg_delete_sql(schema, table, &pk)
+                    build_pg_delete_sql(schema, table, &pk)?
                 }
                 Change::AlterTable { sql, .. } => {
                     // Execute the raw DDL directly; no bound parameters.
@@ -1612,7 +1646,13 @@ pub async fn execute_change(
                     r
                 })
                 .collect();
-            client.execute(&sql, &refs).await.map_err(|e| e.to_string())?;
+            let n = client
+                .execute(&sql, &refs)
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some(msg) = affected_count_error(n) {
+                return Err(msg);
+            }
             Ok(())
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
@@ -1626,13 +1666,7 @@ pub async fn execute_change(
                 } => {
                     let pk = parse_json_pairs(primary_key)?;
                     let data = parse_json_pairs(new_data)?;
-                    (
-                        build_update_sql(schema, table, &pk, &data),
-                        pk.iter()
-                            .chain(data.iter())
-                            .map(|(_, v)| v.clone())
-                            .collect(),
-                    )
+                    build_update_sql(schema, table, &pk, &data)?
                 }
                 Change::Insert {
                     schema,
@@ -1655,10 +1689,7 @@ pub async fn execute_change(
                     ..
                 } => {
                     let pk = parse_json_pairs(primary_key)?;
-                    (
-                        build_delete_sql(schema, table, &pk),
-                        pk.iter().map(|(_, v)| v.clone()).collect(),
-                    )
+                    build_delete_sql(schema, table, &pk)?
                 }
                 Change::AlterTable { sql, .. } => {
                     conn.execute(sql, []).map_err(|e| e.to_string())?;
@@ -1688,8 +1719,12 @@ pub async fn execute_change(
 
             let sqlite_params: Vec<rusqlite::types::Value> =
                 params.iter().map(json_to_sqlite_value).collect();
-            conn.execute(&sql, rusqlite::params_from_iter(sqlite_params))
+            let n = conn
+                .execute(&sql, rusqlite::params_from_iter(sqlite_params))
                 .map_err(|e| e.to_string())?;
+            if let Some(msg) = affected_count_error(n as u64) {
+                return Err(msg);
+            }
             Ok(())
         }
         None => Err("Connection not found".to_string()),
@@ -2006,7 +2041,7 @@ mod tests {
             ("email".to_string(), serde_json::json!("bob@example.com")),
         ];
 
-        let sql = build_update_sql("public", "users", &pk, &data);
+        let (sql, _params) = build_update_sql("public", "users", &pk, &data).unwrap();
 
         assert!(
             sql.to_uppercase().contains("UPDATE"),
@@ -2031,7 +2066,7 @@ mod tests {
     fn build_change_delete_sql_is_valid() {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
 
-        let sql = build_delete_sql("public", "users", &pk);
+        let (sql, _params) = build_delete_sql("public", "users", &pk).unwrap();
 
         assert!(
             sql.to_uppercase().contains("DELETE FROM"),
@@ -2225,5 +2260,44 @@ mod tests {
     fn sqlite_locator_select_adds_rowid_for_no_pk() {
         let sql = build_sqlite_data_select("no_pk", &["id".into(), "name".into()], false);
         assert!(sql.contains("rowid"), "no-PK sqlite table must select rowid; got: {}", sql);
+    }
+
+    // -----------------------------------------------------------------------
+    // No-PK row locator updates + affected-row-count guard (Task 8)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pg_update_with_locator_uses_it_in_where() {
+        // The frontend supplies ctid as the "primary_key" pair for no-PK rows.
+        let locator = vec![("ctid".to_string(), serde_json::json!("(0,1)"))];
+        let data = vec![("name".to_string(), serde_json::json!("Bob"))];
+        let (sql, params) = build_pg_update_sql("public", "no_pk", &locator, &data).unwrap();
+        assert!(sql.contains("\"ctid\" = $"), "locator update must WHERE on ctid; got: {}", sql);
+        assert_eq!(params.len(), 2); // 1 SET value + 1 WHERE value
+    }
+
+    #[test]
+    fn pg_update_with_pk_uses_pk_where() {
+        let pk = vec![("id".to_string(), serde_json::json!(1))];
+        let data = vec![("name".to_string(), serde_json::json!("Bob"))];
+        let (sql, _params) = build_pg_update_sql("public", "users", &pk, &data).unwrap();
+        assert!(sql.contains("\"id\" = $"), "PK update must WHERE on id; got: {}", sql);
+        assert!(!sql.contains("ctid"), "PK update must NOT use ctid; got: {}", sql);
+    }
+
+    #[test]
+    fn pg_update_with_empty_primary_key_is_rejected() {
+        // Defense-in-depth: an empty locator must NOT yield `UPDATE ... WHERE `.
+        let pk: Vec<(String, serde_json::Value)> = vec![];
+        let data = vec![("name".to_string(), serde_json::json!("Bob"))];
+        let result = build_pg_update_sql("public", "no_pk", &pk, &data);
+        assert!(result.is_err(), "empty primary_key must be rejected, not produce broken SQL");
+    }
+
+    #[test]
+    fn affected_row_count_message_for_zero_rows() {
+        assert_eq!(affected_count_error(0u64), Some("row was modified or removed by another session".to_string()));
+        assert_eq!(affected_count_error(1u64), None);
+        assert_eq!(affected_count_error(2u64), Some("ambiguous row match".to_string()));
     }
 }
