@@ -131,7 +131,7 @@ describe("CellEditor", () => {
     expect(list).toHaveTextContent("2 — Bob");
   });
 
-  it("renders FK options as one-row column cells (FK-reference style, capped at 5)", () => {
+  it("renders FK options as one-row values only (FK-reference style, cap 5, fixed width)", () => {
     const onCommit = vi.fn();
     const cells = Array.from({ length: 6 }, (_, i) => ({
         name: `col${i}`,
@@ -141,13 +141,17 @@ describe("CellEditor", () => {
       fkOptions={[{ value: "1", label: "1", cells }]}
       onCommit={onCommit} onCancel={vi.fn()} />);
     const list = screen.getByTestId("fk-options");
-    // all 5 shown cells render name + value in one row
+    // values shown, column names NOT shown
     for (let i = 0; i < 5; i++) {
-        expect(list).toHaveTextContent(`col${i}`);
         expect(list).toHaveTextContent(`v${i}`);
     }
-    // the 6th column is capped
+    expect(list).not.toHaveTextContent("col0");
     expect(list).not.toHaveTextContent("col5");
+    // fixed 360px width, FK-viewer surface styling
+    expect(list.style.width).toBe("360px");
+    expect(list.className).toContain("bg-surface");
+    expect(list.className).toContain("rounded-lg");
+    expect(list.className).toContain("shadow-xl");
     // clicking the row commits the value
     fireEvent.click(screen.getByRole("button"));
     expect(onCommit).toHaveBeenCalledWith("1");

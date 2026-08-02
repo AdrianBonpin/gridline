@@ -8,6 +8,9 @@ export interface FkOption {
   cells?: { name: string; value: string }[];
 }
 
+const MAX_FK_CELLS = 5;
+const FK_DROPDOWN_WIDTH = 360;
+
 interface CellEditorProps {
   initialValue: string;
   dataType: string;
@@ -47,7 +50,15 @@ export function CellEditor({
   useLayoutEffect(() => {
     if (fkOptions && fkOptions.length > 0 && searchRef.current) {
       const r = searchRef.current.getBoundingClientRect();
-      setFkDropdownPos({ top: r.bottom + 4, left: r.left, width: r.width });
+      let left = r.left;
+      if (left + FK_DROPDOWN_WIDTH > window.innerWidth - 16) {
+        left = Math.max(16, window.innerWidth - FK_DROPDOWN_WIDTH - 16);
+      }
+      setFkDropdownPos({
+        top: r.bottom + 4,
+        left,
+        width: FK_DROPDOWN_WIDTH,
+      });
     }
   }, [fkOptions]);
 
@@ -115,9 +126,7 @@ export function CellEditor({
 
   if (fkOptions && fkOptions.length > 0) {
     const q = query.trim().toLowerCase();
-    const MAX_FK_CELLS = 5;
-
-  const fkSearchText = (o: FkOption) =>
+    const fkSearchText = (o: FkOption) =>
     [
       o.label,
       ...(o.cells ?? []).map((c) => `${c.name}:${c.value}`),
@@ -160,7 +169,7 @@ export function CellEditor({
               width: fkDropdownPos.width,
               zIndex: 50,
             }}
-            className="max-h-28 overflow-y-auto bg-canvas border border-border rounded-md shadow-lg"
+            className="max-h-28 overflow-y-auto bg-surface border border-border rounded-lg shadow-xl"
           >
           {filtered.length === 0 && (
             <div className="px-2 py-1 text-xs text-text-muted">No matches</div>
@@ -169,22 +178,21 @@ export function CellEditor({
             <button
               key={o.value}
               type="button"
-              className="block w-full px-2 py-1 hover:bg-surface text-xs text-left"
+              className="block w-full px-3 py-1.5 hover:bg-surface-raised text-xs text-left"
               onClick={() => onCommit(o.value)}
             >
               {o.cells && o.cells.length > 0 ? (
-                <span className="flex items-center gap-2 min-w-0">
+                <span className="flex items-center gap-0 min-w-0">
                   {o.cells.slice(0, MAX_FK_CELLS).map((c, ci) => (
-                    <span
-                      key={ci}
-                      className="flex items-center gap-1 min-w-0"
-                    >
-                      <span className="text-text-muted/70 font-heading shrink-0">
-                        {c.name}
-                      </span>
-                      <span className="truncate text-text">
-                        {c.value || "NULL"}
-                      </span>
+                    <span key={ci} className="flex items-center min-w-0">
+                      {ci > 0 && (
+                        <span className="mx-1.5 h-3 w-px bg-border shrink-0" />
+                      )}
+                      {c.value === "" ? (
+                        <span className="italic text-text-muted">NULL</span>
+                      ) : (
+                        <span className="truncate text-text">{c.value}</span>
+                      )}
                     </span>
                   ))}
                 </span>
