@@ -1,20 +1,38 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Key, Braces } from "lucide-react";
+import { Key, Braces, PanelRight } from "lucide-react";
 import type { ColumnInfo } from "../../lib/types";
 import { abbreviateType } from "../../lib/utils";
 import { FkPreviewPopover } from "../db-viewer/FkPreviewPopover";
 import { JsonCellPopover, jsonPreview } from "../db-viewer/JsonCellPopover";
+import { CellEditor } from "./CellEditor";
+import { CellContextMenu } from "./CellContextMenu";
+import { cellToUpdateChange, isCellEditable } from "./gridEditability";
+import { nextCell, type CellPos } from "./keyboardNav";
 
 interface VirtualDataGridProps {
   connectionId: string;
   schema: string;
+  table?: string;
   rows: unknown[][];
   columns: ColumnInfo[];
   hiddenColumns: Set<string>;
   selectedRows: Set<number>;
   onToggleRow: (rowIndex: number) => void;
   onToggleAll: () => void;
+  dbType?: string;
+  tabType?: "table" | "query";
+  onStageEdit?: (payload: {
+    type: "update";
+    schema: string;
+    table: string;
+    primaryKey: Record<string, unknown>;
+    oldData: Record<string, unknown>;
+    newData: Record<string, unknown>;
+  }) => void;
+  onOpenRowDetail?: (rowIndex: number) => void;
+  getLocator?: (row: unknown[]) => Record<string, unknown>;
+  onOpenFk?: (rowIndex: number) => void;
 }
 
 const ROW_HEIGHT = 36;
@@ -25,12 +43,19 @@ const MAX_COL_WIDTH = 800;
 export function VirtualDataGrid({
   connectionId,
   schema,
+  table = "",
   rows,
   columns,
   hiddenColumns,
   selectedRows,
   onToggleRow,
   onToggleAll,
+  dbType = "postgresql",
+  tabType = "table",
+  onStageEdit,
+  onOpenRowDetail,
+  getLocator,
+  onOpenFk,
 }: VirtualDataGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -52,6 +77,20 @@ export function VirtualDataGrid({
     estimateSize: () => ROW_HEIGHT,
     overscan: 5,
   });
+
+  // ── focus / editing / context menu / row detail state ──
+
+  const [activeCell, setActiveCell] = useState<CellPos | null>(null);
+  const [editingCell, setEditingCell] = useState<CellPos | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ pos: DOMRect; row: number; col: number } | null>(null);
+  const [, setRowDetailIdx] = useState<number | null>(null);
+
+  // Reset transient focus state when the data shape changes.
+  useEffect(() => {
+    setActiveCell(null);
+    setEditingCell(null);
+    setCtxMenu(null);
+  }, [rows.length, columns.length, hiddenColumns.size]);
 
   // ── column widths ─────────────────────────────────────
 
@@ -138,16 +177,63 @@ export function VirtualDataGrid({
     anchorRect: DOMRect | null;
   } | null>(null);
 
+  // ── keyboard navigation ───────────────────────────────
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (editingCell) return;
+      if (!activeCell) return;
+
+      const keyLabel = e.key === "Tab" ? (e.shiftKey ? "Shift+Tab" : "Tab") : e.key;
+
+      if (keyLabel.startsWith("Arrow") || keyLabel === "Tab" || keyLabel === "Shift+Tab") {
+        e.preventDefault();
+        const next = nextCell(activeCell, keyLabel, rows.length, visibleColumns.length);
+        setActiveCell(next);
+        virtualizer.scrollToIndex(next.row);
+        return;
+      }
+
+      if (e.key === "Enter") {
+        const col = visibleColumns[activeCell.col];
+        if (col && isCellEditable(col, tabType, dbType)) {
+          e.preventDefault();
+          setEditingCell(activeCell);
+        }
+        return;
+      }
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setActiveCell(null);
+        return;
+      }
+
+      if (e.key === "c" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        const col = visibleColumns[activeCell.col];
+        if (!col) return;
+        const ci = columns.findIndex((c) => c.name === col.name);
+        const value = rows[activeCell.row]?.[ci];
+        navigator.clipboard.writeText(String(value));
+      }
+    },
+    [activeCell, columns, dbType, editingCell, rows, tabType, visibleColumns, virtualizer],
+  );
+
   // ── cell renderer (shared between header sizing and body) ──
 
   const renderCell = useCallback(
-    (col: ColumnInfo, row: unknown[], _rowIndex: number) => {
+    (col: ColumnInfo, row: unknown[], rowIndex: number, colIndex: number) => {
       const ci = columns.findIndex((c) => c.name === col.name);
       const cell = ci >= 0 ? row[ci] : undefined;
       const isNull = cell === null || cell === undefined;
       const isFk = col.is_fk && col.fk_ref && !isNull;
       const isJson = !isNull && (col.data_type === "jsonb" || col.data_type === "json");
       const jp = isJson ? jsonPreview(cell) : { label: "", isJson: false };
+      const editable = isCellEditable(col, tabType, dbType);
+      const isActive = activeCell?.row === rowIndex && activeCell?.col === colIndex;
+      const isEditing = editingCell?.row === rowIndex && editingCell?.col === colIndex;
 
       const handleJsonClick = (e: React.MouseEvent) => {
         if (isJson) {
@@ -156,14 +242,39 @@ export function VirtualDataGrid({
         }
       };
 
+      const commitEdit = (committed: string | null) => {
+        if (committed !== (isNull ? null : cell)) {
+          const locator = getLocator?.(row) ?? {};
+          onStageEdit?.(
+            cellToUpdateChange({
+              schema,
+              table,
+              primaryKey: locator,
+              oldData: { [col.name]: cell },
+              newData: { [col.name]: committed },
+            }) as {
+              type: "update";
+              schema: string;
+              table: string;
+              primaryKey: Record<string, unknown>;
+              oldData: Record<string, unknown>;
+              newData: Record<string, unknown>;
+            },
+          );
+        }
+        setEditingCell(null);
+      };
+
       return (
         <div
           key={col.name}
-          className={`px-3 py-2 font-heading text-xs truncate select-text border-r border-border self-stretch ${
+          className={`relative px-3 py-2 font-heading text-xs truncate select-text border-r border-border self-stretch ${
             isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""
-          } ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""}`}
+          } ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""} ${
+            isActive ? "bg-accent/10 ring-1 ring-inset ring-accent outline-none" : ""
+          }`}
           role={isFk || isJson ? "button" : undefined}
-          tabIndex={isFk || isJson ? 0 : undefined}
+          tabIndex={isFk || isJson ? 0 : -1}
           onKeyDown={
             isFk || isJson
               ? (e) => {
@@ -188,15 +299,32 @@ export function VirtualDataGrid({
                   ? "Click to view JSON"
                   : String(cell)
           }
-          onClick={
-            isFk
-              ? (e) => handleFkClick(col, cell, e)
-              : isJson
-                ? handleJsonClick
-                : undefined
-          }
+          onClick={(e) => {
+            setActiveCell({ row: rowIndex, col: colIndex });
+            if (isFk) handleFkClick(col, cell, e);
+            else if (isJson) handleJsonClick(e);
+          }}
+          onDoubleClick={() => {
+            if (editable) setEditingCell({ row: rowIndex, col: colIndex });
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            setCtxMenu({ pos: rect, row: rowIndex, col: colIndex });
+            setActiveCell({ row: rowIndex, col: colIndex });
+          }}
         >
-          {isNull ? (
+          {isEditing ? (
+            <div className="absolute inset-0 z-20" onClick={(e) => e.stopPropagation()}>
+              <CellEditor
+                initialValue={isNull ? "" : String(cell)}
+                dataType={col.data_type}
+                nullable={col.is_nullable}
+                onCommit={commitEdit}
+                onCancel={() => setEditingCell(null)}
+              />
+            </div>
+          ) : isNull ? (
             <span className="italic text-text-muted">NULL</span>
           ) : isJson ? (
             <span className="inline-flex items-center gap-0.5">
@@ -209,11 +337,60 @@ export function VirtualDataGrid({
         </div>
       );
     },
-    [columns, getWidth, handleFkClick],
+    [activeCell, columns, dbType, editingCell, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth],
+  );
+
+  // ── context menu helpers ──────────────────────────────
+
+  const ctxCol = ctxMenu ? visibleColumns[ctxMenu.col] : null;
+  const copyCellValue = useCallback(
+    async (row: number, col: number) => {
+      const column = visibleColumns[col];
+      if (!column) return;
+      const ci = columns.findIndex((c) => c.name === column.name);
+      const value = rows[row]?.[ci];
+      await navigator.clipboard.writeText(String(value));
+    },
+    [columns, rows, visibleColumns],
+  );
+
+  const stageNull = useCallback(
+    (row: number, col: number) => {
+      const column = visibleColumns[col];
+      if (!column || !isCellEditable(column, tabType, dbType)) return;
+      const ci = columns.findIndex((c) => c.name === column.name);
+      const value = rows[row]?.[ci];
+      if (value === null || value === undefined) return;
+      const locator = getLocator?.(rows[row]) ?? {};
+      onStageEdit?.(
+        cellToUpdateChange({
+          schema,
+          table,
+          primaryKey: locator,
+          oldData: { [column.name]: value },
+          newData: { [column.name]: null },
+        }) as {
+          type: "update";
+          schema: string;
+          table: string;
+          primaryKey: Record<string, unknown>;
+          oldData: Record<string, unknown>;
+          newData: Record<string, unknown>;
+        },
+      );
+    },
+    [columns, dbType, getLocator, onStageEdit, rows, schema, table, tabType, visibleColumns],
   );
 
   return (
-    <div ref={parentRef} className="overflow-auto h-full" style={{ overscrollBehavior: "none" }}>
+    <div
+      ref={parentRef}
+      className="overflow-auto h-full outline-none"
+      style={{ overscrollBehavior: "none" }}
+      tabIndex={-1}
+      role="grid"
+      onKeyDown={handleKeyDown}
+    >
       {/* ── sticky header (hidden when no columns/table open) ── */}
       {hasColumns && (
         <div className="sticky top-0 z-10">
@@ -285,16 +462,31 @@ export function VirtualDataGrid({
                 }}
               >
                 {hasColumns && (
-                  <div style={{ width: 40, minWidth: 40 }} className="flex items-center justify-center border-r border-border self-stretch">
+                  <div
+                    style={{ width: 40, minWidth: 40 }}
+                    className="flex flex-col items-center justify-center gap-0.5 border-r border-border self-stretch"
+                  >
                     <input
                       type="checkbox"
                       checked={isSelected}
                       onChange={() => onToggleRow(virtualRow.index)}
                       className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
                     />
+                    <button
+                      type="button"
+                      title="View row"
+                      className="text-text-muted hover:text-accent"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRowDetailIdx(virtualRow.index);
+                        onOpenRowDetail?.(virtualRow.index);
+                      }}
+                    >
+                      <PanelRight size={10} />
+                    </button>
                   </div>
                 )}
-                {visibleColumns.map((col) => renderCell(col, row, virtualRow.index))}
+                {visibleColumns.map((col, i) => renderCell(col, row, virtualRow.index, i))}
               </div>
             );
           })}
@@ -319,6 +511,38 @@ export function VirtualDataGrid({
           value={jsonPopover.value}
           anchorRect={jsonPopover.anchorRect}
           onClose={() => setJsonPopover(null)}
+        />
+      )}
+      {/* Cell context menu */}
+      {ctxMenu && ctxCol && (
+        <CellContextMenu
+          anchorRect={ctxMenu.pos}
+          editable={isCellEditable(ctxCol, tabType, dbType)}
+          isJson={ctxCol.data_type === "jsonb" || ctxCol.data_type === "json"}
+          isFk={ctxCol.is_fk && ctxCol.fk_ref != null}
+          nullable={ctxCol.is_nullable}
+          onCopy={() => {
+            void copyCellValue(ctxMenu.row, ctxMenu.col);
+            setCtxMenu(null);
+          }}
+          onCopyJson={() => {
+            void copyCellValue(ctxMenu.row, ctxMenu.col);
+            setCtxMenu(null);
+          }}
+          onEdit={() => {
+            setActiveCell({ row: ctxMenu.row, col: ctxMenu.col });
+            setEditingCell({ row: ctxMenu.row, col: ctxMenu.col });
+            setCtxMenu(null);
+          }}
+          onSetNull={() => {
+            stageNull(ctxMenu.row, ctxMenu.col);
+            setCtxMenu(null);
+          }}
+          onOpenFk={() => {
+            onOpenFk?.(ctxMenu.row);
+            setCtxMenu(null);
+          }}
+          onClose={() => setCtxMenu(null)}
         />
       )}
     </div>

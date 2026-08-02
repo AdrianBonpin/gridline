@@ -4,7 +4,7 @@ import { VirtualDataGrid } from "./VirtualDataGrid";
 import type { ColumnInfo } from "../../lib/types";
 
 const mockColumns: ColumnInfo[] = [
-  { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+  { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
   { name: "name", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
 ];
 
@@ -36,6 +36,44 @@ describe("VirtualDataGrid", () => {
     vi.clearAllMocks();
   });
 
+  it("focuses a cell on click and opens the editor on Enter for an editable cell", () => {
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" />);
+    const nameCell = screen.getAllByText("Alice")[0];
+    fireEvent.click(nameCell);
+    fireEvent.keyDown(nameCell, { key: "Enter" });
+    expect(screen.getByRole("textbox")).toBeInTheDocument();
+  });
+
+  it("Ctrl+C copies the focused cell value to the clipboard", async () => {
+    const writeText = vi.fn();
+    Object.assign(navigator, { clipboard: { writeText } });
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" />);
+    const cell = screen.getAllByText("Alice")[0];
+    fireEvent.click(cell);
+    fireEvent.keyDown(cell, { key: "c", ctrlKey: true });
+    expect(writeText).toHaveBeenCalledWith("Alice");
+  });
+
+  it("does not open an editor for a PK cell", () => {
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" />);
+    const idCell = screen.getByText("1");
+    fireEvent.click(idCell);
+    fireEvent.keyDown(idCell, { key: "Enter" });
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
   it("renders all rows when row count is small", () => {
     mockGetTotalSize.mockReturnValue(mockRows.length * 36);
     mockGetVirtualItems.mockReturnValue(
@@ -51,12 +89,15 @@ describe("VirtualDataGrid", () => {
       <VirtualDataGrid
         connectionId="conn-1"
         schema="public"
+        table="users"
         rows={mockRows}
         columns={mockColumns}
         hiddenColumns={new Set()}
         selectedRows={new Set()}
         onToggleRow={() => {}}
         onToggleAll={() => {}}
+        dbType="postgresql"
+        tabType="table"
       />,
     );
 
@@ -79,12 +120,15 @@ describe("VirtualDataGrid", () => {
       <VirtualDataGrid
         connectionId="conn-1"
         schema="public"
+        table="users"
         rows={mockRows}
         columns={mockColumns}
         hiddenColumns={new Set()}
         selectedRows={new Set()}
         onToggleRow={() => {}}
         onToggleAll={() => {}}
+        dbType="postgresql"
+        tabType="table"
       />,
     );
 
@@ -109,12 +153,15 @@ describe("VirtualDataGrid", () => {
       <VirtualDataGrid
         connectionId="conn-1"
         schema="public"
+        table="users"
         rows={rows}
         columns={mockColumns}
         hiddenColumns={new Set()}
         selectedRows={new Set()}
         onToggleRow={() => {}}
         onToggleAll={() => {}}
+        dbType="postgresql"
+        tabType="table"
       />,
     );
 
@@ -130,12 +177,15 @@ describe("VirtualDataGrid", () => {
       <VirtualDataGrid
         connectionId="conn-1"
         schema="public"
+        table="users"
         rows={[]}
         columns={mockColumns}
         hiddenColumns={new Set()}
         selectedRows={new Set()}
         onToggleRow={() => {}}
         onToggleAll={() => {}}
+        dbType="postgresql"
+        tabType="table"
       />,
     );
 
@@ -147,9 +197,10 @@ describe("VirtualDataGrid", () => {
     mockGetTotalSize.mockReturnValue(mockRows.length * 36);
     mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
 
-    render(<VirtualDataGrid connectionId="conn-1" schema="public" rows={mockRows} columns={mockColumns}
+    render(<VirtualDataGrid connectionId="conn-1" schema="public" table="users" rows={mockRows} columns={mockColumns}
       hiddenColumns={new Set()} selectedRows={new Set()}
-      onToggleRow={(i) => { toggled = i; }} onToggleAll={() => {}} />);
+      onToggleRow={(i) => { toggled = i; }} onToggleAll={() => {}}
+      dbType="postgresql" tabType="table" />);
 
     const checkboxes = screen.getAllByRole("checkbox");
     fireEvent.click(checkboxes[1]); // first row checkbox
@@ -163,9 +214,10 @@ describe("VirtualDataGrid", () => {
     mockGetTotalSize.mockReturnValue(36);
     mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
 
-    render(<VirtualDataGrid connectionId="conn-1" schema="public" rows={[[42]]} columns={fkCols}
+    render(<VirtualDataGrid connectionId="conn-1" schema="public" table="orders" rows={[[42]]} columns={fkCols}
       hiddenColumns={new Set()} selectedRows={new Set()}
-      onToggleRow={() => {}} onToggleAll={() => {}} />);
+      onToggleRow={() => {}} onToggleAll={() => {}}
+      dbType="postgresql" tabType="table" />);
 
     const fkCell = screen.getByText("42");
     expect(fkCell.className).toContain("cursor-pointer");
@@ -179,9 +231,10 @@ describe("VirtualDataGrid", () => {
     mockGetTotalSize.mockReturnValue(36);
     mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
 
-    render(<VirtualDataGrid connectionId="conn-1" schema="public" rows={[[JSON.stringify({ key: "val", count: 3 })]]} columns={jsonCols}
+    render(<VirtualDataGrid connectionId="conn-1" schema="public" table="users" rows={[[JSON.stringify({ key: "val", count: 3 })]]} columns={jsonCols}
       hiddenColumns={new Set()} selectedRows={new Set()}
-      onToggleRow={() => {}} onToggleAll={() => {}} />);
+      onToggleRow={() => {}} onToggleAll={() => {}}
+      dbType="postgresql" tabType="table" />);
 
     expect(screen.getByText(/2 keys/)).toBeInTheDocument();
   });
@@ -194,12 +247,15 @@ describe("VirtualDataGrid", () => {
       <VirtualDataGrid
         connectionId="conn-1"
         schema="public"
+        table="users"
         rows={[]}
         columns={mockColumns}
         hiddenColumns={new Set()}
         selectedRows={new Set()}
         onToggleRow={() => {}}
         onToggleAll={() => {}}
+        dbType="postgresql"
+        tabType="table"
       />,
     );
 
@@ -225,12 +281,15 @@ describe("VirtualDataGrid", () => {
       <VirtualDataGrid
         connectionId="conn-1"
         schema="public"
+        table="users"
         rows={[]}
         columns={[]}
         hiddenColumns={new Set()}
         selectedRows={new Set()}
         onToggleRow={() => {}}
         onToggleAll={() => {}}
+        dbType="postgresql"
+        tabType="table"
       />,
     );
 
@@ -244,9 +303,10 @@ describe("VirtualDataGrid", () => {
     mockGetTotalSize.mockReturnValue(0);
     mockGetVirtualItems.mockReturnValue([]);
 
-    render(<VirtualDataGrid connectionId="conn-1" schema="public" rows={[]} columns={mockColumns}
+    render(<VirtualDataGrid connectionId="conn-1" schema="public" table="users" rows={[]} columns={mockColumns}
       hiddenColumns={new Set()} selectedRows={new Set()}
-      onToggleRow={() => {}} onToggleAll={() => {}} />);
+      onToggleRow={() => {}} onToggleAll={() => {}}
+      dbType="postgresql" tabType="table" />);
 
     const handles = document.querySelectorAll('[class*="cursor-col-resize"]');
     expect(handles.length).toBe(2); // one per visible column
@@ -259,9 +319,10 @@ describe("VirtualDataGrid", () => {
       Array.from({ length: 20 }, (_, i) => ({ key: i, index: i, start: i * 36, size: 36 }))
     );
     render(
-      <VirtualDataGrid connectionId="conn-1" schema="public" rows={bigRows} columns={mockColumns}
+      <VirtualDataGrid connectionId="conn-1" schema="public" table="users" rows={bigRows} columns={mockColumns}
         hiddenColumns={new Set()} selectedRows={new Set()}
-        onToggleRow={() => {}} onToggleAll={() => {}} />,
+        onToggleRow={() => {}} onToggleAll={() => {}}
+        dbType="postgresql" tabType="table" />,
     );
     const checkboxes = screen.getAllByRole("checkbox");
     expect(checkboxes.length).toBeLessThan(50); // virtualized: only visible rows + select all
@@ -274,9 +335,10 @@ describe("VirtualDataGrid", () => {
       mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 }))
     );
     render(
-      <VirtualDataGrid connectionId="conn-1" schema="public" rows={mockRows} columns={mockColumns}
+      <VirtualDataGrid connectionId="conn-1" schema="public" table="users" rows={mockRows} columns={mockColumns}
         hiddenColumns={new Set()} selectedRows={allSelected}
-        onToggleRow={() => {}} onToggleAll={() => {}} />,
+        onToggleRow={() => {}} onToggleAll={() => {}}
+        dbType="postgresql" tabType="table" />,
     );
     const selectAll = screen.getAllByRole("checkbox")[0] as HTMLInputElement;
     expect(selectAll.checked).toBe(true);
@@ -289,9 +351,10 @@ describe("VirtualDataGrid", () => {
       mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 }))
     );
     render(
-      <VirtualDataGrid connectionId="conn-1" schema="public" rows={mockRows} columns={mockColumns}
+      <VirtualDataGrid connectionId="conn-1" schema="public" table="users" rows={mockRows} columns={mockColumns}
         hiddenColumns={hidden} selectedRows={new Set()}
-        onToggleRow={() => {}} onToggleAll={() => {}} />,
+        onToggleRow={() => {}} onToggleAll={() => {}}
+        dbType="postgresql" tabType="table" />,
     );
     expect(screen.queryByText("name")).not.toBeInTheDocument();
     expect(screen.getByText("id")).toBeInTheDocument();
