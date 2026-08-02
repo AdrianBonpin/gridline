@@ -29,6 +29,10 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Install the ring crypto provider so rustls `ClientConfig::builder()` works (no-op if
+    // another provider is already installed).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let store = Store::open("gridline.db").expect("failed to open db");
     let store_ref = StdMutex::new(store);
 
