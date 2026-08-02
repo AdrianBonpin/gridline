@@ -18,7 +18,7 @@ describe("ChangesQueuePanel", () => {
     expect(container.textContent).toBe("");
   });
 
-  it("shows pending changes", () => {
+  it("shows the pending-changes header and a change card", () => {
     useDbViewerStore.getState().addChange({
       type: "update",
       schema: "public",
@@ -26,29 +26,15 @@ describe("ChangesQueuePanel", () => {
       primaryKey: { id: 1 },
       oldData: { name: "Bob" },
       newData: { name: "Alice" },
-    });
+      description: "Update row in users",
+    } as any);
     render(<ChangesQueuePanel />);
-    expect(screen.getByText(/1 pending change/i)).toBeInTheDocument();
-    expect(screen.getByText(/users/i)).toBeInTheDocument();
+    expect(screen.getByText(/pending changes/i)).toBeInTheDocument();
+    expect(screen.getByText(/update/i)).toBeInTheDocument();
+    expect(screen.getByText(/public.users/i)).toBeInTheDocument();
   });
 
-  it("close button collapses the popover", async () => {
-    const user = userEvent.setup();
-    useDbViewerStore.setState({ changesPanelExpanded: true });
-    useDbViewerStore.getState().addChange({
-      type: "update",
-      schema: "public",
-      table: "users",
-      primaryKey: { id: 1 },
-      oldData: { name: "Bob" },
-      newData: { name: "Alice" },
-    });
-    render(<ChangesQueuePanel />);
-    await user.click(screen.getByRole("button", { name: /close changes queue/i }));
-    expect(useDbViewerStore.getState().changesPanelExpanded).toBe(false);
-  });
-
-  it("cancel button changes status", async () => {
+  it("revert removes the change from the queue", async () => {
     const user = userEvent.setup();
     useDbViewerStore.getState().addChange({
       type: "update",
@@ -57,20 +43,20 @@ describe("ChangesQueuePanel", () => {
       primaryKey: { id: 1 },
       oldData: { name: "Bob" },
       newData: { name: "Alice" },
-    });
+      description: "Update row in users",
+    } as any);
     render(<ChangesQueuePanel />);
-    const cancelBtn = screen.getByRole("button", { name: /cancel/i });
-    await user.click(cancelBtn);
-    expect(screen.getByText(/cancelled/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /revert/i }));
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
   });
 
-  it("labels bulk_insert / empty_table / drop_table", () => {
+  it("labels bulk_insert / empty_table / drop_table cards", () => {
     useDbViewerStore.getState().addChange({
       type: "bulk_insert",
       schema: "public",
       table: "t",
-      columns: ["a", "b"],
-      rows: [[1, 2], [3, 4]],
+      columns: ["a"],
+      rows: [[1]],
       description: "Import 2 rows into public.t",
     } as any);
     useDbViewerStore.getState().addChange({
@@ -86,7 +72,7 @@ describe("ChangesQueuePanel", () => {
       description: "Drop Table: public.t",
     } as any);
     render(<ChangesQueuePanel />);
-    expect(screen.getByText(/import 2 rows/i)).toBeInTheDocument();
+    expect(screen.getByText(/import 2 rows into public.t/i)).toBeInTheDocument();
     expect(screen.getByText(/empty table: public.t/i)).toBeInTheDocument();
     expect(screen.getByText(/drop table: public.t/i)).toBeInTheDocument();
   });
@@ -126,5 +112,47 @@ describe("ChangesQueuePanel", () => {
     render(<ChangesQueuePanel />);
     fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
     await waitFor(() => expect(getSchemas).toHaveBeenCalledWith("c1"));
+  });
+
+  it("SQL toggle shows the generated SQL", async () => {
+    const user = userEvent.setup();
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "users",
+      newData: { name: "Alice" },
+      description: "Insert row into users",
+    } as any);
+    render(<ChangesQueuePanel />);
+    await user.click(screen.getByRole("button", { name: /sql/i }));
+    expect(screen.getByText(/insert into "public"."users"/i)).toBeInTheDocument();
+  });
+
+  it("Cmd+S commits all pending changes", async () => {
+    const exec = vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+    render(<ChangesQueuePanel />);
+    fireEvent.keyDown(document, { key: "s", metaKey: true });
+    await waitFor(() => expect(exec).toHaveBeenCalled());
+  });
+
+  it("Clear All empties the queue", async () => {
+    const user = userEvent.setup();
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+    render(<ChangesQueuePanel />);
+    await user.click(screen.getByRole("button", { name: /clear all/i }));
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
   });
 });

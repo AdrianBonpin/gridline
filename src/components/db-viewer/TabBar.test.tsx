@@ -141,9 +141,9 @@ describe("TabBar", () => {
     });
     useDbViewerStore.setState({ changesPanelExpanded: false });
     render(<TabBar />);
-    expect(screen.queryByText(/pending change/i)).toBeNull();
+    expect(screen.queryByText(/pending changes/i)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Changes queue" }));
-    expect(screen.getByText(/pending change/i)).toBeInTheDocument();
+    expect(screen.getByText(/pending changes/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /commit all/i })).toBeInTheDocument();
   });
 
@@ -158,9 +158,9 @@ describe("TabBar", () => {
     });
     useDbViewerStore.setState({ changesPanelExpanded: true });
     render(<TabBar />);
-    expect(screen.getByText(/pending change/i)).toBeInTheDocument();
+    expect(screen.getByText(/pending changes/i)).toBeInTheDocument();
     await user.keyboard("{Escape}");
-    expect(screen.queryByText(/pending change/i)).toBeNull();
+    expect(screen.queryByText(/pending changes/i)).toBeNull();
   });
 
   it("turns the button border amber when there are pending changes", () => {

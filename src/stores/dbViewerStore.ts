@@ -128,6 +128,8 @@ interface DbViewerState {
     description?: string | null;
   }) => void;
   cancelChange: (changeId: string) => void;
+  removeChange: (changeId: string) => void;
+  clearChanges: () => void;
   markChangeCommitted: (changeId: string) => void;
   markChangeFailed: (changeId: string, error: string) => void;
   toggleChangesPanel: () => void;
@@ -348,6 +350,13 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
         c.id === changeId ? { ...c, status: "cancelled" as const } : c,
       ),
     })),
+
+  removeChange: (changeId) =>
+    set((state) => ({
+      changesQueue: state.changesQueue.filter((c) => c.id !== changeId),
+    })),
+
+  clearChanges: () => set({ changesQueue: [] }),
 
   markChangeCommitted: (changeId) =>
     set((state) => ({

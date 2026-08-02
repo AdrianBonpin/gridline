@@ -1,10 +1,10 @@
-import { useCallback } from "react";
-import { X, Check } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { X, Check, RotateCcw } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import * as cmd from "../../lib/commands";
-import { buildChangePayload } from "../../lib/changePayload";
+import { buildChangePayload, buildChangeSql } from "../../lib/changePayload";
 import type { QueueItem, QueueStatus } from "../../stores/dbViewerStore";
 
 const statusBg: Record<QueueStatus, string> = {
@@ -32,6 +32,11 @@ function formatChangeLabel(change: QueueItem): string {
 
 function capitalizeType(type: string) {
   return type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+function tableRef(change: QueueItem): string {
+  if (change.schema && change.table) return `${change.schema}.${change.table}`;
+  return change.table ?? "-";
 }
 
 function StatusIndicator({ status }: { status: QueueStatus }) {
@@ -70,13 +75,13 @@ function StatusIndicator({ status }: { status: QueueStatus }) {
 
 export function ChangesQueuePanel() {
   const changesQueue = useDbViewerStore((state) => state.changesQueue);
-  const cancelChange = useDbViewerStore((state) => state.cancelChange);
+  const removeChange = useDbViewerStore((state) => state.removeChange);
+  const clearChanges = useDbViewerStore((state) => state.clearChanges);
   const markChangeCommitted = useDbViewerStore((state) => state.markChangeCommitted);
   const markChangeFailed = useDbViewerStore((state) => state.markChangeFailed);
   const notify = useNotificationStore((state) => state.notify);
-  const toggleChangesPanel = useDbViewerStore(
-    (state) => state.toggleChangesPanel,
-  );
+
+  const [view, setView] = useState<"visual" | "sql">("visual");
 
   const handleCommitAll = useCallback(async () => {
     const connectionId = useUiStore.getState().activeConnectionId;
@@ -118,84 +123,122 @@ export function ChangesQueuePanel() {
     }
   }, [markChangeCommitted, markChangeFailed, notify]);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void handleCommitAll();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [handleCommitAll]);
+
   if (changesQueue.length === 0) {
     return null;
   }
 
   const pendingCount = changesQueue.filter((c) => c.status === "pending").length;
-  const changeWord = pendingCount === 1 ? "change" : "changes";
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-center justify-between px-4 py-2 text-sm text-text border-b border-border">
-        <span className="font-medium">
-          Changes Queue ({pendingCount} pending {changeWord})
-        </span>
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+        <span className="font-medium text-sm text-text">Pending Changes</span>
+        <div className="flex rounded-md border border-border overflow-hidden">
           <button
             type="button"
-            disabled={pendingCount === 0}
-            onClick={handleCommitAll}
-            className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            aria-label="Visual"
+            onClick={() => setView("visual")}
+            className={[
+              "px-2 py-0.5 text-xs transition-colors",
+              view === "visual"
+                ? "bg-surface-raised text-text"
+                : "text-text-muted hover:text-text",
+            ].join(" ")}
           >
-            Commit All
+            Visual
           </button>
           <button
             type="button"
-            aria-label="Close changes queue"
-            onClick={() => toggleChangesPanel()}
-            className="rounded p-1 text-text-muted hover:bg-surface-raised hover:text-text cursor-pointer"
+            aria-label="SQL"
+            onClick={() => setView("sql")}
+            className={[
+              "px-2 py-0.5 text-xs transition-colors",
+              view === "sql"
+                ? "bg-surface-raised text-text"
+                : "text-text-muted hover:text-text",
+            ].join(" ")}
           >
-            <X className="h-4 w-4" />
+            SQL
           </button>
         </div>
       </div>
 
-      <div className="max-h-64 overflow-y-auto">
-        {changesQueue.map((change) => (
-          <ChangeRow
-            key={change.id}
-            change={change}
-            onCancel={() => cancelChange(change.id)}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ChangeRow({
-  change,
-  onCancel,
-}: {
-  change: QueueItem;
-  onCancel: () => void;
-}) {
-  return (
-    <div
-      className={`flex items-center justify-between px-4 py-2 text-sm ${statusBg[change.status]}`}
-    >
-      <div className="flex items-center gap-3">
-        <span className="rounded-md bg-surface-raised px-2 py-0.5 text-xs font-medium text-text-muted">
-          {capitalizeType(change.type)}
-        </span>
-        <span className="text-text">
-          {formatChangeLabel(change)}
-        </span>
-      </div>
-
-      <div className="flex items-center gap-3">
-        <StatusIndicator status={change.status} />
-        {change.status === "pending" && (
-          <button
-            type="button"
-            aria-label="Cancel"
-            onClick={onCancel}
-            className="rounded p-1 text-text-muted hover:bg-red-500/10 hover:text-red-500 cursor-pointer"
-          >
-            <X className="h-4 w-4" />
-          </button>
+      <div className="max-h-64 overflow-y-auto px-2 py-2 space-y-2">
+        {view === "visual" ? (
+          changesQueue.map((change) => (
+            <div
+              key={change.id}
+              className={`rounded-lg border border-border bg-surface-raised/40 px-3 py-2 ${statusBg[change.status]}`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="rounded bg-surface-raised px-1.5 py-0.5 text-xs font-medium text-text-muted">
+                    {capitalizeType(change.type)}
+                  </span>
+                  <span className="text-sm text-text truncate">
+                    {tableRef(change)}
+                  </span>
+                </div>
+                {change.status === "pending" && (
+                  <button
+                    type="button"
+                    aria-label="Revert change"
+                    title="Revert change"
+                    onClick={() => removeChange(change.id)}
+                    className="rounded p-1 text-text-muted hover:bg-red-500/10 hover:text-red-500 cursor-pointer shrink-0"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-2 mt-1">
+                <span className="text-xs text-text-muted truncate">
+                  {formatChangeLabel(change)}
+                </span>
+                <StatusIndicator status={change.status} />
+              </div>
+            </div>
+          ))
+        ) : (
+          changesQueue.map((change) => (
+            <pre
+              key={change.id}
+              className="text-xs text-text-muted whitespace-pre-wrap rounded-md bg-canvas px-3 py-2 font-mono border border-border"
+            >
+              {buildChangeSql(change)}
+            </pre>
+          ))
         )}
+      </div>
+
+      <div className="flex items-center justify-between border-t border-border px-3 py-2">
+        <button
+          type="button"
+          onClick={clearChanges}
+          className="text-xs text-text-muted hover:text-text hover:bg-surface-raised rounded-md px-2 py-1 transition-colors cursor-pointer"
+        >
+          Clear All
+        </button>
+        <button
+          type="button"
+          disabled={pendingCount === 0}
+          onClick={handleCommitAll}
+          className="inline-flex items-center rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+        >
+          Commit All ({pendingCount})
+          <kbd className="ml-1.5 rounded bg-surface-raised px-1 text-[10px]">⌘S</kbd>
+        </button>
       </div>
     </div>
   );

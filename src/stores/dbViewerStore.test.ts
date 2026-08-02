@@ -165,6 +165,20 @@ describe("dbViewerStore", () => {
     expect(change.error).toBe("Constraint violation");
   });
 
+  it("removeChange drops the change from the queue", () => {
+    useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 }, description: "x" } as any);
+    const id = useDbViewerStore.getState().changesQueue[0].id;
+    useDbViewerStore.getState().removeChange(id);
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+  });
+
+  it("clearChanges empties the queue", () => {
+    useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 }, description: "x" } as any);
+    useDbViewerStore.getState().addChange({ type: "delete", schema: "public", table: "t", primaryKey: { id: 1 }, description: "y" } as any);
+    useDbViewerStore.getState().clearChanges();
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+  });
+
   it("reset clears all state", () => {
     const store = useDbViewerStore.getState();
     store.openTab("public", "users");
