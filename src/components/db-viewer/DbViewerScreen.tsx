@@ -451,6 +451,14 @@ export function DbViewerScreen({
                                         dispValue && dispValue !== refValue
                                             ? `${refValue} — ${dispValue}`
                                             : refValue,
+                                    // Referenced-row cells for the FK-reference-style
+                                    // one-row dropdown (first 5 columns).
+                                    cells: result.columns
+                                        .slice(0, 5)
+                                        .map((c, i) => ({
+                                            name: c.name,
+                                            value: String(row[i] ?? ""),
+                                        })),
                                 };
                             });
                             fkPlaceholders[col.name] = `Search ${refTable}…`;

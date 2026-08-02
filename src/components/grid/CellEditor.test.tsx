@@ -130,4 +130,26 @@ describe("CellEditor", () => {
     expect(list).toHaveTextContent("1 — Alice");
     expect(list).toHaveTextContent("2 — Bob");
   });
+
+  it("renders FK options as one-row column cells (FK-reference style, capped at 5)", () => {
+    const onCommit = vi.fn();
+    const cells = Array.from({ length: 6 }, (_, i) => ({
+        name: `col${i}`,
+        value: `v${i}`,
+    }));
+    render(<CellEditor initialValue="" dataType="integer"
+      fkOptions={[{ value: "1", label: "1", cells }]}
+      onCommit={onCommit} onCancel={vi.fn()} />);
+    const list = screen.getByTestId("fk-options");
+    // all 5 shown cells render name + value in one row
+    for (let i = 0; i < 5; i++) {
+        expect(list).toHaveTextContent(`col${i}`);
+        expect(list).toHaveTextContent(`v${i}`);
+    }
+    // the 6th column is capped
+    expect(list).not.toHaveTextContent("col5");
+    // clicking the row commits the value
+    fireEvent.click(screen.getByRole("button"));
+    expect(onCommit).toHaveBeenCalledWith("1");
+  });
 });

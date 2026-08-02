@@ -3,7 +3,9 @@ import { createPortal } from "react-dom";
 
 export interface FkOption {
   value: string; // the referenced column's value (what gets committed)
-  label: string; // display text (e.g. "42 — Alice" or the referenced column value)
+  label: string; // fallback display text (e.g. "42 — Alice")
+  /** Referenced row cells shown in one row (≤5 columns), FK-reference style. */
+  cells?: { name: string; value: string }[];
 }
 
 interface CellEditorProps {
@@ -113,7 +115,20 @@ export function CellEditor({
 
   if (fkOptions && fkOptions.length > 0) {
     const q = query.trim().toLowerCase();
-    const filtered = q === "" ? fkOptions : fkOptions.filter((o) => o.label.toLowerCase().includes(q));
+    const MAX_FK_CELLS = 5;
+
+  const fkSearchText = (o: FkOption) =>
+    [
+      o.label,
+      ...(o.cells ?? []).map((c) => `${c.name}:${c.value}`),
+    ]
+      .join(" ")
+      .toLowerCase();
+
+  const filtered =
+    q === ""
+      ? fkOptions
+      : fkOptions.filter((o) => fkSearchText(o).includes(q));
     return (
       <div className="flex flex-col gap-1 p-1 bg-canvas border border-accent rounded">
         <input
@@ -157,7 +172,25 @@ export function CellEditor({
               className="block w-full px-2 py-1 hover:bg-surface text-xs text-left"
               onClick={() => onCommit(o.value)}
             >
-              {o.label}
+              {o.cells && o.cells.length > 0 ? (
+                <span className="flex items-center gap-2 min-w-0">
+                  {o.cells.slice(0, MAX_FK_CELLS).map((c, ci) => (
+                    <span
+                      key={ci}
+                      className="flex items-center gap-1 min-w-0"
+                    >
+                      <span className="text-text-muted/70 font-heading shrink-0">
+                        {c.name}
+                      </span>
+                      <span className="truncate text-text">
+                        {c.value || "NULL"}
+                      </span>
+                    </span>
+                  ))}
+                </span>
+              ) : (
+                o.label
+              )}
             </button>
           ))}
             </div>,
