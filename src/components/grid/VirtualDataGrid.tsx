@@ -362,7 +362,6 @@ export function VirtualDataGrid({
             </span>
           ) : isFk && cell !== null && cell !== undefined ? (
             <span className="inline-flex items-center gap-1 min-w-0">
-              <span className="truncate">{String(cell)}</span>
               <button
                 type="button"
                 aria-label="Open FK reference"
@@ -376,6 +375,7 @@ export function VirtualDataGrid({
               >
                 <ArrowUpRight size={11} />
               </button>
+              <span className="truncate">{String(cell)}</span>
             </span>
           ) : (
             String(cell)
