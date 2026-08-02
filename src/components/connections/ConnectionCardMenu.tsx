@@ -103,7 +103,7 @@ export function ConnectionCardMenu({
         );
 
     return (
-        <div className="absolute top-2 right-2 z-10" ref={menuRef}>
+        <div className="absolute top-1/2 -translate-y-1/2 right-2 z-10" ref={menuRef}>
             <button
                 type="button"
                 aria-label="Connection actions"
