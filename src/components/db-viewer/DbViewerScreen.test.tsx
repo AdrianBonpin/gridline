@@ -17,9 +17,17 @@ vi.mock("../../hooks/useDbConnection", () => ({
 }));
 
 vi.mock("@tanstack/react-virtual", () => ({
-    useVirtualizer: () => ({
-        getVirtualItems: () => [],
-        getTotalSize: () => 0,
+    useVirtualizer: ({ count }: any) => ({
+        getVirtualItems: () =>
+            count > 0
+                ? Array.from({ length: count }, (_, i) => ({
+                      key: i,
+                      index: i,
+                      start: i * 36,
+                      size: 36,
+                  }))
+                : [],
+        getTotalSize: () => count * 36,
         measureElement: () => {},
     }),
 }));
@@ -104,6 +112,53 @@ describe("DbViewerScreen", () => {
             />,
         );
         expect(screen.getByLabelText(/home/i)).toBeInTheDocument();
+    });
+
+    it("full flow: editing a cell shows the staged value + pending dot in the grid", async () => {
+        const store = useDbViewerStore.getState();
+        store.openTab("public", "users");
+        const tabId = useDbViewerStore.getState().activeTabId!;
+        store.setTabData(tabId, {
+            columns: [
+                { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+                { name: "name", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+            ],
+            rows: [[1, "Alice"]],
+            total_rows: 1,
+            page: 1,
+            page_size: 50,
+        } as any);
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        const cell = await waitFor(() => screen.getByText("Alice"));
+        fireEvent.click(cell);
+        fireEvent.keyDown(cell, { key: "Enter" });
+        // the editor's textarea is the last textbox (toolbar filter input is first)
+        const input = screen.getAllByRole("textbox").at(-1)!;
+        fireEvent.change(input, { target: { value: "Alicia" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        // staged change carries the correct table (was the root-cause bug)
+        const staged = useDbViewerStore.getState().changesQueue[0];
+        expect(staged?.table).toBe("users");
+        expect(staged?.schema).toBe("public");
+        // grid cell shows the optimistic value + the pending dot (2nd match is the queue panel diff)
+        await waitFor(() => {
+            expect(screen.getAllByText("Alicia").length).toBeGreaterThanOrEqual(2);
+        });
+        expect(screen.getByTestId("pending-edit-dot")).toBeInTheDocument();
+        // clearing the queue clears the optimistic display
+        act(() => {
+            useDbViewerStore.getState().clearChanges();
+        });
+        await waitFor(() => {
+            expect(screen.getByText("Alice")).toBeInTheDocument();
+        });
+        expect(screen.queryByText("Alicia")).toBeNull();
     });
 
     it("deriveStagedValues maps queue updates to optimistic cell values", () => {

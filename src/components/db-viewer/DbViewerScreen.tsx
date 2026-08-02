@@ -1056,6 +1056,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 <VirtualDataGrid
                                                     connectionId={connectionId}
                                                     schema={activeSchema}
+                                                    table={activeTable}
                                                     rows={processedRows}
                                                     columns={columns}
                                                     hiddenColumns={hiddenColumns}
@@ -1207,6 +1208,7 @@ const onQueriesPanelResizeStart = useCallback(
                                             <VirtualDataGrid
                                                 connectionId={connectionId}
                                                 schema={activeSchema}
+                                                table={activeTable}
                                                 rows={processedRows}
                                                 columns={columns}
                                                 hiddenColumns={hiddenColumns}
