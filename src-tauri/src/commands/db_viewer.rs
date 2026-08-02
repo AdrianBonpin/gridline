@@ -91,6 +91,75 @@ pub fn offset(page: i64, page_size: i64) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
+// Table DDL helpers
+// ---------------------------------------------------------------------------
+
+/// Fetch the stored `CREATE TABLE` statement for a SQLite table from
+/// `sqlite_master`. Errors when the table does not exist.
+pub fn get_sqlite_ddl(conn: &rusqlite::Connection, table: &str) -> Result<String, String> {
+    conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+        rusqlite::params![table],
+        |row| row.get::<_, String>(0),
+    )
+    .map_err(|e| format!("table DDL not found for {table}: {e}"))
+}
+
+/// Build the `pg_dump` argument vector for schema-only DDL extraction of a
+/// single table. The password is intentionally NOT part of these args — it is
+/// passed via the `PGPASSWORD` environment variable so it never appears on
+/// the command line.
+pub fn build_pg_dump_ddl_args(schema: &str, table: &str) -> Vec<String> {
+    vec![
+        "--schema-only".into(),
+        "--no-owner".into(),
+        format!("--schema={schema}"),
+        format!("--table={table}"),
+    ]
+}
+
+/// Check whether the system `pg_dump` binary is on PATH.
+pub fn pg_dump_available() -> bool {
+    std::process::Command::new("pg_dump")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+/// Extract a single table's DDL from a PostgreSQL database by shelling out to
+/// the system `pg_dump` with `--schema-only`. Credentials are supplied via the
+/// `PGPASSWORD` environment variable only — never as argv — and are never
+/// logged. Execution requires a reachable PostgreSQL server plus an installed
+/// `pg_dump`; unit tests cover the argument construction instead.
+pub fn get_pg_ddl_via_dump(
+    schema: &str,
+    table: &str,
+    host: &str,
+    port: u16,
+    user: &str,
+    db: &str,
+    password: &str,
+) -> Result<String, String> {
+    if !pg_dump_available() {
+        return Err("pg_dump not found. Install PostgreSQL client tools to copy table schema.".into());
+    }
+    let mut cmd = std::process::Command::new("pg_dump");
+    cmd.args([
+        format!("--host={host}"),
+        format!("--port={port}"),
+        format!("--username={user}"),
+        format!("--dbname={db}"),
+    ]);
+    cmd.args(build_pg_dump_ddl_args(schema, table));
+    cmd.env("PGPASSWORD", password);
+    let out = cmd.output().map_err(|e| format!("pg_dump spawn failed: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Filter / Sort → SQL helpers
 // ---------------------------------------------------------------------------
 
@@ -1636,6 +1705,40 @@ mod tests {
             sql.to_uppercase().contains("VALUES"),
             "INSERT SQL must contain 'VALUES'; got: {}",
             sql
+        );
+    }
+
+    /// Verify that `get_sqlite_ddl` returns the stored CREATE TABLE statement
+    /// from `sqlite_master`.
+    #[test]
+    fn sqlite_ddl_returns_create_table() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE foo (id INTEGER PRIMARY KEY, name TEXT)", [])
+            .unwrap();
+        let ddl = get_sqlite_ddl(&conn, "foo").unwrap();
+        assert!(ddl.contains("CREATE TABLE foo"), "got: {ddl}");
+    }
+
+    /// Verify that `get_sqlite_ddl` errors for a table that does not exist.
+    #[test]
+    fn sqlite_ddl_missing_table_errors() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(get_sqlite_ddl(&conn, "nope").is_err());
+    }
+
+    /// Verify that the pg_dump argument builder emits schema-only DDL flags
+    /// scoped to the requested schema and table.
+    #[test]
+    fn pg_dump_ddl_args_built() {
+        let args = build_pg_dump_ddl_args("public", "users");
+        assert_eq!(
+            args,
+            vec![
+                "--schema-only".to_string(),
+                "--no-owner".to_string(),
+                "--schema=public".to_string(),
+                "--table=users".to_string()
+            ]
         );
     }
 }
