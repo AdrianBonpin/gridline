@@ -68,6 +68,7 @@ export interface ConnectionInput {
   ssh_user?: string | null;
   ssh_auth_method?: "password" | "key" | null;
   ssh_private_key_path?: string | null;
+  ssh_password?: string | null;
   ssh_passphrase?: string | null;
   // SSL/TLS fields
   ssl_mode?: "disable" | "require" | "verify-ca" | "verify-full" | null;

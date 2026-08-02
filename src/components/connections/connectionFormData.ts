@@ -14,4 +14,5 @@ export interface ConnectionFormData {
   password: string | null;
   database: string | null;
   use_keychain: boolean;
+  ssh_password: string | null;
 }

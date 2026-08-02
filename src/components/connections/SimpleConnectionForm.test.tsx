@@ -19,6 +19,7 @@ const BASE_FORM: ConnectionFormData = {
   password: null,
   database: null,
   use_keychain: false,
+  ssh_password: null,
 };
 
 function StatefulForm(

@@ -42,6 +42,7 @@ function createEmptyForm(
         password: null,
         database: null,
         use_keychain: false,
+        ssh_password: null,
     };
 }
 
@@ -112,6 +113,7 @@ export function NewConnectionScreen({
             password: form.password,
             database: form.database,
             use_keychain: form.use_keychain,
+            ssh_password: form.ssh_password ?? null,
         };
     }, [form]);
 

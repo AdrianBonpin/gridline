@@ -5,7 +5,7 @@ use std::time::Instant;
 ///
 /// Fields map to connection parameters. For SQLite, `host` stores the
 /// file path and `port` is always `None`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DbConfig {
     pub db_type: String,
     pub host: String,
@@ -17,6 +17,20 @@ pub struct DbConfig {
     pub ssl_ca_path: Option<String>,
     pub ssl_cert_path: Option<String>,
     pub ssl_key_path: Option<String>,
+    #[serde(default)]
+    pub ssh_host: Option<String>,
+    #[serde(default)]
+    pub ssh_port: Option<i64>,
+    #[serde(default)]
+    pub ssh_user: Option<String>,
+    #[serde(default)]
+    pub ssh_auth_method: Option<String>,
+    #[serde(default)]
+    pub ssh_password: Option<String>,
+    #[serde(default)]
+    pub ssh_private_key_path: Option<String>,
+    #[serde(default)]
+    pub ssh_passphrase: Option<String>,
 }
 
 impl DbConfig {
@@ -35,7 +49,34 @@ impl DbConfig {
             ssl_ca_path: None,
             ssl_cert_path: None,
             ssl_key_path: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_password: None,
+            ssh_private_key_path: None,
+            ssh_passphrase: None,
         }
+    }
+
+    /// Build an `SshConfig` from the flat SSH fields, or `None` if no SSH host is set.
+    pub fn ssh_config(&self) -> Option<crate::models::SshConfig> {
+        let host = self.ssh_host.clone()?;
+        if host.is_empty() {
+            return None;
+        }
+        Some(crate::models::SshConfig {
+            host,
+            port: self.ssh_port.unwrap_or(22) as u16,
+            user: self.ssh_user.clone().unwrap_or_default(),
+            auth_method: self
+                .ssh_auth_method
+                .clone()
+                .unwrap_or_else(|| "password".to_string()),
+            password: self.ssh_password.clone(),
+            private_key_path: self.ssh_private_key_path.clone(),
+            passphrase: self.ssh_passphrase.clone(),
+        })
     }
 }
 
@@ -166,10 +207,7 @@ mod tests {
             username: Some("admin".into()),
             password: Some("secret".into()),
             database: Some("mydb".into()),
-            ssl_mode: None,
-            ssl_ca_path: None,
-            ssl_cert_path: None,
-            ssl_key_path: None,
+            ..Default::default()
         };
 
         assert_eq!(cfg.db_type, "PostgreSQL");
@@ -190,6 +228,33 @@ mod tests {
         assert!(cfg.port.is_none());
         assert!(cfg.username.is_none());
         assert!(cfg.database.is_none());
+    }
+
+    #[test]
+    fn db_config_ssh_config_is_none_when_no_host() {
+        let cfg = DbConfig { db_type: "PostgreSQL".into(), host: "h".into(), port: Some(5432),
+            username: None, password: None, database: None, ssl_mode: None, ssl_ca_path: None,
+            ssl_cert_path: None, ssl_key_path: None, ssh_host: None, ssh_port: None, ssh_user: None,
+            ssh_auth_method: None, ssh_password: None, ssh_private_key_path: None, ssh_passphrase: None,
+        };
+        assert!(cfg.ssh_config().is_none());
+    }
+
+    #[test]
+    fn db_config_ssh_config_builds_from_flat_fields() {
+        let cfg = DbConfig { db_type: "PostgreSQL".into(), host: "db".into(), port: Some(5432),
+            username: None, password: None, database: None, ssl_mode: None, ssl_ca_path: None,
+            ssl_cert_path: None, ssl_key_path: None,
+            ssh_host: Some("jump".into()), ssh_port: Some(2222), ssh_user: Some("u".into()),
+            ssh_auth_method: Some("password".into()), ssh_password: Some("pw".into()),
+            ssh_private_key_path: None, ssh_passphrase: None,
+        };
+        let s = cfg.ssh_config().expect("ssh config present");
+        assert_eq!(s.host, "jump");
+        assert_eq!(s.port, 2222);
+        assert_eq!(s.user, "u");
+        assert_eq!(s.auth_method, "password");
+        assert_eq!(s.password.as_deref(), Some("pw"));
     }
 
     // ------------------------------------------------------------------

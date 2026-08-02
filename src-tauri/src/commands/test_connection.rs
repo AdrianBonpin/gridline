@@ -324,13 +324,7 @@ mod tests {
             db_type: "mongodb".to_string(),
             host: "localhost".to_string(),
             port: Some(27017),
-            username: None,
-            password: None,
-            database: None,
-            ssl_mode: None,
-            ssl_ca_path: None,
-            ssl_cert_path: None,
-            ssl_key_path: None,
+            ..Default::default()
         };
         assert!(
             validate_test_input(&config).is_some(),
@@ -342,13 +336,7 @@ mod tests {
             db_type: "postgresql".to_string(),
             host: "".to_string(),
             port: Some(5432),
-            username: None,
-            password: None,
-            database: None,
-            ssl_mode: None,
-            ssl_ca_path: None,
-            ssl_cert_path: None,
-            ssl_key_path: None,
+            ..Default::default()
         };
         assert!(
             validate_test_input(&config).is_some(),
@@ -360,13 +348,7 @@ mod tests {
             db_type: "postgresql".to_string(),
             host: "localhost".to_string(),
             port: Some(0),
-            username: None,
-            password: None,
-            database: None,
-            ssl_mode: None,
-            ssl_ca_path: None,
-            ssl_cert_path: None,
-            ssl_key_path: None,
+            ..Default::default()
         };
         assert!(
             validate_test_input(&config).is_some(),
@@ -385,12 +367,8 @@ mod tests {
             host: "localhost".to_string(),
             port: Some(5432),
             username: Some("user".to_string()),
-            password: None,
             database: Some("mydb".to_string()),
-            ssl_mode: None,
-            ssl_ca_path: None,
-            ssl_cert_path: None,
-            ssl_key_path: None,
+            ..Default::default()
         };
         assert!(
             validate_test_input(&config).is_none(),
@@ -405,13 +383,7 @@ mod tests {
             db_type: "sqlite".to_string(),
             host: "/tmp/test.db".to_string(),
             port: None,
-            username: None,
-            password: None,
-            database: None,
-            ssl_mode: None,
-            ssl_ca_path: None,
-            ssl_cert_path: None,
-            ssl_key_path: None,
+            ..Default::default()
         };
         assert!(
             validate_test_input(&config).is_none(),
@@ -423,13 +395,7 @@ mod tests {
             db_type: "sqlite".to_string(),
             host: "/tmp/test.db".to_string(),
             port: Some(9999),
-            username: None,
-            password: None,
-            database: None,
-            ssl_mode: None,
-            ssl_ca_path: None,
-            ssl_cert_path: None,
-            ssl_key_path: None,
+            ..Default::default()
         };
         assert!(
             validate_test_input(&config).is_none(),

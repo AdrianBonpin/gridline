@@ -98,6 +98,13 @@ describe("Connection", () => {
 });
 
 describe("ConnectionInput", () => {
+  it("accepts ssh_password", () => {
+    const input: ConnectionInput = {
+      name: "x", db_type: "postgresql", host: "h", port: 5432, ssh_password: "ssh-pw",
+    };
+    expect(input.ssh_password).toBe("ssh-pw");
+  });
+
   it("accepts all SSH/SSL fields", () => {
     const input: ConnectionInput = {
       name: "Test",

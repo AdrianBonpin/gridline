@@ -16,6 +16,7 @@ const BASE_FORM: ConnectionFormData = {
   password: "secret",
   database: "mydb",
   use_keychain: true,
+  ssh_password: null,
 };
 
 describe("GeneralTab", () => {

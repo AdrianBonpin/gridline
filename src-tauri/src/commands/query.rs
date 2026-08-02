@@ -906,6 +906,7 @@ mod tests {
                 ssh_user: None,
                 ssh_auth_method: None,
                 ssh_private_key_path: None,
+                ssh_password: None,
                 ssh_passphrase: None,
                 ssl_mode: None,
                 ssl_ca_path: None,

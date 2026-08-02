@@ -43,6 +43,7 @@ pub struct ConnectionInput {
     pub ssh_user: Option<String>,
     pub ssh_auth_method: Option<String>,
     pub ssh_private_key_path: Option<String>,
+    pub ssh_password: Option<String>,
     pub ssh_passphrase: Option<String>,
     pub ssl_mode: Option<String>,
     pub ssl_ca_path: Option<String>,
@@ -71,6 +72,7 @@ mod tests {
             ssh_user: Some("tunnel".to_string()),
             ssh_auth_method: Some("Key".to_string()),
             ssh_private_key_path: Some("/path/to/key".to_string()),
+            ssh_password: Some("ssh-pw".to_string()),
             ssh_passphrase: Some("passphrase".to_string()),
             ssl_mode: Some("require".to_string()),
             ssl_ca_path: Some("/path/to/ca".to_string()),
@@ -96,6 +98,7 @@ mod tests {
         assert_eq!(deserialized.ssh_user, Some("tunnel".to_string()));
         assert_eq!(deserialized.ssh_auth_method, Some("Key".to_string()));
         assert_eq!(deserialized.ssh_private_key_path, Some("/path/to/key".to_string()));
+        assert_eq!(deserialized.ssh_password, Some("ssh-pw".to_string()));
         assert_eq!(deserialized.ssh_passphrase, Some("passphrase".to_string()));
         assert_eq!(deserialized.ssl_mode, Some("require".to_string()));
         assert_eq!(deserialized.ssl_ca_path, Some("/path/to/ca".to_string()));

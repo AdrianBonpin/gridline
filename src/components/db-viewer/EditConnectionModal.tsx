@@ -34,6 +34,7 @@ export function EditConnectionModal({
     password: null,
     database: connection.database ?? null,
     use_keychain: false,
+    ssh_password: null,
   }));
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -55,6 +56,7 @@ export function EditConnectionModal({
         folder_id: form.folder_id,
         environment: form.environment,
         tag_ids: form.tag_ids,
+        ssh_password: form.ssh_password ?? null,
       };
       const updated = await updateConnection(connection.id, input);
       if (form.password) {
@@ -91,6 +93,7 @@ export function EditConnectionModal({
         folder_id: form.folder_id,
         environment: form.environment,
         tag_ids: form.tag_ids,
+        ssh_password: form.ssh_password ?? null,
       });
       if (result.ok) {
         notify("Connection successful", "success");
