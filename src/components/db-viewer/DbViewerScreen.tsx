@@ -77,6 +77,45 @@ export function deriveStagedValues(
 }
 
 /**
+ * Keys of cells with a PENDING update only — drives the amber pending dot.
+ * Once a change is committed the dot clears even though the optimistic value
+ * (from `deriveStagedValues`) stays until the refetch lands.
+ */
+export function derivePendingCellKeys(
+    changesQueue: QueueItem[],
+    schema: string,
+    table: string,
+    rows: unknown[][],
+    getLocator: (row: unknown[]) => Record<string, unknown>,
+): Record<string, boolean> {
+    const keys: Record<string, boolean> = {};
+    const updates = changesQueue.filter(
+        (c) =>
+            c.type === "update" &&
+            c.status === "pending" &&
+            c.schema === schema &&
+            c.table === table &&
+            c.primaryKey &&
+            c.newData,
+    );
+    if (updates.length === 0) return keys;
+    rows.forEach((row, rowIdx) => {
+        const loc = getLocator(row);
+        for (const c of updates) {
+            const pk = c.primaryKey!;
+            const matches = Object.entries(pk).every(
+                ([k, v]) => String(loc[k]) === String(v),
+            );
+            if (!matches) continue;
+            const colName = Object.keys(c.newData!)[0];
+            if (!colName) continue;
+            keys[`${rowIdx}:${colName}`] = true;
+        }
+    });
+    return keys;
+}
+
+/**
  * Pick a human-friendly display column for FK option labels from the
  * referenced table's columns: prefer name-like columns, else the first
  * text-ish column that isn't the ref column, else the ref column itself.
@@ -892,6 +931,15 @@ const onQueriesPanelResizeStart = useCallback(
                   getLocator,
               )
             : {};
+        const pendingKeys = activeTab?.data
+            ? derivePendingCellKeys(
+                  changesQueue,
+                  activeTab.schema,
+                  activeTab.table,
+                  activeTab.data.rows,
+                  getLocator,
+              )
+            : {};
 
         return (
                             <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
@@ -1079,6 +1127,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                     fkOptions={editorOptions?.fks}
                                                     fkPlaceholders={editorOptions?.fkPlaceholders}
                                                     stagedValues={stagedValues}
+                                                    pendingKeys={pendingKeys}
                                                     onToggleRow={(rowIndex) => {
                                                         setSelectedRows(
                                                             (prev) => {
@@ -1231,6 +1280,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 fkOptions={editorOptions?.fks}
                                                 fkPlaceholders={editorOptions?.fkPlaceholders}
                                                 stagedValues={stagedValues}
+                                                pendingKeys={pendingKeys}
                                                 onToggleRow={(rowIndex) => {
                                                     setSelectedRows((prev) => {
                                                         const next = new Set(

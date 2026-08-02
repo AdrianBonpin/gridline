@@ -43,6 +43,8 @@ interface VirtualDataGridProps {
   fkPlaceholders?: Record<string, string>;
   /** Optimistic staged cell values keyed `${rowIndex}:${colName}` → value (null = NULL), from the changes queue. */
   stagedValues?: Record<string, string | null>;
+  /** Keys of cells with a PENDING (not yet committed) update → drives the amber dot. */
+  pendingKeys?: Record<string, boolean>;
 }
 
 const ROW_HEIGHT = 36;
@@ -71,6 +73,7 @@ export function VirtualDataGrid({
   fkOptions,
   fkPlaceholders,
   stagedValues,
+  pendingKeys,
 }: VirtualDataGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -284,7 +287,7 @@ export function VirtualDataGrid({
       const isPending =
         (pendingCell?.row === rowIndex && pendingCell?.col === colIndex) ||
         pendingCellKey === cellKey ||
-        (stagedValues ? cellKey in stagedValues : false);
+        (pendingKeys ? cellKey in pendingKeys : false);
 
       const handleJsonClick = (e: React.MouseEvent) => {
         if (isJson) {
@@ -414,7 +417,7 @@ export function VirtualDataGrid({
         </div>
       );
     },
-    [activeCell, columns, dbType, editingCell, enumValues, fkOptions, fkPlaceholders, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth, pendingCell, stagedValues, pendingCellKey],
+    [activeCell, columns, dbType, editingCell, enumValues, fkOptions, fkPlaceholders, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth, pendingCell, stagedValues, pendingKeys, pendingCellKey],
   );
 
   // ── context menu helpers ──────────────────────────────

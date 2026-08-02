@@ -53,9 +53,19 @@ describe("VirtualDataGrid", () => {
     mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
     render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
       hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
-      dbType="postgresql" tabType="table" stagedValues={{ "0:name": "Alicia" }} />);
+      dbType="postgresql" tabType="table" stagedValues={{ "0:name": "Alicia" }} pendingKeys={{ "0:name": true }} />);
     expect(screen.getByText("Alicia")).toBeInTheDocument();
     expect(screen.getByTestId("pending-edit-dot")).toBeInTheDocument();
+  });
+
+  it("pending dot requires pendingKeys even when a staged value exists (committed → no dot)", () => {
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" stagedValues={{ "0:name": "Alicia" }} pendingKeys={{}} />);
+    expect(screen.getByText("Alicia")).toBeInTheDocument();
+    expect(screen.queryByTestId("pending-edit-dot")).toBeNull();
   });
 
   it("clears staged values when the stagedValues prop empties (Clear All)", () => {

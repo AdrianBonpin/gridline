@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, act } from "@testing-library/react"
 import {
     DbViewerScreen,
     deriveStagedValues,
+    derivePendingCellKeys,
     pickDisplayColumn,
 } from "./DbViewerScreen";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
@@ -152,6 +153,18 @@ describe("DbViewerScreen", () => {
             expect(screen.getAllByText("Alicia").length).toBeGreaterThanOrEqual(2);
         });
         expect(screen.getByTestId("pending-edit-dot")).toBeInTheDocument();
+        // committing the change clears the pending dot but keeps the value until refetch
+        act(() => {
+            useDbViewerStore
+                .getState()
+                .markChangeCommitted(
+                    useDbViewerStore.getState().changesQueue[0].id,
+                );
+        });
+        await waitFor(() => {
+            expect(screen.queryByTestId("pending-edit-dot")).toBeNull();
+        });
+        expect(screen.getAllByText("Alicia").length).toBeGreaterThanOrEqual(2);
         // clearing the queue clears the optimistic display
         act(() => {
             useDbViewerStore.getState().clearChanges();
@@ -199,6 +212,26 @@ describe("DbViewerScreen", () => {
         const loc = (r: unknown[]) => ({ id: r[0] });
         expect(deriveStagedValues(queue as any, "public", "users", rows, loc)).toEqual({
             "0:name": null,
+        });
+    });
+
+    it("derivePendingCellKeys only includes pending updates (dot clears on commit)", () => {
+        const queue = [
+            {
+                id: "ch-1", type: "update" as const, sql: "", schema: "public", table: "users",
+                primaryKey: { id: 1 }, oldData: { name: "Alice" }, newData: { name: "Alicia" },
+                status: "pending" as const, createdAt: 0,
+            },
+            {
+                id: "ch-2", type: "update" as const, sql: "", schema: "public", table: "users",
+                primaryKey: { id: 2 }, oldData: { name: "Bob" }, newData: { name: "Bobby" },
+                status: "committed" as const, createdAt: 0,
+            },
+        ];
+        const rows: unknown[][] = [[1, "Alice"], [2, "Bob"]];
+        const loc = (r: unknown[]) => ({ id: r[0] });
+        expect(derivePendingCellKeys(queue as any, "public", "users", rows, loc)).toEqual({
+            "0:name": true,
         });
     });
 
