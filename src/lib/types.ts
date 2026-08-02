@@ -44,6 +44,8 @@ export interface Connection {
   ssl_key_path?: string | null;
   // Environment label (production, staging, development, etc.)
   environment?: string | null;
+  // Favorite flag (v0.5.0 — pinned connection)
+  favorite: boolean;
 }
 
 export type NewConnectionMode = "simple" | "detailed";
@@ -143,6 +145,36 @@ export interface ColumnInfo {
   is_fk: boolean;
   fk_ref: [string, string] | null;
   default_value: string | null;
+  editable: boolean;
+  is_generated: boolean;
+}
+
+export interface IndexInfo {
+  name: string;
+  schema: string;
+  table: string;
+  definition: string;
+  is_unique: boolean;
+  method: string;
+  columns: string[];
+  size_bytes: number | null;
+  tablespace: string | null;
+}
+
+export interface ConstraintInfo {
+  name: string;
+  schema: string;
+  table: string;
+  contype: "CHECK" | "UNIQUE" | "EXCLUSION";
+  definition: string;
+  deferrable: boolean;
+  validated: boolean;
+  columns: string[];
+}
+
+export interface RecentConnection {
+  connection_id: string;
+  opened_at: string;
 }
 
 export interface QueryResult {

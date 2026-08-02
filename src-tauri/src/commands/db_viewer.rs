@@ -1080,6 +1080,8 @@ ORDER BY c.ordinal_position"#;
                             None
                         },
                         default_value: r.get::<_, Option<String>>(7),
+                        editable: true,
+                        is_generated: false,
                     }
                 })
                 .collect();
@@ -1207,6 +1209,8 @@ ORDER BY c.ordinal_position"#;
                         is_fk: fk.is_some(),
                         fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
                         default_value: default_val.clone(),
+                        editable: true,
+                        is_generated: false,
                     }
                 })
                 .collect();
@@ -1334,6 +1338,8 @@ ORDER BY c.ordinal_position"#;
                             None
                         },
                         default_value: r.get::<_, Option<String>>(7),
+                        editable: true,
+                        is_generated: false,
                     }
                 })
                 .collect();
@@ -1411,6 +1417,8 @@ ORDER BY c.ordinal_position"#;
                         is_fk: fk.is_some(),
                         fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
                         default_value: default_val.clone(),
+                        editable: true,
+                        is_generated: false,
                     }
                 })
                 .collect();

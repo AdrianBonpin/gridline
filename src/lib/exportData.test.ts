@@ -3,8 +3,8 @@ import { exportData } from "./exportData";
 import type { ColumnInfo } from "./types";
 
 const columns: ColumnInfo[] = [
-  { name: "id", data_type: "int", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null },
-  { name: "v", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null },
+  { name: "id", data_type: "int", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+  { name: "v", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
 ];
 
 describe("exportData", () => {

@@ -243,6 +243,8 @@ async fn execute_pg_query(
                 is_fk: false,
                 fk_ref: None,
                 default_value: None,
+                editable: true,
+                is_generated: false,
             })
             .collect(),
         None => {
@@ -309,6 +311,8 @@ async fn execute_pg_raw(
                             is_fk: false,
                             fk_ref: None,
                             default_value: None,
+                            editable: true,
+                            is_generated: false,
                         })
                         .collect();
                     saw_columns = true;
@@ -432,6 +436,8 @@ fn execute_sqlite_with_query(
                 is_fk: false,
                 fk_ref: None,
                 default_value: None,
+                editable: true,
+                is_generated: false,
             }
         })
         .collect();

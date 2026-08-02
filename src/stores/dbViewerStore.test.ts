@@ -109,7 +109,7 @@ describe("dbViewerStore", () => {
     store.setTabLoading(tabId, true);
 
     const mockData: QueryResult = {
-      columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null},{name:"name",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
+      columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null,editable:true,is_generated:false},{name:"name",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null,editable:true,is_generated:false}],
       rows: [[1, "Alice"]],
       total_rows: 1, page: 1, page_size: 50,
     };

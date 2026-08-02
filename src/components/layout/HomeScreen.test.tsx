@@ -138,6 +138,7 @@ function makeConnection(id: string): Connection {
     folder_id: null,
     keychain_ref: null,
     tag_ids: [],
+    favorite: false,
     created_at: "",
     updated_at: "",
   };

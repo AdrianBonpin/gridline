@@ -23,6 +23,7 @@ const makeConnection = (over: Partial<Connection> = {}): Connection => ({
   keychain_ref: null,
   tag_ids: [],
   environment: null,
+  favorite: false,
   created_at: "2026-07-26T00:00:00Z",
   updated_at: "2026-07-26T00:00:00Z",
   ...over,

@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const makeConn = (over: Partial<Connection> = {}): Connection => ({
   id: "c1", name: "P", db_type: "postgresql", host: "h", port: 5432,
   username: null, folder_id: null, keychain_ref: null, tag_ids: [],
-  created_at: "", updated_at: "", ...over,
+  favorite: false, created_at: "", updated_at: "", ...over,
 });
 
 beforeEach(() => {
@@ -82,6 +82,7 @@ describe("moveConnection", () => {
     ssl_cert_path: null,
     ssl_key_path: null,
     tag_ids: [],
+    favorite: false,
     created_at: "2024-01-01",
     updated_at: "2024-01-01",
   };

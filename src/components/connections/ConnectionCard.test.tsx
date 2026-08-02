@@ -13,7 +13,7 @@ const tags: Tag[] = [
 const conn: Connection = {
   id: "c1", name: "Prod DB", db_type: "postgresql", host: "prod.example.com",
   port: 5432, username: null, folder_id: null, keychain_ref: null,
-  tag_ids: ["t1", "t2"], created_at: "", updated_at: "",
+  tag_ids: ["t1", "t2"], favorite: false, created_at: "", updated_at: "",
 };
 
 function Wrapper({ children }: { children: React.ReactNode }) {

@@ -4,8 +4,8 @@ import { VirtualDataGrid } from "./VirtualDataGrid";
 import type { ColumnInfo } from "../../lib/types";
 
 const mockColumns: ColumnInfo[] = [
-  { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null },
-  { name: "name", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null },
+  { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+  { name: "name", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
 ];
 
 const mockRows: unknown[][] = [
@@ -158,7 +158,7 @@ describe("VirtualDataGrid", () => {
 
   it("renders FK cells with clickable underline styling", () => {
     const fkCols: ColumnInfo[] = [
-      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["users", "id"], default_value: null },
+      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["users", "id"], default_value: null, editable: true, is_generated: false },
     ];
     mockGetTotalSize.mockReturnValue(36);
     mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
@@ -174,7 +174,7 @@ describe("VirtualDataGrid", () => {
 
   it("renders JSON cells with preview label", () => {
     const jsonCols: ColumnInfo[] = [
-      { name: "metadata", data_type: "jsonb", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null },
+      { name: "metadata", data_type: "jsonb", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
     ];
     mockGetTotalSize.mockReturnValue(36);
     mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);

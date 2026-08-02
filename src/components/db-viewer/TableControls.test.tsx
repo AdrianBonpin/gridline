@@ -15,6 +15,8 @@ const columns = [
     is_fk: false,
     fk_ref: null,
     default_value: null,
+    editable: true,
+    is_generated: false,
   },
 ];
 
