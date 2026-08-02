@@ -122,6 +122,66 @@ pub fn add_connection_tags(
     add_connection_tags_inner(&state.db_store, connection_id, tag_ids)
 }
 
+pub fn set_connection_favorite_inner(
+    state: &Mutex<Store>,
+    connection_id: String,
+    favorite: bool,
+) -> Result<(), String> {
+    let store = state.lock().map_err(|e| e.to_string())?;
+    store.set_connection_favorite(&connection_id, favorite)
+}
+
+pub fn record_recent_connection_inner(
+    state: &Mutex<Store>,
+    connection_id: String,
+) -> Result<(), String> {
+    let store = state.lock().map_err(|e| e.to_string())?;
+    store.record_recent_connection(&connection_id)
+}
+
+pub fn get_recent_connections_inner(
+    state: &Mutex<Store>,
+    limit: i64,
+) -> Result<Vec<crate::models::RecentConnection>, String> {
+    let store = state.lock().map_err(|e| e.to_string())?;
+    store.get_recent_connections(limit)
+}
+
+pub fn clear_recent_connections_inner(state: &Mutex<Store>) -> Result<(), String> {
+    let store = state.lock().map_err(|e| e.to_string())?;
+    store.clear_recent_connections()
+}
+
+#[tauri::command]
+pub fn set_connection_favorite(
+    state: tauri::State<crate::AppState>,
+    connection_id: String,
+    favorite: bool,
+) -> Result<(), String> {
+    set_connection_favorite_inner(&state.db_store, connection_id, favorite)
+}
+
+#[tauri::command]
+pub fn record_recent_connection(
+    state: tauri::State<crate::AppState>,
+    connection_id: String,
+) -> Result<(), String> {
+    record_recent_connection_inner(&state.db_store, connection_id)
+}
+
+#[tauri::command]
+pub fn get_recent_connections(
+    state: tauri::State<crate::AppState>,
+    limit: i64,
+) -> Result<Vec<crate::models::RecentConnection>, String> {
+    get_recent_connections_inner(&state.db_store, limit)
+}
+
+#[tauri::command]
+pub fn clear_recent_connections(state: tauri::State<crate::AppState>) -> Result<(), String> {
+    clear_recent_connections_inner(&state.db_store)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +291,71 @@ mod tests {
         let conn = create_connection_inner(&st, input).unwrap();
         delete_connection_inner(&st, &conn.id).unwrap();
         assert_eq!(get_connections_inner(&st).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn set_connection_favorite_command_persists() {
+        let st = state();
+        let input = ConnectionInput {
+            name: "P".into(),
+            db_type: "postgresql".into(),
+            host: "h".into(),
+            port: Some(5432),
+            username: None,
+            folder_id: None,
+            tag_ids: vec![],
+            password: None,
+            database: None,
+            environment: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_private_key_path: None,
+            ssh_password: None,
+            ssh_passphrase: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+        };
+        let conn = create_connection_inner(&st, input).unwrap();
+        set_connection_favorite_inner(&st, conn.id.clone(), true).unwrap();
+        assert_eq!(get_connections_inner(&st).unwrap()[0].favorite, true);
+    }
+
+    #[test]
+    fn record_recent_command_upserts() {
+        let st = state();
+        let input = ConnectionInput {
+            name: "P".into(),
+            db_type: "postgresql".into(),
+            host: "h".into(),
+            port: Some(5432),
+            username: None,
+            folder_id: None,
+            tag_ids: vec![],
+            password: None,
+            database: None,
+            environment: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_private_key_path: None,
+            ssh_password: None,
+            ssh_passphrase: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+        };
+        let conn = create_connection_inner(&st, input).unwrap();
+        record_recent_connection_inner(&st, conn.id.clone()).unwrap();
+        record_recent_connection_inner(&st, conn.id.clone()).unwrap(); // idempotent upsert
+        let recent = get_recent_connections_inner(&st, 10).unwrap();
+        assert_eq!(recent.len(), 1);
+        clear_recent_connections_inner(&st).unwrap();
+        assert_eq!(get_recent_connections_inner(&st, 10).unwrap().len(), 0);
     }
 }

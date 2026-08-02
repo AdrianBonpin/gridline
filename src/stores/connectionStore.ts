@@ -5,12 +5,17 @@ import * as cmd from "../lib/commands";
 interface ConnectionState {
   connections: Connection[]; folders: Folder[]; tags: Tag[];
   tagOrder: string[];
+  recent: Connection[];
   loading: boolean; error: string | null;
   loadAll: () => Promise<void>;
+  loadRecent: () => Promise<void>;
+  recordRecent: (id: string) => Promise<void>;
+  toggleFavorite: (id: string) => Promise<void>;
   loadTagOrder: () => Promise<void>;
   setTagOrder: (order: string[]) => Promise<void>;
-  createConnection: (input: ConnectionInput) => Promise<void>;
+  createConnection: (input: ConnectionInput) => Promise<Connection>;
   deleteConnection: (id: string) => Promise<void>;
+  duplicateConnection: (id: string) => Promise<Connection>;
   createFolder: (input: FolderInput) => Promise<void>;
   updateFolder: (id: string, input: FolderInput) => Promise<void>;
   deleteFolder: (id: string) => Promise<void>;
@@ -19,21 +24,46 @@ interface ConnectionState {
   deleteTag: (id: string) => Promise<void>;
   addTagToItems: (tagId: string, folderIds: string[], connectionIds: string[]) => Promise<void>;
   moveConnection: (connectionId: string, newFolderId: string | null) => Promise<void>;
+  moveSelectionToFolder: (selectedIds: string[], targetFolderId: string | null) => Promise<void>;
   cachePassword: (connectionId: string, password: string) => Promise<void>;
   getConnectionPassword: (connectionId: string) => Promise<string | null>;
 }
 
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
-  connections: [], folders: [], tags: [], tagOrder: [], loading: false, error: null,
+  connections: [], folders: [], tags: [], tagOrder: [], recent: [], loading: false, error: null,
   loadAll: async () => {
     set({ loading: true, error: null });
     try {
       const [connections, folders, tags] = await Promise.all([cmd.getConnections(), cmd.getFolders(), cmd.getTags()]);
       set({ connections, folders, tags, loading: false });
+      // Sort favorites first (stable sort preserves name order within groups)
+      set((s) => ({ connections: [...s.connections].sort((a, b) => Number(b.favorite) - Number(a.favorite)) }));
       // Also load tag order
       get().loadTagOrder();
     } catch (e) {
       set({ loading: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+  loadRecent: async () => {
+    try {
+      const recent = await cmd.getRecentConnections(8);
+      const map = new Map(get().connections.map((c) => [c.id, c]));
+      set({ recent: recent.map((r) => map.get(r.connection_id)).filter(Boolean) as Connection[] });
+    } catch { /* best-effort: recent list is non-critical */ }
+  },
+  recordRecent: async (id) => {
+    try { await cmd.recordRecentConnection(id); } catch { /* best-effort */ }
+  },
+  toggleFavorite: async (id) => {
+    const prev = get().connections;
+    const next = prev.map((c) => c.id === id ? { ...c, favorite: !c.favorite } : c);
+    set({ connections: next });
+    const conn = next.find((c) => c.id === id);
+    try {
+      await cmd.setConnectionFavorite(id, conn?.favorite ?? false);
+    } catch (e) {
+      set({ connections: prev }); // rollback
+      throw e;
     }
   },
   loadTagOrder: async () => {
@@ -66,6 +96,36 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       await cmd.saveConnectionSshPassphrase(conn.id, input.ssh_passphrase);
     }
     set((s) => ({ connections: [...s.connections, conn] }));
+    return conn;
+  },
+  duplicateConnection: async (id) => {
+    const source = get().connections.find((c) => c.id === id);
+    if (!source) throw new Error("Connection not found");
+    // Passwords live in the OS keychain and are NEVER copied; the duplicate
+    // starts unkeyed and with no favorite flag.
+    const input: ConnectionInput = {
+      name: `${source.name} (copy)`,
+      db_type: source.db_type,
+      host: source.host,
+      port: source.port,
+      username: source.username ?? null,
+      database: source.database ?? null,
+      folder_id: source.folder_id,
+      tag_ids: source.tag_ids ?? [],
+      environment: source.environment ?? null,
+      ssh_host: source.ssh_host ?? null,
+      ssh_port: source.ssh_port ?? null,
+      ssh_user: source.ssh_user ?? null,
+      ssh_auth_method: (source.ssh_auth_method as ConnectionInput["ssh_auth_method"]) ?? null,
+      ssh_private_key_path: source.ssh_private_key_path ?? null,
+      ssl_mode: (source.ssl_mode as ConnectionInput["ssl_mode"]) ?? null,
+      ssl_ca_path: source.ssl_ca_path ?? null,
+      ssl_cert_path: source.ssl_cert_path ?? null,
+      ssl_key_path: source.ssl_key_path ?? null,
+      password: null,
+      use_keychain: false,
+    };
+    return get().createConnection(input);
   },
   deleteConnection: async (id) => {
     await cmd.deleteConnection(id);
@@ -172,5 +232,33 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       set({ connections: previousState!.connections });
       throw e;
     }
+  },
+  moveSelectionToFolder: async (selectedIds, targetFolderId) => {
+    const prev = { connections: [...get().connections], folders: [...get().folders] };
+    const connIds = new Set<string>();
+    const folderIds = new Set<string>();
+    for (const id of selectedIds) {
+      if (prev.connections.some((c) => c.id === id)) connIds.add(id);
+      else if (prev.folders.some((f) => f.id === id)) folderIds.add(id);
+    }
+    try {
+      // Persist first: moveConnection has its own optimistic logic + rollback and
+      // would no-op (early-return on same folder_id) if we pre-set the target.
+      for (const id of connIds) {
+        await get().moveConnection(id, targetFolderId);
+      }
+      for (const id of folderIds) {
+        const f = prev.folders.find((x) => x.id === id);
+        if (f) await cmd.updateFolder(id, { name: f.name, parent_id: targetFolderId, tag_ids: f.tag_ids });
+      }
+    } catch (e) {
+      set({ connections: prev.connections, folders: prev.folders });
+      throw e;
+    }
+    // Apply the move optimistically at the end so state always ends moved
+    set((s) => ({
+      connections: s.connections.map((c) => connIds.has(c.id) ? { ...c, folder_id: targetFolderId } : c),
+      folders: s.folders.map((f) => folderIds.has(f.id) ? { ...f, parent_id: targetFolderId } : f),
+    }));
   },
 }));

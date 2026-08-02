@@ -1,9 +1,12 @@
 import { useEffect, useState, useMemo, useCallback, useRef, cloneElement } from "react";
 import {
+    BookMarked,
     ChevronRight,
     FunctionSquare,
     GitBranch,
+    ListChecks,
     ListOrdered,
+    SquareFunction,
     Tag,
     Puzzle,
     Search,
@@ -19,6 +22,8 @@ import type {
     SequenceInfo,
     EnumInfo,
     ExtensionInfo,
+    IndexInfo,
+    ConstraintInfo,
 } from "../../lib/types";
 
 export type ObjectType =
@@ -26,7 +31,10 @@ export type ObjectType =
     | "triggers"
     | "sequences"
     | "enums"
-    | "extensions";
+    | "extensions"
+    | "indexes"
+    | "constraints"
+    | "procedures";
 
 interface ObjectExplorerPageProps {
     connectionId: string;
@@ -38,6 +46,9 @@ const TYPE_LABELS: Record<ObjectType, string> = {
     sequences: "Sequences",
     enums: "Enums",
     extensions: "Extensions",
+    indexes: "Indexes",
+    constraints: "Constraints",
+    procedures: "Procedures",
 };
 
 const OBJECT_TYPE_OPTIONS = (Object.keys(TYPE_LABELS) as ObjectType[]).map(
@@ -50,7 +61,20 @@ const SINGULAR_LABELS: Record<ObjectType, string> = {
     sequences: "sequence",
     enums: "enum",
     extensions: "extension",
+    indexes: "index",
+    constraints: "constraint",
+    procedures: "procedure",
 };
+
+/** Natural plural for empty-state copy, derived from SINGULAR_LABELS with known irregulars mapped explicitly. */
+function emptyPlural(type: ObjectType): string {
+    const singular = SINGULAR_LABELS[type];
+    const irregulars: Record<string, string> = {
+        index: "indexes",
+        constraint: "constraints",
+    };
+    return irregulars[singular] ?? `${singular}s`;
+}
 
 const ICONS: Record<ObjectType, React.ReactNode> = {
     functions: (
@@ -60,6 +84,9 @@ const ICONS: Record<ObjectType, React.ReactNode> = {
     sequences: <ListOrdered size={14} className="text-text-muted shrink-0" />,
     enums: <Tag size={14} className="text-text-muted shrink-0" />,
     extensions: <Puzzle size={14} className="text-text-muted shrink-0" />,
+    indexes: <BookMarked size={14} className="text-text-muted shrink-0" />,
+    constraints: <ListChecks size={14} className="text-text-muted shrink-0" />,
+    procedures: <SquareFunction size={14} className="text-text-muted shrink-0" />,
 };
 
 type AnyObject =
@@ -67,7 +94,9 @@ type AnyObject =
     | TriggerInfo
     | SequenceInfo
     | EnumInfo
-    | ExtensionInfo;
+    | ExtensionInfo
+    | IndexInfo
+    | ConstraintInfo;
 
 /** Build a unique key per item. Functions use their signature to disambiguate overloads. */
 function itemKey(item: AnyObject): string {
@@ -487,105 +516,287 @@ function SyntaxCode({
     );
 }
 
+function renderFunctionDetail(f: FunctionInfo) {
+    return (
+        <div>
+            <div className="border-b border-border px-4 py-2">
+                <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                    Signature
+                </span>
+            </div>
+            <div className="border-b border-border flex flex-row">
+                <div className="border-r border-border px-4 py-2 flex items-center flex-2">
+                    <span className="text-xs text-text-muted w-24 shrink-0">
+                        Returns
+                    </span>
+                    <span className="text-sm text-accent font-mono">
+                        {f.return_type || "void"}
+                    </span>
+                </div>
+                <div className="px-4 py-2 flex items-center flex-2">
+                    <span className="text-xs text-text-muted w-24 shrink-0">
+                        Language
+                    </span>
+                    <span className="text-sm text-text">
+                        {f.language}
+                    </span>
+                </div>
+            </div>
+            <div className="border-b border-border flex flex-row">
+                <div className="border-r border-border px-4 py-2 flex items-center flex-2">
+                    <span className="text-xs text-text-muted w-24 shrink-0">
+                        Kind
+                    </span>
+                    <span className="text-sm text-text">
+                        {f.kind === "f" ? "Function" : "Procedure"}
+                    </span>
+                </div>
+                <div className="px-4 py-2 flex items-center flex-2">
+                    <span className="text-xs text-text-muted w-24 shrink-0">
+                        Schema
+                    </span>
+                    <span className="text-sm text-text font-mono">
+                        {f.schema}
+                    </span>
+                </div>
+            </div>
+            {f.argument_names.length > 0 && (
+                <>
+                    <div className="border-b border-border px-4 py-2 flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                            Arguments
+                        </span>
+                        <span className="text-[10px] text-text-subtle">
+                            {f.argument_names.length} total
+                        </span>
+                    </div>
+                    {f.argument_names.map((name, i) => (
+                        <div
+                            key={i}
+                            className="border-b border-border px-4 py-2 flex items-center"
+                        >
+                            <div className="w-24 shrink-0">
+                                <span className="text-xs text-text-muted">
+                                    {f.argument_modes?.[i] &&
+                                        f.argument_modes[i] !==
+                                            "IN" && (
+                                            <span className="text-amber-400 font-medium mr-1">
+                                                {f.argument_modes[i]}
+                                            </span>
+                                        )}
+                                    #{i + 1}
+                                </span>
+                            </div>
+                            <span className="text-sm text-accent font-mono">
+                                {name}
+                            </span>
+                            <span className="mx-2 text-border">:</span>
+                            <span className="text-sm text-text-muted font-mono">
+                                {f.argument_types?.[i] || "unknown"}
+                            </span>
+                        </div>
+                    ))}
+                </>
+            )}
+            {f.source && (
+                <>
+                    <div className="border-b border-border px-4 py-2 flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                            Source
+                        </span>
+                        <span className="text-[10px] text-text-subtle">
+                            {f.language}
+                        </span>
+                    </div>
+                    <SyntaxCode
+                        source={f.source}
+                        language={f.language}
+                    />
+                </>
+            )}
+        </div>
+    );
+}
+
 function renderDetail(type: ObjectType, item: AnyObject) {
     switch (type) {
-        case "functions": {
-            const f = item as FunctionInfo;
+        case "functions":
+            return renderFunctionDetail(item as FunctionInfo);
+        case "procedures":
+            return renderFunctionDetail(item as FunctionInfo);
+        case "indexes": {
+            const idx = item as IndexInfo;
             return (
                 <div>
                     <div className="border-b border-border px-4 py-2">
                         <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                            Signature
+                            Index
                         </span>
                     </div>
                     <div className="border-b border-border flex flex-row">
                         <div className="border-r border-border px-4 py-2 flex items-center flex-2">
                             <span className="text-xs text-text-muted w-24 shrink-0">
-                                Returns
+                                Table
                             </span>
-                            <span className="text-sm text-accent font-mono">
-                                {f.return_type || "void"}
+                            <span className="text-sm text-text font-mono">
+                                {idx.table}
                             </span>
                         </div>
                         <div className="px-4 py-2 flex items-center flex-2">
                             <span className="text-xs text-text-muted w-24 shrink-0">
-                                Language
+                                Method
                             </span>
-                            <span className="text-sm text-text">
-                                {f.language}
+                            <span className="text-sm text-accent font-mono">
+                                {idx.method}
                             </span>
                         </div>
                     </div>
                     <div className="border-b border-border flex flex-row">
                         <div className="border-r border-border px-4 py-2 flex items-center flex-2">
                             <span className="text-xs text-text-muted w-24 shrink-0">
-                                Kind
+                                Unique
                             </span>
-                            <span className="text-sm text-text">
-                                {f.kind === "f" ? "Function" : "Procedure"}
+                            <span
+                                className={`text-sm ${idx.is_unique ? "text-emerald-400" : "text-text-muted"}`}
+                            >
+                                {idx.is_unique ? "Yes" : "No"}
                             </span>
                         </div>
                         <div className="px-4 py-2 flex items-center flex-2">
                             <span className="text-xs text-text-muted w-24 shrink-0">
-                                Schema
+                                Size
                             </span>
                             <span className="text-sm text-text font-mono">
-                                {f.schema}
+                                {idx.size_bytes ?? "-"}
                             </span>
                         </div>
                     </div>
-                    {f.argument_names.length > 0 && (
+                    {idx.columns.length > 0 && (
                         <>
                             <div className="border-b border-border px-4 py-2 flex items-center justify-between">
                                 <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                                    Arguments
+                                    Columns
                                 </span>
                                 <span className="text-[10px] text-text-subtle">
-                                    {f.argument_names.length} total
+                                    {idx.columns.length}
                                 </span>
                             </div>
-                            {f.argument_names.map((name, i) => (
+                            {idx.columns.map((col, i) => (
                                 <div
                                     key={i}
                                     className="border-b border-border px-4 py-2 flex items-center"
                                 >
-                                    <div className="w-24 shrink-0">
-                                        <span className="text-xs text-text-muted">
-                                            {f.argument_modes?.[i] &&
-                                                f.argument_modes[i] !==
-                                                    "IN" && (
-                                                    <span className="text-amber-400 font-medium mr-1">
-                                                        {f.argument_modes[i]}
-                                                    </span>
-                                                )}
-                                            #{i + 1}
-                                        </span>
-                                    </div>
-                                    <span className="text-sm text-accent font-mono">
-                                        {name}
+                                    <span className="text-xs text-text-muted w-12 shrink-0 font-mono">
+                                        #{i + 1}
                                     </span>
-                                    <span className="mx-2 text-border">:</span>
-                                    <span className="text-sm text-text-muted font-mono">
-                                        {f.argument_types?.[i] || "unknown"}
+                                    <span className="text-sm text-accent font-mono">
+                                        {col}
                                     </span>
                                 </div>
                             ))}
                         </>
                     )}
-                    {f.source && (
+                    {idx.definition && (
                         <>
                             <div className="border-b border-border px-4 py-2 flex items-center justify-between">
                                 <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                                    Source
+                                    Definition
                                 </span>
                                 <span className="text-[10px] text-text-subtle">
-                                    {f.language}
+                                    SQL
                                 </span>
                             </div>
-                            <SyntaxCode
-                                source={f.source}
-                                language={f.language}
-                            />
+                            <SyntaxCode source={idx.definition} />
+                        </>
+                    )}
+                </div>
+            );
+        }
+        case "constraints": {
+            const c = item as ConstraintInfo;
+            return (
+                <div>
+                    <div className="border-b border-border px-4 py-2">
+                        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                            Constraint
+                        </span>
+                    </div>
+                    <div className="border-b border-border flex flex-row">
+                        <div className="border-r border-border px-4 py-2 flex items-center flex-2">
+                            <span className="text-xs text-text-muted w-24 shrink-0">
+                                Type
+                            </span>
+                            <span className="text-sm text-accent font-mono">
+                                {c.contype}
+                            </span>
+                        </div>
+                        <div className="px-4 py-2 flex items-center flex-2">
+                            <span className="text-xs text-text-muted w-24 shrink-0">
+                                Table
+                            </span>
+                            <span className="text-sm text-text font-mono">
+                                {c.table}
+                            </span>
+                        </div>
+                    </div>
+                    <div className="border-b border-border flex flex-row">
+                        <div className="border-r border-border px-4 py-2 flex items-center flex-2">
+                            <span className="text-xs text-text-muted w-24 shrink-0">
+                                Deferrable
+                            </span>
+                            <span
+                                className={`text-sm ${c.deferrable ? "text-amber-400" : "text-text-muted"}`}
+                            >
+                                {c.deferrable ? "Yes" : "No"}
+                            </span>
+                        </div>
+                        <div className="px-4 py-2 flex items-center flex-2">
+                            <span className="text-xs text-text-muted w-24 shrink-0">
+                                Validated
+                            </span>
+                            <span
+                                className={`text-sm ${c.validated ? "text-emerald-400" : "text-text-muted"}`}
+                            >
+                                {c.validated ? "Yes" : "No"}
+                            </span>
+                        </div>
+                    </div>
+                    {c.columns.length > 0 && (
+                        <>
+                            <div className="border-b border-border px-4 py-2 flex items-center justify-between">
+                                <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                                    Columns
+                                </span>
+                                <span className="text-[10px] text-text-subtle">
+                                    {c.columns.length}
+                                </span>
+                            </div>
+                            {c.columns.map((col, i) => (
+                                <div
+                                    key={i}
+                                    className="border-b border-border px-4 py-2 flex items-center"
+                                >
+                                    <span className="text-xs text-text-muted w-12 shrink-0 font-mono">
+                                        #{i + 1}
+                                    </span>
+                                    <span className="text-sm text-accent font-mono">
+                                        {col}
+                                    </span>
+                                </div>
+                            ))}
+                        </>
+                    )}
+                    {c.definition && (
+                        <>
+                            <div className="border-b border-border px-4 py-2 flex items-center justify-between">
+                                <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                                    Definition
+                                </span>
+                                <span className="text-[10px] text-text-subtle">
+                                    SQL
+                                </span>
+                            </div>
+                            <SyntaxCode source={c.definition} />
                         </>
                     )}
                 </div>
@@ -867,10 +1078,15 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
             if (type === "extensions") {
                 result = await cmd.getExtensions(connectionId);
             } else if (type === "functions") {
-                result = await cmd.getFunctions(
+                result = (await cmd.getFunctions(
                     connectionId,
                     currentSchema ?? undefined,
-                );
+                )).filter((f) => f.kind === "f");
+            } else if (type === "procedures") {
+                result = (await cmd.getFunctions(
+                    connectionId,
+                    currentSchema ?? undefined,
+                )).filter((f) => f.kind === "p");
             } else if (type === "triggers") {
                 result = await cmd.getTriggers(
                     connectionId,
@@ -883,6 +1099,16 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                 );
             } else if (type === "enums") {
                 result = await cmd.getEnums(
+                    connectionId,
+                    currentSchema ?? undefined,
+                );
+            } else if (type === "indexes") {
+                result = await cmd.getIndexes(
+                    connectionId,
+                    currentSchema ?? undefined,
+                );
+            } else if (type === "constraints") {
+                result = await cmd.getConstraints(
                     connectionId,
                     currentSchema ?? undefined,
                 );
@@ -1087,11 +1313,9 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
 
                     {!loading && !error && filtered.length === 0 && (
                         <div className="px-3 py-2 text-sm text-text-muted">
-                            {items === null
-                                ? `No ${label.toLowerCase()} found`
-                                : searchQuery
-                                  ? `No ${label.toLowerCase()} matching "${searchQuery}"`
-                                  : `No ${label.toLowerCase()} found in ${currentSchema || "current schema"}`}
+                            {searchQuery
+                                ? `No ${emptyPlural(type)} matching "${searchQuery}"`
+                                : `No ${emptyPlural(type)} found`}
                         </div>
                     )}
 

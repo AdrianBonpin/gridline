@@ -5,8 +5,8 @@
 
 use crate::db::pool::{DbConfig, DbHandle};
 use crate::models::db_viewer::{
-    Change, ColumnInfo, EnumInfo, ExtensionInfo, FunctionInfo, QueryResult,
-    SequenceInfo, TableInfo, TriggerInfo,
+    Change, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo,
+    IndexInfo, QueryResult, SequenceInfo, TableInfo, TriggerInfo,
 };
 use std::collections::HashMap;
 use tauri::State;
@@ -88,6 +88,40 @@ fn truncate(s: &str, max: usize) -> String {
 /// - page 5, page_size 25 => offset 100
 pub fn offset(page: i64, page_size: i64) -> i64 {
     (page - 1) * page_size
+}
+
+/// Split a `pg_get_indexdef(...,0,true)` / `pg_attribute` column CSV into a
+/// Vec, trimming whitespace. Splits on commas that are NOT inside parens
+/// (to keep expression-index columns intact).
+pub(crate) fn split_columns_csv(csv: &str) -> Vec<String> {
+    let csv = csv.trim();
+    if csv.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut buf = String::new();
+    for ch in csv.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                buf.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                buf.push(ch);
+            }
+            ',' if depth == 0 => {
+                out.push(buf.trim().to_string());
+                buf.clear();
+            }
+            _ => buf.push(ch),
+        }
+    }
+    if !buf.trim().is_empty() {
+        out.push(buf.trim().to_string());
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +309,66 @@ fn build_order_clause(sorts: &[crate::models::db_viewer::SortRule]) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Row-locator / editability helpers (Task 7)
+// ---------------------------------------------------------------------------
+
+/// Decide editability from pg_attribute flags: `attgenerated` ('' or 's'/'v')
+/// and `attidentity` ('' or 'a'='ALWAYS' / 'd'='BY DEFAULT').
+/// Generated (stored) columns and IDENTITY ALWAYS columns are non-editable.
+pub(crate) fn editable_from_att(attgenerated: &str, attidentity: &str) -> bool {
+    attgenerated.is_empty() && attidentity != "a"
+}
+
+/// Convert pg_attribute's internal "char" (i8, OID 18) to the 1-char string
+/// used by `editable_from_att`: '' = not set, 's' = STORED, 'v' = VIRTUAL,
+/// 'a' = ALWAYS, 'd' = BY DEFAULT. `None`/`\0` → "" (safe, no panic).
+pub(crate) fn pg_char_to_att(value: Option<i8>) -> String {
+    match value.and_then(|c| char::from_u32(c as u32)) {
+        Some(c) if c != '\0' => c.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Assemble a PG SELECT statement from pre-formatted select items (already
+/// quoted and optionally `::text`-cast), appending `ctid` when the table has
+/// no primary key so later UPDATE/DELETE queue changes can target the exact
+/// row. `ctid` is appended last so it does not shift visible column order.
+fn build_pg_select_from_items(schema: &str, table: &str, items: Vec<String>, has_pk: bool) -> String {
+    let mut all_cols = items;
+    if !has_pk {
+        all_cols.push("ctid".to_string());
+    }
+    format!("SELECT {} FROM \"{}\".\"{}\"", all_cols.join(", "), schema, table)
+}
+
+/// Build the PG data SELECT, appending `ctid` only when the table has no PK.
+pub(crate) fn build_pg_data_select(
+    schema: &str,
+    table: &str,
+    visible_cols: &[String],
+    has_pk: bool,
+) -> String {
+    let base_cols: Vec<String> = visible_cols.iter().map(|c| format!("\"{}\"", c)).collect();
+    build_pg_select_from_items(schema, table, base_cols, has_pk)
+}
+
+/// Build the SQLite data SELECT, appending `rowid` only when the table has no
+/// PK. The table is unqualified; SQLite browsing in this app is always scoped
+/// to the `main` schema, where an unqualified name resolves identically.
+pub(crate) fn build_sqlite_data_select(
+    table: &str,
+    visible_cols: &[String],
+    has_pk: bool,
+) -> String {
+    let base_cols: Vec<String> = visible_cols.iter().map(|c| format!("\"{}\"", c)).collect();
+    let mut all_cols = base_cols;
+    if !has_pk {
+        all_cols.push("rowid".to_string());
+    }
+    format!("SELECT {} FROM \"{}\"", all_cols.join(", "), table)
+}
+
 /// Build a parameterized UPDATE SQL statement.
 ///
 /// The returned SQL uses `?` placeholders for both the SET values and the
@@ -289,7 +383,10 @@ pub fn build_update_sql(
     table: &str,
     primary_key: &[(String, serde_json::Value)],
     new_data: &[(String, serde_json::Value)],
-) -> String {
+) -> Result<(String, Vec<serde_json::Value>), String> {
+    if primary_key.is_empty() {
+        return Err("cannot update a row without a primary key or row locator".to_string());
+    }
     let set_clause: Vec<String> = new_data
         .iter()
         .map(|(col, _)| format!("\"{}\" = ?", col))
@@ -298,13 +395,22 @@ pub fn build_update_sql(
         .iter()
         .map(|(col, _)| format!("\"{}\" = ?", col))
         .collect();
-    format!(
-        "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
-        schema,
-        table,
-        set_clause.join(", "),
-        where_clause.join(" AND ")
-    )
+    // Params must follow placeholder order: SET values first, then WHERE.
+    let params: Vec<serde_json::Value> = new_data
+        .iter()
+        .chain(primary_key.iter())
+        .map(|(_, v)| v.clone())
+        .collect();
+    Ok((
+        format!(
+            "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
+            schema,
+            table,
+            set_clause.join(", "),
+            where_clause.join(" AND ")
+        ),
+        params,
+    ))
 }
 
 /// Build a parameterized DELETE SQL statement.
@@ -317,17 +423,23 @@ pub fn build_delete_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
-) -> String {
+) -> Result<(String, Vec<serde_json::Value>), String> {
+    if primary_key.is_empty() {
+        return Err("cannot delete a row without a primary key or row locator".to_string());
+    }
     let where_clause: Vec<String> = primary_key
         .iter()
         .map(|(col, _)| format!("\"{}\" = ?", col))
         .collect();
-    format!(
-        "DELETE FROM \"{}\".\"{}\" WHERE {}",
-        schema,
-        table,
-        where_clause.join(" AND ")
-    )
+    Ok((
+        format!(
+            "DELETE FROM \"{}\".\"{}\" WHERE {}",
+            schema,
+            table,
+            where_clause.join(" AND ")
+        ),
+        primary_key.iter().map(|(_, v)| v.clone()).collect(),
+    ))
 }
 
 /// Build a parameterized INSERT SQL statement.
@@ -367,7 +479,10 @@ pub fn build_pg_update_sql(
     table: &str,
     primary_key: &[(String, serde_json::Value)],
     new_data: &[(String, serde_json::Value)],
-) -> (String, Vec<serde_json::Value>) {
+) -> Result<(String, Vec<serde_json::Value>), String> {
+    if primary_key.is_empty() {
+        return Err("cannot update a row without a primary key or row locator".to_string());
+    }
     let mut params: Vec<serde_json::Value> = Vec::new();
     let set_clause: Vec<String> = new_data
         .iter()
@@ -383,7 +498,7 @@ pub fn build_pg_update_sql(
             format!("\"{}\" = ${}", col, params.len())
         })
         .collect();
-    (
+    Ok((
         format!(
             "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
             schema,
@@ -392,7 +507,7 @@ pub fn build_pg_update_sql(
             where_clause.join(" AND ")
         ),
         params,
-    )
+    ))
 }
 
 /// Build a PostgreSQL DELETE statement.
@@ -400,7 +515,10 @@ pub fn build_pg_delete_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
-) -> (String, Vec<serde_json::Value>) {
+) -> Result<(String, Vec<serde_json::Value>), String> {
+    if primary_key.is_empty() {
+        return Err("cannot delete a row without a primary key or row locator".to_string());
+    }
     let mut params: Vec<serde_json::Value> = Vec::new();
     let where_clause: Vec<String> = primary_key
         .iter()
@@ -409,7 +527,7 @@ pub fn build_pg_delete_sql(
             format!("\"{}\" = ${}", col, params.len())
         })
         .collect();
-    (
+    Ok((
         format!(
             "DELETE FROM \"{}\".\"{}\" WHERE {}",
             schema,
@@ -417,7 +535,7 @@ pub fn build_pg_delete_sql(
             where_clause.join(" AND ")
         ),
         params,
-    )
+    ))
 }
 
 /// Build a PostgreSQL INSERT statement.
@@ -661,13 +779,20 @@ fn sqlite_value_to_json(row: &rusqlite::Row, i: usize) -> serde_json::Value {
     }
 }
 
+/// Serialize an i64 as a JSON string to preserve precision across the IPC
+/// boundary (JS `Number` loses integer fidelity beyond 2^53). The frontend
+/// treats numeric columns as strings for edit round-trips.
+pub(crate) fn i64_to_json(v: i64) -> serde_json::Value {
+    serde_json::Value::String(v.to_string())
+}
+
 pub(crate) fn pg_value_to_json(row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
     // Integer types
     if let Ok(Some(v)) = row.try_get::<_, Option<i32>>(i) {
         return serde_json::json!(v);
     }
     if let Ok(Some(v)) = row.try_get::<_, Option<i64>>(i) {
-        return serde_json::json!(v);
+        return i64_to_json(v);
     }
     if let Ok(Some(v)) = row.try_get::<_, Option<i16>>(i) {
         return serde_json::json!(v);
@@ -1024,7 +1149,9 @@ pub async fn get_table_data(
     COALESCE(fk.is_fk, false) AS is_fk,
     fk.foreign_table_name,
     fk.foreign_column_name,
-    c.column_default
+    c.column_default,
+    a.attgenerated,
+    a.attidentity
 FROM information_schema.columns c
 LEFT JOIN (
     SELECT ku.column_name, true AS is_pk
@@ -1056,6 +1183,11 @@ LEFT JOIN (
         AND tc.table_schema = $1
         AND tc.table_name = $2
 ) fk ON c.column_name = fk.column_name
+LEFT JOIN pg_attribute a
+    ON a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass
+    AND a.attname = c.column_name
+    AND a.attnum > 0
+    AND NOT a.attisdropped
 WHERE c.table_schema = $1 AND c.table_name = $2
 ORDER BY c.ordinal_position"#;
             let col_rows = client
@@ -1068,11 +1200,21 @@ ORDER BY c.ordinal_position"#;
                     let is_fk: bool = r.get(4);
                     let fk_table: Option<String> = r.get(5);
                     let fk_column: Option<String> = r.get(6);
+                    // pg_attribute.attgenerated/attidentity are PG's internal
+                    // "char" type (OID 18) → tokio-postgres delivers i8, not
+                    // String; deserializing as String panics. Convert safely.
+                    let attgenerated = pg_char_to_att(
+                        r.try_get::<_, Option<i8>>(8).unwrap_or(None),
+                    );
+                    let attidentity = pg_char_to_att(
+                        r.try_get::<_, Option<i8>>(9).unwrap_or(None),
+                    );
+                    let is_pk: bool = r.get(3);
                     ColumnInfo {
                         name: r.get(0),
                         data_type: r.get(1),
                         is_nullable: r.get::<_, String>(2) == "YES",
-                        is_pk: r.get(3),
+                        is_pk,
                         is_fk,
                         fk_ref: if is_fk {
                             Some((fk_table.unwrap_or_default(), fk_column.unwrap_or_default()))
@@ -1080,6 +1222,8 @@ ORDER BY c.ordinal_position"#;
                             None
                         },
                         default_value: r.get::<_, Option<String>>(7),
+                        editable: editable_from_att(&attgenerated, &attidentity) && !is_pk,
+                        is_generated: !attgenerated.is_empty(),
                     }
                 })
                 .collect();
@@ -1098,7 +1242,8 @@ ORDER BY c.ordinal_position"#;
                 "timestamp without time zone", "timestamp with time zone",
                 "time without time zone", "time with time zone",
             ];
-            let select_cols: Vec<String> = columns
+            let has_pk = columns.iter().any(|c| c.is_pk);
+            let select_items: Vec<String> = columns
                 .iter()
                 .map(|c| {
                     let lower = c.data_type.to_lowercase();
@@ -1110,10 +1255,12 @@ ORDER BY c.ordinal_position"#;
                     }
                 })
                 .collect();
+            // `ctid` is appended last for no-PK tables so later UPDATE/DELETE
+            // queue changes can target the exact row. It stays out of `columns`.
             let data_query = format!(
-                "SELECT {} FROM \"{}\".\"{}\" WHERE 1=1{} {} LIMIT {} OFFSET {}",
-                select_cols.join(", "),
-                schema, table, filter_clause, order_clause, ps, off
+                "{} WHERE 1=1{} {} LIMIT {} OFFSET {}",
+                build_pg_select_from_items(&schema, &table, select_items, has_pk),
+                filter_clause, order_clause, ps, off
             );
             let data_rows = if filter_params.is_empty() {
                 client
@@ -1207,14 +1354,21 @@ ORDER BY c.ordinal_position"#;
                         is_fk: fk.is_some(),
                         fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
                         default_value: default_val.clone(),
+                        editable: !*is_pk,
+                        is_generated: false,
                     }
                 })
                 .collect();
 
-            // Get data (with filters and sorts applied)
+            // Get data (with filters and sorts applied).
+            // `rowid` is appended last for no-PK tables so later UPDATE/DELETE
+            // queue changes can target the exact row. It stays out of `columns`.
+            let visible_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+            let has_pk = columns.iter().any(|c| c.is_pk);
             let data_query = format!(
-                "SELECT * FROM \"{}\".\"{}\" WHERE 1=1{} {} LIMIT {} OFFSET {}",
-                schema, table, filter_clause, order_clause, ps, off
+                "{} WHERE 1=1{} {} LIMIT {} OFFSET {}",
+                build_sqlite_data_select(&table, &visible_names, has_pk),
+                filter_clause, order_clause, ps, off
             );
             let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
             let col_count = stmt.column_count();
@@ -1334,6 +1488,8 @@ ORDER BY c.ordinal_position"#;
                             None
                         },
                         default_value: r.get::<_, Option<String>>(7),
+                        editable: true,
+                        is_generated: false,
                     }
                 })
                 .collect();
@@ -1411,6 +1567,8 @@ ORDER BY c.ordinal_position"#;
                         is_fk: fk.is_some(),
                         fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
                         default_value: default_val.clone(),
+                        editable: true,
+                        is_generated: false,
                     }
                 })
                 .collect();
@@ -1447,6 +1605,16 @@ ORDER BY c.ordinal_position"#;
     }
 }
 
+/// Map a tokio_postgres/rusqlite affected-row count to a friendly error.
+/// Exactly 1 -> Ok (None). 0 -> stale; >1 -> ambiguous.
+pub(crate) fn affected_count_error(n: u64) -> Option<String> {
+    match n {
+        0 => Some("row was modified or removed by another session".to_string()),
+        1 => None,
+        _ => Some("ambiguous row match".to_string()),
+    }
+}
+
 #[tauri::command]
 pub async fn execute_change(
     connection_id: String,
@@ -1467,7 +1635,7 @@ pub async fn execute_change(
                 } => {
                     let pk = parse_json_pairs(primary_key)?;
                     let data = parse_json_pairs(new_data)?;
-                    build_pg_update_sql(schema, table, &pk, &data)
+                    build_pg_update_sql(schema, table, &pk, &data)?
                 }
                 Change::Insert {
                     schema,
@@ -1485,7 +1653,7 @@ pub async fn execute_change(
                     ..
                 } => {
                     let pk = parse_json_pairs(primary_key)?;
-                    build_pg_delete_sql(schema, table, &pk)
+                    build_pg_delete_sql(schema, table, &pk)?
                 }
                 Change::AlterTable { sql, .. } => {
                     // Execute the raw DDL directly; no bound parameters.
@@ -1536,7 +1704,13 @@ pub async fn execute_change(
                     r
                 })
                 .collect();
-            client.execute(&sql, &refs).await.map_err(|e| e.to_string())?;
+            let n = client
+                .execute(&sql, &refs)
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some(msg) = affected_count_error(n) {
+                return Err(msg);
+            }
             Ok(())
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
@@ -1550,13 +1724,7 @@ pub async fn execute_change(
                 } => {
                     let pk = parse_json_pairs(primary_key)?;
                     let data = parse_json_pairs(new_data)?;
-                    (
-                        build_update_sql(schema, table, &pk, &data),
-                        pk.iter()
-                            .chain(data.iter())
-                            .map(|(_, v)| v.clone())
-                            .collect(),
-                    )
+                    build_update_sql(schema, table, &pk, &data)?
                 }
                 Change::Insert {
                     schema,
@@ -1579,10 +1747,7 @@ pub async fn execute_change(
                     ..
                 } => {
                     let pk = parse_json_pairs(primary_key)?;
-                    (
-                        build_delete_sql(schema, table, &pk),
-                        pk.iter().map(|(_, v)| v.clone()).collect(),
-                    )
+                    build_delete_sql(schema, table, &pk)?
                 }
                 Change::AlterTable { sql, .. } => {
                     conn.execute(sql, []).map_err(|e| e.to_string())?;
@@ -1612,8 +1777,12 @@ pub async fn execute_change(
 
             let sqlite_params: Vec<rusqlite::types::Value> =
                 params.iter().map(json_to_sqlite_value).collect();
-            conn.execute(&sql, rusqlite::params_from_iter(sqlite_params))
+            let n = conn
+                .execute(&sql, rusqlite::params_from_iter(sqlite_params))
                 .map_err(|e| e.to_string())?;
+            if let Some(msg) = affected_count_error(n as u64) {
+                return Err(msg);
+            }
             Ok(())
         }
         None => Err("Connection not found".to_string()),
@@ -1670,6 +1839,85 @@ pub async fn get_functions(
                     language: r.get(6),
                     source: r.get(7),
                     kind: r.get(8),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_indexes(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<IndexInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_indexes_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| IndexInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    table: r.get(2),
+                    definition: r.get(3),
+                    is_unique: r.get(4),
+                    method: r.get::<_, Option<String>>(5).unwrap_or_default(),
+                    columns: split_columns_csv(&r.get::<_, Option<String>>(6).unwrap_or_default()),
+                    size_bytes: r.get::<_, Option<i64>>(7),
+                    tablespace: r.get::<_, Option<String>>(8),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_constraints(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<ConstraintInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_constraints_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| {
+                    // contype::text decodes as a String ("c" | "u" | "x").
+                    let contype = match r.get::<_, Option<String>>(3).unwrap_or_default().as_str() {
+                        "c" => "CHECK",
+                        "u" => "UNIQUE",
+                        "x" => "EXCLUSION",
+                        other => other,
+                    }
+                    .to_string();
+                    ConstraintInfo {
+                        name: r.get(0),
+                        schema: r.get(1),
+                        table: r.get(2),
+                        contype,
+                        definition: r.get(4),
+                        deferrable: r.get(5),
+                        validated: r.get(6),
+                        columns: split_columns_csv(&r.get::<_, Option<String>>(7).unwrap_or_default()),
+                    }
                 })
                 .collect())
         }
@@ -1877,6 +2125,28 @@ mod tests {
     use super::*;
     use crate::models::db_viewer::Change;
 
+    #[test]
+    fn split_columns_csv_handles_commas_and_trims() {
+        assert_eq!(split_columns_csv("id, name, created_at"), vec!["id", "name", "created_at"]);
+        assert_eq!(split_columns_csv("id"), vec!["id"]);
+        assert_eq!(split_columns_csv(""), Vec::<String>::new());
+        // expression index column list may include parens — keep raw, just split on top-level commas
+        assert_eq!(split_columns_csv("lower(name), id"), vec!["lower(name)", "id"]);
+    }
+
+    /// bigint precision: values beyond 2^53 must round-trip as strings.
+    #[test]
+    fn i64_preserves_precision_as_string() {
+        // A bigint beyond 2^53 must round-trip as a string, not a JS number.
+        let big: i64 = 9_007_199_254_740_993; // 2^53 + 1
+        let v = i64_to_json(big);
+        assert_eq!(v, serde_json::Value::String("9007199254740993".to_string()),
+            "bigint must be a string to avoid float precision loss");
+        let small: i64 = 42;
+        let v2 = i64_to_json(small);
+        assert_eq!(v2, serde_json::Value::String("42".to_string()));
+    }
+
     /// Verify the `offset` helper produces correct pagination offsets.
     #[test]
     fn pagination_offset_is_correct() {
@@ -1930,7 +2200,7 @@ mod tests {
             ("email".to_string(), serde_json::json!("bob@example.com")),
         ];
 
-        let sql = build_update_sql("public", "users", &pk, &data);
+        let (sql, _params) = build_update_sql("public", "users", &pk, &data).unwrap();
 
         assert!(
             sql.to_uppercase().contains("UPDATE"),
@@ -1955,7 +2225,7 @@ mod tests {
     fn build_change_delete_sql_is_valid() {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
 
-        let sql = build_delete_sql("public", "users", &pk);
+        let (sql, _params) = build_delete_sql("public", "users", &pk).unwrap();
 
         assert!(
             sql.to_uppercase().contains("DELETE FROM"),
@@ -2115,5 +2385,91 @@ mod tests {
             build_empty_table_sql("public", "users"),
             r#"DELETE FROM "public"."users""#
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Row-locator / editability helpers (Task 7)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn editable_pg_column_flags_mark_generated_and_identity_always() {
+        // generated STORED ('s') -> not editable; identity ALWAYS ('a') -> not editable
+        assert!(!editable_from_att("s", ""));
+        assert!(!editable_from_att("", "a"));
+        // plain column -> editable
+        assert!(editable_from_att("", ""));
+        // identity BY DEFAULT ('d') -> editable
+        assert!(editable_from_att("", "d"));
+    }
+
+    #[test]
+    fn pg_char_to_att_maps_internal_char_codes_safely() {
+        // pg_attribute "char" arrives as i8; None/\0 -> "", codes -> 1-char string
+        assert_eq!(pg_char_to_att(None), "");
+        assert_eq!(pg_char_to_att(Some(0)), "");
+        assert_eq!(pg_char_to_att(Some(b's' as i8)), "s");
+        assert_eq!(pg_char_to_att(Some(b'v' as i8)), "v");
+        assert_eq!(pg_char_to_att(Some(b'a' as i8)), "a");
+        assert_eq!(pg_char_to_att(Some(b'd' as i8)), "d");
+        // wiring: a STORED generated column must be non-editable through the helper
+        assert!(!editable_from_att(&pg_char_to_att(Some(b's' as i8)), ""));
+    }
+
+    #[test]
+    fn pg_locator_select_adds_ctid() {
+        let sql = build_pg_data_select("public", "no_pk", &["id".into(), "name".into()], false);
+        assert!(sql.contains("ctid"), "no-PK table must select ctid; got: {}", sql);
+        assert!(sql.contains("\"public\""), "schema must be quoted; got: {}", sql);
+    }
+
+    #[test]
+    fn pg_locator_select_omits_ctid_when_pk_present() {
+        let sql = build_pg_data_select("public", "with_pk", &["id".into(), "name".into()], true);
+        assert!(!sql.contains("ctid"), "PK table must NOT select ctid; got: {}", sql);
+    }
+
+    #[test]
+    fn sqlite_locator_select_adds_rowid_for_no_pk() {
+        let sql = build_sqlite_data_select("no_pk", &["id".into(), "name".into()], false);
+        assert!(sql.contains("rowid"), "no-PK sqlite table must select rowid; got: {}", sql);
+    }
+
+    // -----------------------------------------------------------------------
+    // No-PK row locator updates + affected-row-count guard (Task 8)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pg_update_with_locator_uses_it_in_where() {
+        // The frontend supplies ctid as the "primary_key" pair for no-PK rows.
+        let locator = vec![("ctid".to_string(), serde_json::json!("(0,1)"))];
+        let data = vec![("name".to_string(), serde_json::json!("Bob"))];
+        let (sql, params) = build_pg_update_sql("public", "no_pk", &locator, &data).unwrap();
+        assert!(sql.contains("\"ctid\" = $"), "locator update must WHERE on ctid; got: {}", sql);
+        assert_eq!(params.len(), 2); // 1 SET value + 1 WHERE value
+    }
+
+    #[test]
+    fn pg_update_with_pk_uses_pk_where() {
+        let pk = vec![("id".to_string(), serde_json::json!(1))];
+        let data = vec![("name".to_string(), serde_json::json!("Bob"))];
+        let (sql, _params) = build_pg_update_sql("public", "users", &pk, &data).unwrap();
+        assert!(sql.contains("\"id\" = $"), "PK update must WHERE on id; got: {}", sql);
+        assert!(!sql.contains("ctid"), "PK update must NOT use ctid; got: {}", sql);
+    }
+
+    #[test]
+    fn pg_update_with_empty_primary_key_is_rejected() {
+        // Defense-in-depth: an empty locator must NOT yield `UPDATE ... WHERE `.
+        let pk: Vec<(String, serde_json::Value)> = vec![];
+        let data = vec![("name".to_string(), serde_json::json!("Bob"))];
+        let result = build_pg_update_sql("public", "no_pk", &pk, &data);
+        assert!(result.is_err(), "empty primary_key must be rejected, not produce broken SQL");
+    }
+
+    #[test]
+    fn affected_row_count_message_for_zero_rows() {
+        assert_eq!(affected_count_error(0u64), Some("row was modified or removed by another session".to_string()));
+        assert_eq!(affected_count_error(1u64), None);
+        assert_eq!(affected_count_error(2u64), Some("ambiguous row match".to_string()));
     }
 }

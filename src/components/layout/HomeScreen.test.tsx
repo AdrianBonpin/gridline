@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HomeScreen } from "./HomeScreen";
 import { useConnectionStore } from "../../stores/connectionStore";
@@ -12,6 +12,8 @@ vi.mock("../../lib/commands", () => ({
   getFolders: vi.fn().mockResolvedValue([]),
   getTags: vi.fn().mockResolvedValue([]),
   getSettings: vi.fn().mockResolvedValue({}),
+  getRecentConnections: vi.fn().mockResolvedValue([{ connection_id: "recent-1", opened_at: "" }]),
+  recordRecentConnection: vi.fn().mockResolvedValue(undefined),
   deleteConnection: vi.fn().mockResolvedValue(undefined),
   deleteConnectionPassword: vi.fn().mockResolvedValue(undefined),
   deleteFolder: vi.fn().mockResolvedValue(undefined),
@@ -25,7 +27,7 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 
 describe("HomeScreen", () => {
   beforeEach(() => {
-    useConnectionStore.setState({ connections: [], folders: [], tags: [], loading: false, error: null });
+    useConnectionStore.setState({ connections: [], folders: [], tags: [], recent: [], loading: false, error: null });
     useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home", selectedItemIds: [] });
     useSettingsStore.setState({ settings: null, loading: false, error: null });
     // SearchBar stores its debounce timer on window.__sb; clear any timer leaked
@@ -125,6 +127,83 @@ describe("HomeScreen", () => {
     expect(screen.queryByText(/are you sure you want to delete/i)).not.toBeInTheDocument();
     expect(screen.queryByTestId("animated-backdrop")).not.toBeInTheDocument();
   });
+
+  it("records a recent connection when opening a connection", async () => {
+    const user = userEvent.setup();
+    useConnectionStore.setState({ connections: [makeConnection("conn-1")] });
+    render(<HomeScreen />);
+    await user.click(screen.getByText("Local DB"));
+    const { recordRecentConnection } = await import("../../lib/commands");
+    await waitFor(() =>
+      expect(recordRecentConnection).toHaveBeenCalledWith("conn-1"),
+    );
+  });
+
+  it("renders the recent connections strip at the root when recents exist", async () => {
+    useConnectionStore.setState({ connections: [makeConnection("recent-1")] });
+    useUiStore.setState({ activeFolderId: null, searchQuery: "" });
+    render(<HomeScreen />);
+    await waitFor(() => {
+      expect(screen.getByText("Recent")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /local db/i })).toBeInTheDocument();
+    });
+  });
+
+  it("opens EditConnectionModal from the connection card kebab menu", async () => {
+    const user = userEvent.setup();
+    vi.clearAllMocks();
+    useConnectionStore.setState({ connections: [makeConnection("conn-1")] });
+    render(<HomeScreen />);
+
+    await user.click(screen.getByLabelText("Connection actions"));
+    await user.click(screen.getByText("Manage"));
+    await user.click(screen.getByText("Edit…"));
+
+    expect(await screen.findByText("Edit Connection")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Local DB")).toBeInTheDocument();
+  });
+
+  it("shows the confirmation dialog before deleting a connection from the kebab menu by default", async () => {
+    const user = userEvent.setup();
+    vi.clearAllMocks();
+    useConnectionStore.setState({ connections: [makeConnection("conn-1")] });
+    render(<HomeScreen />);
+
+    await user.click(screen.getByLabelText("Connection actions"));
+    await user.click(screen.getByText("Manage"));
+    await user.click(screen.getByText("Delete…"));
+
+    expect(
+      await screen.findByText(/are you sure you want to delete \"Local DB\"/i),
+    ).toBeInTheDocument();
+    const { deleteConnection } = await import("../../lib/commands");
+    expect(deleteConnection).not.toHaveBeenCalled();
+  });
+
+  it("deletes a connection from the kebab menu without confirmation when confirm_before_delete is false", async () => {
+    const user = userEvent.setup();
+    vi.clearAllMocks();
+    useSettingsStore.setState({
+      settings: {
+        ...baseSettings(),
+        confirm_before_delete: false,
+      },
+    });
+    useConnectionStore.setState({ connections: [makeConnection("conn-1")] });
+    render(<HomeScreen />);
+
+    await user.click(screen.getByLabelText("Connection actions"));
+    await user.click(screen.getByText("Manage"));
+    await user.click(screen.getByText("Delete…"));
+
+    const { deleteConnection } = await import("../../lib/commands");
+    await waitFor(() =>
+      expect(deleteConnection).toHaveBeenCalledWith("conn-1"),
+    );
+    expect(
+      screen.queryByText(/are you sure you want to delete/i),
+    ).not.toBeInTheDocument();
+  });
 });
 
 function makeConnection(id: string): Connection {
@@ -138,6 +217,7 @@ function makeConnection(id: string): Connection {
     folder_id: null,
     keychain_ref: null,
     tag_ids: [],
+    favorite: false,
     created_at: "",
     updated_at: "",
   };

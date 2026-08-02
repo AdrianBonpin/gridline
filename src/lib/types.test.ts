@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, expectTypeOf } from "vitest";
 import type {
   Connection,
   ConnectionInput,
@@ -16,6 +16,9 @@ import type {
   GraphColumn,
   Relationship,
   Settings,
+  IndexInfo,
+  ConstraintInfo,
+  RecentConnection,
 } from "./types";
 
 describe("ActiveView", () => {
@@ -37,6 +40,7 @@ describe("Connection", () => {
       folder_id: null,
       keychain_ref: null,
       tag_ids: [],
+      favorite: false,
       created_at: "2024-01-01T00:00:00Z",
       updated_at: "2024-01-01T00:00:00Z",
       // new SSH/SSL fields
@@ -68,6 +72,7 @@ describe("Connection", () => {
       folder_id: null,
       keychain_ref: null,
       tag_ids: [],
+      favorite: false,
       created_at: "2024-01-01T00:00:00Z",
       updated_at: "2024-01-01T00:00:00Z",
     };
@@ -89,6 +94,7 @@ describe("Connection", () => {
       folder_id: null,
       keychain_ref: null,
       tag_ids: [],
+      favorite: false,
       created_at: "2024-01-01T00:00:00Z",
       updated_at: "2024-01-01T00:00:00Z",
     };
@@ -184,6 +190,8 @@ describe("ColumnInfo", () => {
       is_fk: false,
       fk_ref: null,
       default_value: null,
+      editable: true,
+      is_generated: false,
     };
     expect(col.name).toBe("id");
     expect(col.is_pk).toBe(true);
@@ -198,6 +206,8 @@ describe("ColumnInfo", () => {
       is_fk: true,
       fk_ref: ["users", "id"],
       default_value: null,
+      editable: true,
+      is_generated: false,
     };
     expect(col.fk_ref?.[0]).toBe("users");
   });
@@ -206,7 +216,7 @@ describe("ColumnInfo", () => {
 describe("QueryResult", () => {
   it("is well-typed with columns and rows", () => {
     const result: QueryResult = {
-      columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null},{name:"name",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null},{name:"email",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
+      columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null,editable:true,is_generated:false},{name:"name",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null,editable:true,is_generated:false},{name:"email",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null,editable:true,is_generated:false}],
       rows: [
         [1, "Alice"],
         [2, "Bob"],
@@ -231,7 +241,7 @@ describe("QueryResult", () => {
 
   it("can have null execution_time", () => {
     const result: QueryResult = {
-      columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
+      columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null,editable:true,is_generated:false}],
       rows: [],
       total_rows: 0, page: 1, page_size: 50,
       execution_time_ms: null,
@@ -324,7 +334,7 @@ describe("DbViewerTab", () => {
       title: "SELECT * FROM users",
       query: "SELECT * FROM users",
       result: {
-        columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null},{name:"name",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null}],
+        columns: [{name:"id",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null,editable:true,is_generated:false},{name:"name",data_type:"text",is_pk:false,is_fk:false,is_nullable:false,default_value:null,fk_ref:null,editable:true,is_generated:false}],
         rows: [],
         total_rows: 0, page: 1, page_size: 50,
       },
@@ -451,5 +461,38 @@ describe("Settings", () => {
     };
     expect(s.editor_font_size).toBe(13);
     expect(s.editor_word_wrap).toBe("off");
+  });
+});
+
+describe("v0.5.0 types", () => {
+  it("ColumnInfo carries editability metadata", () => {
+    const c: ColumnInfo = {
+      name: "id", data_type: "integer", is_nullable: false, is_pk: true,
+      is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false,
+    };
+    expectTypeOf(c.editable).toEqualTypeOf<boolean>();
+    expectTypeOf(c.is_generated).toEqualTypeOf<boolean>();
+  });
+  it("IndexInfo has the documented fields", () => {
+    const i: IndexInfo = {
+      name: "idx", schema: "public", table: "users", definition: "CREATE INDEX ...",
+      is_unique: true, method: "btree", columns: ["id"], size_bytes: 4096, tablespace: null,
+    };
+    expectTypeOf(i).toMatchTypeOf<IndexInfo>();
+  });
+  it("ConstraintInfo has the documented fields", () => {
+    const c: ConstraintInfo = {
+      name: "ck", schema: "public", table: "users", contype: "CHECK",
+      definition: "CHECK (x > 0)", deferrable: false, validated: true, columns: ["x"],
+    };
+    expectTypeOf(c).toMatchTypeOf<ConstraintInfo>();
+  });
+  it("RecentConnection pairs a connection id with an opened_at timestamp", () => {
+    const r: RecentConnection = { connection_id: "c1", opened_at: "2026-08-02T00:00:00Z" };
+    expectTypeOf(r.connection_id).toEqualTypeOf<string>();
+  });
+  it("Connection carries favorite", () => {
+    const c = { favorite: true } as Connection;
+    expectTypeOf(c.favorite).toEqualTypeOf<boolean>();
   });
 });

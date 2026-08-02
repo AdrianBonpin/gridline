@@ -8,7 +8,7 @@ import type { Connection, Folder, Tag } from "../../lib/types";
 const makeConn = (id: string, folder_id: string | null = null): Connection => ({
   id, name: `Conn ${id}`, db_type: "postgresql", host: "h", port: 5432,
   username: null, folder_id, keychain_ref: null, tag_ids: [],
-  created_at: "", updated_at: "", environment: null,
+  created_at: "", updated_at: "", environment: null, favorite: false,
 });
 
 const folders: Folder[] = [

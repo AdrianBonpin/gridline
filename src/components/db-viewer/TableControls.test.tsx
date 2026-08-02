@@ -15,6 +15,8 @@ const columns = [
     is_fk: false,
     fk_ref: null,
     default_value: null,
+    editable: true,
+    is_generated: false,
   },
 ];
 
@@ -313,5 +315,20 @@ describe("TableControls", () => {
       vi.advanceTimersByTime(1000);
     });
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the Insert Row button for a materialized view", () => {
+    seed([makeTab()], "tab-1");
+    renderControls({ isMatview: true });
+    expect(screen.queryByLabelText(/insert row/i)).toBeNull();
+  });
+
+  it("renders the FilterBuilder inside the filter popover", () => {
+    seed([makeTab()], "tab-1");
+    renderControls();
+    fireEvent.click(screen.getByLabelText(/column filters/i));
+    expect(
+      screen.getByText("Drop columns here to add filters"),
+    ).toBeInTheDocument();
   });
 });

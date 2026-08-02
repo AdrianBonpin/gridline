@@ -44,6 +44,15 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function Se
             window.clearTimeout((window as any).__sb);
             (window as any).__sb = window.setTimeout(() => setSearchQuery(v), 150);
           }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              window.clearTimeout((window as any).__sb);
+              setValue("");
+              setSearchQuery("");
+              inputRef.current?.blur();
+            }
+          }}
           className="pl-10 pr-14"
         />
         <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-border bg-surface-raised text-text-muted text-xs pointer-events-none">

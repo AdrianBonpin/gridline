@@ -13,7 +13,7 @@ const tags: Tag[] = [
 const conn: Connection = {
   id: "c1", name: "Prod DB", db_type: "postgresql", host: "prod.example.com",
   port: 5432, username: null, folder_id: null, keychain_ref: null,
-  tag_ids: ["t1", "t2"], created_at: "", updated_at: "",
+  tag_ids: ["t1", "t2"], favorite: false, created_at: "", updated_at: "",
 };
 
 function Wrapper({ children }: { children: React.ReactNode }) {
@@ -22,6 +22,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 
 describe("ConnectionCard", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     useUiStore.setState({ selectedItemIds: [] });
   });
 
@@ -42,6 +43,24 @@ describe("ConnectionCard", () => {
   it("renders drag handle", () => {
     render(<ConnectionCard connection={conn} tags={tags} />, { wrapper: Wrapper });
     expect(screen.getByLabelText("Drag to move connection")).toBeInTheDocument();
+  });
+  it("mounts the connection actions kebab menu with action callbacks", () => {
+    const onEdit = vi.fn();
+    const onDuplicate = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <ConnectionCard
+        connection={conn}
+        tags={tags}
+        onEdit={onEdit}
+        onDuplicate={onDuplicate}
+        onDelete={onDelete}
+      />,
+      { wrapper: Wrapper },
+    );
+    expect(screen.getByLabelText("Connection actions")).toBeInTheDocument();
+    expect(screen.getByText("Prod DB")).toBeInTheDocument();
+    expect(screen.getByText("prod.example.com:5432")).toBeInTheDocument();
   });
   it("omits port for sqlite", () => {
     const sqlite = { ...conn, db_type: "sqlite" as const, host: "/data/x.db", port: null };
@@ -73,5 +92,18 @@ describe("ConnectionCard", () => {
     // Should NOT open — should toggle selection instead
     expect(fn).not.toHaveBeenCalled();
     expect(useUiStore.getState().selectedItemIds).toContain(conn.id);
+  });
+
+  it("no longer renders a favorite star (replaced by kebab menu)", () => {
+    render(<ConnectionCard connection={conn} tags={tags} />, { wrapper: Wrapper });
+    expect(screen.queryByLabelText(/favorite|unfavorite/i)).not.toBeInTheDocument();
+  });
+
+  it("no longer renders a status indicator and still shows name/host/tags", () => {
+    render(<ConnectionCard connection={{ ...conn, favorite: true }} tags={tags} />, { wrapper: Wrapper });
+    expect(screen.queryByLabelText(/check connection/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Prod DB")).toBeInTheDocument();
+    expect(screen.getByText("prod.example.com:5432")).toBeInTheDocument();
+    expect(screen.getByText("production")).toBeInTheDocument();
   });
 });

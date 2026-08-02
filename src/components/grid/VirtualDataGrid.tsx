@@ -1,20 +1,50 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Key, Braces } from "lucide-react";
+import { Key, Braces, ArrowUpRight } from "lucide-react";
 import type { ColumnInfo } from "../../lib/types";
 import { abbreviateType } from "../../lib/utils";
 import { FkPreviewPopover } from "../db-viewer/FkPreviewPopover";
 import { JsonCellPopover, jsonPreview } from "../db-viewer/JsonCellPopover";
+import { CellEditor, type FkOption } from "./CellEditor";
+import { CellContextMenu } from "./CellContextMenu";
+import { cellToUpdateChange, isCellEditable } from "./gridEditability";
+import { nextCell, type CellPos } from "./keyboardNav";
 
 interface VirtualDataGridProps {
   connectionId: string;
   schema: string;
+  table?: string;
   rows: unknown[][];
   columns: ColumnInfo[];
   hiddenColumns: Set<string>;
   selectedRows: Set<number>;
   onToggleRow: (rowIndex: number) => void;
   onToggleAll: () => void;
+  dbType?: string;
+  tabType?: "table" | "query";
+  onStageEdit?: (payload: {
+    type: "update";
+    schema: string;
+    table: string;
+    primaryKey: Record<string, unknown>;
+    oldData: Record<string, unknown>;
+    newData: Record<string, unknown>;
+  }) => void;
+  onOpenRowDetail?: (rowIndex: number) => void;
+  getLocator?: (row: unknown[]) => Record<string, unknown>;
+  readOnly?: boolean;
+  /** When set, renders a pending-edit indicator on the staged cell at (row, col). */
+  pendingCell?: { row: number; col: number } | null;
+  /** Enum labels keyed by column NAME → renders a <select> in the CellEditor. */
+  enumValues?: Record<string, string[]>;
+  /** Foreign-key reference rows keyed by column NAME → renders a searchable dropdown in the CellEditor. */
+  fkOptions?: Record<string, FkOption[]>;
+  /** Placeholder text for the FK search input, keyed by column NAME. */
+  fkPlaceholders?: Record<string, string>;
+  /** Optimistic staged cell values keyed `${rowIndex}:${colName}` → value (null = NULL), from the changes queue. */
+  stagedValues?: Record<string, string | null>;
+  /** Keys of cells with a PENDING (not yet committed) update → drives the amber dot. */
+  pendingKeys?: Record<string, boolean>;
 }
 
 const ROW_HEIGHT = 36;
@@ -25,12 +55,25 @@ const MAX_COL_WIDTH = 800;
 export function VirtualDataGrid({
   connectionId,
   schema,
+  table = "",
   rows,
   columns,
   hiddenColumns,
   selectedRows,
   onToggleRow,
   onToggleAll,
+  dbType = "postgresql",
+  tabType = "table",
+  onStageEdit,
+  onOpenRowDetail,
+  getLocator,
+  readOnly = false,
+  pendingCell = null,
+  enumValues,
+  fkOptions,
+  fkPlaceholders,
+  stagedValues,
+  pendingKeys,
 }: VirtualDataGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -52,6 +95,45 @@ export function VirtualDataGrid({
     estimateSize: () => ROW_HEIGHT,
     overscan: 5,
   });
+
+  // ── focus / editing / context menu / row detail state ──
+
+  const [activeCell, setActiveCell] = useState<CellPos | null>(null);
+  const [editingCell, setEditingCell] = useState<CellPos | null>(null);
+
+  // Optimistic staged cell values come from the parent via `stagedValues`
+  // (derived from the changes queue), so clearing the queue clears them.
+  const [pendingCellKey, setPendingCellKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPendingCellKey(null);
+  }, [stagedValues]);
+  const [ctxMenu, setCtxMenu] = useState<{ pos: DOMRect; row: number; col: number } | null>(null);
+
+  // Reset transient focus state when the data shape changes.
+  useEffect(() => {
+    setActiveCell(null);
+    setEditingCell(null);
+    setCtxMenu(null);
+  }, [rows.length, columns.length, hiddenColumns.size]);
+
+  // Document-level Escape: cancels in-cell editing even when the editor input
+  // has lost focus, and closes the context menu when open.
+  useEffect(() => {
+    const editing = editingCell != null;
+    const menuOpen = ctxMenu != null;
+    if (!editing && !menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (editing) {
+        setEditingCell(null);
+        setActiveCell(null);
+      }
+      if (menuOpen) setCtxMenu(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [editingCell != null, ctxMenu != null]);
 
   // ── column widths ─────────────────────────────────────
 
@@ -138,42 +220,126 @@ export function VirtualDataGrid({
     anchorRect: DOMRect | null;
   } | null>(null);
 
+  // ── keyboard navigation ───────────────────────────────
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (editingCell) return;
+      if (!activeCell) return;
+
+      const keyLabel = e.key === "Tab" ? (e.shiftKey ? "Shift+Tab" : "Tab") : e.key;
+
+      if (keyLabel.startsWith("Arrow") || keyLabel === "Tab" || keyLabel === "Shift+Tab") {
+        e.preventDefault();
+        const next = nextCell(activeCell, keyLabel, rows.length, visibleColumns.length);
+        setActiveCell(next);
+        virtualizer.scrollToIndex(next.row);
+        return;
+      }
+
+      if (e.key === "Enter") {
+        const col = visibleColumns[activeCell.col];
+        if (col && isCellEditable(col, tabType, dbType, readOnly)) {
+          e.preventDefault();
+          setEditingCell(activeCell);
+        }
+        return;
+      }
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setActiveCell(null);
+        return;
+      }
+
+      if (e.key === "c" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        const col = visibleColumns[activeCell.col];
+        if (!col) return;
+        const ci = columns.findIndex((c) => c.name === col.name);
+        const value = rows[activeCell.row]?.[ci];
+        navigator.clipboard.writeText(String(value));
+      }
+    },
+    [activeCell, columns, dbType, editingCell, rows, tabType, visibleColumns, virtualizer],
+  );
+
   // ── cell renderer (shared between header sizing and body) ──
 
   const renderCell = useCallback(
-    (col: ColumnInfo, row: unknown[], _rowIndex: number) => {
+    (col: ColumnInfo, row: unknown[], rowIndex: number, colIndex: number) => {
       const ci = columns.findIndex((c) => c.name === col.name);
       const cell = ci >= 0 ? row[ci] : undefined;
-      const isNull = cell === null || cell === undefined;
+      const cellKey = `${rowIndex}:${col.name}`;
+      const stagedDefined = stagedValues ? cellKey in stagedValues : false;
+      const displayCell = stagedDefined
+        ? stagedValues![cellKey]
+        : cell;
+      const displayIsNull =
+        displayCell === null || displayCell === undefined;
+      const isNull = displayIsNull;
       const isFk = col.is_fk && col.fk_ref && !isNull;
       const isJson = !isNull && (col.data_type === "jsonb" || col.data_type === "json");
-      const jp = isJson ? jsonPreview(cell) : { label: "", isJson: false };
+      const jp = isJson ? jsonPreview(displayCell) : { label: "", isJson: false };
+      const editable = isCellEditable(col, tabType, dbType, readOnly);
+      const isActive = activeCell?.row === rowIndex && activeCell?.col === colIndex;
+      const isEditing = editingCell?.row === rowIndex && editingCell?.col === colIndex;
+      const isPending =
+        (pendingCell?.row === rowIndex && pendingCell?.col === colIndex) ||
+        pendingCellKey === cellKey ||
+        (pendingKeys ? cellKey in pendingKeys : false);
 
       const handleJsonClick = (e: React.MouseEvent) => {
         if (isJson) {
           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          setJsonPopover({ value: cell, anchorRect: rect });
+          setJsonPopover({ value: displayCell, anchorRect: rect });
         }
+      };
+
+      const commitEdit = (committed: string | null) => {
+        // oldData must be the DB value (the un-staged cell), so the queue's
+        // revert/display stays correct even after repeated edits of the same cell.
+        const dbValue = ci >= 0 ? row[ci] : undefined;
+        if (committed !== (dbValue === null || dbValue === undefined ? null : dbValue)) {
+          const locator = getLocator?.(row) ?? {};
+          onStageEdit?.(
+            cellToUpdateChange({
+              schema,
+              table,
+              primaryKey: locator,
+              oldData: { [col.name]: dbValue },
+              newData: { [col.name]: committed },
+            }) as {
+              type: "update";
+              schema: string;
+              table: string;
+              primaryKey: Record<string, unknown>;
+              oldData: Record<string, unknown>;
+              newData: Record<string, unknown>;
+            },
+          );
+        }
+        setPendingCellKey(cellKey);
+        setEditingCell(null);
       };
 
       return (
         <div
           key={col.name}
-          className={`px-3 py-2 font-heading text-xs truncate select-text border-r border-border self-stretch ${
+          className={`relative px-3 py-2 font-heading text-xs truncate select-text border-r border-border self-stretch ${
             isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""
-          } ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""}`}
-          role={isFk || isJson ? "button" : undefined}
-          tabIndex={isFk || isJson ? 0 : undefined}
+          } ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""} ${
+            isActive ? "bg-accent/10 ring-1 ring-inset ring-accent outline-none" : ""
+          }`}
+          role={isJson ? "button" : undefined}
+          tabIndex={isJson ? 0 : -1}
           onKeyDown={
-            isFk || isJson
+            isJson
               ? (e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    if (isFk) handleFkClick(col, cell, e as any);
-                    else if (isJson) {
-                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                      setJsonPopover({ value: cell, anchorRect: rect });
-                    }
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setJsonPopover({ value: cell, anchorRect: rect });
                   }
                 }
               : undefined
@@ -183,37 +349,128 @@ export function VirtualDataGrid({
             isNull
               ? "NULL"
               : isFk
-                ? `FK → ${col.fk_ref![0]}.${col.fk_ref![1]}: ${String(cell)}`
+                ? `FK → ${col.fk_ref![0]}.${col.fk_ref![1]}: ${String(displayCell)}`
                 : isJson
                   ? "Click to view JSON"
-                  : String(cell)
+                  : String(displayCell)
           }
-          onClick={
-            isFk
-              ? (e) => handleFkClick(col, cell, e)
-              : isJson
-                ? handleJsonClick
-                : undefined
-          }
+          onClick={(e) => {
+            setActiveCell({ row: rowIndex, col: colIndex });
+            if (isJson) handleJsonClick(e);
+          }}
+          onDoubleClick={() => {
+            if (editable) setEditingCell({ row: rowIndex, col: colIndex });
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            setCtxMenu({ pos: rect, row: rowIndex, col: colIndex });
+            setActiveCell({ row: rowIndex, col: colIndex });
+          }}
         >
-          {isNull ? (
+          {isEditing ? (
+            <div className="absolute inset-0 z-20" onClick={(e) => e.stopPropagation()}>
+              <CellEditor
+                initialValue={isNull ? "" : String(displayCell)}
+                dataType={col.data_type}
+                nullable={col.is_nullable}
+                enumValues={enumValues?.[col.name]}
+                fkOptions={fkOptions?.[col.name]}
+                fkPlaceholder={fkPlaceholders?.[col.name]}
+                onCommit={commitEdit}
+                onCancel={() => setEditingCell(null)}
+              />
+            </div>
+          ) : isNull ? (
             <span className="italic text-text-muted">NULL</span>
           ) : isJson ? (
             <span className="inline-flex items-center gap-0.5">
               <Braces size={10} className="shrink-0" />
               {jp.label}
             </span>
+          ) : isFk && displayCell !== null && displayCell !== undefined ? (
+            <span className="inline-flex items-center gap-1 min-w-0">
+              <button
+                type="button"
+                aria-label="Open FK reference"
+                title={`FK → ${col.fk_ref![0]}.${col.fk_ref![1]}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  handleFkClick(col, displayCell, e);
+                }}
+                className="shrink-0 text-text-muted hover:text-accent"
+              >
+                <ArrowUpRight size={11} />
+              </button>
+              <span className="truncate">{String(displayCell)}</span>
+            </span>
           ) : (
-            String(cell)
+            String(displayCell)
+          )}
+          {isPending && (
+            <span
+              className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400"
+              data-testid="pending-edit-dot"
+            />
           )}
         </div>
       );
     },
-    [columns, getWidth, handleFkClick],
+    [activeCell, columns, dbType, editingCell, enumValues, fkOptions, fkPlaceholders, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth, pendingCell, stagedValues, pendingKeys, pendingCellKey],
+  );
+
+  // ── context menu helpers ──────────────────────────────
+
+  const ctxCol = ctxMenu ? visibleColumns[ctxMenu.col] : null;
+  const copyCellValue = useCallback(
+    async (row: number, col: number) => {
+      const column = visibleColumns[col];
+      if (!column) return;
+      const ci = columns.findIndex((c) => c.name === column.name);
+      const value = rows[row]?.[ci];
+      await navigator.clipboard.writeText(String(value));
+    },
+    [columns, rows, visibleColumns],
+  );
+
+  const stageNull = useCallback(
+    (row: number, col: number) => {
+      const column = visibleColumns[col];
+      if (!column || !isCellEditable(column, tabType, dbType, readOnly)) return;
+      const ci = columns.findIndex((c) => c.name === column.name);
+      const value = rows[row]?.[ci];
+      if (value === null || value === undefined) return;
+      const locator = getLocator?.(rows[row]) ?? {};
+      onStageEdit?.(
+        cellToUpdateChange({
+          schema,
+          table,
+          primaryKey: locator,
+          oldData: { [column.name]: value },
+          newData: { [column.name]: null },
+        }) as {
+          type: "update";
+          schema: string;
+          table: string;
+          primaryKey: Record<string, unknown>;
+          oldData: Record<string, unknown>;
+          newData: Record<string, unknown>;
+        },
+      );
+    },
+    [columns, dbType, getLocator, onStageEdit, readOnly, rows, schema, table, tabType, visibleColumns],
   );
 
   return (
-    <div ref={parentRef} className="overflow-auto h-full" style={{ overscrollBehavior: "none" }}>
+    <div
+      ref={parentRef}
+      className="overflow-auto h-full outline-none"
+      style={{ overscrollBehavior: "none" }}
+      tabIndex={-1}
+      role="grid"
+      onKeyDown={handleKeyDown}
+    >
       {/* ── sticky header (hidden when no columns/table open) ── */}
       {hasColumns && (
         <div className="sticky top-0 z-10">
@@ -285,7 +542,10 @@ export function VirtualDataGrid({
                 }}
               >
                 {hasColumns && (
-                  <div style={{ width: 40, minWidth: 40 }} className="flex items-center justify-center border-r border-border self-stretch">
+                  <div
+                    style={{ width: 40, minWidth: 40 }}
+                    className="flex items-center justify-center border-r border-border self-stretch"
+                  >
                     <input
                       type="checkbox"
                       checked={isSelected}
@@ -294,7 +554,7 @@ export function VirtualDataGrid({
                     />
                   </div>
                 )}
-                {visibleColumns.map((col) => renderCell(col, row, virtualRow.index))}
+                {visibleColumns.map((col, i) => renderCell(col, row, virtualRow.index, i))}
               </div>
             );
           })}
@@ -320,6 +580,69 @@ export function VirtualDataGrid({
           anchorRect={jsonPopover.anchorRect}
           onClose={() => setJsonPopover(null)}
         />
+      )}
+      {/* Cell context menu */}
+      {ctxMenu && ctxCol && (
+        <>
+          {/* Click-outside-to-close backdrop (below the z-50 menu) */}
+          <div
+            className="fixed inset-0 z-40"
+            data-testid="ctx-backdrop"
+            onClick={() => setCtxMenu(null)}
+          />
+          <CellContextMenu
+            anchorRect={ctxMenu.pos}
+            editable={isCellEditable(ctxCol, tabType, dbType, readOnly)}
+            isJson={ctxCol.data_type === "jsonb" || ctxCol.data_type === "json"}
+            isFk={ctxCol.is_fk && ctxCol.fk_ref != null}
+            nullable={ctxCol.is_nullable}
+            onCopy={() => {
+              void copyCellValue(ctxMenu.row, ctxMenu.col);
+              setCtxMenu(null);
+            }}
+            onCopyJson={() => {
+              void copyCellValue(ctxMenu.row, ctxMenu.col);
+              setCtxMenu(null);
+            }}
+            onViewRow={() => {
+              onOpenRowDetail?.(ctxMenu.row);
+              setCtxMenu(null);
+            }}
+            onSelectRow={() => {
+              onToggleRow(ctxMenu.row);
+              setCtxMenu(null);
+            }}
+            onEdit={() => {
+              setActiveCell({ row: ctxMenu.row, col: ctxMenu.col });
+              setEditingCell({ row: ctxMenu.row, col: ctxMenu.col });
+              setCtxMenu(null);
+            }}
+            onSetNull={() => {
+              stageNull(ctxMenu.row, ctxMenu.col);
+              setCtxMenu(null);
+            }}
+            onOpenFk={() => {
+              if (ctxCol?.is_fk && ctxCol.fk_ref) {
+                // Resolve the column index into `rows` (ctxMenu.col indexes visibleColumns,
+                // which can differ when columns are hidden).
+                const ci = columns.findIndex((c) => c.name === ctxCol.name);
+                const cellValue = rows[ctxMenu.row]?.[ci];
+                if (cellValue !== null && cellValue !== undefined) {
+                  setFkPreview({
+                    connectionId,
+                    schema,
+                    table: ctxCol.fk_ref[0],
+                    column: ctxCol.fk_ref[1],
+                    value: String(cellValue),
+                    anchorRect: ctxMenu.pos,
+                  });
+                }
+              }
+              setCtxMenu(null);
+            }}
+            onClose={() => setCtxMenu(null)}
+          />
+        </>
       )}
     </div>
   );

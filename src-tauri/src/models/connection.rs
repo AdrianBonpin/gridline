@@ -12,6 +12,7 @@ pub struct Connection {
     pub folder_id: Option<String>,
     pub keychain_ref: Option<String>,
     pub environment: Option<String>,
+    pub favorite: bool,
     pub ssh_host: Option<String>,
     pub ssh_port: Option<i64>,
     pub ssh_user: Option<String>,
@@ -118,6 +119,7 @@ mod tests {
             folder_id: Some("folder".to_string()),
             keychain_ref: Some("keychain-ref".to_string()),
             environment: None,
+            favorite: false,
             tag_ids: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
@@ -135,5 +137,21 @@ mod tests {
 
         let json = serde_json::to_string(&conn).unwrap();
         assert!(!json.contains("password"), "Connection JSON should not contain password field");
+    }
+
+    #[test]
+    fn connection_serializes_favorite_field() {
+        let conn = Connection {
+            id: "x".into(), name: "n".into(), db_type: "postgresql".into(),
+            host: "h".into(), port: Some(5432), username: None, database: None,
+            folder_id: None, keychain_ref: None, environment: None,
+            ssh_host: None, ssh_port: None, ssh_user: None, ssh_auth_method: None,
+            ssh_private_key_path: None, ssl_mode: None, ssl_ca_path: None,
+            ssl_cert_path: None, ssl_key_path: None, tag_ids: vec![],
+            favorite: true,
+            created_at: "2024-01-01T00:00:00Z".into(), updated_at: "2024-01-01T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&conn).unwrap();
+        assert!(json.contains("\"favorite\":true"));
     }
 }

@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { DbViewerScreen } from "./DbViewerScreen";
+import {
+    DbViewerScreen,
+    deriveStagedValues,
+    derivePendingCellKeys,
+    pickDisplayColumn,
+} from "./DbViewerScreen";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useUiStore } from "../../stores/uiStore";
 import * as commands from "../../lib/commands";
 
 vi.mock("../../hooks/useDbConnection", () => ({
@@ -12,9 +18,17 @@ vi.mock("../../hooks/useDbConnection", () => ({
 }));
 
 vi.mock("@tanstack/react-virtual", () => ({
-    useVirtualizer: () => ({
-        getVirtualItems: () => [],
-        getTotalSize: () => 0,
+    useVirtualizer: ({ count }: any) => ({
+        getVirtualItems: () =>
+            count > 0
+                ? Array.from({ length: count }, (_, i) => ({
+                      key: i,
+                      index: i,
+                      start: i * 36,
+                      size: 36,
+                  }))
+                : [],
+        getTotalSize: () => count * 36,
         measureElement: () => {},
     }),
 }));
@@ -64,6 +78,8 @@ const mockQueryResult = {
             is_fk: false,
             fk_ref: null,
             default_value: null,
+            editable: true,
+            is_generated: false,
         },
     ],
     rows: [[1]],
@@ -97,6 +113,126 @@ describe("DbViewerScreen", () => {
             />,
         );
         expect(screen.getByLabelText(/home/i)).toBeInTheDocument();
+    });
+
+    it("full flow: editing a cell shows the staged value + pending dot in the grid", async () => {
+        const store = useDbViewerStore.getState();
+        store.openTab("public", "users");
+        const tabId = useDbViewerStore.getState().activeTabId!;
+        store.setTabData(tabId, {
+            columns: [
+                { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+                { name: "name", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+            ],
+            rows: [[1, "Alice"]],
+            total_rows: 1,
+            page: 1,
+            page_size: 50,
+        } as any);
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        const cell = await waitFor(() => screen.getByText("Alice"));
+        fireEvent.click(cell);
+        fireEvent.keyDown(cell, { key: "Enter" });
+        // the editor's textarea is the last textbox (toolbar filter input is first)
+        const textboxes = screen.getAllByRole("textbox");
+        const input = textboxes[textboxes.length - 1]!;
+        fireEvent.change(input, { target: { value: "Alicia" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        // staged change carries the correct table (was the root-cause bug)
+        const staged = useDbViewerStore.getState().changesQueue[0];
+        expect(staged?.table).toBe("users");
+        expect(staged?.schema).toBe("public");
+        // grid cell shows the optimistic value + the pending dot (2nd match is the queue panel diff)
+        await waitFor(() => {
+            expect(screen.getAllByText("Alicia").length).toBeGreaterThanOrEqual(2);
+        });
+        expect(screen.getByTestId("pending-edit-dot")).toBeInTheDocument();
+        // committing the change clears the pending dot but keeps the value until refetch
+        act(() => {
+            useDbViewerStore
+                .getState()
+                .markChangeCommitted(
+                    useDbViewerStore.getState().changesQueue[0].id,
+                );
+        });
+        await waitFor(() => {
+            expect(screen.queryByTestId("pending-edit-dot")).toBeNull();
+        });
+        expect(screen.getAllByText("Alicia").length).toBeGreaterThanOrEqual(2);
+        // clearing the queue clears the optimistic display
+        act(() => {
+            useDbViewerStore.getState().clearChanges();
+        });
+        await waitFor(() => {
+            expect(screen.getByText("Alice")).toBeInTheDocument();
+        });
+        expect(screen.queryByText("Alicia")).toBeNull();
+    });
+
+    it("deriveStagedValues maps queue updates to optimistic cell values", () => {
+        const queue = [
+            {
+                id: "ch-1", type: "update" as const, sql: "", schema: "public", table: "users",
+                primaryKey: { id: 1 }, oldData: { name: "Alice" }, newData: { name: "Alicia" },
+                status: "pending" as const, createdAt: 0,
+            },
+        ];
+        const rows: unknown[][] = [[1, "Alice"], [2, "Bob"]];
+        const loc = (r: unknown[]) => ({ id: r[0] });
+        expect(deriveStagedValues(queue as any, "public", "users", rows, loc)).toEqual({
+            "0:name": "Alicia",
+        });
+    });
+
+    it("deriveStagedValues ignores failed/other-table changes and handles NULL", () => {
+        const queue = [
+            {
+                id: "ch-1", type: "update" as const, sql: "", schema: "public", table: "users",
+                primaryKey: { id: 1 }, oldData: { name: "Alice" }, newData: { name: null },
+                status: "pending" as const, createdAt: 0,
+            },
+            {
+                id: "ch-2", type: "update" as const, sql: "", schema: "public", table: "orders",
+                primaryKey: { id: 1 }, oldData: { x: 1 }, newData: { x: 2 },
+                status: "pending" as const, createdAt: 0,
+            },
+            {
+                id: "ch-3", type: "update" as const, sql: "", schema: "public", table: "users",
+                primaryKey: { id: 1 }, oldData: { name: "Alice" }, newData: { name: "X" },
+                status: "failed" as const, error: "boom", createdAt: 0,
+            },
+        ];
+        const rows: unknown[][] = [[1, "Alice"]];
+        const loc = (r: unknown[]) => ({ id: r[0] });
+        expect(deriveStagedValues(queue as any, "public", "users", rows, loc)).toEqual({
+            "0:name": null,
+        });
+    });
+
+    it("derivePendingCellKeys only includes pending updates (dot clears on commit)", () => {
+        const queue = [
+            {
+                id: "ch-1", type: "update" as const, sql: "", schema: "public", table: "users",
+                primaryKey: { id: 1 }, oldData: { name: "Alice" }, newData: { name: "Alicia" },
+                status: "pending" as const, createdAt: 0,
+            },
+            {
+                id: "ch-2", type: "update" as const, sql: "", schema: "public", table: "users",
+                primaryKey: { id: 2 }, oldData: { name: "Bob" }, newData: { name: "Bobby" },
+                status: "committed" as const, createdAt: 0,
+            },
+        ];
+        const rows: unknown[][] = [[1, "Alice"], [2, "Bob"]];
+        const loc = (r: unknown[]) => ({ id: r[0] });
+        expect(derivePendingCellKeys(queue as any, "public", "users", rows, loc)).toEqual({
+            "0:name": true,
+        });
     });
 
     it("renders the New Query button", () => {
@@ -458,5 +594,231 @@ describe("DbViewerScreen", () => {
                 screen.queryByTestId("refresh-pulse"),
             ).not.toBeInTheDocument(),
         );
+    });
+
+    it("disables Insert Row for a materialized-view tab", async () => {
+        useDbViewerStore.setState({
+            tables: [
+                { name: "mat_users", schema: "public", table_type: "MATERIALIZED VIEW" },
+            ],
+            tabs: [
+                {
+                    id: "tab-mv",
+                    schema: "public",
+                    table: "mat_users",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    data: mockQueryResult,
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "table",
+                },
+            ],
+            activeTabId: "tab-mv",
+        });
+
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+
+        await waitFor(() =>
+            expect(screen.queryByLabelText(/insert row/i)).toBeNull(),
+        );
+    });
+
+    it("refetches the active tab after a successful Commit All", async () => {
+        useUiStore.setState({ activeConnectionId: "c1" });
+        vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+        const getTableData = vi
+            .spyOn(commands, "getTableData")
+            .mockResolvedValue({
+                columns: mockQueryResult.columns,
+                rows: [[2]],
+                total_rows: 1,
+                page: 1,
+                page_size: 50,
+            } as any);
+
+        useDbViewerStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    schema: "public",
+                    table: "users",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    data: mockQueryResult,
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "table",
+                },
+            ],
+            activeTabId: "tab-1",
+            changesQueue: [],
+            changesPanelExpanded: true,
+        });
+        useDbViewerStore.getState().addChange({
+            type: "insert",
+            schema: "public",
+            table: "users",
+            newData: { id: 2, name: "Alice" },
+            description: "Insert row into users",
+        });
+
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
+
+        await waitFor(() => expect(getTableData).toHaveBeenCalledTimes(1));
+    });
+
+    it("fetches enum labels and FK reference rows for the active table tab", async () => {
+        const getEnums = vi
+            .spyOn(commands, "getEnums")
+            .mockResolvedValue([
+                {
+                    name: "user_role",
+                    schema: "public",
+                    labels: ["admin", "user"],
+                },
+            ]);
+        const getTableData = vi
+            .spyOn(commands, "getTableData")
+            .mockResolvedValue({
+                columns: [
+                    {
+                        name: "id",
+                        data_type: "integer",
+                        is_nullable: false,
+                        is_pk: true,
+                        is_fk: false,
+                        fk_ref: null,
+                        default_value: null,
+                        editable: false,
+                        is_generated: false,
+                    },
+                ],
+                rows: [[1], [2]],
+                total_rows: 2,
+                page: 1,
+                page_size: 50,
+            } as any);
+
+        useDbViewerStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    schema: "public",
+                    table: "users",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    data: {
+                        columns: [
+                            {
+                                name: "id",
+                                data_type: "integer",
+                                is_nullable: false,
+                                is_pk: true,
+                                is_fk: false,
+                                fk_ref: null,
+                                default_value: null,
+                                editable: false,
+                                is_generated: false,
+                            },
+                            {
+                                name: "user_id",
+                                data_type: "integer",
+                                is_nullable: true,
+                                is_pk: false,
+                                is_fk: true,
+                                fk_ref: ["users", "id"],
+                                default_value: null,
+                                editable: true,
+                                is_generated: false,
+                            },
+                            {
+                                name: "role",
+                                data_type: "user_role",
+                                is_nullable: true,
+                                is_pk: false,
+                                is_fk: false,
+                                fk_ref: null,
+                                default_value: null,
+                                editable: true,
+                                is_generated: false,
+                            },
+                        ],
+                        rows: [[1, 2, "admin"]],
+                        total_rows: 1,
+                        page: 1,
+                        page_size: 50,
+                    } as any,
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "table",
+                },
+            ],
+            activeTabId: "tab-1",
+        });
+
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+
+        // Enum labels are fetched for the tab's schema (cached per schema).
+        await waitFor(() =>
+            expect(getEnums).toHaveBeenCalledWith("c1", "public"),
+        );
+        // FK reference rows are fetched from the referenced table (page 1, 50).
+        await waitFor(() =>
+            expect(getTableData).toHaveBeenCalledWith(
+                "c1",
+                "public",
+                "users",
+                1,
+                50,
+            ),
+        );
+    });
+
+    it("pickDisplayColumn prefers name-like columns over the ref column", () => {
+        const cols = [
+            { name: "id", data_type: "integer" },
+            { name: "email", data_type: "text" },
+            { name: "name", data_type: "text" },
+        ];
+        expect(pickDisplayColumn(cols, "id")).toBe("name");
+        expect(pickDisplayColumn(cols, "id", "email")).toBe("email");
+    });
+
+    it("pickDisplayColumn falls back to the ref column when nothing is name-like", () => {
+        const cols = [{ name: "id", data_type: "integer" }];
+        expect(pickDisplayColumn(cols, "id")).toBe("id");
     });
 });

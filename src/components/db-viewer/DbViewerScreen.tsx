@@ -16,6 +16,7 @@ import { TableTree } from "./TableTree";
 import { ObjectExplorerPage } from "./ObjectExplorerPage";
 import { TabBar } from "./TabBar";
 import { VirtualDataGrid } from "../grid/VirtualDataGrid";
+import { RowDetailDrawer } from "../grid/RowDetailDrawer";
 import { TableControls } from "./TableControls";
 import { EditConnectionModal } from "./EditConnectionModal";
 import { useDbConnection } from "../../hooks/useDbConnection";
@@ -29,6 +30,124 @@ import { SchemaVisualizerPage } from "./SchemaVisualizerPage";
 import { QueriesPanel } from "../queries/QueriesPanel";
 import { useQueryStore } from "../../stores/queryStore";
 import * as cmd from "../../lib/commands";
+import type { EnumInfo } from "../../lib/types";
+import type { FkOption } from "../grid/CellEditor";
+import type { QueueItem } from "../../stores/dbViewerStore";
+
+/**
+ * Derive optimistic staged cell values from the changes queue for a table
+ * tab, keyed `${rowIndex}:${colName}` → the staged value (null = NULL).
+ * Rows are matched to queue items via the row locator (PK or ctid/rowid).
+ * Pending + committed updates count (survive until refetch); Clear All
+ * empties the queue so the optimistic display vanishes.
+ */
+export function deriveStagedValues(
+    changesQueue: QueueItem[],
+    schema: string,
+    table: string,
+    rows: unknown[][],
+    getLocator: (row: unknown[]) => Record<string, unknown>,
+): Record<string, string | null> {
+    const map: Record<string, string | null> = {};
+    const updates = changesQueue.filter(
+        (c) =>
+            c.type === "update" &&
+            (c.status === "pending" || c.status === "committed") &&
+            c.schema === schema &&
+            c.table === table &&
+            c.primaryKey &&
+            c.newData,
+    );
+    if (updates.length === 0) return map;
+    rows.forEach((row, rowIdx) => {
+        const loc = getLocator(row);
+        for (const c of updates) {
+            const pk = c.primaryKey!;
+            const matches = Object.entries(pk).every(
+                ([k, v]) => String(loc[k]) === String(v),
+            );
+            if (!matches) continue;
+            const colName = Object.keys(c.newData!)[0];
+            if (!colName) continue;
+            map[`${rowIdx}:${colName}`] =
+                (c.newData![colName] as string | null) ?? null;
+        }
+    });
+    return map;
+}
+
+/**
+ * Keys of cells with a PENDING update only — drives the amber pending dot.
+ * Once a change is committed the dot clears even though the optimistic value
+ * (from `deriveStagedValues`) stays until the refetch lands.
+ */
+export function derivePendingCellKeys(
+    changesQueue: QueueItem[],
+    schema: string,
+    table: string,
+    rows: unknown[][],
+    getLocator: (row: unknown[]) => Record<string, unknown>,
+): Record<string, boolean> {
+    const keys: Record<string, boolean> = {};
+    const updates = changesQueue.filter(
+        (c) =>
+            c.type === "update" &&
+            c.status === "pending" &&
+            c.schema === schema &&
+            c.table === table &&
+            c.primaryKey &&
+            c.newData,
+    );
+    if (updates.length === 0) return keys;
+    rows.forEach((row, rowIdx) => {
+        const loc = getLocator(row);
+        for (const c of updates) {
+            const pk = c.primaryKey!;
+            const matches = Object.entries(pk).every(
+                ([k, v]) => String(loc[k]) === String(v),
+            );
+            if (!matches) continue;
+            const colName = Object.keys(c.newData!)[0];
+            if (!colName) continue;
+            keys[`${rowIdx}:${colName}`] = true;
+        }
+    });
+    return keys;
+}
+
+/**
+ * Pick a human-friendly display column for FK option labels from the
+ * referenced table's columns: prefer name-like columns, else the first
+ * text-ish column that isn't the ref column, else the ref column itself.
+ */
+export function pickDisplayColumn(
+    columns: { name: string; data_type: string }[],
+    refCol: string,
+    preferred?: string,
+): string {
+    if (preferred && columns.some((c) => c.name === preferred)) return preferred;
+    const nameLike = [
+        "name",
+        "title",
+        "label",
+        "username",
+        "email",
+        "full_name",
+        "display_name",
+        "first_name",
+        "last_name",
+        "description",
+    ];
+    for (const n of nameLike) {
+        if (columns.some((c) => c.name === n)) return n;
+    }
+    const textish = columns.find(
+        (c) =>
+            c.name !== refCol &&
+            /text|char|name|uuid/i.test(c.data_type),
+    );
+    return textish ? textish.name : refCol;
+}
 
 export interface DbViewerScreenProps {
     connectionId: string;
@@ -48,6 +167,7 @@ export function DbViewerScreen({
     const [queriesPanelWidth, setQueriesPanelWidth] = useState(280);
     const [searchQuery, setSearchQuery] = useState("");
     const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+    const [rowDetailIdx, setRowDetailIdx] = useState<number | null>(null);
     const [editModalOpen, setEditModalOpen] = useState(false);
     const [destructiveQuery, setDestructiveQuery] = useState<string | null>(null);
     const connections = useConnectionStore((s) => s.connections);
@@ -84,6 +204,19 @@ export function DbViewerScreen({
     const filterRules = activeTab?.filterRules ?? [];
     const sortRules = activeTab?.sortRules ?? [];
     const hiddenColumns = new Set(activeTab?.hiddenColumns ?? []);
+    const changesQueue = useDbViewerStore((s) => s.changesQueue);
+    const tables = useDbViewerStore((s) => s.tables);
+    const stageCellEdit = useDbViewerStore((s) => s.stageCellEdit);
+
+    const isMatview =
+        activeTab && activeTab.tabType === "table"
+            ? tables.some(
+                  (t) =>
+                      t.schema === activeTab.schema &&
+                      t.name === activeTab.table &&
+                      t.table_type === "MATERIALIZED VIEW",
+              )
+            : false;
 
     const setTabData = useDbViewerStore((s) => s.setTabData);
     const setTabError = useDbViewerStore((s) => s.setTabError);
@@ -95,6 +228,18 @@ export function DbViewerScreen({
     const currentSchema = useDbViewerStore((s) => s.currentSchema);
     const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
     const fetchingRef = useRef<Set<string>>(new Set());
+
+    // CellEditor options for the active table tab: PG enum labels (cached per
+    // connection+schema) + FK reference rows (page 1, 50 per FK column).
+    const [editorOptions, setEditorOptions] = useState<{
+        enums: Record<string, string[]>;
+        fks: Record<string, FkOption[]>;
+        fkPlaceholders: Record<string, string>;
+    } | null>(null);
+    const enumCacheRef = useRef<Map<string, EnumInfo[]>>(new Map());
+    // Key identifying the (connection, tab, schema) the options were fetched for;
+    // guards against refetching on every render while data updates in place.
+    const editorOptionsKeyRef = useRef<string>("");
 
     const fetchData = useCallback(
         async (tab: NonNullable<typeof activeTab>) => {
@@ -138,6 +283,31 @@ export function DbViewerScreen({
             useQueryStore.getState().invalidateHistory(connectionId);
         }
     }
+
+    const handleStageEdit = useCallback(
+        (payload: {
+            type: "update";
+            schema: string;
+            table: string;
+            primaryKey: Record<string, unknown>;
+            oldData: Record<string, unknown>;
+            newData: Record<string, unknown>;
+        }) => {
+            if (!activeTab) return;
+            const { type: _, ...rest } = payload;
+            stageCellEdit({ tabId: activeTab.id, ...rest });
+        },
+        [activeTab, stageCellEdit],
+    );
+
+    const handleOpenRowDetail = useCallback((rowIndex: number) => {
+        setRowDetailIdx(rowIndex);
+    }, []);
+
+    const handleCommitted = useCallback(() => {
+        if (!activeTab) return;
+        fetchData(activeTab);
+    }, [activeTab, fetchData]);
 
     // Read the active tab from the store directly so the Monaco keybinding action
     // (which keeps the first onRun closure) always sees the latest query text.
@@ -242,6 +412,108 @@ export function DbViewerScreen({
         if (activeTab.error) return;
         fetchData(activeTab);
     }, [activeTab, fetchData]);
+
+    // Feed the grid's CellEditor with enum labels + FK reference rows for the
+    // active table tab. Fetched once per tab/schema (enums additionally cached
+    // per connection+schema across tabs); a failed fetch for one FK column is
+    // skipped without breaking the tab. Never refetches on in-place data updates.
+    useEffect(() => {
+        const key =
+            activeTab && activeTab.tabType === "table" && activeTab.data
+                ? `${connectionId}:${activeTab.id}:${activeTab.schema}`
+                : "";
+        if (key === editorOptionsKeyRef.current) return;
+        editorOptionsKeyRef.current = key;
+        if (!key || !activeTab || !activeTab.data) {
+            setEditorOptions(null);
+            return;
+        }
+        const cols = activeTab.data.columns;
+        const tab = activeTab;
+        void (async () => {
+            const enums: Record<string, string[]> = {};
+            const fks: Record<string, FkOption[]> = {};
+            const fkPlaceholders: Record<string, string> = {};
+
+            // PG enums: fetched once per connection+schema, reused across tabs.
+            const cacheKey = `${connectionId}:${tab.schema}`;
+            let enumList = enumCacheRef.current.get(cacheKey);
+            if (!enumList) {
+                try {
+                    enumList = await cmd.getEnums(connectionId, tab.schema);
+                    enumCacheRef.current.set(cacheKey, enumList);
+                } catch {
+                    enumList = [];
+                }
+            }
+            for (const col of cols) {
+                const match = enumList.find((e) => e.name === col.data_type);
+                if (match) enums[col.name] = match.labels;
+            }
+
+            // FK options: referenced rows (page 1, 50) per FK column.
+            const fkCols = cols.filter((c) => c.is_fk && c.fk_ref);
+            await Promise.all(
+                fkCols.map(async (col) => {
+                    const [refTable, refCol] = col.fk_ref!;
+                    try {
+                        const result = await cmd.getTableData(
+                            connectionId,
+                            tab.schema,
+                            refTable,
+                            1,
+                            50,
+                        );
+                        const refIdx = result.columns.findIndex(
+                            (c) => c.name === refCol,
+                        );
+                        if (refIdx >= 0) {
+                            const displayCol = pickDisplayColumn(
+                                result.columns,
+                                refCol,
+                            );
+                            const displayIdx =
+                                displayCol === refCol
+                                    ? refIdx
+                                    : result.columns.findIndex(
+                                          (c) => c.name === displayCol,
+                                      );
+                            fks[col.name] = result.rows.map((row) => {
+                                const refValue = String(row[refIdx]);
+                                const dispValue =
+                                    displayIdx >= 0 && displayIdx !== refIdx
+                                        ? String(row[displayIdx])
+                                        : "";
+                                return {
+                                    value: refValue,
+                                    label:
+                                        dispValue && dispValue !== refValue
+                                            ? `${refValue} — ${dispValue}`
+                                            : refValue,
+                                    // Referenced-row cells for the FK-reference-style
+                                    // one-row dropdown (first 5 columns).
+                                    cells: result.columns
+                                        .slice(0, 5)
+                                        .map((c, i) => ({
+                                            name: c.name,
+                                            value: String(row[i] ?? ""),
+                                        })),
+                                };
+                            });
+                            fkPlaceholders[col.name] = `Search ${refTable}…`;
+                        }
+                    } catch {
+                        // Skip this FK column; the cell keeps the plain editor.
+                    }
+                }),
+            );
+
+            // Apply only if no newer fetch superseded this one (tab/schema switched).
+            if (editorOptionsKeyRef.current === key) {
+                setEditorOptions({ enums, fks, fkPlaceholders });
+            }
+        })();
+    }, [activeTab, connectionId]);
 
     // Smart default sort: apply once when data first loads for a tab
     useEffect(() => {
@@ -630,9 +902,48 @@ const onQueriesPanelResizeStart = useCallback(
     const activeTable = activeTab?.table ?? "";
 
     function renderQueryWorkspace() {
+        const getLocator = (row: unknown[]) => {
+            const pkCol = columns.find((c) => c.is_pk);
+            if (pkCol) {
+                const pkIndex = columns.findIndex(
+                    (c) => c.name === pkCol.name,
+                );
+                return { [pkCol.name]: row[pkIndex] };
+            }
+            const dbType = currentConnection?.db_type ?? "postgresql";
+            const locatorIndex = columns.length;
+            if (dbType === "sqlite") {
+                return { rowid: row[locatorIndex] };
+            }
+            return { ctid: row[locatorIndex] };
+        };
+
+        // Staged cell values derived from the changes queue (single source of
+        // truth): keyed `${rowIndex}:${colName}` → optimistic value. Pending +
+        // committed updates survive until refetch; Clear All empties the queue
+        // so the optimistic display and pending dots vanish immediately.
+        const stagedValues = activeTab?.data
+            ? deriveStagedValues(
+                  changesQueue,
+                  activeTab.schema,
+                  activeTab.table,
+                  activeTab.data.rows,
+                  getLocator,
+              )
+            : {};
+        const pendingKeys = activeTab?.data
+            ? derivePendingCellKeys(
+                  changesQueue,
+                  activeTab.schema,
+                  activeTab.table,
+                  activeTab.data.rows,
+                  getLocator,
+              )
+            : {};
+
         return (
                             <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
-                                <TabBar />
+                                <TabBar onCommitted={handleCommitted} />
                                 {!activeTab ? (
                                     <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
                                         {currentView === "queries" ? (
@@ -794,16 +1105,29 @@ const onQueriesPanelResizeStart = useCallback(
                                                                     )
                                                                 }
                                                                 variant="query"
+                                                                isMatview={isMatview}
                                                             />
                                                         )}
                                                         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                                                 <VirtualDataGrid
                                                     connectionId={connectionId}
                                                     schema={activeSchema}
+                                                    table={activeTable}
                                                     rows={processedRows}
                                                     columns={columns}
                                                     hiddenColumns={hiddenColumns}
                                                     selectedRows={selectedRows}
+                                                    dbType={currentConnection?.db_type ?? "postgresql"}
+                                                    tabType={activeTab?.tabType ?? "table"}
+                                                    getLocator={getLocator}
+                                                    onStageEdit={isMatview ? undefined : handleStageEdit}
+                                                    onOpenRowDetail={handleOpenRowDetail}
+                                                    readOnly={isMatview}
+                                                    enumValues={editorOptions?.enums}
+                                                    fkOptions={editorOptions?.fks}
+                                                    fkPlaceholders={editorOptions?.fkPlaceholders}
+                                                    stagedValues={stagedValues}
+                                                    pendingKeys={pendingKeys}
                                                     onToggleRow={(rowIndex) => {
                                                         setSelectedRows(
                                                             (prev) => {
@@ -934,16 +1258,29 @@ const onQueriesPanelResizeStart = useCallback(
                                                 onClearSelection={() =>
                                                     setSelectedRows(new Set())
                                                 }
+                                                isMatview={isMatview}
                                             />
                                         )}
                                         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                                             <VirtualDataGrid
                                                 connectionId={connectionId}
                                                 schema={activeSchema}
+                                                table={activeTable}
                                                 rows={processedRows}
                                                 columns={columns}
                                                 hiddenColumns={hiddenColumns}
                                                 selectedRows={selectedRows}
+                                                dbType={currentConnection?.db_type ?? "postgresql"}
+                                                tabType={activeTab?.tabType ?? "table"}
+                                                getLocator={getLocator}
+                                                onStageEdit={isMatview ? undefined : handleStageEdit}
+                                                onOpenRowDetail={handleOpenRowDetail}
+                                                readOnly={isMatview}
+                                                enumValues={editorOptions?.enums}
+                                                fkOptions={editorOptions?.fks}
+                                                fkPlaceholders={editorOptions?.fkPlaceholders}
+                                                stagedValues={stagedValues}
+                                                pendingKeys={pendingKeys}
                                                 onToggleRow={(rowIndex) => {
                                                     setSelectedRows((prev) => {
                                                         const next = new Set(
@@ -978,6 +1315,16 @@ const onQueriesPanelResizeStart = useCallback(
                                         </div>
                                     </>
                                 )}
+                            {rowDetailIdx !== null && activeTab?.data && (
+                                <RowDetailDrawer
+                                    columns={activeTab.data.columns}
+                                    row={activeTab.data.rows[rowDetailIdx]}
+                                    onClose={() => setRowDetailIdx(null)}
+                                    onCopy={(value) =>
+                                        navigator.clipboard.writeText(value).catch(() => {})
+                                    }
+                                />
+                            )}
                             </div>
         );
     }

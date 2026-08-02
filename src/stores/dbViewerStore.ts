@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo } from "../lib/types";
+import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, IndexInfo, ConstraintInfo } from "../lib/types";
 import { getDatabases, getSchemas, getTables } from "../lib/commands";
 
 // ─── Local types ────────────────────────────────────────────────
@@ -96,6 +96,8 @@ interface DbViewerState {
   sequences: SequenceInfo[] | null;
   enums: EnumInfo[] | null;
   extensions: ExtensionInfo[] | null;
+  indexes: IndexInfo[] | null;
+  constraints: ConstraintInfo[] | null;
 
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
@@ -141,6 +143,17 @@ interface DbViewerState {
   setSequences: (sequences: SequenceInfo[]) => void;
   setEnums: (enums: EnumInfo[]) => void;
   setExtensions: (extensions: ExtensionInfo[]) => void;
+  setIndexes: (indexes: IndexInfo[]) => void;
+  setConstraints: (constraints: ConstraintInfo[]) => void;
+  stageCellEdit: (input: {
+    tabId: string;
+    schema: string;
+    table: string;
+    primaryKey: Record<string, unknown>;
+    oldData: Record<string, unknown>;
+    newData: Record<string, unknown>;
+    description?: string;
+  }) => void;
   populate: (
     databases: string[],
     schemas: string[],
@@ -168,6 +181,8 @@ const initialState = {
   sequences: null as SequenceInfo[] | null,
   enums: null as EnumInfo[] | null,
   extensions: null as ExtensionInfo[] | null,
+  indexes: null as IndexInfo[] | null,
+  constraints: null as ConstraintInfo[] | null,
 };
 
 // ─── Store ──────────────────────────────────────────────────────
@@ -400,6 +415,48 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setSequences: (sequences) => set({ sequences }),
   setEnums: (enums) => set({ enums }),
   setExtensions: (extensions) => set({ extensions }),
+  setIndexes: (indexes) => set({ indexes }),
+  setConstraints: (constraints) => set({ constraints }),
+
+  stageCellEdit: (input) => {
+    // Re-staging the same cell replaces the existing pending entry (keeps the
+    // original oldData so revert restores the DB value) instead of stacking
+    // a second queue item.
+    const colName = Object.keys(input.newData)[0];
+    const existing = get().changesQueue.find(
+      (c) =>
+        c.status === "pending" &&
+        c.type === "update" &&
+        c.schema === input.schema &&
+        c.table === input.table &&
+        c.primaryKey &&
+        JSON.stringify(c.primaryKey) === JSON.stringify(input.primaryKey) &&
+        Object.keys(c.newData ?? {})[0] === colName,
+    );
+    if (existing) {
+      set((state) => ({
+        changesQueue: state.changesQueue.map((c) =>
+          c.id === existing.id
+            ? {
+                ...c,
+                newData: input.newData,
+                description: input.description ?? c.description,
+              }
+            : c,
+        ),
+      }));
+      return;
+    }
+    get().addChange({
+      type: "update",
+      schema: input.schema,
+      table: input.table,
+      primaryKey: input.primaryKey,
+      oldData: input.oldData,
+      newData: input.newData,
+      description: input.description ?? `Edit ${input.table}`,
+    });
+  },
 
   populate: (databases, schemas, tables) =>
     set({ databases, schemas, tables }),

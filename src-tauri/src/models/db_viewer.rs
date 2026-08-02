@@ -33,6 +33,33 @@ pub struct ColumnInfo {
     pub is_fk: bool,
     pub fk_ref: Option<(String, String)>,
     pub default_value: Option<String>,
+    pub editable: bool,
+    pub is_generated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexInfo {
+    pub name: String,
+    pub schema: String,
+    pub table: String,
+    pub definition: String,
+    pub is_unique: bool,
+    pub method: String,
+    pub columns: Vec<String>,
+    pub size_bytes: Option<i64>,
+    pub tablespace: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintInfo {
+    pub name: String,
+    pub schema: String,
+    pub table: String,
+    pub contype: String, // "CHECK" | "UNIQUE" | "EXCLUSION"
+    pub definition: String,
+    pub deferrable: bool,
+    pub validated: bool,
+    pub columns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,10 +365,24 @@ mod tests {
             is_fk: true,
             fk_ref: Some(("users".to_string(), "id".to_string())),
             default_value: None,
+            editable: true,
+            is_generated: false,
         };
         let json = serde_json::to_string(&col).unwrap();
         assert!(json.contains("user_id"));
         assert!(json.contains("users"));
+    }
+
+    #[test]
+    fn column_info_has_editability_fields() {
+        let c = ColumnInfo {
+            name: "id".into(), data_type: "integer".into(), is_nullable: false,
+            is_pk: true, is_fk: false, fk_ref: None, default_value: None,
+            editable: false, is_generated: false,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("\"editable\":false"));
+        assert!(json.contains("\"is_generated\":false"));
     }
 
     #[test]

@@ -1,8 +1,9 @@
 import { memo } from "react";
-import type { Connection, Tag } from "../../lib/types";
+import type { Connection, ConnectionInput, Tag } from "../../lib/types";
 import { DbIcon, DB_LABELS } from "../../lib/dbIcons";
 import { ENV_LABELS, ENV_COLORS } from "../../lib/environment";
 import { TagBadge } from "../tags/TagBadge";
+import { ConnectionCardMenu } from "./ConnectionCardMenu";
 import { Check, GripVertical } from "lucide-react";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraggable } from "@dnd-kit/core";
@@ -13,6 +14,35 @@ interface ConnectionCardProps {
     tags: Tag[];
     onTagToggle?: (id: string) => void;
     onOpenDbViewer?: (connectionId: string) => void;
+    onEdit?: (connection: Connection) => void;
+    onDuplicate?: (connection: Connection) => void;
+    onDelete?: (connection: Connection) => void;
+}
+
+export function buildConfigFromConnection(conn: Connection, password: string | null): ConnectionInput {
+    return {
+        name: conn.name,
+        db_type: conn.db_type,
+        host: conn.host,
+        port: conn.port,
+        username: conn.username,
+        folder_id: conn.folder_id,
+        tag_ids: conn.tag_ids,
+        password,
+        database: conn.database ?? null,
+        environment: conn.environment ?? null,
+        ssh_host: conn.ssh_host ?? null,
+        ssh_port: conn.ssh_port ?? null,
+        ssh_user: conn.ssh_user ?? null,
+        ssh_auth_method: (conn.ssh_auth_method as ConnectionInput["ssh_auth_method"]) ?? null,
+        ssh_private_key_path: conn.ssh_private_key_path ?? null,
+        ssh_password: null,
+        ssh_passphrase: null,
+        ssl_mode: (conn.ssl_mode as ConnectionInput["ssl_mode"]) ?? null,
+        ssl_ca_path: conn.ssl_ca_path ?? null,
+        ssl_cert_path: conn.ssl_cert_path ?? null,
+        ssl_key_path: conn.ssl_key_path ?? null,
+    };
 }
 
 function ConnectionCardBase({
@@ -20,6 +50,9 @@ function ConnectionCardBase({
     tags,
     onTagToggle,
     onOpenDbViewer,
+    onEdit,
+    onDuplicate,
+    onDelete,
 }: ConnectionCardProps) {
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const toggleItemSelection = useUiStore((s) => s.toggleItemSelection);
@@ -68,7 +101,7 @@ function ConnectionCardBase({
             <div
                 {...listeners}
                 {...attributes}
-                className="absolute top-1/2 -translate-y-1/2 right-2 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab z-10"
+                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab z-10"
                 aria-label="Drag to move connection"
             >
                 <GripVertical size={14} className="text-text-muted" />
@@ -107,6 +140,12 @@ function ConnectionCardBase({
                     ))}
                 </div>
             </div>
+            <ConnectionCardMenu
+                connection={connection}
+                onEdit={() => onEdit?.(connection)}
+                onDuplicate={() => onDuplicate?.(connection)}
+                onDelete={() => onDelete?.(connection)}
+            />
             <button
                 onClick={(e) => {
                     e.stopPropagation();

@@ -30,6 +30,7 @@ const makeConn = (overrides: Partial<Connection> = {}): Connection => ({
   ssl_ca_path: null,
   ssl_cert_path: null,
   ssl_key_path: null,
+  favorite: false,
   ...overrides,
 });
 

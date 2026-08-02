@@ -34,6 +34,22 @@ describe("ChangesQueuePanel", () => {
     expect(screen.getByText(/public.users/i)).toBeInTheDocument();
   });
 
+  it("shows the old → new value diff on update cards", () => {
+    useDbViewerStore.getState().addChange({
+      type: "update",
+      schema: "public",
+      table: "users",
+      primaryKey: { id: 1 },
+      oldData: { name: "Bob" },
+      newData: { name: "Alice" },
+      description: "Update row in users",
+    } as any);
+    render(<ChangesQueuePanel />);
+    // the diff renders old (struck) → new (accent) as separate spans
+    expect(screen.getByText(/name: Bob/)).toBeInTheDocument();
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+  });
+
   it("revert removes the change from the queue", async () => {
     const user = userEvent.setup();
     useDbViewerStore.getState().addChange({
@@ -154,6 +170,21 @@ describe("ChangesQueuePanel", () => {
     render(<ChangesQueuePanel />);
     await user.click(screen.getByRole("button", { name: /clear all/i }));
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+  });
+
+  it("calls onCommitted after a successful commit cycle", async () => {
+    const onCommitted = vi.fn();
+    vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+    render(<ChangesQueuePanel onCommitted={onCommitted} />);
+    fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
+    await waitFor(() => expect(onCommitted).toHaveBeenCalledTimes(1));
   });
 
   it("shows a green check on committed changes after Commit All", async () => {

@@ -75,7 +75,7 @@ describe("TableOverflowMenu", () => {
 
   it("Export data calls exportData when rows and columns are provided", async () => {
     const spy = vi.spyOn(exportData, "exportData");
-    const columns = [{ name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null }];
+    const columns = [{ name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false }];
     render(<TableOverflowMenu schema="public" table="t" onOpenTab={() => "tab-1"} columns={columns} rows={[[1]]} />);
     fireEvent.click(screen.getByLabelText(/table options/i));
     fireEvent.click(screen.getByText(/export data \(csv\)/i));

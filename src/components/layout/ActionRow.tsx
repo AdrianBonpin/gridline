@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, Settings as SettingsIcon, FolderPlus, Trash2, Check, X, ChevronDown } from "lucide-react";
+import { Plus, Settings as SettingsIcon, FolderPlus, FolderInput, Trash2, Check, X, ChevronDown } from "lucide-react";
 import { Button } from "../ui/Button";
 import { useUiStore } from "../../stores/uiStore";
 import { ImportExportMenu } from "./ImportExportMenu";
@@ -12,10 +12,11 @@ interface ActionRowProps {
   onNewFolder?: () => void;
   onFilters?: () => void;
   onDeleteSelected?: () => void;
+  onMoveToFolder?: () => void;
   visibleItemIds?: string[];
 }
 
-export function ActionRow({ onImport, onExport, onNewFolder, onFilters: _onFilters, onDeleteSelected, visibleItemIds = [] }: ActionRowProps) {
+export function ActionRow({ onImport, onExport, onNewFolder, onFilters: _onFilters, onDeleteSelected, onMoveToFolder, visibleItemIds = [] }: ActionRowProps) {
   const setActiveView = useUiStore((s) => s.setActiveView);
   const openSettings = useUiStore((s) => s.openSettings);
   const selectedItemIds = useUiStore((s) => s.selectedItemIds);
@@ -52,6 +53,11 @@ export function ActionRow({ onImport, onExport, onNewFolder, onFilters: _onFilte
         <Button variant="ghost" className="text-xs border-0" onClick={onNewFolder ?? (() => {})}>
           <FolderPlus size={14} /> New Folder
         </Button>
+        {hasSelection && (
+          <Button variant="ghost" className="text-xs border-0" onClick={onMoveToFolder}>
+            <FolderInput size={14} /> Move to folder
+          </Button>
+        )}
         {hasSelection && (
           <div className="relative" ref={menuRef}>
             <Button variant="ghost" className="text-xs border-0" onClick={() => setMenuOpen((o) => !o)}>

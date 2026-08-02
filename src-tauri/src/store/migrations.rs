@@ -19,6 +19,11 @@ const CONNECTION_COLUMNS_V3: &[(&str, &str)] = &[
     ("environment", "TEXT"),
 ];
 
+/// New columns added in version 7.
+const CONNECTION_COLUMNS_V7: &[(&str, &str)] = &[
+    ("favorite", "INTEGER NOT NULL DEFAULT 0"),
+];
+
 pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
@@ -219,6 +224,42 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
 
+    // v7: connection favorites + recent_connections
+    if current_ver < 7 {
+        let existing: Vec<String> = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(connections)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        for (col_name, col_type) in CONNECTION_COLUMNS_V7 {
+            if !existing.contains(&col_name.to_string()) {
+                let sql = format!(
+                    "ALTER TABLE connections ADD COLUMN {} {}",
+                    col_name, col_type
+                );
+                conn.execute(&sql, []).map_err(|e| e.to_string())?;
+            }
+        }
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS recent_connections (
+                connection_id TEXT PRIMARY KEY REFERENCES connections(id) ON DELETE CASCADE,
+                opened_at TEXT NOT NULL
+            );"
+        ).map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (7)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -269,7 +310,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 5);
+        assert_eq!(count, 6);
     }
 
     #[test]
@@ -408,13 +449,77 @@ mod tests {
     fn v6_bumps_schema_version_to_6() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
-        let ver: i64 = conn
+        let count: i64 = conn
             .query_row(
-                "SELECT MAX(version) FROM schema_version",
+                "SELECT COUNT(*) FROM schema_version WHERE version = 6",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ver, 6, "Schema version should be 6 after v6 migration");
+        assert_eq!(count, 1, "Schema version 6 should be recorded after v6 migration");
+    }
+
+    #[test]
+    fn v7_adds_favorite_column_to_connections() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let columns: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(connections)").unwrap();
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1)).unwrap();
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        assert!(
+            columns.contains(&"favorite".to_string()),
+            "Expected connections to have a 'favorite' column after v7"
+        );
+        let conn_id = "fav-test";
+        conn.execute(
+            "INSERT INTO connections (id, name, db_type, host, port, created_at, updated_at) VALUES (?1, 't', 'postgresql', 'h', 5432, datetime('now'), datetime('now'))",
+            rusqlite::params![conn_id],
+        ).unwrap();
+        let fav: i64 = conn.query_row(
+            "SELECT favorite FROM connections WHERE id = ?1", rusqlite::params![conn_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(fav, 0, "favorite defaults to 0");
+    }
+
+    #[test]
+    fn v7_creates_recent_connections_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM recent_connections", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn v7_recent_connections_cascade_on_connection_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let conn_id = "rc-cascade";
+        conn.execute(
+            "INSERT INTO connections (id, name, db_type, host, port, created_at, updated_at) VALUES (?1, 't', 'postgresql', 'h', 5432, datetime('now'), datetime('now'))",
+            rusqlite::params![conn_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO recent_connections (connection_id, opened_at) VALUES (?1, datetime('now'))",
+            rusqlite::params![conn_id],
+        ).unwrap();
+        conn.execute("DELETE FROM connections WHERE id = ?1", rusqlite::params![conn_id]).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM recent_connections WHERE connection_id = ?1", rusqlite::params![conn_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn v7_bumps_schema_version_to_7() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let ver: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ver, 7);
     }
 }
