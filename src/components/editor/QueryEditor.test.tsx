@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { QueryEditor } from "./QueryEditor";
 import { editor as monacoEditor } from "monaco-editor";
+import { useSettingsStore } from "../../stores/settingsStore";
 
 // Monaco editor loads from CDN — mock it for tests to avoid network dependency
-const { registeredActions } = vi.hoisted(() => ({
+const { registeredActions, updateOptions } = vi.hoisted(() => ({
   registeredActions: [] as Array<{ id: string; keybindings: number[]; run: () => void }>,
+  updateOptions: vi.fn(),
 }));
 const { editorOptions } = vi.hoisted(() => ({ editorOptions: [] as Array<Record<string, unknown>> }));
 
@@ -23,6 +25,7 @@ vi.mock("@monaco-editor/react", () => ({
         getValue: () => value,
         setValue: (v: string) => onChange?.(v),
         focus: vi.fn(),
+        updateOptions,
       });
     }
     return (
@@ -40,7 +43,10 @@ vi.mock("@monaco-editor/react", () => ({
 describe("QueryEditor", () => {
   beforeEach(() => {
     registeredActions.length = 0;
+    editorOptions.length = 0;
+    updateOptions.mockClear();
     vi.mocked(monacoEditor.remeasureFonts).mockClear();
+    useSettingsStore.setState({ settings: null });
   });
 
   it("renders a textarea editor", () => {
@@ -79,6 +85,37 @@ describe("QueryEditor", () => {
   it("re-measures fonts after mount so the cursor stays aligned", () => {
     render(<QueryEditor value="" onChange={() => {}} onRun={() => {}} />);
     expect(monacoEditor.remeasureFonts).toHaveBeenCalled();
+  });
+
+  it("calls updateOptions with editor settings when settings change", () => {
+    const settings = {
+      confirm_before_delete: true,
+      default_folder_id: null,
+      theme: "dark" as const,
+      font_size: "medium" as const,
+      default_ports: {},
+      tag_order: null,
+      table_refresh_rate: 5,
+      table_page_size: 50,
+      shortcuts: {},
+      accent_color: "blue",
+      editor_font_size: 13,
+      editor_font_family: "Space Mono",
+      editor_word_wrap: "off" as const,
+      editor_minimap: false,
+      editor_tab_size: 4,
+    };
+    useSettingsStore.setState({ settings });
+    render(<QueryEditor value="" onChange={() => {}} onRun={() => {}} />);
+    updateOptions.mockClear();
+    act(() => {
+      useSettingsStore.setState({
+        settings: { ...settings, editor_font_size: 16, editor_word_wrap: "on" as const },
+      });
+    });
+    expect(updateOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ fontSize: 16, wordWrap: "on" }),
+    );
   });
 
   it("wraps the editor without padding, border, or rounding", () => {
