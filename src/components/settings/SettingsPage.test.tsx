@@ -128,14 +128,18 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "settings-tab-general");
   });
 
-  it("switches to the Editor tab and shows placeholder", async () => {
+  it("switches to the Editor tab and shows editor settings", async () => {
     const user = userEvent.setup();
     render(<SettingsPage />);
     await waitFor(() => {
       expect(screen.getByRole("tab", { name: /editor/i })).toBeInTheDocument();
     });
     await user.click(screen.getByRole("tab", { name: /editor/i }));
-    expect(screen.getByText(/editor settings are coming soon/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/font size/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/font family/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/word wrap/i)).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: /minimap/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/tab size/i)).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /editor/i })).toHaveAttribute("aria-selected", "true");
   });
 

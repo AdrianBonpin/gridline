@@ -6,6 +6,7 @@ import { GeneralSettingsTab } from "./GeneralSettingsTab";
 import { TagsSettingsTab } from "./TagsSettingsTab";
 import { ShortcutsSettingsTab } from "./ShortcutsSettingsTab";
 import { AdvancedSettingsTab } from "./AdvancedSettingsTab";
+import { EditorSettingsTab } from "./EditorSettingsTab";
 import {
     ChevronLeft,
     Cog,
@@ -42,14 +43,7 @@ export function SettingsPage() {
         load();
     }, [load]);
 
-    const renderEditor = () => (
-        <section>
-            <h2 className="text-sm font-medium text-text mb-3">Editor</h2>
-            <div className="py-8 text-center text-sm text-text-muted">
-                Editor settings are coming soon.
-            </div>
-        </section>
-    );
+    const renderEditor = () => <EditorSettingsTab />;
 
     const renderTabContent = () => {
         switch (activeTab) {
