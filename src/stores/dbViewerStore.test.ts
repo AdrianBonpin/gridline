@@ -1,6 +1,13 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useDbViewerStore } from "./dbViewerStore";
 import type { QueryResult, TableInfo } from "../lib/types";
+import * as commands from "../lib/commands";
+
+vi.mock("../lib/commands", () => ({
+  getDatabases: vi.fn(),
+  getSchemas: vi.fn(),
+  getTables: vi.fn(),
+}));
 
 beforeEach(() => {
   useDbViewerStore.getState().reset();
@@ -189,6 +196,37 @@ describe("dbViewerStore", () => {
     expect(state.databases).toEqual(["mydb", "testdb"]);
     expect(state.schemas).toEqual(["public", "private"]);
     expect(state.tables).toEqual(tables);
+  });
+});
+
+describe("refreshTree", () => {
+  it("fetches databases/schemas/tables and populates", async () => {
+    vi.mocked(commands.getDatabases).mockResolvedValue(["mydb"]);
+    vi.mocked(commands.getSchemas).mockResolvedValue(["public"]);
+    vi.mocked(commands.getTables).mockResolvedValue([
+      { name: "users", schema: "public", table_type: "TABLE" },
+    ] as any);
+    useDbViewerStore.setState({ currentSchema: "public" });
+    await useDbViewerStore.getState().refreshTree("c1");
+    expect(useDbViewerStore.getState().databases).toEqual(["mydb"]);
+    expect(useDbViewerStore.getState().schemas).toEqual(["public"]);
+    expect(useDbViewerStore.getState().tables).toHaveLength(1);
+    expect(commands.getTables).toHaveBeenCalledWith("c1", "public");
+  });
+  it("falls back to no schema when currentSchema is null", async () => {
+    vi.mocked(commands.getDatabases).mockResolvedValue([] as any);
+    vi.mocked(commands.getSchemas).mockResolvedValue([] as any);
+    vi.mocked(commands.getTables).mockResolvedValue([] as any);
+    useDbViewerStore.setState({ currentSchema: null });
+    await useDbViewerStore.getState().refreshTree("c1");
+    expect(commands.getTables).toHaveBeenCalledWith("c1", undefined);
+  });
+  it("swallows fetch errors", async () => {
+    vi.mocked(commands.getDatabases).mockResolvedValue([] as any);
+    vi.mocked(commands.getSchemas).mockRejectedValue(new Error("boom"));
+    await expect(
+      useDbViewerStore.getState().refreshTree("c1"),
+    ).resolves.toBeUndefined();
   });
 });
 

@@ -112,4 +112,20 @@ describe("ChangesQueuePanel", () => {
       data: expect.any(String),
     }));
   });
+
+  it("refreshes the schema tree after committing a drop_table change", async () => {
+    vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    const getSchemas = vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    vi.spyOn(commands, "getDatabases").mockResolvedValue(["mydb"]);
+    vi.spyOn(commands, "getTables").mockResolvedValue([] as any);
+    useDbViewerStore.getState().addChange({
+      type: "drop_table",
+      schema: "public",
+      table: "t",
+      description: "Drop Table: public.t",
+    });
+    render(<ChangesQueuePanel />);
+    fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
+    await waitFor(() => expect(getSchemas).toHaveBeenCalledWith("c1"));
+  });
 });

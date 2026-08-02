@@ -202,6 +202,62 @@ describe("DbViewerScreen", () => {
         );
     });
 
+    it("refreshes the schema tree after a DDL query runs", async () => {
+        vi.spyOn(commands, "executeQuery").mockResolvedValue(
+            mockQueryResult as any,
+        );
+        const getSchemas = vi
+            .spyOn(commands, "getSchemas")
+            .mockResolvedValue(["public"]);
+        vi.spyOn(commands, "getDatabases").mockResolvedValue(["mydb"]);
+        vi.spyOn(commands, "getTables").mockResolvedValue([] as any);
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        const textarea = await waitFor(() =>
+            screen.getByTestId("monaco-textarea"),
+        );
+        fireEvent.change(textarea, {
+            target: { value: "CREATE TABLE users_new (id INTEGER)" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
+        // CREATE is destructive -> confirm dialog appears -> click Execute
+        await waitFor(() =>
+            screen.getByRole("button", { name: /execute/i }),
+        );
+        fireEvent.click(screen.getByRole("button", { name: /execute/i }));
+        await waitFor(() => expect(getSchemas).toHaveBeenCalledWith("c1"));
+    });
+
+    it("does not refresh the schema tree after a SELECT", async () => {
+        vi.spyOn(commands, "executeQuery").mockResolvedValue(
+            mockQueryResult as any,
+        );
+        const getSchemas = vi
+            .spyOn(commands, "getSchemas")
+            .mockResolvedValue(["public"]);
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        const textarea = await waitFor(() =>
+            screen.getByTestId("monaco-textarea"),
+        );
+        fireEvent.change(textarea, { target: { value: "SELECT 1" } });
+        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
+        await waitFor(() => expect(commands.executeQuery).toHaveBeenCalled());
+        expect(getSchemas).not.toHaveBeenCalled();
+    });
+
     it("formats the query SQL when Auto format is clicked", async () => {
         render(
             <DbViewerScreen

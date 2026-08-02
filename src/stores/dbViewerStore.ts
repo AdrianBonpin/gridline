@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo } from "../lib/types";
+import { getDatabases, getSchemas, getTables } from "../lib/commands";
 
 // ─── Local types ────────────────────────────────────────────────
 
@@ -142,6 +143,7 @@ interface DbViewerState {
     schemas: string[],
     tables: TableInfo[],
   ) => void;
+  refreshTree: (connectionId: string, schema?: string) => Promise<void>;
   reset: () => void;
 }
 
@@ -376,6 +378,22 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
 
   populate: (databases, schemas, tables) =>
     set({ databases, schemas, tables }),
+
+  // Best-effort re-fetch of the schema tree (databases/schemas/tables) so
+  // newly created/dropped objects show up without a manual refresh.  A
+  // failure must never surface to the user.
+  refreshTree: async (connectionId, schema) => {
+    try {
+      const [dbs, scs, tbls] = await Promise.all([
+        getDatabases(connectionId),
+        getSchemas(connectionId),
+        getTables(connectionId, schema ?? get().currentSchema ?? undefined),
+      ]);
+      get().populate(dbs, scs, tbls);
+    } catch {
+      // Best-effort refresh; a failure must not surface to the user.
+    }
+  },
 
   reset: () => {
     tabCounter = 0;

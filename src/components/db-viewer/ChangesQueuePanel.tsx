@@ -92,6 +92,7 @@ export function ChangesQueuePanel() {
     if (pending.length === 0) return;
 
     let committedCount = 0;
+    let treeDirty = false;
 
     for (const change of pending) {
       try {
@@ -99,6 +100,7 @@ export function ChangesQueuePanel() {
         await cmd.executeChange(connectionId, payload);
         markChangeCommitted(change.id);
         committedCount++;
+        if (change.type === "drop_table") treeDirty = true;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         markChangeFailed(change.id, msg);
@@ -109,6 +111,11 @@ export function ChangesQueuePanel() {
 
     if (committedCount > 0) {
       notify(`${committedCount} change(s) committed`, "success");
+    }
+
+    if (treeDirty) {
+      const st = useDbViewerStore.getState();
+      void st.refreshTree(connectionId, st.currentSchema ?? undefined);
     }
   }, [markChangeCommitted, markChangeFailed, notify]);
 
