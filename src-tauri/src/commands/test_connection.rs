@@ -13,6 +13,10 @@ pub struct TestConnectionResult {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
 }
 
 /// Strip credentials and sensitive information from error messages while
@@ -212,6 +216,8 @@ pub async fn test_database_connection(
         return TestConnectionResult {
             ok: false,
             error: Some(err),
+            server_version: None,
+            latency_ms: None,
         };
     }
 
@@ -223,12 +229,16 @@ pub async fn test_database_connection(
         other => TestConnectionResult {
             ok: false,
             error: Some(format!("unsupported database type: {other}")),
+            server_version: None,
+            latency_ms: None,
         },
     };
 
     TestConnectionResult {
         ok: result.ok,
         error: result.error.map(|e| sanitize_error(&e)),
+        server_version: result.server_version,
+        latency_ms: result.latency_ms,
     }
 }
 
@@ -245,7 +255,14 @@ async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnecti
 
     let target = match resolve_connect_target(config, ssh, 5432).await {
         Ok(t) => t,
-        Err(e) => return TestConnectionResult { ok: false, error: Some(e) },
+        Err(e) => {
+            return TestConnectionResult {
+                ok: false,
+                error: Some(e),
+                server_version: None,
+                latency_ms: None,
+            }
+        }
     };
 
     // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
@@ -263,7 +280,12 @@ async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnecti
         Ok(t) => t,
         Err(e) => {
             close_probe_tunnel(ssh, target.tunnel_key.as_deref());
-            return TestConnectionResult { ok: false, error: Some(e) };
+            return TestConnectionResult {
+                ok: false,
+                error: Some(e),
+                server_version: None,
+                latency_ms: None,
+            };
         }
     };
 
@@ -278,6 +300,7 @@ async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnecti
         .dbname(dbname)
         .connect_timeout(std::time::Duration::from_secs(10));
 
+    let start = std::time::Instant::now();
     let result = match tls {
         None => crate::commands::db_viewer::connect_pg_with(&pgconfig, tokio_postgres::NoTls).await,
         Some(cc) => {
@@ -286,19 +309,33 @@ async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnecti
             crate::commands::db_viewer::connect_pg_with(&pgconfig, connector).await
         }
     };
+    let latency_ms = Some(start.elapsed().as_millis() as u64);
 
     match result {
-        Ok((_client, _handle)) => {
+        Ok((client, _handle)) => {
             close_probe_tunnel(ssh, target.tunnel_key.as_deref());
-            // Spawn the connection handler so it keeps running while we test.
-            // (Already spawned inside `connect_pg_with`.)
-            TestConnectionResult { ok: true, error: None }
+            // Best-effort server version from the live client; None if the
+            // query fails. The driver task is already spawned inside
+            // `connect_pg_with`, so the client is fully usable here.
+            let server_version = client
+                .query_one("SELECT current_setting('server_version')", &[])
+                .await
+                .ok()
+                .and_then(|row| row.try_get::<_, String>(0).ok());
+            TestConnectionResult {
+                ok: true,
+                error: None,
+                server_version,
+                latency_ms,
+            }
         }
         Err(e) => {
             close_probe_tunnel(ssh, target.tunnel_key.as_deref());
             TestConnectionResult {
                 ok: false,
                 error: Some(e.to_string()),
+                server_version: None,
+                latency_ms: None,
             }
         }
     }
@@ -315,7 +352,14 @@ async fn test_mysql_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
 
     let target = match resolve_connect_target(config, ssh, 3306).await {
         Ok(t) => t,
-        Err(e) => return TestConnectionResult { ok: false, error: Some(e) },
+        Err(e) => {
+            return TestConnectionResult {
+                ok: false,
+                error: Some(e),
+                server_version: None,
+                latency_ms: None,
+            }
+        }
     };
 
     let mut opts = MySqlConnectOptions::new()
@@ -351,6 +395,7 @@ async fn test_mysql_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
         }
     }
 
+    let start = std::time::Instant::now();
     match MySqlPoolOptions::new()
         .max_connections(1)
         .acquire_timeout(std::time::Duration::from_secs(10))
@@ -359,14 +404,28 @@ async fn test_mysql_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
     {
         Ok(pool) => {
             close_probe_tunnel(ssh, target.tunnel_key.as_deref());
+            // Best-effort server version; None if the query fails.
+            let server_version =
+                sqlx::query_scalar::<_, String>("SELECT VERSION()")
+                    .fetch_one(&pool)
+                    .await
+                    .ok();
+            let latency_ms = Some(start.elapsed().as_millis() as u64);
             pool.close().await;
-            TestConnectionResult { ok: true, error: None }
+            TestConnectionResult {
+                ok: true,
+                error: None,
+                server_version,
+                latency_ms,
+            }
         }
         Err(e) => {
             close_probe_tunnel(ssh, target.tunnel_key.as_deref());
             TestConnectionResult {
                 ok: false,
                 error: Some(e.to_string()),
+                server_version: None,
+                latency_ms: None,
             }
         }
     }
@@ -377,11 +436,27 @@ async fn test_mysql_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
 /// Opens the database file at `config.host`. Returns success if the file
 /// can be opened as a valid SQLite database.
 fn test_sqlite_connection(config: &DbConfig) -> TestConnectionResult {
+    let start = std::time::Instant::now();
     match rusqlite::Connection::open(&config.host) {
-        Ok(_conn) => TestConnectionResult { ok: true, error: None },
+        Ok(conn) => {
+            // Best-effort server version; None if the query fails.
+            let server_version = conn
+                .query_row("SELECT sqlite_version()", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .ok();
+            TestConnectionResult {
+                ok: true,
+                error: None,
+                server_version,
+                latency_ms: Some(start.elapsed().as_millis() as u64),
+            }
+        }
         Err(e) => TestConnectionResult {
             ok: false,
             error: Some(e.to_string()),
+            server_version: None,
+            latency_ms: None,
         },
     }
 }
@@ -396,7 +471,14 @@ async fn test_redis_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
 
     let target = match resolve_connect_target(config, ssh, 6379).await {
         Ok(t) => t,
-        Err(e) => return TestConnectionResult { ok: false, error: Some(e) },
+        Err(e) => {
+            return TestConnectionResult {
+                ok: false,
+                error: Some(e),
+                server_version: None,
+                latency_ms: None,
+            }
+        }
     };
     let password = config.password.as_deref();
 
@@ -406,6 +488,7 @@ async fn test_redis_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
         format!("redis://{}:{}/", target.host, target.port)
     };
 
+    let start = std::time::Instant::now();
     match redis::Client::open(conn_str.as_str()) {
         Ok(client) => {
             match timeout(
@@ -416,13 +499,20 @@ async fn test_redis_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
             {
                 Ok(Ok(_conn)) => {
                     close_probe_tunnel(ssh, target.tunnel_key.as_deref());
-                    TestConnectionResult { ok: true, error: None }
+                    TestConnectionResult {
+                        ok: true,
+                        error: None,
+                        server_version: None,
+                        latency_ms: Some(start.elapsed().as_millis() as u64),
+                    }
                 }
                 Ok(Err(e)) => {
                     close_probe_tunnel(ssh, target.tunnel_key.as_deref());
                     TestConnectionResult {
                         ok: false,
                         error: Some(e.to_string()),
+                        server_version: None,
+                        latency_ms: None,
                     }
                 }
                 Err(_) => {
@@ -430,6 +520,8 @@ async fn test_redis_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
                     TestConnectionResult {
                         ok: false,
                         error: Some("connection timed out after 10 seconds".to_string()),
+                        server_version: None,
+                        latency_ms: None,
                     }
                 }
             }
@@ -439,6 +531,8 @@ async fn test_redis_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
             TestConnectionResult {
                 ok: false,
                 error: Some(e.to_string()),
+                server_version: None,
+                latency_ms: None,
             }
         }
     }
@@ -466,18 +560,47 @@ mod tests {
 
     #[test]
     fn test_connection_result_serialization() {
-        // ok=true result serializes correctly
-        let result = TestConnectionResult { ok: true, error: None };
+        // ok=true result with server_version/latency serializes all fields
+        let result = TestConnectionResult {
+            ok: true,
+            error: None,
+            server_version: Some("15.2".to_string()),
+            latency_ms: Some(12),
+        };
         let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"ok\":true"), "ok=true should appear in JSON");
+        assert!(
+            json.contains("\"ok\":true"),
+            "ok=true should appear in JSON: {json}"
+        );
+        assert!(
+            json.contains("\"server_version\":\"15.2\""),
+            "server_version should appear in JSON: {json}"
+        );
+        assert!(
+            json.contains("\"latency_ms\":12"),
+            "latency_ms should appear in JSON: {json}"
+        );
 
-        // error result includes the error message
+        // error result includes the error message; None fields are skipped
         let result = TestConnectionResult {
             ok: false,
             error: Some("connection refused".to_string()),
+            server_version: None,
+            latency_ms: None,
         };
         let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"connection refused\""), "error message should appear in JSON");
+        assert!(
+            json.contains("\"connection refused\""),
+            "error message should appear in JSON: {json}"
+        );
+        assert!(
+            !json.contains("server_version"),
+            "None server_version should be skipped: {json}"
+        );
+        assert!(
+            !json.contains("latency_ms"),
+            "None latency_ms should be skipped: {json}"
+        );
     }
 
     // ------------------------------------------------------------------

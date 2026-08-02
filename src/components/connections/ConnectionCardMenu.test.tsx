@@ -114,6 +114,23 @@ describe("ConnectionCardMenu", () => {
     expect(screen.getByText(/12ms/)).toBeInTheDocument();
   });
 
+  it("test connection shows just Online when no version/latency reported", async () => {
+    vi.mocked(commands.getConnectionPassword).mockResolvedValue("pw");
+    vi.mocked(commands.testConnection).mockResolvedValue({ ok: true } as any);
+    renderMenu();
+    await openMenu();
+
+    await userEvent.click(screen.getByText("Test connection"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Online", { exact: true }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/unknown/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/0ms/)).not.toBeInTheDocument();
+  });
+
   it("test connection shows the offline error text", async () => {
     vi.mocked(commands.getConnectionPassword).mockResolvedValue("pw");
     vi.mocked(commands.testConnection).mockResolvedValue({

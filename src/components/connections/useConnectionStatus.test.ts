@@ -56,6 +56,25 @@ describe("useConnectionStatus", () => {
     expect(result.current.info).toContain("timeout");
   });
 
+  it("online with no version/latency reported keeps info empty (no unknown/0ms fallback)", async () => {
+    vi.spyOn(commands, "getConnectionPassword").mockResolvedValue("pw");
+    vi.spyOn(commands, "testConnection").mockResolvedValue({ ok: true } as any);
+    const { result } = renderHook(() =>
+      useConnectionStatus("c1", () => ({
+        name: "P",
+        db_type: "postgresql",
+        host: "h",
+        port: 5432,
+        username: "u",
+      } as any)),
+    );
+    await act(async () => {
+      await result.current.check();
+    });
+    expect(result.current.state).toBe("online");
+    expect(result.current.info).toBe("");
+  });
+
   it("debounces: rapid check() calls run one check; a re-check is allowed after 2s", async () => {
     vi.useFakeTimers({ now: 100_000 });
     try {

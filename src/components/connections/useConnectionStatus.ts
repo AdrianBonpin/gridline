@@ -50,9 +50,10 @@ export function useConnectionStatus(
       const input = buildConfig(password);
       const result: ConnectionTestResult = await cmd.testConnection(input);
       if (result.ok) {
-        const latency = result.latency_ms ?? 0;
-        const version = result.server_version ?? "unknown";
-        setInfo(`${version} · ${latency}ms`);
+        const parts: string[] = [];
+        if (result.server_version) parts.push(result.server_version);
+        if (result.latency_ms != null) parts.push(`${result.latency_ms}ms`);
+        setInfo(parts.join(" · "));
         setStateBoth("online");
       } else {
         setInfo(result.error ?? "offline");

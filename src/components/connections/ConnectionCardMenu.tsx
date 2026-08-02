@@ -86,7 +86,7 @@ export function ConnectionCardMenu({
         state === "checking"
             ? "Testing…"
             : state === "online"
-              ? `Online · ${info}`
+              ? `Online${info ? ` · ${info}` : ""}`
               : state === "offline"
                 ? info
                 : "Test connection";
