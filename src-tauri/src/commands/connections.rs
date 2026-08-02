@@ -96,8 +96,21 @@ pub fn update_connection(
 }
 
 #[tauri::command]
-pub fn delete_connection(state: tauri::State<crate::AppState>, id: String) -> Result<(), String> {
-    delete_connection_inner(&state.db_store, &id)
+pub fn delete_connection(
+    state: tauri::State<crate::AppState>,
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    delete_connection_inner(&state.db_store, &id)?;
+    // Purge keychain secrets (missing entries are no-ops) and close any
+    // SSH tunnel associated with the deleted connection.
+    let _ = crate::commands::keychain::delete_connection_password_internal(&app, &id);
+    let _ = crate::commands::keychain::delete_connection_ssh_password_internal(&app, &id);
+    let _ = crate::commands::keychain::delete_connection_ssh_passphrase_internal(&app, &id);
+    if let Ok(mut mgr) = state.ssh_manager.lock() {
+        mgr.close_tunnel(&id);
+    }
+    Ok(())
 }
 
 #[tauri::command]

@@ -45,6 +45,32 @@ export async function deleteConnectionPassword(connectionId: string): Promise<vo
   return invoke<void>("delete_connection_password", { connectionId });
 }
 
+// ─── Keychain: SSH secrets ────────────────────────────────────
+
+export async function saveConnectionSshPassword(connectionId: string, password: string): Promise<void> {
+  return invoke<void>("save_connection_ssh_password", { connectionId, password });
+}
+
+export async function getConnectionSshPassword(connectionId: string): Promise<string | null> {
+  return invoke<string | null>("get_connection_ssh_password", { connectionId });
+}
+
+export async function deleteConnectionSshPassword(connectionId: string): Promise<void> {
+  return invoke<void>("delete_connection_ssh_password", { connectionId });
+}
+
+export async function saveConnectionSshPassphrase(connectionId: string, passphrase: string): Promise<void> {
+  return invoke<void>("save_connection_ssh_passphrase", { connectionId, passphrase });
+}
+
+export async function getConnectionSshPassphrase(connectionId: string): Promise<string | null> {
+  return invoke<string | null>("get_connection_ssh_passphrase", { connectionId });
+}
+
+export async function deleteConnectionSshPassphrase(connectionId: string): Promise<void> {
+  return invoke<void>("delete_connection_ssh_passphrase", { connectionId });
+}
+
 export async function recreateDemoDb(): Promise<string> {
   return invoke<string>("recreate_demo_db");
 }

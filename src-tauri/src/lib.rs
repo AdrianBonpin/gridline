@@ -53,6 +53,22 @@ pub fn run() {
                     eprintln!("Failed to set up demo DB: {e}");
                 })
                 .ok();
+
+            // Close the SSH tunnel for a connection when its pool is evicted
+            // (LRU overflow or max-pool shrink). The hook captures a clone of
+            // the app handle and resolves AppState through the manager.
+            let handle = app.handle().clone();
+            state
+                .pool_manager
+                .blocking_lock()
+                .set_on_evict(Box::new(move |id: &str| {
+                    if let Some(s) = handle.try_state::<AppState>() {
+                        if let Ok(mut mgr) = s.ssh_manager.lock() {
+                            mgr.close_tunnel(id);
+                        }
+                    }
+                }));
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -93,6 +109,12 @@ pub fn run() {
             keychain::save_connection_password,
             keychain::get_connection_password,
             keychain::delete_connection_password,
+            keychain::save_connection_ssh_password,
+            keychain::get_connection_ssh_password,
+            keychain::delete_connection_ssh_password,
+            keychain::save_connection_ssh_passphrase,
+            keychain::get_connection_ssh_passphrase,
+            keychain::delete_connection_ssh_passphrase,
             demo::recreate_demo_db,
             backup::detect_pg_tools,
             backup::pg_dump,
@@ -108,6 +130,18 @@ pub fn run() {
             query::update_saved_query,
             query::delete_saved_query,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // Close all SSH tunnels on exit: ExitRequested fires before the
+            // event loop ends, Exit fires after it has.
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                if let Ok(mut mgr) = app_handle.state::<AppState>().ssh_manager.lock() {
+                    mgr.close_all();
+                }
+            }
+        });
 }
