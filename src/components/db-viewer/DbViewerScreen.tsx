@@ -30,6 +30,8 @@ import { SchemaVisualizerPage } from "./SchemaVisualizerPage";
 import { QueriesPanel } from "../queries/QueriesPanel";
 import { useQueryStore } from "../../stores/queryStore";
 import * as cmd from "../../lib/commands";
+import type { EnumInfo } from "../../lib/types";
+import type { FkOption } from "../grid/CellEditor";
 
 export interface DbViewerScreenProps {
     connectionId: string;
@@ -109,6 +111,17 @@ export function DbViewerScreen({
     const currentSchema = useDbViewerStore((s) => s.currentSchema);
     const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
     const fetchingRef = useRef<Set<string>>(new Set());
+
+    // CellEditor options for the active table tab: PG enum labels (cached per
+    // connection+schema) + FK reference rows (page 1, 50 per FK column).
+    const [editorOptions, setEditorOptions] = useState<{
+        enums: Record<string, string[]>;
+        fks: Record<string, FkOption[]>;
+    } | null>(null);
+    const enumCacheRef = useRef<Map<string, EnumInfo[]>>(new Map());
+    // Key identifying the (connection, tab, schema) the options were fetched for;
+    // guards against refetching on every render while data updates in place.
+    const editorOptionsKeyRef = useRef<string>("");
 
     const fetchData = useCallback(
         async (tab: NonNullable<typeof activeTab>) => {
@@ -281,6 +294,78 @@ export function DbViewerScreen({
         if (activeTab.error) return;
         fetchData(activeTab);
     }, [activeTab, fetchData]);
+
+    // Feed the grid's CellEditor with enum labels + FK reference rows for the
+    // active table tab. Fetched once per tab/schema (enums additionally cached
+    // per connection+schema across tabs); a failed fetch for one FK column is
+    // skipped without breaking the tab. Never refetches on in-place data updates.
+    useEffect(() => {
+        const key =
+            activeTab && activeTab.tabType === "table" && activeTab.data
+                ? `${connectionId}:${activeTab.id}:${activeTab.schema}`
+                : "";
+        if (key === editorOptionsKeyRef.current) return;
+        editorOptionsKeyRef.current = key;
+        if (!key || !activeTab || !activeTab.data) {
+            setEditorOptions(null);
+            return;
+        }
+        const cols = activeTab.data.columns;
+        const tab = activeTab;
+        void (async () => {
+            const enums: Record<string, string[]> = {};
+            const fks: Record<string, FkOption[]> = {};
+
+            // PG enums: fetched once per connection+schema, reused across tabs.
+            const cacheKey = `${connectionId}:${tab.schema}`;
+            let enumList = enumCacheRef.current.get(cacheKey);
+            if (!enumList) {
+                try {
+                    enumList = await cmd.getEnums(connectionId, tab.schema);
+                    enumCacheRef.current.set(cacheKey, enumList);
+                } catch {
+                    enumList = [];
+                }
+            }
+            for (const col of cols) {
+                const match = enumList.find((e) => e.name === col.data_type);
+                if (match) enums[col.name] = match.labels;
+            }
+
+            // FK options: referenced rows (page 1, 50) per FK column.
+            const fkCols = cols.filter((c) => c.is_fk && c.fk_ref);
+            await Promise.all(
+                fkCols.map(async (col) => {
+                    const [refTable, refCol] = col.fk_ref!;
+                    try {
+                        const result = await cmd.getTableData(
+                            connectionId,
+                            tab.schema,
+                            refTable,
+                            1,
+                            50,
+                        );
+                        const refIdx = result.columns.findIndex(
+                            (c) => c.name === refCol,
+                        );
+                        if (refIdx >= 0) {
+                            fks[col.name] = result.rows.map((row) => ({
+                                value: String(row[refIdx]),
+                                label: String(row[refIdx]),
+                            }));
+                        }
+                    } catch {
+                        // Skip this FK column; the cell keeps the plain editor.
+                    }
+                }),
+            );
+
+            // Apply only if no newer fetch superseded this one (tab/schema switched).
+            if (editorOptionsKeyRef.current === key) {
+                setEditorOptions({ enums, fks });
+            }
+        })();
+    }, [activeTab, connectionId]);
 
     // Smart default sort: apply once when data first loads for a tab
     useEffect(() => {
@@ -866,6 +951,8 @@ const onQueriesPanelResizeStart = useCallback(
                                                     onStageEdit={isMatview ? undefined : handleStageEdit}
                                                     onOpenRowDetail={handleOpenRowDetail}
                                                     readOnly={isMatview}
+                                                    enumValues={editorOptions?.enums}
+                                                    fkOptions={editorOptions?.fks}
                                                     onToggleRow={(rowIndex) => {
                                                         setSelectedRows(
                                                             (prev) => {
@@ -1013,6 +1100,8 @@ const onQueriesPanelResizeStart = useCallback(
                                                 onStageEdit={isMatview ? undefined : handleStageEdit}
                                                 onOpenRowDetail={handleOpenRowDetail}
                                                 readOnly={isMatview}
+                                                enumValues={editorOptions?.enums}
+                                                fkOptions={editorOptions?.fks}
                                                 onToggleRow={(rowIndex) => {
                                                     setSelectedRows((prev) => {
                                                         const next = new Set(

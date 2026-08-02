@@ -488,4 +488,77 @@ describe("VirtualDataGrid", () => {
     // Popover header renders the referenced table synchronously.
     expect(screen.getByText("public.users")).toBeInTheDocument();
   });
+
+  // ── GRID-C: enum + FK options fed into CellEditor ────────────────
+
+  it("renders an enum <select> with the column's labels when editing", () => {
+    const enumCols: ColumnInfo[] = [
+      { name: "status", data_type: "user_role", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    ];
+    mockGetTotalSize.mockReturnValue(36);
+    mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
+
+    render(
+      <VirtualDataGrid
+        connectionId="c1"
+        schema="public"
+        table="users"
+        rows={[["active"]]}
+        columns={enumCols}
+        hiddenColumns={new Set()}
+        selectedRows={new Set()}
+        onToggleRow={vi.fn()}
+        onToggleAll={vi.fn()}
+        dbType="postgresql"
+        tabType="table"
+        enumValues={{ status: ["active", "inactive"] }}
+      />,
+    );
+
+    const cell = screen.getByText("active");
+    fireEvent.click(cell);
+    fireEvent.keyDown(cell, { key: "Enter" });
+
+    expect(screen.getByRole("combobox")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "active" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "inactive" })).toBeInTheDocument();
+  });
+
+  it("renders a searchable FK dropdown with the referenced rows when editing", () => {
+    const fkCols: ColumnInfo[] = [
+      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["users", "id"], default_value: null, editable: true, is_generated: false },
+    ];
+    mockGetTotalSize.mockReturnValue(36);
+    mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
+
+    render(
+      <VirtualDataGrid
+        connectionId="c1"
+        schema="public"
+        table="orders"
+        rows={[[42]]}
+        columns={fkCols}
+        hiddenColumns={new Set()}
+        selectedRows={new Set()}
+        onToggleRow={vi.fn()}
+        onToggleAll={vi.fn()}
+        dbType="postgresql"
+        tabType="table"
+        fkOptions={{
+          user_id: [
+            { value: "1", label: "1 — Alice" },
+            { value: "2", label: "2 — Bob" },
+          ],
+        }}
+      />,
+    );
+
+    const cell = screen.getByText("42");
+    fireEvent.click(cell);
+    fireEvent.keyDown(cell, { key: "Enter" });
+
+    expect(screen.getByLabelText(/search foreign key/i)).toBeInTheDocument();
+    expect(screen.getByText("1 — Alice")).toBeInTheDocument();
+    expect(screen.getByText("2 — Bob")).toBeInTheDocument();
+  });
 });

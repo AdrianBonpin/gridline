@@ -5,7 +5,7 @@ import type { ColumnInfo } from "../../lib/types";
 import { abbreviateType } from "../../lib/utils";
 import { FkPreviewPopover } from "../db-viewer/FkPreviewPopover";
 import { JsonCellPopover, jsonPreview } from "../db-viewer/JsonCellPopover";
-import { CellEditor } from "./CellEditor";
+import { CellEditor, type FkOption } from "./CellEditor";
 import { CellContextMenu } from "./CellContextMenu";
 import { cellToUpdateChange, isCellEditable } from "./gridEditability";
 import { nextCell, type CellPos } from "./keyboardNav";
@@ -35,6 +35,10 @@ interface VirtualDataGridProps {
   readOnly?: boolean;
   /** When set, renders a pending-edit indicator on the staged cell at (row, col). */
   pendingCell?: { row: number; col: number } | null;
+  /** Enum labels keyed by column NAME → renders a <select> in the CellEditor. */
+  enumValues?: Record<string, string[]>;
+  /** Foreign-key reference rows keyed by column NAME → renders a searchable dropdown in the CellEditor. */
+  fkOptions?: Record<string, FkOption[]>;
 }
 
 const ROW_HEIGHT = 36;
@@ -59,6 +63,8 @@ export function VirtualDataGrid({
   getLocator,
   readOnly = false,
   pendingCell = null,
+  enumValues,
+  fkOptions,
 }: VirtualDataGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -341,6 +347,8 @@ export function VirtualDataGrid({
                 initialValue={isNull ? "" : String(cell)}
                 dataType={col.data_type}
                 nullable={col.is_nullable}
+                enumValues={enumValues?.[col.name]}
+                fkOptions={fkOptions?.[col.name]}
                 onCommit={commitEdit}
                 onCancel={() => setEditingCell(null)}
               />
@@ -364,7 +372,7 @@ export function VirtualDataGrid({
         </div>
       );
     },
-    [activeCell, columns, dbType, editingCell, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth, pendingCell],
+    [activeCell, columns, dbType, editingCell, enumValues, fkOptions, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth, pendingCell],
   );
 
   // ── context menu helpers ──────────────────────────────

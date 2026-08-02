@@ -556,4 +556,121 @@ describe("DbViewerScreen", () => {
 
         await waitFor(() => expect(getTableData).toHaveBeenCalledTimes(1));
     });
+
+    it("fetches enum labels and FK reference rows for the active table tab", async () => {
+        const getEnums = vi
+            .spyOn(commands, "getEnums")
+            .mockResolvedValue([
+                {
+                    name: "user_role",
+                    schema: "public",
+                    labels: ["admin", "user"],
+                },
+            ]);
+        const getTableData = vi
+            .spyOn(commands, "getTableData")
+            .mockResolvedValue({
+                columns: [
+                    {
+                        name: "id",
+                        data_type: "integer",
+                        is_nullable: false,
+                        is_pk: true,
+                        is_fk: false,
+                        fk_ref: null,
+                        default_value: null,
+                        editable: false,
+                        is_generated: false,
+                    },
+                ],
+                rows: [[1], [2]],
+                total_rows: 2,
+                page: 1,
+                page_size: 50,
+            } as any);
+
+        useDbViewerStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    schema: "public",
+                    table: "users",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    data: {
+                        columns: [
+                            {
+                                name: "id",
+                                data_type: "integer",
+                                is_nullable: false,
+                                is_pk: true,
+                                is_fk: false,
+                                fk_ref: null,
+                                default_value: null,
+                                editable: false,
+                                is_generated: false,
+                            },
+                            {
+                                name: "user_id",
+                                data_type: "integer",
+                                is_nullable: true,
+                                is_pk: false,
+                                is_fk: true,
+                                fk_ref: ["users", "id"],
+                                default_value: null,
+                                editable: true,
+                                is_generated: false,
+                            },
+                            {
+                                name: "role",
+                                data_type: "user_role",
+                                is_nullable: true,
+                                is_pk: false,
+                                is_fk: false,
+                                fk_ref: null,
+                                default_value: null,
+                                editable: true,
+                                is_generated: false,
+                            },
+                        ],
+                        rows: [[1, 2, "admin"]],
+                        total_rows: 1,
+                        page: 1,
+                        page_size: 50,
+                    } as any,
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "table",
+                },
+            ],
+            activeTabId: "tab-1",
+        });
+
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+
+        // Enum labels are fetched for the tab's schema (cached per schema).
+        await waitFor(() =>
+            expect(getEnums).toHaveBeenCalledWith("c1", "public"),
+        );
+        // FK reference rows are fetched from the referenced table (page 1, 50).
+        await waitFor(() =>
+            expect(getTableData).toHaveBeenCalledWith(
+                "c1",
+                "public",
+                "users",
+                1,
+                50,
+            ),
+        );
+    });
 });
