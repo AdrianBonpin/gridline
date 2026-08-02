@@ -275,6 +275,56 @@ fn build_order_clause(sorts: &[crate::models::db_viewer::SortRule]) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Row-locator / editability helpers (Task 7)
+// ---------------------------------------------------------------------------
+
+/// Decide editability from pg_attribute flags: `attgenerated` ('' or 's'/'v')
+/// and `attidentity` ('' or 'a'='ALWAYS' / 'd'='BY DEFAULT').
+/// Generated (stored) columns and IDENTITY ALWAYS columns are non-editable.
+pub(crate) fn editable_from_att(attgenerated: &str, attidentity: &str) -> bool {
+    attgenerated.is_empty() && attidentity != "a"
+}
+
+/// Assemble a PG SELECT statement from pre-formatted select items (already
+/// quoted and optionally `::text`-cast), appending `ctid` when the table has
+/// no primary key so later UPDATE/DELETE queue changes can target the exact
+/// row. `ctid` is appended last so it does not shift visible column order.
+fn build_pg_select_from_items(schema: &str, table: &str, items: Vec<String>, has_pk: bool) -> String {
+    let mut all_cols = items;
+    if !has_pk {
+        all_cols.push("ctid".to_string());
+    }
+    format!("SELECT {} FROM \"{}\".\"{}\"", all_cols.join(", "), schema, table)
+}
+
+/// Build the PG data SELECT, appending `ctid` only when the table has no PK.
+pub(crate) fn build_pg_data_select(
+    schema: &str,
+    table: &str,
+    visible_cols: &[String],
+    has_pk: bool,
+) -> String {
+    let base_cols: Vec<String> = visible_cols.iter().map(|c| format!("\"{}\"", c)).collect();
+    build_pg_select_from_items(schema, table, base_cols, has_pk)
+}
+
+/// Build the SQLite data SELECT, appending `rowid` only when the table has no
+/// PK. The table is unqualified; SQLite browsing in this app is always scoped
+/// to the `main` schema, where an unqualified name resolves identically.
+pub(crate) fn build_sqlite_data_select(
+    table: &str,
+    visible_cols: &[String],
+    has_pk: bool,
+) -> String {
+    let base_cols: Vec<String> = visible_cols.iter().map(|c| format!("\"{}\"", c)).collect();
+    let mut all_cols = base_cols;
+    if !has_pk {
+        all_cols.push("rowid".to_string());
+    }
+    format!("SELECT {} FROM \"{}\"", all_cols.join(", "), table)
+}
+
 /// Build a parameterized UPDATE SQL statement.
 ///
 /// The returned SQL uses `?` placeholders for both the SET values and the
@@ -1024,7 +1074,9 @@ pub async fn get_table_data(
     COALESCE(fk.is_fk, false) AS is_fk,
     fk.foreign_table_name,
     fk.foreign_column_name,
-    c.column_default
+    c.column_default,
+    a.attgenerated,
+    a.attidentity
 FROM information_schema.columns c
 LEFT JOIN (
     SELECT ku.column_name, true AS is_pk
@@ -1056,6 +1108,11 @@ LEFT JOIN (
         AND tc.table_schema = $1
         AND tc.table_name = $2
 ) fk ON c.column_name = fk.column_name
+LEFT JOIN pg_attribute a
+    ON a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass
+    AND a.attname = c.column_name
+    AND a.attnum > 0
+    AND NOT a.attisdropped
 WHERE c.table_schema = $1 AND c.table_name = $2
 ORDER BY c.ordinal_position"#;
             let col_rows = client
@@ -1068,11 +1125,14 @@ ORDER BY c.ordinal_position"#;
                     let is_fk: bool = r.get(4);
                     let fk_table: Option<String> = r.get(5);
                     let fk_column: Option<String> = r.get(6);
+                    let attgenerated: String = r.get(8);
+                    let attidentity: String = r.get(9);
+                    let is_pk: bool = r.get(3);
                     ColumnInfo {
                         name: r.get(0),
                         data_type: r.get(1),
                         is_nullable: r.get::<_, String>(2) == "YES",
-                        is_pk: r.get(3),
+                        is_pk,
                         is_fk,
                         fk_ref: if is_fk {
                             Some((fk_table.unwrap_or_default(), fk_column.unwrap_or_default()))
@@ -1080,8 +1140,8 @@ ORDER BY c.ordinal_position"#;
                             None
                         },
                         default_value: r.get::<_, Option<String>>(7),
-                        editable: true,
-                        is_generated: false,
+                        editable: editable_from_att(&attgenerated, &attidentity) && !is_pk,
+                        is_generated: !attgenerated.is_empty(),
                     }
                 })
                 .collect();
@@ -1100,7 +1160,8 @@ ORDER BY c.ordinal_position"#;
                 "timestamp without time zone", "timestamp with time zone",
                 "time without time zone", "time with time zone",
             ];
-            let select_cols: Vec<String> = columns
+            let has_pk = columns.iter().any(|c| c.is_pk);
+            let select_items: Vec<String> = columns
                 .iter()
                 .map(|c| {
                     let lower = c.data_type.to_lowercase();
@@ -1112,10 +1173,12 @@ ORDER BY c.ordinal_position"#;
                     }
                 })
                 .collect();
+            // `ctid` is appended last for no-PK tables so later UPDATE/DELETE
+            // queue changes can target the exact row. It stays out of `columns`.
             let data_query = format!(
-                "SELECT {} FROM \"{}\".\"{}\" WHERE 1=1{} {} LIMIT {} OFFSET {}",
-                select_cols.join(", "),
-                schema, table, filter_clause, order_clause, ps, off
+                "{} WHERE 1=1{} {} LIMIT {} OFFSET {}",
+                build_pg_select_from_items(&schema, &table, select_items, has_pk),
+                filter_clause, order_clause, ps, off
             );
             let data_rows = if filter_params.is_empty() {
                 client
@@ -1209,16 +1272,21 @@ ORDER BY c.ordinal_position"#;
                         is_fk: fk.is_some(),
                         fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
                         default_value: default_val.clone(),
-                        editable: true,
+                        editable: !*is_pk,
                         is_generated: false,
                     }
                 })
                 .collect();
 
-            // Get data (with filters and sorts applied)
+            // Get data (with filters and sorts applied).
+            // `rowid` is appended last for no-PK tables so later UPDATE/DELETE
+            // queue changes can target the exact row. It stays out of `columns`.
+            let visible_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+            let has_pk = columns.iter().any(|c| c.is_pk);
             let data_query = format!(
-                "SELECT * FROM \"{}\".\"{}\" WHERE 1=1{} {} LIMIT {} OFFSET {}",
-                schema, table, filter_clause, order_clause, ps, off
+                "{} WHERE 1=1{} {} LIMIT {} OFFSET {}",
+                build_sqlite_data_select(&table, &visible_names, has_pk),
+                filter_clause, order_clause, ps, off
             );
             let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
             let col_count = stmt.column_count();
@@ -2123,5 +2191,39 @@ mod tests {
             build_empty_table_sql("public", "users"),
             r#"DELETE FROM "public"."users""#
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Row-locator / editability helpers (Task 7)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn editable_pg_column_flags_mark_generated_and_identity_always() {
+        // generated STORED ('s') -> not editable; identity ALWAYS ('a') -> not editable
+        assert!(!editable_from_att("s", ""));
+        assert!(!editable_from_att("", "a"));
+        // plain column -> editable
+        assert!(editable_from_att("", ""));
+        // identity BY DEFAULT ('d') -> editable
+        assert!(editable_from_att("", "d"));
+    }
+
+    #[test]
+    fn pg_locator_select_adds_ctid() {
+        let sql = build_pg_data_select("public", "no_pk", &["id".into(), "name".into()], false);
+        assert!(sql.contains("ctid"), "no-PK table must select ctid; got: {}", sql);
+        assert!(sql.contains("\"public\""), "schema must be quoted; got: {}", sql);
+    }
+
+    #[test]
+    fn pg_locator_select_omits_ctid_when_pk_present() {
+        let sql = build_pg_data_select("public", "with_pk", &["id".into(), "name".into()], true);
+        assert!(!sql.contains("ctid"), "PK table must NOT select ctid; got: {}", sql);
+    }
+
+    #[test]
+    fn sqlite_locator_select_adds_rowid_for_no_pk() {
+        let sql = build_sqlite_data_select("no_pk", &["id".into(), "name".into()], false);
+        assert!(sql.contains("rowid"), "no-PK sqlite table must select rowid; got: {}", sql);
     }
 }
