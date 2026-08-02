@@ -35,4 +35,20 @@ describe("StatusDot", () => {
     fireEvent.click(dot);
     await waitFor(() => expect(pw).toHaveBeenCalledTimes(1));
   });
+
+  it("allows a re-check after the 2s debounce window", async () => {
+    vi.useFakeTimers({ now: 100_000 });
+    try {
+      const pw = vi.spyOn(commands, "getConnectionPassword").mockResolvedValue("pw");
+      vi.spyOn(commands, "testConnection").mockResolvedValue({ ok: true } as any);
+      render(<StatusDot connectionId="c1" buildConfig={() => ({ name: "P", db_type: "postgresql", host: "h", port: 5432 } as any)} />);
+      const dot = screen.getByRole("button", { name: /check connection/i });
+      fireEvent.click(dot);
+      await vi.advanceTimersByTimeAsync(2000);
+      fireEvent.click(dot);
+      expect(pw).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

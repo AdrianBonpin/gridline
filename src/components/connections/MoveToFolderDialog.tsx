@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Folder as FolderIcon, Check } from "lucide-react";
 import { AnimatedModal } from "../ui/AnimatedModal";
 import { Button } from "../ui/Button";
@@ -19,13 +19,22 @@ export function MoveToFolderDialog({
   onConfirm,
   onClose,
 }: MoveToFolderDialogProps) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [target, setTarget] = useState<string | null>(null);
+  const [selected, setSelected] = useState(false);
+
+  // Reset on close so a fresh open starts unselected (null is a valid target = Root).
+  useEffect(() => {
+    if (!open) {
+      setTarget(null);
+      setSelected(false);
+    }
+  }, [open]);
 
   const handleConfirm = () => {
-    onConfirm(selectedId);
+    onConfirm(target);
   };
 
-  const isSelected = (id: string | null) => selectedId === id;
+  const isSelected = (id: string | null) => target === id;
 
   return (
     <AnimatedModal open={open} onClose={onClose}>
@@ -36,7 +45,10 @@ export function MoveToFolderDialog({
         <div className="max-h-[300px] overflow-y-auto space-y-1 pr-1">
           <button
             type="button"
-            onClick={() => setSelectedId(null)}
+            onClick={() => {
+              setTarget(null);
+              setSelected(true);
+            }}
             className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm transition-colors cursor-pointer ${
               isSelected(null)
                 ? "bg-accent/10 text-text"
@@ -51,7 +63,10 @@ export function MoveToFolderDialog({
             <button
               key={folder.id}
               type="button"
-              onClick={() => setSelectedId(folder.id)}
+              onClick={() => {
+                setTarget(folder.id);
+                setSelected(true);
+              }}
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm transition-colors cursor-pointer ${
                 isSelected(folder.id)
                   ? "bg-accent/10 text-text"
@@ -68,7 +83,9 @@ export function MoveToFolderDialog({
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={handleConfirm}>Move</Button>
+          <Button onClick={handleConfirm} disabled={!selected}>
+            Move
+          </Button>
         </div>
       </div>
     </AnimatedModal>

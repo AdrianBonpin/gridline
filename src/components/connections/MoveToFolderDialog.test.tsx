@@ -61,4 +61,20 @@ describe("MoveToFolderDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("Move button is disabled until an option is chosen", () => {
+    render(
+      <MoveToFolderDialog
+        open
+        folders={[makeFolder("f1", "Prod")]}
+        selectedCount={1}
+        onConfirm={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    const move = screen.getByRole("button", { name: /move/i });
+    expect(move).toBeDisabled();
+    fireEvent.click(screen.getByText("Prod"));
+    expect(move).not.toBeDisabled();
+  });
 });

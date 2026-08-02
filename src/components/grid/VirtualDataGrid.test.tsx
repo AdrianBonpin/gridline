@@ -359,4 +359,55 @@ describe("VirtualDataGrid", () => {
     expect(screen.queryByText("name")).not.toBeInTheDocument();
     expect(screen.getByText("id")).toBeInTheDocument();
   });
+
+  it("renders a pending-edit dot on the pending cell", () => {
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(
+      mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })),
+    );
+
+    render(
+      <VirtualDataGrid
+        connectionId="conn-1"
+        schema="public"
+        table="users"
+        rows={mockRows}
+        columns={mockColumns}
+        hiddenColumns={new Set()}
+        selectedRows={new Set()}
+        onToggleRow={() => {}}
+        onToggleAll={() => {}}
+        dbType="postgresql"
+        tabType="table"
+        pendingCell={{ row: 0, col: 1 }}
+      />,
+    );
+
+    expect(screen.getByTestId("pending-edit-dot")).toBeInTheDocument();
+  });
+
+  it("does not render a pending-edit dot without pendingCell", () => {
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(
+      mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })),
+    );
+
+    render(
+      <VirtualDataGrid
+        connectionId="conn-1"
+        schema="public"
+        table="users"
+        rows={mockRows}
+        columns={mockColumns}
+        hiddenColumns={new Set()}
+        selectedRows={new Set()}
+        onToggleRow={() => {}}
+        onToggleAll={() => {}}
+        dbType="postgresql"
+        tabType="table"
+      />,
+    );
+
+    expect(screen.queryByTestId("pending-edit-dot")).toBeNull();
+  });
 });

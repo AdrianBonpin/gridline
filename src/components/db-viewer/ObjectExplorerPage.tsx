@@ -66,6 +66,16 @@ const SINGULAR_LABELS: Record<ObjectType, string> = {
     procedures: "procedure",
 };
 
+/** Natural plural for empty-state copy, derived from SINGULAR_LABELS with known irregulars mapped explicitly. */
+function emptyPlural(type: ObjectType): string {
+    const singular = SINGULAR_LABELS[type];
+    const irregulars: Record<string, string> = {
+        index: "indexes",
+        constraint: "constraints",
+    };
+    return irregulars[singular] ?? `${singular}s`;
+}
+
 const ICONS: Record<ObjectType, React.ReactNode> = {
     functions: (
         <FunctionSquare size={14} className="text-text-muted shrink-0" />
@@ -1303,11 +1313,9 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
 
                     {!loading && !error && filtered.length === 0 && (
                         <div className="px-3 py-2 text-sm text-text-muted">
-                            {items === null
-                                ? `No ${label.toLowerCase()} found`
-                                : searchQuery
-                                  ? `No ${label.toLowerCase()} matching "${searchQuery}"`
-                                  : `No ${label.toLowerCase()} found in ${currentSchema || "current schema"}`}
+                            {searchQuery
+                                ? `No ${emptyPlural(type)} matching "${searchQuery}"`
+                                : `No ${emptyPlural(type)} found`}
                         </div>
                     )}
 

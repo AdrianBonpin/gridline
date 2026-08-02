@@ -133,6 +133,28 @@ describe("ObjectExplorerPage", () => {
     });
   });
 
+  it("shows 'No indexes found' when getIndexes returns []", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(commands, "getIndexes").mockResolvedValue([]);
+    render(<ObjectExplorerPage connectionId="c1" />);
+    await user.click(screen.getByLabelText("Object type"));
+    await user.click(screen.getByText("Indexes"));
+    await waitFor(() =>
+      expect(screen.getByText("No indexes found")).toBeInTheDocument(),
+    );
+  });
+
+  it("shows an error message when getIndexes rejects", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(commands, "getIndexes").mockRejectedValue(new Error("boom"));
+    render(<ObjectExplorerPage connectionId="c1" />);
+    await user.click(screen.getByLabelText("Object type"));
+    await user.click(screen.getByText("Indexes"));
+    await waitFor(() =>
+      expect(screen.getByText("boom")).toBeInTheDocument(),
+    );
+  });
+
   it("procedures type filters getFunctions to kind === 'p'", async () => {
     const user = userEvent.setup();
     vi.spyOn(commands, "getFunctions").mockResolvedValue([

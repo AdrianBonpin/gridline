@@ -34,6 +34,8 @@ interface VirtualDataGridProps {
   getLocator?: (row: unknown[]) => Record<string, unknown>;
   onOpenFk?: (rowIndex: number) => void;
   readOnly?: boolean;
+  /** When set, renders a pending-edit indicator on the staged cell at (row, col). */
+  pendingCell?: { row: number; col: number } | null;
 }
 
 const ROW_HEIGHT = 36;
@@ -58,6 +60,7 @@ export function VirtualDataGrid({
   getLocator,
   onOpenFk,
   readOnly = false,
+  pendingCell = null,
 }: VirtualDataGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -236,6 +239,7 @@ export function VirtualDataGrid({
       const editable = isCellEditable(col, tabType, dbType, readOnly);
       const isActive = activeCell?.row === rowIndex && activeCell?.col === colIndex;
       const isEditing = editingCell?.row === rowIndex && editingCell?.col === colIndex;
+      const isPending = pendingCell?.row === rowIndex && pendingCell?.col === colIndex;
 
       const handleJsonClick = (e: React.MouseEvent) => {
         if (isJson) {
@@ -336,10 +340,16 @@ export function VirtualDataGrid({
           ) : (
             String(cell)
           )}
+          {isPending && (
+            <span
+              className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400"
+              data-testid="pending-edit-dot"
+            />
+          )}
         </div>
       );
     },
-    [activeCell, columns, dbType, editingCell, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth],
+    [activeCell, columns, dbType, editingCell, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth, pendingCell],
   );
 
   // ── context menu helpers ──────────────────────────────
