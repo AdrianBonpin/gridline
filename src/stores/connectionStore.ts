@@ -13,8 +13,9 @@ interface ConnectionState {
   toggleFavorite: (id: string) => Promise<void>;
   loadTagOrder: () => Promise<void>;
   setTagOrder: (order: string[]) => Promise<void>;
-  createConnection: (input: ConnectionInput) => Promise<void>;
+  createConnection: (input: ConnectionInput) => Promise<Connection>;
   deleteConnection: (id: string) => Promise<void>;
+  duplicateConnection: (id: string) => Promise<Connection>;
   createFolder: (input: FolderInput) => Promise<void>;
   updateFolder: (id: string, input: FolderInput) => Promise<void>;
   deleteFolder: (id: string) => Promise<void>;
@@ -95,6 +96,36 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       await cmd.saveConnectionSshPassphrase(conn.id, input.ssh_passphrase);
     }
     set((s) => ({ connections: [...s.connections, conn] }));
+    return conn;
+  },
+  duplicateConnection: async (id) => {
+    const source = get().connections.find((c) => c.id === id);
+    if (!source) throw new Error("Connection not found");
+    // Passwords live in the OS keychain and are NEVER copied; the duplicate
+    // starts unkeyed and with no favorite flag.
+    const input: ConnectionInput = {
+      name: `${source.name} (copy)`,
+      db_type: source.db_type,
+      host: source.host,
+      port: source.port,
+      username: source.username ?? null,
+      database: source.database ?? null,
+      folder_id: source.folder_id,
+      tag_ids: source.tag_ids ?? [],
+      environment: source.environment ?? null,
+      ssh_host: source.ssh_host ?? null,
+      ssh_port: source.ssh_port ?? null,
+      ssh_user: source.ssh_user ?? null,
+      ssh_auth_method: (source.ssh_auth_method as ConnectionInput["ssh_auth_method"]) ?? null,
+      ssh_private_key_path: source.ssh_private_key_path ?? null,
+      ssl_mode: (source.ssl_mode as ConnectionInput["ssl_mode"]) ?? null,
+      ssl_ca_path: source.ssl_ca_path ?? null,
+      ssl_cert_path: source.ssl_cert_path ?? null,
+      ssl_key_path: source.ssl_key_path ?? null,
+      password: null,
+      use_keychain: false,
+    };
+    return get().createConnection(input);
   },
   deleteConnection: async (id) => {
     await cmd.deleteConnection(id);

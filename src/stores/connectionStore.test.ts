@@ -225,6 +225,30 @@ describe("favorites / recents / move-selection", () => {
     expect(commands.recordRecentConnection).toHaveBeenCalledWith("c1");
   });
 
+  describe("duplicateConnection", () => {
+    it("copies fields with a '(copy)' name and favorite false", async () => {
+      const src = makeConn({ id: "c1", name: "Prod", folder_id: "f1", tag_ids: ["t1"], favorite: true });
+      useConnectionStore.setState({ connections: [src] });
+      const created = { ...src, id: "c2", name: "Prod (copy)", favorite: false, keychain_ref: null };
+      vi.spyOn(commands, "createConnection").mockResolvedValue(created as any);
+      const out = await useConnectionStore.getState().duplicateConnection("c1");
+      expect(out.name).toBe("Prod (copy)");
+      expect(out.favorite).toBe(false);
+      expect(commands.createConnection).toHaveBeenCalledWith(expect.objectContaining({
+        name: "Prod (copy)",
+        host: src.host,
+        folder_id: "f1",
+        tag_ids: ["t1"],
+        password: null,
+      }));
+    });
+
+    it("throws when the connection is missing", async () => {
+      useConnectionStore.setState({ connections: [] });
+      await expect(useConnectionStore.getState().duplicateConnection("nope")).rejects.toThrow("not found");
+    });
+  });
+
   it("moveSelectionToFolder moves connections and reparents folders", async () => {
     useConnectionStore.setState({
       connections: [makeConn({ id: "c1", folder_id: null })],

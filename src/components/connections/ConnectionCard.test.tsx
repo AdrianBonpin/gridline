@@ -1,12 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DndContext } from "@dnd-kit/core";
 import { ConnectionCard } from "./ConnectionCard";
 import type { Connection, Tag } from "../../lib/types";
 import { useUiStore } from "../../stores/uiStore";
-import { useConnectionStore } from "../../stores/connectionStore";
-import * as commands from "../../lib/commands";
 
 const tags: Tag[] = [
   { id: "t1", name: "production", color: "#ef4444", created_at: "" },
@@ -26,9 +24,6 @@ describe("ConnectionCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useUiStore.setState({ selectedItemIds: [] });
-    useConnectionStore.setState({ connections: [], toggleFavorite: vi.fn() });
-    vi.spyOn(commands, "getConnectionPassword").mockResolvedValue("pw");
-    vi.spyOn(commands, "testConnection").mockResolvedValue({ ok: true, latency_ms: 0 });
   });
 
   it("renders name and host", () => {
@@ -81,18 +76,16 @@ describe("ConnectionCard", () => {
     expect(useUiStore.getState().selectedItemIds).toContain(conn.id);
   });
 
-  it("renders a favorite star and toggles it via the store", async () => {
-    const toggleFavorite = vi.fn();
-    useConnectionStore.setState({ connections: [conn], toggleFavorite });
+  it("no longer renders a favorite star (replaced by kebab menu)", () => {
     render(<ConnectionCard connection={conn} tags={tags} />, { wrapper: Wrapper });
-    const star = screen.getByLabelText(/favorite/i);
-    fireEvent.click(star);
-    expect(toggleFavorite).toHaveBeenCalledWith("c1");
+    expect(screen.queryByLabelText(/favorite|unfavorite/i)).not.toBeInTheDocument();
   });
 
-  it("shows a filled star when favorite is true", () => {
-    useConnectionStore.setState({ connections: [] });
+  it("no longer renders a status indicator and still shows name/host/tags", () => {
     render(<ConnectionCard connection={{ ...conn, favorite: true }} tags={tags} />, { wrapper: Wrapper });
-    expect(screen.getByLabelText(/unfavorite/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/check connection/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Prod DB")).toBeInTheDocument();
+    expect(screen.getByText("prod.example.com:5432")).toBeInTheDocument();
+    expect(screen.getByText("production")).toBeInTheDocument();
   });
 });

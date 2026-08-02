@@ -3,12 +3,10 @@ import type { Connection, ConnectionInput, Tag } from "../../lib/types";
 import { DbIcon, DB_LABELS } from "../../lib/dbIcons";
 import { ENV_LABELS, ENV_COLORS } from "../../lib/environment";
 import { TagBadge } from "../tags/TagBadge";
-import { Check, GripVertical, Star } from "lucide-react";
+import { Check, GripVertical } from "lucide-react";
 import { useUiStore } from "../../stores/uiStore";
-import { useConnectionStore } from "../../stores/connectionStore";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { StatusDot } from "./StatusDot";
 
 interface ConnectionCardProps {
     connection: Connection;
@@ -51,7 +49,6 @@ function ConnectionCardBase({
 }: ConnectionCardProps) {
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const toggleItemSelection = useUiStore((s) => s.toggleItemSelection);
-    const toggleFavorite = useConnectionStore((s) => s.toggleFavorite);
 
     const { attributes, listeners, setNodeRef, transform, isDragging } =
         useDraggable({
@@ -83,11 +80,6 @@ function ConnectionCardBase({
         }
     };
 
-    const handleFavorite = (e: React.MouseEvent) => {
-        e.stopPropagation();
-        toggleFavorite(connection.id);
-    };
-
     return (
         <div
             ref={setNodeRef}
@@ -107,17 +99,6 @@ function ConnectionCardBase({
             >
                 <GripVertical size={14} className="text-text-muted" />
             </div>
-            <button
-                type="button"
-                onClick={handleFavorite}
-                aria-label={connection.favorite ? "Unfavorite" : "Favorite"}
-                className="absolute top-2 left-2 z-10 p-0.5 rounded transition-colors hover:bg-surface-raised focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-            >
-                <Star
-                    size={14}
-                    className={connection.favorite ? "text-amber-400 fill-amber-400" : "text-text-muted"}
-                />
-            </button>
             <div className="p-4">
                 <div className="flex items-center gap-3 mb-2">
                     <div className="w-9 h-9 rounded-lg bg-surface-raised border border-border flex items-center justify-center overflow-hidden">
@@ -150,12 +131,6 @@ function ConnectionCardBase({
                     {cardTags.map((t) => (
                         <TagBadge key={t.id} tag={t} onToggle={onTagToggle} />
                     ))}
-                </div>
-                <div className="mt-2 flex items-center">
-                    <StatusDot
-                        connectionId={connection.id}
-                        buildConfig={(pw) => buildConfigFromConnection(connection, pw)}
-                    />
                 </div>
             </div>
             <button
