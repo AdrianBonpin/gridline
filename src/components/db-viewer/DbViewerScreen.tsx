@@ -16,7 +16,6 @@ import { TableTree } from "./TableTree";
 import { ObjectExplorerPage } from "./ObjectExplorerPage";
 import { TabBar } from "./TabBar";
 import { VirtualDataGrid } from "../grid/VirtualDataGrid";
-import { ChangesQueuePanel } from "./ChangesQueuePanel";
 import { TableControls } from "./TableControls";
 import { EditConnectionModal } from "./EditConnectionModal";
 import { useDbConnection } from "../../hooks/useDbConnection";
@@ -1060,7 +1059,6 @@ const onQueriesPanelResizeStart = useCallback(
                             }}
                         />
                     ) : null}
-                    {(currentView === "db-viewer" || currentView === "queries") && <ChangesQueuePanel />}
                 </div>
                 {currentConnection && (
                     <EditConnectionModal

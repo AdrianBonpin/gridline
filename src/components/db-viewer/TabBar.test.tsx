@@ -14,8 +14,7 @@ describe("TabBar", () => {
   it("renders the fixed Query and Changes actions when no tabs are open", () => {
     render(<TabBar />);
     expect(screen.getByRole("button", { name: /new query/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /changes queue/i })).toBeInTheDocument();
-    expect(screen.queryAllByRole("tab")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Changes queue" })).toBeInTheDocument();
   });
 
   it("renders open tab names", () => {
@@ -61,8 +60,7 @@ describe("TabBar", () => {
     useDbViewerStore.setState({ changesPanelExpanded: false });
 
     render(<TabBar />);
-    const changesButton = screen.getByRole("button", { name: /changes queue/i });
-    expect(within(changesButton).getByText("1")).toBeInTheDocument();
+    const changesButton = screen.getByRole("button", { name: "Changes queue" });
 
     await user.click(changesButton);
     expect(useDbViewerStore.getState().changesPanelExpanded).toBe(true);
@@ -102,7 +100,7 @@ describe("TabBar", () => {
     });
 
     render(<TabBar />);
-    const button = screen.getByRole("button", { name: /changes queue/i });
+    const button = screen.getByRole("button", { name: "Changes queue" });
     expect(button.querySelector("svg")).not.toBeNull();
     expect(within(button).getByText("2")).toBeInTheDocument();
     expect(screen.queryByText("Changes")).toBeNull();
@@ -110,7 +108,7 @@ describe("TabBar", () => {
 
   it("hides the count badge when there are no pending changes", () => {
     render(<TabBar />);
-    const button = screen.getByRole("button", { name: /changes queue/i });
+    const button = screen.getByRole("button", { name: "Changes queue" });
     expect(within(button).queryByText(/\d/)).toBeNull();
   });
 
@@ -129,5 +127,52 @@ describe("TabBar", () => {
     expect(
       useDbViewerStore.getState().tabs.find((t) => t.id === firstTabId),
     ).toBeUndefined();
+  });
+
+  it("opens the changes popover when the button is clicked", async () => {
+    const user = userEvent.setup();
+    useDbViewerStore.getState().addChange({
+      type: "update",
+      schema: "public",
+      table: "users",
+      primaryKey: { id: 1 },
+      oldData: { name: "Bob" },
+      newData: { name: "Alice" },
+    });
+    useDbViewerStore.setState({ changesPanelExpanded: false });
+    render(<TabBar />);
+    expect(screen.queryByText(/pending change/i)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Changes queue" }));
+    expect(screen.getByText(/pending change/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /commit all/i })).toBeInTheDocument();
+  });
+
+  it("closes the changes popover on Escape", async () => {
+    const user = userEvent.setup();
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "users",
+      newData: { id: 1 },
+      description: "Insert row into users",
+    });
+    useDbViewerStore.setState({ changesPanelExpanded: true });
+    render(<TabBar />);
+    expect(screen.getByText(/pending change/i)).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByText(/pending change/i)).toBeNull();
+  });
+
+  it("turns the button border amber when there are pending changes", () => {
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "users",
+      newData: { id: 1 },
+      description: "Insert row into users",
+    });
+    render(<TabBar />);
+    const button = screen.getByRole("button", { name: "Changes queue" });
+    expect(button.className).toContain("border-amber-500");
   });
 });

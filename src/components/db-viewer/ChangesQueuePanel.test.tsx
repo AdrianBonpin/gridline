@@ -32,8 +32,9 @@ describe("ChangesQueuePanel", () => {
     expect(screen.getByText(/users/i)).toBeInTheDocument();
   });
 
-  it("toggle button flips the store expanded state", async () => {
+  it("close button collapses the popover", async () => {
     const user = userEvent.setup();
+    useDbViewerStore.setState({ changesPanelExpanded: true });
     useDbViewerStore.getState().addChange({
       type: "update",
       schema: "public",
@@ -43,10 +44,8 @@ describe("ChangesQueuePanel", () => {
       newData: { name: "Alice" },
     });
     render(<ChangesQueuePanel />);
-    await user.click(screen.getByText(/1 pending change/i));
+    await user.click(screen.getByRole("button", { name: /close changes queue/i }));
     expect(useDbViewerStore.getState().changesPanelExpanded).toBe(false);
-    await user.click(screen.getByText(/1 pending change/i));
-    expect(useDbViewerStore.getState().changesPanelExpanded).toBe(true);
   });
 
   it("cancel button changes status", async () => {

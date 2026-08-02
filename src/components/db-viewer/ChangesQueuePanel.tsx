@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { X, Check, ChevronUp, ChevronDown } from "lucide-react";
+import { X, Check } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -74,7 +74,6 @@ export function ChangesQueuePanel() {
   const markChangeCommitted = useDbViewerStore((state) => state.markChangeCommitted);
   const markChangeFailed = useDbViewerStore((state) => state.markChangeFailed);
   const notify = useNotificationStore((state) => state.notify);
-  const expanded = useDbViewerStore((state) => state.changesPanelExpanded);
   const toggleChangesPanel = useDbViewerStore(
     (state) => state.toggleChangesPanel,
   );
@@ -124,62 +123,43 @@ export function ChangesQueuePanel() {
   }
 
   const pendingCount = changesQueue.filter((c) => c.status === "pending").length;
-  const processedCount = changesQueue.filter(
-    (c) => c.status === "committed" || c.status === "failed",
-  ).length;
-
   const changeWord = pendingCount === 1 ? "change" : "changes";
 
   return (
-    <div className="border-t border-border bg-surface">
-      <div
-        role="button"
-        tabIndex={0}
-        aria-label="Toggle changes panel"
-        onClick={() => toggleChangesPanel()}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") toggleChangesPanel(); }}
-        className="flex w-full items-center justify-between px-4 py-2 text-sm text-text hover:bg-surface-raised/50 cursor-pointer"
-      >
+    <div className="flex flex-col">
+      <div className="flex items-center justify-between px-4 py-2 text-sm text-text border-b border-border">
+        <span className="font-medium">
+          Changes Queue ({pendingCount} pending {changeWord})
+        </span>
         <div className="flex items-center gap-2">
-          {expanded ? (
-            <ChevronDown className="h-4 w-4 text-text-muted" />
-          ) : (
-            <ChevronUp className="h-4 w-4 text-text-muted" />
-          )}
-          <span className="font-medium">
-            Changes Queue ({pendingCount} pending {changeWord}, {processedCount}{" "}
-            processed)
-          </span>
-          {pendingCount > 0 && (
-            <span className="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-muted">
-              {pendingCount}
-            </span>
-          )}
+          <button
+            type="button"
+            disabled={pendingCount === 0}
+            onClick={handleCommitAll}
+            className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+          >
+            Commit All
+          </button>
+          <button
+            type="button"
+            aria-label="Close changes queue"
+            onClick={() => toggleChangesPanel()}
+            className="rounded p-1 text-text-muted hover:bg-surface-raised hover:text-text cursor-pointer"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
-        <button
-          type="button"
-          disabled={pendingCount === 0}
-          onClick={(e) => {
-            e.stopPropagation();
-            handleCommitAll();
-          }}
-          className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
-        >
-          Commit All
-        </button>
       </div>
 
-      {expanded && (
-        <div className="max-h-48 overflow-y-auto">
-          {changesQueue.map((change) => (
-            <ChangeRow
-              key={change.id}
-              change={change}
-              onCancel={() => cancelChange(change.id)}
-            />
-          ))}
-        </div>
-      )}
+      <div className="max-h-64 overflow-y-auto">
+        {changesQueue.map((change) => (
+          <ChangeRow
+            key={change.id}
+            change={change}
+            onCancel={() => cancelChange(change.id)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
