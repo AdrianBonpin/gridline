@@ -1,18 +1,46 @@
 import { memo } from "react";
-import type { Connection, Tag } from "../../lib/types";
+import type { Connection, ConnectionInput, Tag } from "../../lib/types";
 import { DbIcon, DB_LABELS } from "../../lib/dbIcons";
 import { ENV_LABELS, ENV_COLORS } from "../../lib/environment";
 import { TagBadge } from "../tags/TagBadge";
-import { Check, GripVertical } from "lucide-react";
+import { Check, GripVertical, Star } from "lucide-react";
 import { useUiStore } from "../../stores/uiStore";
+import { useConnectionStore } from "../../stores/connectionStore";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
+import { StatusDot } from "./StatusDot";
 
 interface ConnectionCardProps {
     connection: Connection;
     tags: Tag[];
     onTagToggle?: (id: string) => void;
     onOpenDbViewer?: (connectionId: string) => void;
+}
+
+export function buildConfigFromConnection(conn: Connection, password: string | null): ConnectionInput {
+    return {
+        name: conn.name,
+        db_type: conn.db_type,
+        host: conn.host,
+        port: conn.port,
+        username: conn.username,
+        folder_id: conn.folder_id,
+        tag_ids: conn.tag_ids,
+        password,
+        database: conn.database ?? null,
+        environment: conn.environment ?? null,
+        ssh_host: conn.ssh_host ?? null,
+        ssh_port: conn.ssh_port ?? null,
+        ssh_user: conn.ssh_user ?? null,
+        ssh_auth_method: (conn.ssh_auth_method as ConnectionInput["ssh_auth_method"]) ?? null,
+        ssh_private_key_path: conn.ssh_private_key_path ?? null,
+        ssh_password: null,
+        ssh_passphrase: null,
+        ssl_mode: (conn.ssl_mode as ConnectionInput["ssl_mode"]) ?? null,
+        ssl_ca_path: conn.ssl_ca_path ?? null,
+        ssl_cert_path: conn.ssl_cert_path ?? null,
+        ssl_key_path: conn.ssl_key_path ?? null,
+    };
 }
 
 function ConnectionCardBase({
@@ -23,6 +51,7 @@ function ConnectionCardBase({
 }: ConnectionCardProps) {
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const toggleItemSelection = useUiStore((s) => s.toggleItemSelection);
+    const toggleFavorite = useConnectionStore((s) => s.toggleFavorite);
 
     const { attributes, listeners, setNodeRef, transform, isDragging } =
         useDraggable({
@@ -54,6 +83,11 @@ function ConnectionCardBase({
         }
     };
 
+    const handleFavorite = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        toggleFavorite(connection.id);
+    };
+
     return (
         <div
             ref={setNodeRef}
@@ -73,6 +107,17 @@ function ConnectionCardBase({
             >
                 <GripVertical size={14} className="text-text-muted" />
             </div>
+            <button
+                type="button"
+                onClick={handleFavorite}
+                aria-label={connection.favorite ? "Unfavorite" : "Favorite"}
+                className="absolute top-2 left-2 z-10 p-0.5 rounded transition-colors hover:bg-surface-raised focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            >
+                <Star
+                    size={14}
+                    className={connection.favorite ? "text-amber-400 fill-amber-400" : "text-text-muted"}
+                />
+            </button>
             <div className="p-4">
                 <div className="flex items-center gap-3 mb-2">
                     <div className="w-9 h-9 rounded-lg bg-surface-raised border border-border flex items-center justify-center overflow-hidden">
@@ -105,6 +150,12 @@ function ConnectionCardBase({
                     {cardTags.map((t) => (
                         <TagBadge key={t.id} tag={t} onToggle={onTagToggle} />
                     ))}
+                </div>
+                <div className="mt-2 flex items-center">
+                    <StatusDot
+                        connectionId={connection.id}
+                        buildConfig={(pw) => buildConfigFromConnection(connection, pw)}
+                    />
                 </div>
             </div>
             <button
