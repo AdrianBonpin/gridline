@@ -22,10 +22,10 @@ Most database GUI clients either lock essential productivity features behind pay
 | Object explorer depth | Tables, views | Tables, views | **Functions, Triggers, Enums, Sequences, Extensions** |
 | Indexes, constraints, matviews, procedures | 🔒 paid | ❌ | **✅ Full object views** |
 | ER diagram / schema visualizer | ❌ (planned) | ❌ (paid only) | **✅ Interactive React Flow** |
-| Inline cell editing | ✅ | ✅ | **✅ Inline editing** (double-click / Enter, ctid/rowid locator, stale-write guard) |
-| Keyboard cell navigation | ✅ | ✅ | **✅** |
-| Cell copy (right-click / Ctrl+C) | ✅ | ✅ | **✅** |
-| Row detail drawer | ✅ | ✅ | **✅** |
+| Inline cell editing | ✅ | ✅ | **✅ Inline editing** (double-click / Enter, ctid/rowid locator, stale-write guard; optimistic staged values + pending dot from the changes queue; smart editors — PG enum dropdowns and searchable FK dropdowns of referenced rows) |
+| Keyboard cell navigation | ✅ | ✅ | **✅** (arrows + Tab wrap, Esc cancels editing) |
+| Cell copy (right-click / Ctrl+C) | ✅ | ✅ | **✅** (context menu: Copy / Copy JSON / Edit / Set NULL / Open FK / View Row / Select Row) |
+| Row detail drawer | ✅ | ✅ | **✅** (via context menu View Row) |
 | Visual filter builder | ✅ | ✅ | **✅** (drag-and-drop, type-aware operators) |
 | SSH tunneling | 🟡 (likely paid) | ✅ | **✅ Full tunnel (password + key auth, keychain)** |
 | OS credential vault | ✅ | ✅ | **Keychain / Secret Service** |
@@ -128,13 +128,13 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 - **Column Management** — resize with drag handles (double-click to auto-fit), show/hide per column, multi-column sort
 - **Server-Side Filtering & Sorting** — filters and sorts pushed to SQL WHERE/ORDER BY
 - **Export** — JSON, CSV, SQL, Markdown via toolbar
-- **FK Preview** — click a foreign key cell to preview the referenced row
+- **FK Preview** — ↗ icon at the start of FK cells (or context menu → Open FK reference) opens a popover with the referenced row; opens a filtered tab on demand
 - **JSON/JSONB Viewer** — popover with formatted/raw tabs and copy button
 - **Auto-Refresh** — configurable interval timer
-- **Inline Cell Editing** — double-click/Enter to edit cells; changes stage through the queue → Commit All (ctid/rowid locator for no-PK tables, PK/generated/identity read-only, stale-write guard via affected-row-count)
-- **Keyboard Navigation** — arrow keys + Tab/Shift+Tab wrap
-- **Cell Copy + Context Menu** — right-click / Ctrl+C copy on selection
-- **Row Detail Drawer** — right-drawer per-row inspection
+- **Inline Cell Editing** — double-click/Enter to edit cells; changes stage through the queue → Commit All (ctid/rowid locator for no-PK tables, PK/generated/identity read-only, stale-write guard via affected-row-count). Cells show the staged value + an amber pending dot immediately (queue is the source of truth; dot clears on commit, values survive until refetch); queue cards show an old → new diff; re-editing a cell replaces its queue entry
+- **Smart Cell Editors** — PG enum columns edit via a dropdown of enum labels; FK columns edit via a searchable dropdown of referenced rows (one row per option showing the first 4 referenced columns, FK-popover styling)
+- **Keyboard Navigation** — arrow keys + Tab/Shift+Tab wrap; Esc cancels editing even when the editor has lost focus
+- **Cell Copy + Context Menu** — right-click / Ctrl+C copy; menu items: Copy, Copy JSON, Edit, Set NULL, Open FK reference, View Row, Select Row; closes on outside click/Esc
 - **Visual Filter Builder** — drag-and-drop column palette with type-aware operators (AND semantics, persists per tab)
 
 ### PostgreSQL Administrative Tools

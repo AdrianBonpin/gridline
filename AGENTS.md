@@ -207,7 +207,7 @@ cargo test               # Rust tests
 | Folder tag matching | ✅ | When any filter is active, folder cards show only if the folder matches a selected tag OR contains matching connections (directly or in subfolders) |
 | DB type filter (Postgres/MySQL/SQLite/Redis) | ✅ | Dropdown with checkboxes + Clear all; folder cards hidden when their contents don't match the DB type |
 | Environment filter | ✅ | Select in Filters dropdown: All / Production / Staging / Development / None (unassigned); counts toward active badge |
-| Global search (Cmd+K) | ✅ | Connection URL detection auto-fills new-connection form; shows results from ALL folders as if at root (folder scope bypassed while searching); breadcrumb shows "Showing Search Results" with Clear button |
+| Global search (Cmd+K) | ✅ | Connection URL detection auto-fills new-connection form; shows results from ALL folders as if at root (folder scope bypassed while searching); breadcrumb shows "Showing Search Results" with Clear button; **Esc while the search is focused clears the query, exits search mode and blurs** |
 | Connection name editing | ✅ | Name field in GeneralTab edit form |
 | Import/Export connections (JSON) | ✅ | Bulk import with validation, skipped-record reporting |
 | Bulk select + delete connections/folders | ✅ | Checkbox selection with confirmation dialog |
@@ -215,7 +215,7 @@ cargo test               # Rust tests
 | Inline tag creation | ✅ | "Create first tag" inline form (name + color) in SearchableTagPicker empty state |
 | Move-to-folder bulk action | ✅ | Selection toolbar → Move to Folder dialog (folder picker, move confirmed via dialog) |
 | Favorites / Recent connections | ✅ | Star toggle in the connection card ⋮ menu (persisted `favorite` flag); Recent connections row (top 8 via `getRecentConnections`) |
-| Connection status indicator on cards | ✅ | Kebab menu → Test connection with inline idle/checking/online/offline result, on-demand via keychain + `testConnection` |
+| Connection status indicator on cards | ✅ | Kebab menu → Test connection with inline idle/checking/online/offline result, on-demand via keychain + `testConnection`. **Reports real `server_version` + `latency_ms`** (PG/MySQL/SQLite queries + connect timing in the Rust backend); shows `Online · 16.4 · 42ms` or the error, re-check debounced 2s |
 | Connection card actions menu (⋮) | ✅ | Kebab dropdown: Favorite toggle, Test connection (inline status), Manage submenu (Edit… / Duplicate / Delete…) |
 
 ### Database Viewer
@@ -245,11 +245,12 @@ cargo test               # Rust tests
 | Table menu actions | ✅ | Copy table schema (DDL via pg_dump / sqlite_master), Empty Table (DELETE) / Delete Table (DROP) through the queue with confirm, export stubs wired (JSON/CSV/SQL/Markdown) |
 | Edit connection modal (from DB viewer) | ✅ | AnimatedModal with keychain password fetch on test |
 | Connection drop banner | ✅ | Auto-detects broken connections with reconnect prompt |
-| Inline cell editing | ✅ | Double-click/Enter edits a cell; commit stages an `update` change in the queue → Commit All. No-PK tables use ctid/rowid locator; PK/generated/identity columns and views/matviews are read-only. Stale-write protection via affected-row-count check. |
+| Inline cell editing | ✅ | Double-click/Enter edits a cell; commit stages an `update` change in the queue → Commit All. No-PK tables use ctid/rowid locator; PK/generated/identity columns and views/matviews are read-only. Stale-write protection via affected-row-count check. **Optimistic UI**: the changes queue is the single source of truth — `deriveStagedValues` feeds staged values + a pending amber dot back into the grid (dot clears on commit, values survive until refetch); re-editing the same cell replaces the queue entry (original `oldData` kept); Clear All removes dots instantly; queue cards show an old → new value diff. **Smart editors**: PG enum columns render a `<select>` of enum labels; FK columns render a searchable dropdown of referenced rows (one row per option showing the first 4 referenced columns, FK-popover styling, 360px fixed, portal to body); `text`/`json`/`jsonb` use a single-line scrolling textarea. |
 | Virtualized data grid | ✅ | Row-level virtualization via @tanstack/react-virtual `useVirtualizer`; handles 100k+ rows |
-| Row detail / expandable row view | ✅ | RowDetailDrawer: right-drawer per row |
-| Keyboard cell navigation (arrow keys, Tab) | ✅ | Arrow keys + Tab/Shift+Tab wrap (`keyboardNav`) |
-| Cell-level copy (right-click or Ctrl+C) | ✅ | CellContextMenu: right-click / Ctrl/Cmd+C on selection |
+| Row detail / expandable row view | ✅ | RowDetailDrawer: right-drawer per row, opened via the cell context menu **View Row** |
+| Keyboard cell navigation (arrow keys, Tab) | ✅ | Arrow keys + Tab/Shift+Tab wrap (`keyboardNav`); Enter opens the editor; **Esc cancels editing even after the editor lost focus** (document-level listener) and closes the context menu |
+| Cell-level copy (right-click or Ctrl+C) | ✅ | CellContextMenu: Copy / Copy JSON (jsonb) / Edit / Set NULL / Open FK reference + **View Row** and **Select Row** items; right-click or Ctrl/Cmd+C on the focused cell; menu closes on outside click/Esc |
+| FK reference | ✅ | Small ↗ icon at the start of FK cells opens the FK preview popover (also via context menu Open FK reference); plain click on the cell selects/edits and does not open it |
 
 ### Object Explorer (non-table objects)
 | Feature | Status | Details |
