@@ -29,6 +29,8 @@ export interface QueueItem {
   primaryKey?: Record<string, unknown>;
   oldData?: Record<string, unknown> | null;
   newData?: Record<string, unknown> | null;
+  columns?: string[];
+  rows?: unknown[][];
   status: QueueStatus;
   error?: string | null;
   description?: string | null;

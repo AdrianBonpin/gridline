@@ -165,7 +165,9 @@ export type ChangeItemType =
   | "update"
   | "delete"
   | "create_index"
-  | "drop_index";
+  | "drop_index"
+  | "bulk_insert"
+  | "empty_table";
 
 export interface ChangeItem {
   type: ChangeItemType;

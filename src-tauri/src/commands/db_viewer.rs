@@ -1233,6 +1233,15 @@ pub async fn execute_change(
                     client.execute(sql, &[]).await.map_err(|e| e.to_string())?;
                     return Ok(());
                 }
+                Change::BulkInsert { .. } => {
+                    return Err("bulk_insert changes are not implemented yet".to_string());
+                }
+                Change::DropTable { .. } => {
+                    return Err("drop_table changes are not implemented yet".to_string());
+                }
+                Change::EmptyTable { .. } => {
+                    return Err("empty_table changes are not implemented yet".to_string());
+                }
             };
 
             // Box each value for trait-object binding (`$N` placeholders). The
@@ -1301,6 +1310,15 @@ pub async fn execute_change(
                 Change::AlterTable { sql, .. } => {
                     conn.execute(sql, []).map_err(|e| e.to_string())?;
                     return Ok(());
+                }
+                Change::BulkInsert { .. } => {
+                    return Err("bulk_insert changes are not implemented yet".to_string());
+                }
+                Change::DropTable { .. } => {
+                    return Err("drop_table changes are not implemented yet".to_string());
+                }
+                Change::EmptyTable { .. } => {
+                    return Err("empty_table changes are not implemented yet".to_string());
                 }
             };
 

@@ -1,0 +1,41 @@
+import { describe, it, expect } from "vitest";
+import { buildChangePayload } from "./changePayload";
+import type { QueueItem } from "../stores/dbViewerStore";
+
+const base = { id: "c1", status: "pending" as const, createdAt: 0 };
+
+describe("buildChangePayload", () => {
+  it("insert -> {schema, table, data}", () => {
+    const item: QueueItem = { ...base, type: "insert", sql: "", schema: "public", table: "t",
+      newData: { a: 1 } } as unknown as QueueItem;
+    const p = buildChangePayload(item);
+    expect(p).toEqual({ id: "c1", type: "insert", schema: "public", table: "t", data: "{\"a\":1}" });
+  });
+
+  it("delete -> {schema, table, primary_key}", () => {
+    const item = { ...base, type: "delete", sql: "", schema: "public", table: "t",
+      primaryKey: { id: 5 } } as unknown as QueueItem;
+    expect(buildChangePayload(item)).toEqual({ id: "c1", type: "delete", schema: "public", table: "t", primary_key: "{\"id\":5}" });
+  });
+
+  it("bulk_insert -> {schema, table, columns, rows}", () => {
+    const item = { ...base, type: "bulk_insert", sql: "", schema: "public", table: "t",
+      columns: ["a", "b"], rows: [[1, 2], [3, 4]] } as unknown as QueueItem;
+    expect(buildChangePayload(item)).toEqual({ id: "c1", type: "bulk_insert", schema: "public", table: "t", columns: ["a", "b"], rows: [[1, 2], [3, 4]] });
+  });
+
+  it("drop_table -> {schema, table}", () => {
+    const item = { ...base, type: "drop_table", sql: "", schema: "public", table: "t" } as unknown as QueueItem;
+    expect(buildChangePayload(item)).toEqual({ id: "c1", type: "drop_table", schema: "public", table: "t" });
+  });
+
+  it("empty_table -> {schema, table}", () => {
+    const item = { ...base, type: "empty_table", sql: "", schema: "public", table: "t" } as unknown as QueueItem;
+    expect(buildChangePayload(item)).toEqual({ id: "c1", type: "empty_table", schema: "public", table: "t" });
+  });
+
+  it("alter_table -> {schema, table, sql, rollback_sql}", () => {
+    const item = { ...base, type: "alter_table", sql: "ALTER TABLE t ADD c int", schema: "public", table: "t" } as unknown as QueueItem;
+    expect(buildChangePayload(item)).toEqual({ id: "c1", type: "alter_table", schema: "public", table: "t", sql: "ALTER TABLE t ADD c int", rollback_sql: "" });
+  });
+});
