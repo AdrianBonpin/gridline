@@ -607,6 +607,29 @@ pub(crate) fn pg_value_to_json(row: &tokio_postgres::Row, i: usize) -> serde_jso
     serde_json::Value::Null
 }
 
+/// Establish a PostgreSQL connection with the given TLS connector and spawn
+/// the background connection driver task.
+///
+/// This helper keeps the two TLS branches of `db_connect` unified: without it
+/// the `Connection<Socket, NoTlsStream>` vs `Connection<Socket, TlsStream>`
+/// types would force duplicated spawn/register blocks.
+pub(crate) async fn connect_pg_with<T>(
+    pgconfig: &tokio_postgres::Config,
+    tls: T,
+) -> Result<(tokio_postgres::Client, tokio::task::JoinHandle<()>), tokio_postgres::Error>
+where
+    T: tokio_postgres::tls::MakeTlsConnect<tokio_postgres::Socket>,
+    T::Stream: Send + 'static,
+{
+    let (client, connection) = pgconfig.connect(tls).await?;
+    let handle = tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            eprintln!("PostgreSQL connection error: {}", e);
+        }
+    });
+    Ok((client, handle))
+}
+
 #[tauri::command]
 pub async fn db_connect(
     connection_id: String,
@@ -614,35 +637,85 @@ pub async fn db_connect(
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
     if config.db_type == "postgresql" {
-        use tokio_postgres::NoTls;
-
-        let host = &config.host;
-        let port = config.port.unwrap_or(5432) as u16;
         let user = config.username.as_deref().unwrap_or("postgres");
         let dbname = config.database.as_deref().unwrap_or("postgres");
         let password = config.password.as_deref().unwrap_or("");
+        let default_port = config.port.unwrap_or(5432) as u16;
 
-        // Build a postgres URL connection string rather than the fragile
-        // libpq key=value format. tokio-postgres parses URLs reliably and
-        // urlencoding handles special characters in user/password/dbname.
-        use urlencoding::encode as enc;
-        let conn_str = format!(
-            "postgresql://{}:{}@{}:{}/{}?connect_timeout=10",
-            enc(user),
-            enc(password),
-            host,
-            port,
-            enc(dbname),
+        let ssh_cfg = config.ssh_config();
+        let will_tunnel = ssh_cfg.is_some();
+
+        // TLS first: through a tunnel the peer is loopback, so
+        // verify-ca/verify-full degrade to encrypt-only `require`; direct
+        // connections honor the user's mode. Building this before opening the
+        // tunnel means a config error can't leak the tunnel.
+        let decision = crate::commands::ssh::effective_tls_decision(
+            crate::db::tls::tls_decision(config.ssl_mode.as_deref()),
+            will_tunnel,
         );
+        let tls = crate::db::tls::build_tls_config(
+            decision,
+            config.ssl_ca_path.as_deref(),
+            config.ssl_cert_path.as_deref(),
+            config.ssl_key_path.as_deref(),
+        )?;
 
-        match tokio_postgres::connect(&conn_str, NoTls).await {
-            Ok((client, connection)) => {
-                let handle = tokio::spawn(async move {
-                    if let Err(e) = connection.await {
-                        eprintln!("PostgreSQL connection error: {}", e);
-                    }
-                });
+        // SSH tunnel: if configured, open a loopback tunnel to the remote DB
+        // and connect through it. The blocking ssh2 handshake runs in
+        // `spawn_blocking` so it never blocks the async runtime.
+        let (connect_host, connect_port, via_tunnel) = match ssh_cfg {
+            Some(ssh) => {
+                let key = connection_id.clone();
+                let remote_host = config.host.clone();
+                let remote_port = config.port.unwrap_or(5432) as u16;
+                let pw = config.ssh_password.clone();
+                let pp = config.ssh_passphrase.clone();
+                let backend = state.ssh_manager.lock().unwrap().backend_clone();
+                let tunnel = tokio::task::spawn_blocking(move || {
+                    backend.open(
+                        &key,
+                        &ssh,
+                        &remote_host,
+                        remote_port,
+                        pw.as_deref(),
+                        pp.as_deref(),
+                    )
+                })
+                .await
+                .map_err(|e| format!("Connection failed: {e}"))??;
+                let lp = tunnel.local_port;
+                state
+                    .ssh_manager
+                    .lock()
+                    .unwrap()
+                    .insert_tunnel(connection_id.clone(), tunnel);
+                ("127.0.0.1".to_string(), lp, true)
+            }
+            None => (config.host.clone(), default_port, false),
+        };
 
+        // Config builder: user/password/dbname are sent as-is (no URL
+        // percent-encoding needed), and the TLS connector is chosen explicitly.
+        let mut pgconfig = tokio_postgres::Config::new();
+        pgconfig
+            .host(connect_host.clone())
+            .port(connect_port)
+            .user(user)
+            .password(password)
+            .dbname(dbname)
+            .connect_timeout(std::time::Duration::from_secs(10));
+
+        let result = match tls {
+            None => connect_pg_with(&pgconfig, tokio_postgres::NoTls).await,
+            Some(cc) => {
+                let connector =
+                    tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
+                connect_pg_with(&pgconfig, connector).await
+            }
+        };
+
+        match result {
+            Ok((client, handle)) => {
                 let mut pm = state.pool_manager.lock().await;
                 pm.register(
                     &connection_id,
@@ -650,7 +723,16 @@ pub async fn db_connect(
                 );
                 Ok(())
             }
-            Err(e) => Err(format!("Connection failed: {}", pg_error_message(&e))),
+            Err(e) => {
+                if via_tunnel {
+                    state
+                        .ssh_manager
+                        .lock()
+                        .unwrap()
+                        .close_tunnel(&connection_id);
+                }
+                Err(format!("Connection failed: {}", pg_error_message(&e)))
+            }
         }
     } else if config.db_type == "sqlite" {
         match rusqlite::Connection::open(&config.host) {

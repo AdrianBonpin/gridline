@@ -1,6 +1,19 @@
+use crate::db::tls::TlsDecision;
 use crate::models::SshConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Through a tunnel the TLS peer is loopback (`127.0.0.1`), so certificate
+/// verification is meaningless: `verify-ca`/`verify-full` degrade to
+/// encrypt-only `require`. A direct (non-tunneled) connection honors the
+/// user's mode unchanged.
+pub fn effective_tls_decision(d: TlsDecision, via_tunnel: bool) -> TlsDecision {
+    if via_tunnel && matches!(d, TlsDecision::Verify) {
+        TlsDecision::Require
+    } else {
+        d
+    }
+}
 
 /// A live tunnel handle. `closer` drops the listener + ssh session when called.
 pub struct Tunnel {
@@ -101,14 +114,31 @@ impl SshTunnelManager {
         self.tunnels.get(key).map(|t| t.local_port)
     }
 
+    /// Clone of the active backend, for handing into `spawn_blocking` so the
+    /// blocking ssh2 work never blocks an async runtime thread.
+    pub fn backend_clone(&self) -> Arc<dyn TunnelBackend> {
+        self.backend.clone()
+    }
+
+    /// Insert an already-opened tunnel under `key`, closing any previous one.
+    pub fn insert_tunnel(&mut self, key: String, tunnel: Tunnel) {
+        if let Some(old) = self.tunnels.insert(key, tunnel) {
+            drop(old.closer);
+        }
+    }
+
     /// Return the number of active tunnels.
     pub fn active_count(&self) -> usize {
         self.tunnels.len()
     }
 }
 
-/// Real ssh2 backend — plumbing wired in a later task; returns Err here so
-/// the crate compiles and the manager is fully wired.
+/// Real ssh2 backend: binds a loopback listener, authenticates to the SSH
+/// host over a blocking socket, and pumps data between the local client and
+/// the remote DB over an SSH direct-tcpip channel.
+///
+/// The whole `open` runs inside `tokio::task::spawn_blocking` at the call
+/// sites because `ssh2::Session` is purely blocking.
 pub struct Ssh2Backend;
 
 impl TunnelBackend for Ssh2Backend {
@@ -116,13 +146,87 @@ impl TunnelBackend for Ssh2Backend {
         &self,
         _key: &str,
         cfg: &SshConfig,
-        _remote_host: &str,
-        _remote_port: u16,
+        remote_host: &str,
+        remote_port: u16,
         password: Option<&str>,
         passphrase: Option<&str>,
     ) -> Result<Tunnel, String> {
-        let _ = (cfg, password, passphrase);
-        Err("Ssh2Backend.open is wired in Task 9".into())
+        use ssh2::Session;
+
+        // Loopback-only listener with an ephemeral port.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("bind local tunnel port: {e}"))?;
+        let local_port = listener
+            .local_addr()
+            .map_err(|e| format!("local tunnel address: {e}"))?
+            .port();
+
+        let tcp = std::net::TcpStream::connect((cfg.host.as_str(), cfg.port))
+            .map_err(|e| format!("connect ssh host: {e}"))?;
+        let mut session = Session::new().map_err(|e| format!("ssh session: {e}"))?;
+        session.set_tcp_stream(tcp);
+        session.handshake().map_err(|e| format!("ssh handshake: {e}"))?;
+
+        match cfg.auth_method.as_str() {
+            "key" => {
+                let path = cfg.private_key_path.as_deref().ok_or_else(|| {
+                    "private_key_path required for key auth".to_string()
+                })?;
+                session
+                    .userauth_pubkey_file(&cfg.user, None, std::path::Path::new(path), passphrase)
+                    .map_err(|e| format!("ssh key auth: {e}"))?;
+            }
+            _ => session
+                .userauth_password(&cfg.user, password.unwrap_or(""))
+                .map_err(|e| format!("ssh password auth: {e}"))?,
+        }
+        if !session.authenticated() {
+            return Err("SSH authentication failed".into());
+        }
+
+        let remote_host = remote_host.to_string();
+        let session = Arc::new(std::sync::Mutex::new(session));
+        let (closer_tx, closer_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            if let Ok((mut local, _)) = listener.accept() {
+                // Open the direct-tcpip channel to the remote DB. `Channel` is
+                // cloneable (Arc-shared inner), so one clone per direction
+                // lets two pump threads copy data in parallel.
+                let mut channel = match session.lock().unwrap().channel_direct_tcpip(
+                    &remote_host,
+                    remote_port as u16,
+                    None,
+                ) {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                // The accepted socket stays owned by this thread; when the
+                // tunnel is closed the closer wakes us, we drop `local` and
+                // the pumps end on EOF/broken pipe.
+                let mut upstream = channel.clone();
+                let down = local.try_clone();
+                let pump = match down {
+                    Ok(down) => Some(std::thread::spawn(move || {
+                        let mut down = down;
+                        // client -> remote DB
+                        let _ = std::io::copy(&mut down, &mut upstream);
+                    })),
+                    Err(_) => None,
+                };
+                // remote DB -> client (this thread)
+                let _ = std::io::copy(&mut channel, &mut local);
+                if let Some(p) = pump {
+                    let _ = p.join();
+                }
+            }
+            let _ = closer_rx.recv();
+        });
+        Ok(Tunnel {
+            local_port,
+            closer: Some(Box::new(move || {
+                let _ = closer_tx.send(());
+            })),
+        })
     }
 }
 
@@ -258,6 +362,52 @@ mod tests {
         mgr.close_tunnel("c1");
         assert_eq!(mgr.get_local_port("c1"), None);
         assert_eq!(mgr.active_count(), 0);
+    }
+
+    #[test]
+    fn tunneled_tls_is_downgraded_to_require() {
+        // verify-full through a tunnel degrades to encrypt-only `require`
+        assert_eq!(
+            effective_tls_decision(crate::db::tls::tls_decision(Some("verify-full")), true),
+            crate::db::tls::TlsDecision::Require
+        );
+        // direct (non-tunneled) connection keeps the user's mode
+        assert_eq!(
+            effective_tls_decision(crate::db::tls::tls_decision(Some("verify-full")), false),
+            crate::db::tls::TlsDecision::Verify
+        );
+        // disable stays disabled regardless of tunneling
+        assert_eq!(
+            effective_tls_decision(crate::db::tls::tls_decision(Some("disable")), true),
+            crate::db::tls::TlsDecision::Disable
+        );
+    }
+
+    #[test]
+    fn manager_backend_clone_returns_backend() {
+        let backend = Arc::new(FakeBackend {
+            next_port: 7,
+            ..Default::default()
+        });
+        let mgr = SshTunnelManager::new(backend.clone());
+        // The cloned Arc points at the same fake backend.
+        let cloned = mgr.backend_clone();
+        let cfg = crate::models::SshConfig::new("h".into(), 22, "u".into(), "password".into());
+        let tunnel = cloned
+            .open("c1", &cfg, "db.host", 5432, None, None)
+            .unwrap();
+        assert_eq!(tunnel.local_port, 7);
+    }
+
+    #[test]
+    fn manager_insert_tunnel_replaces_and_closes_old() {
+        let mut mgr = SshTunnelManager::new(Arc::new(FakeBackend::default()));
+        mgr.insert_tunnel("c1".to_string(), Tunnel::fake(1111));
+        assert_eq!(mgr.get_local_port("c1"), Some(1111));
+        // Re-inserting under the same key replaces the old tunnel.
+        mgr.insert_tunnel("c1".to_string(), Tunnel::fake(2222));
+        assert_eq!(mgr.get_local_port("c1"), Some(2222));
+        assert_eq!(mgr.active_count(), 1);
     }
 
     #[test]

@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
+use tauri::State;
 
+use crate::commands::ssh::SshTunnelManager;
 use crate::db::pool::DbConfig;
+
+/// The SSH tunnel manager behind a mutex (as stored in `AppState`).
+type SshManager = std::sync::Mutex<SshTunnelManager>;
 
 /// Result of a test database connection attempt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,12 +107,81 @@ pub fn validate_test_input(config: &DbConfig) -> Option<String> {
     None
 }
 
+/// Effective connect target after optional SSH tunnel resolution.
+struct ConnectTarget {
+    host: String,
+    port: u16,
+    via_tunnel: bool,
+    /// Key of the opened tunnel, if any — must be closed after the probe.
+    tunnel_key: Option<String>,
+}
+
+/// Open an SSH tunnel if `config` has one configured, returning the loopback
+/// target to connect through. The blocking ssh2 handshake runs in
+/// `spawn_blocking` so it never blocks the async runtime.
+///
+/// The caller must close the tunnel (via `tunnel_key`) after the probe, on
+/// every path.
+async fn resolve_connect_target(
+    config: &DbConfig,
+    ssh: &SshManager,
+    default_port: u16,
+) -> Result<ConnectTarget, String> {
+    match config.ssh_config() {
+        Some(ssh_cfg) => {
+            let key = format!("test-{}", uuid::Uuid::new_v4());
+            let open_key = key.clone();
+            let remote_host = config.host.clone();
+            let remote_port = config.port.unwrap_or(default_port as i64) as u16;
+            let pw = config.ssh_password.clone();
+            let pp = config.ssh_passphrase.clone();
+            let backend = ssh.lock().unwrap().backend_clone();
+            let tunnel = tokio::task::spawn_blocking(move || {
+                backend.open(
+                    &open_key,
+                    &ssh_cfg,
+                    &remote_host,
+                    remote_port,
+                    pw.as_deref(),
+                    pp.as_deref(),
+                )
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            let lp = tunnel.local_port;
+            ssh.lock().unwrap().insert_tunnel(key.clone(), tunnel);
+            Ok(ConnectTarget {
+                host: "127.0.0.1".to_string(),
+                port: lp,
+                via_tunnel: true,
+                tunnel_key: Some(key),
+            })
+        }
+        None => Ok(ConnectTarget {
+            host: config.host.clone(),
+            port: config.port.unwrap_or(default_port as i64) as u16,
+            via_tunnel: false,
+            tunnel_key: None,
+        }),
+    }
+}
+
+/// Close the probe tunnel if one was opened.
+fn close_probe_tunnel(ssh: &SshManager, key: Option<&str>) {
+    if let Some(k) = key {
+        ssh.lock().unwrap().close_tunnel(k);
+    }
+}
+
 /// Test a database connection for the given configuration.
 ///
 /// Dispatches to the appropriate type-specific connection test based on
 /// `config.db_type`. Returns a `TestConnectionResult` indicating success
 /// or failure with a sanitized error message.
-pub async fn test_database_connection(config: &DbConfig) -> TestConnectionResult {
+pub async fn test_database_connection(
+    config: &DbConfig,
+    ssh: &SshManager,
+) -> TestConnectionResult {
     // Validate input first
     if let Some(err) = validate_test_input(config) {
         return TestConnectionResult {
@@ -117,10 +191,10 @@ pub async fn test_database_connection(config: &DbConfig) -> TestConnectionResult
     }
 
     let result = match config.db_type.to_lowercase().as_str() {
-        "postgresql" => test_pg_connection(config).await,
-        "mysql" => test_mysql_connection(config).await,
+        "postgresql" => test_pg_connection(config, ssh).await,
+        "mysql" => test_mysql_connection(config, ssh).await,
         "sqlite" => test_sqlite_connection(config),
-        "redis" => test_redis_connection(config).await,
+        "redis" => test_redis_connection(config, ssh).await,
         other => TestConnectionResult {
             ok: false,
             error: Some(format!("unsupported database type: {other}")),
@@ -135,78 +209,141 @@ pub async fn test_database_connection(config: &DbConfig) -> TestConnectionResult
 
 /// Test a PostgreSQL connection using `tokio-postgres`.
 ///
-/// Connects without TLS. The connection handler is spawned and immediately
-/// dropped after confirming the connection is alive.
-async fn test_pg_connection(config: &DbConfig) -> TestConnectionResult {
-    use tokio_postgres::NoTls;
-
-    let host = &config.host;
-    let port = config.port.unwrap_or(5432) as u16;
+/// Connects through an SSH tunnel when configured, with TLS selected from
+/// `ssl_mode` (downgraded to encrypt-only through a tunnel). The connection
+/// handler is spawned and immediately dropped after confirming the
+/// connection is alive; any probe tunnel is closed in every path.
+async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnectionResult {
     let user = config.username.as_deref().unwrap_or("postgres");
     let dbname = config.database.as_deref().unwrap_or("postgres");
     let password = config.password.as_deref().unwrap_or("");
 
-    // Use a postgres URL rather than libpq key=value format: tokio-postgres
-    // parses URLs reliably and urlencoding handles special chars safely.
-    use urlencoding::encode as enc;
-    let conn_str = format!(
-        "postgresql://{}:{}@{}:{}/{}?connect_timeout=10",
-        enc(user),
-        enc(password),
-        host,
-        port,
-        enc(dbname),
-    );
+    let target = match resolve_connect_target(config, ssh, 5432).await {
+        Ok(t) => t,
+        Err(e) => return TestConnectionResult { ok: false, error: Some(e) },
+    };
 
-    match tokio_postgres::connect(&conn_str, NoTls).await {
-        Ok((_client, connection)) => {
-            // Spawn the connection handler so it keeps running while we test
-            tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    eprintln!("connection error: {}", e);
-                }
-            });
+    // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
+    // degrade to encrypt-only `require`. Direct connections honor the mode.
+    let decision = crate::commands::ssh::effective_tls_decision(
+        crate::db::tls::tls_decision(config.ssl_mode.as_deref()),
+        target.via_tunnel,
+    );
+    let tls = match crate::db::tls::build_tls_config(
+        decision,
+        config.ssl_ca_path.as_deref(),
+        config.ssl_cert_path.as_deref(),
+        config.ssl_key_path.as_deref(),
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            close_probe_tunnel(ssh, target.tunnel_key.as_deref());
+            return TestConnectionResult { ok: false, error: Some(e) };
+        }
+    };
+
+    // Config builder: user/password/dbname are sent as-is (no URL
+    // percent-encoding needed), and the TLS connector is chosen explicitly.
+    let mut pgconfig = tokio_postgres::Config::new();
+    pgconfig
+        .host(target.host)
+        .port(target.port)
+        .user(user)
+        .password(password)
+        .dbname(dbname)
+        .connect_timeout(std::time::Duration::from_secs(10));
+
+    let result = match tls {
+        None => crate::commands::db_viewer::connect_pg_with(&pgconfig, tokio_postgres::NoTls).await,
+        Some(cc) => {
+            let connector =
+                tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
+            crate::commands::db_viewer::connect_pg_with(&pgconfig, connector).await
+        }
+    };
+
+    match result {
+        Ok((_client, _handle)) => {
+            close_probe_tunnel(ssh, target.tunnel_key.as_deref());
+            // Spawn the connection handler so it keeps running while we test.
+            // (Already spawned inside `connect_pg_with`.)
             TestConnectionResult { ok: true, error: None }
         }
-        Err(e) => TestConnectionResult {
-            ok: false,
-            error: Some(e.to_string()),
-        },
+        Err(e) => {
+            close_probe_tunnel(ssh, target.tunnel_key.as_deref());
+            TestConnectionResult {
+                ok: false,
+                error: Some(e.to_string()),
+            }
+        }
     }
 }
 
 /// Test a MySQL connection using `sqlx`.
 ///
 /// Uses `MySqlPoolOptions` with a pool size of 1 and a 10-second
-/// `acquire_timeout`.
-async fn test_mysql_connection(config: &DbConfig) -> TestConnectionResult {
-    use sqlx::mysql::MySqlPoolOptions;
+/// `acquire_timeout`, connecting through an SSH tunnel when configured and
+/// mapping `ssl_mode` onto `MySqlSslMode` (downgraded to encrypt-only
+/// through a tunnel). Any probe tunnel is closed in every path.
+async fn test_mysql_connection(config: &DbConfig, ssh: &SshManager) -> TestConnectionResult {
+    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
 
-    let host = &config.host;
-    let port = config.port.unwrap_or(3306);
-    let user = config.username.as_deref().unwrap_or("root");
-    let password = config.password.as_deref().unwrap_or("");
-    let dbname = config.database.as_deref().unwrap_or("mysql");
+    let target = match resolve_connect_target(config, ssh, 3306).await {
+        Ok(t) => t,
+        Err(e) => return TestConnectionResult { ok: false, error: Some(e) },
+    };
 
-    let conn_str = format!(
-        "mysql://{}:{}@{}:{}/{}",
-        user, password, host, port, dbname
+    let mut opts = MySqlConnectOptions::new()
+        .host(&target.host)
+        .port(target.port)
+        .username(config.username.as_deref().unwrap_or("root"))
+        .password(config.password.as_deref().unwrap_or(""))
+        .database(config.database.as_deref().unwrap_or("mysql"));
+
+    // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
+    // degrade to encrypt-only `require`. Direct connections honor the mode.
+    let decision = crate::commands::ssh::effective_tls_decision(
+        crate::db::tls::tls_decision(config.ssl_mode.as_deref()),
+        target.via_tunnel,
     );
+    match decision {
+        crate::db::tls::TlsDecision::Disable => {
+            opts = opts.ssl_mode(MySqlSslMode::Disabled);
+        }
+        crate::db::tls::TlsDecision::Require => {
+            opts = opts.ssl_mode(MySqlSslMode::Required);
+        }
+        crate::db::tls::TlsDecision::Verify => {
+            // sqlx 0.8 has no VerifyFull: verify-ca -> VerifyCa (chain only),
+            // verify-full -> VerifyIdentity (chain + hostname).
+            match config.ssl_mode.as_deref() {
+                Some("verify-ca") => opts = opts.ssl_mode(MySqlSslMode::VerifyCa),
+                _ => opts = opts.ssl_mode(MySqlSslMode::VerifyIdentity),
+            }
+            if let Some(ca) = config.ssl_ca_path.as_deref() {
+                opts = opts.ssl_ca(ca);
+            }
+        }
+    }
 
     match MySqlPoolOptions::new()
         .max_connections(1)
         .acquire_timeout(std::time::Duration::from_secs(10))
-        .connect(&conn_str)
+        .connect_with(opts)
         .await
     {
         Ok(pool) => {
+            close_probe_tunnel(ssh, target.tunnel_key.as_deref());
             pool.close().await;
             TestConnectionResult { ok: true, error: None }
         }
-        Err(e) => TestConnectionResult {
-            ok: false,
-            error: Some(e.to_string()),
-        },
+        Err(e) => {
+            close_probe_tunnel(ssh, target.tunnel_key.as_deref());
+            TestConnectionResult {
+                ok: false,
+                error: Some(e.to_string()),
+            }
+        }
     }
 }
 
@@ -227,18 +364,21 @@ fn test_sqlite_connection(config: &DbConfig) -> TestConnectionResult {
 /// Test a Redis connection using the `redis` crate.
 ///
 /// Uses `redis::Client::open` followed by `get_async_connection` with a
-/// 10-second timeout via `tokio::time::timeout`.
-async fn test_redis_connection(config: &DbConfig) -> TestConnectionResult {
+/// 10-second timeout via `tokio::time::timeout`. Connects through an SSH
+/// tunnel when configured; any probe tunnel is closed in every path.
+async fn test_redis_connection(config: &DbConfig, ssh: &SshManager) -> TestConnectionResult {
     use tokio::time::timeout;
 
-    let host = &config.host;
-    let port = config.port.unwrap_or(6379);
+    let target = match resolve_connect_target(config, ssh, 6379).await {
+        Ok(t) => t,
+        Err(e) => return TestConnectionResult { ok: false, error: Some(e) },
+    };
     let password = config.password.as_deref();
 
     let conn_str = if let Some(pwd) = password {
-        format!("redis://:{}@{}:{}/", pwd, host, port)
+        format!("redis://:{}@{}:{}/", pwd, target.host, target.port)
     } else {
-        format!("redis://{}:{}/", host, port)
+        format!("redis://{}:{}/", target.host, target.port)
     };
 
     match redis::Client::open(conn_str.as_str()) {
@@ -249,30 +389,46 @@ async fn test_redis_connection(config: &DbConfig) -> TestConnectionResult {
             )
             .await
             {
-                Ok(Ok(_conn)) => TestConnectionResult { ok: true, error: None },
-                Ok(Err(e)) => TestConnectionResult {
-                    ok: false,
-                    error: Some(e.to_string()),
-                },
-                Err(_) => TestConnectionResult {
-                    ok: false,
-                    error: Some("connection timed out after 10 seconds".to_string()),
-                },
+                Ok(Ok(_conn)) => {
+                    close_probe_tunnel(ssh, target.tunnel_key.as_deref());
+                    TestConnectionResult { ok: true, error: None }
+                }
+                Ok(Err(e)) => {
+                    close_probe_tunnel(ssh, target.tunnel_key.as_deref());
+                    TestConnectionResult {
+                        ok: false,
+                        error: Some(e.to_string()),
+                    }
+                }
+                Err(_) => {
+                    close_probe_tunnel(ssh, target.tunnel_key.as_deref());
+                    TestConnectionResult {
+                        ok: false,
+                        error: Some("connection timed out after 10 seconds".to_string()),
+                    }
+                }
             }
         }
-        Err(e) => TestConnectionResult {
-            ok: false,
-            error: Some(e.to_string()),
-        },
+        Err(e) => {
+            close_probe_tunnel(ssh, target.tunnel_key.as_deref());
+            TestConnectionResult {
+                ok: false,
+                error: Some(e.to_string()),
+            }
+        }
     }
 }
 
 /// Tauri command to test a database connection.
 ///
-/// Calls `test_database_connection` and returns the result.
+/// Calls `test_database_connection` and returns the result. `state` is
+/// auto-injected; the frontend only passes `config`.
 #[tauri::command]
-pub async fn test_connection(config: DbConfig) -> Result<TestConnectionResult, String> {
-    Ok(test_database_connection(&config).await)
+pub async fn test_connection(
+    config: DbConfig,
+    state: State<'_, crate::AppState>,
+) -> Result<TestConnectionResult, String> {
+    Ok(test_database_connection(&config, &state.ssh_manager).await)
 }
 
 #[cfg(test)]
