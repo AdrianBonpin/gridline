@@ -16,17 +16,17 @@ Most database GUI clients either lock essential productivity features behind pay
 | Saved connections | 2 | Unlimited | **Unlimited** |
 | Saved queries | 5 | Unlimited | **Unlimited** |
 | Data export (CSV, JSON, SQL) | ❌ (paid only) | Basic only | **JSON, CSV, SQL, Markdown** |
-| Data import (CSV, JSON) | ❌ (paid only) | ✅ | 🟡 *Upcoming* |
+| Data import (CSV, JSON) | ❌ (paid only) | ✅ | **✅ CSV/JSON + column mapping** |
 | pg_dump / pg_restore GUI | ❌ | ❌ (paid only) | **First-class UI** |
 | DB-to-DB sync | ❌ | ❌ | **Built-in pipe sync** |
 | Object explorer depth | Tables, views | Tables, views | **Functions, Triggers, Enums, Sequences, Extensions** |
 | ER diagram / schema visualizer | ❌ (planned) | ❌ (paid only) | **✅ Interactive React Flow** |
 | Inline cell editing | ✅ | ✅ | 🟡 *Upcoming* |
-| SSH tunneling | 🟡 (likely paid) | ✅ | 🟡 *Config UI done* |
+| SSH tunneling | 🟡 (likely paid) | ✅ | **✅ Full tunnel (password + key auth, keychain)** |
 | OS credential vault | ✅ | ✅ | **Keychain / Secret Service** |
 | Workspace / folder hierarchy | ❌ | ❌ | **Multi-level tree + tags** |
 | Changes queue (stage & commit) | ❌ | ❌ | **✅ Queue → Commit All** (tab-bar **Changes** button with count badge toggles the commit panel) |
-| Query history | ✅ (auto-saved) | ✅ | 🟡 *Backend done, UI pending* |
+| Query history | ✅ (auto-saved) | ✅ | **✅ Toolbar dropdown, favorites, Queries view** |
 | AI assistant | ✅ (BYO key) | ❌ (paid only) | 🔮 *Planned — BYOK* |
 | Open source | ❌ | ✅ (GPLv3) | **✅ (MIT)** |
 | Desktop shell | Native webview | Electron (~250MB) | **Tauri 2.0 (~40MB)** |
@@ -117,7 +117,7 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 - **FK Preview** — click a foreign key cell to preview the referenced row
 - **JSON/JSONB Viewer** — popover with formatted/raw tabs and copy button
 - **Auto-Refresh** — configurable interval timer
-- *(Inline cell editing, visual filter builder, and data import — upcoming)*
+- *(Inline cell editing and visual filter builder — upcoming)*
 
 ### PostgreSQL Administrative Tools
 - **Visual Backup** — `pg_dump` wrapper with format selector (Plain SQL, Custom, Tar, Directory), file browser, schema filter, no-owner toggle, real-time progress bar
@@ -239,12 +239,11 @@ gridline/
 - **Query History & Saved Queries** — toolbar history dropdown (load / run / favorite / clear), favorites, consecutive-identical dedup + 500-retention pruning, SaveQueryDialog, and a two-pane Queries view (History / Saved Queries sidebar scoped per connection + tabbed query workspace)
 - **Consolidated Navigation** — merged Functions/Triggers/Sequences/Enums/Extensions into a single Objects view (object-type dropdown) and Backup/Restore/DB Sync into a single Tools view (operation dropdown)
 - **Settings (Redesigned & Fully Wired)** — DB-viewer-styled settings screen (icon+text sidebar, tab-titled header, border-sharp no-card sections, Back returns to origin view); all settings functional: theme (light/dark/system, applied live + native macOS Overlay titlebar sync), font size, **accent color** (circle palette), default folder on startup, confirm-before-delete toggle, default ports prefill; drag-and-drop tag reorder
+- **Editor Settings, SSH/SSL Runtime, Data Import** — Monaco editor options (font size/family, word wrap, minimap, tab size) applied live; real SSH tunnel (`ssh2`, password + key auth, keychain secrets, full lifecycle) and TLS (`rustls`, all modes + client certs) for PostgreSQL/MySQL; CSV/JSON import with preview + column mapping through the changes queue; table-menu loose ends (Copy table schema DDL, Empty/Delete Table via queue, export stubs wired)
 
 ### 🟡 In Progress / Upcoming
-- **Editor Settings** — font, tab size, word wrap, minimap options
-- **SSH/SSL Runtime** — SSH tunnel via `ssh2` crate, SSL/TLS config passed to `sqlx`/`tokio-postgres`
 - **Inline Cell Editing** — Edit cells directly in the data grid
-- **Data Import** — CSV, JSON import with column mapping
+- **Visual Filter Builder** — drag-and-drop filter construction
 
 ### 🔮 Future
 - **Multi-DB Support** — MySQL browsing, Redis key browser, full MySQL/SQLite/Redis parity with PostgreSQL
