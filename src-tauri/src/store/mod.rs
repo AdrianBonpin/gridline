@@ -337,6 +337,64 @@ impl Store {
         })
     }
 
+    pub fn set_connection_favorite(&self, id: &str, favorite: bool) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let fav: i64 = if favorite { 1 } else { 0 };
+        conn.execute(
+            "UPDATE connections SET favorite = ?1, updated_at = ?2 WHERE id = ?3",
+            params![fav, Self::now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_recent_connections(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<crate::models::RecentConnection>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT connection_id, opened_at FROM recent_connections ORDER BY opened_at DESC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(crate::models::RecentConnection {
+                    connection_id: row.get(0)?,
+                    opened_at: row.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn record_recent_connection(&self, connection_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        conn.execute(
+            "INSERT INTO recent_connections (connection_id, opened_at) VALUES (?1, ?2)
+             ON CONFLICT(connection_id) DO UPDATE SET opened_at = excluded.opened_at",
+            params![connection_id, now],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM recent_connections WHERE connection_id NOT IN (
+                SELECT connection_id FROM recent_connections ORDER BY opened_at DESC LIMIT 20
+            )",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn clear_recent_connections(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM recent_connections", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn delete_connection(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM connections WHERE id = ?1", params![id])
@@ -1283,6 +1341,52 @@ mod tests {
         let store = fresh_store();
         let result = store.set_history_favorite("nonexistent", "any-conn");
         assert!(result.is_err(), "Unknown id should be an error");
+    }
+
+    #[test]
+    fn set_connection_favorite_toggles_and_persists() {
+        let store = fresh_store();
+        let conn = create_test_connection(&store, "fav-conn");
+        store.set_connection_favorite(&conn.id, true).unwrap();
+        let conns = store.get_connections().unwrap();
+        assert_eq!(conns[0].favorite, true);
+        store.set_connection_favorite(&conn.id, false).unwrap();
+        assert_eq!(store.get_connections().unwrap()[0].favorite, false);
+    }
+
+    #[test]
+    fn record_recent_connection_upserts_and_caps_at_20() {
+        let store = fresh_store();
+        for i in 0..25 {
+            let conn = create_test_connection(&store, &format!("c{}", i));
+            store.record_recent_connection(&conn.id).unwrap();
+        }
+        let recent = store.get_recent_connections(100).unwrap();
+        assert_eq!(recent.len(), 20, "recent list capped at 20");
+    }
+
+    #[test]
+    fn record_recent_connection_dedupes_and_bumps_to_top() {
+        let store = fresh_store();
+        let a = create_test_connection(&store, "a");
+        let b = create_test_connection(&store, "b");
+        store.record_recent_connection(&a.id).unwrap();
+        store.record_recent_connection(&b.id).unwrap();
+        store.record_recent_connection(&a.id).unwrap(); // a re-opened -> should be most recent
+        let recent = store.get_recent_connections(10).unwrap();
+        assert_eq!(recent.len(), 2, "dedupe keeps one row per connection");
+        let pos_a = recent.iter().position(|r| r.connection_id == a.id).unwrap();
+        let pos_b = recent.iter().position(|r| r.connection_id == b.id).unwrap();
+        assert!(pos_a < pos_b, "re-opened a must be most recent");
+    }
+
+    #[test]
+    fn clear_recent_connections_empties_table() {
+        let store = fresh_store();
+        let conn = create_test_connection(&store, "x");
+        store.record_recent_connection(&conn.id).unwrap();
+        store.clear_recent_connections().unwrap();
+        assert_eq!(store.get_recent_connections(10).unwrap().len(), 0);
     }
 
     fn create_test_connection(store: &Store, name: &str) -> crate::models::Connection {
