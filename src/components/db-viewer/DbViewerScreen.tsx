@@ -845,7 +845,7 @@ const onQueriesPanelResizeStart = useCallback(
             );
             if (updates.length > 0) {
                 activeTab.data.rows.forEach((row, rowIdx) => {
-                    const loc = getLocator(row);
+                    const loc = getLocator(row) as Record<string, unknown>;
                     for (const c of updates) {
                         const pk = c.primaryKey!;
                         const matches = Object.entries(pk).every(
