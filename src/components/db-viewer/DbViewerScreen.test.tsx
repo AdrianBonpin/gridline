@@ -139,7 +139,8 @@ describe("DbViewerScreen", () => {
         fireEvent.click(cell);
         fireEvent.keyDown(cell, { key: "Enter" });
         // the editor's textarea is the last textbox (toolbar filter input is first)
-        const input = screen.getAllByRole("textbox").at(-1)!;
+        const textboxes = screen.getAllByRole("textbox");
+        const input = textboxes[textboxes.length - 1]!;
         fireEvent.change(input, { target: { value: "Alicia" } });
         fireEvent.keyDown(input, { key: "Enter" });
         // staged change carries the correct table (was the root-cause bug)
