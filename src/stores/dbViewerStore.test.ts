@@ -231,6 +231,41 @@ describe("dbViewerStore", () => {
     expect(state.schemas).toEqual(["public", "private"]);
     expect(state.tables).toEqual(tables);
   });
+
+  it("stageCellEdit appends an update QueueItem with primaryKey + old/new data", () => {
+    const store = useDbViewerStore.getState();
+    store.openTab("public", "users");
+    const tabId = useDbViewerStore.getState().activeTabId!;
+    store.stageCellEdit({
+      tabId,
+      schema: "public",
+      table: "users",
+      primaryKey: { id: 1 },
+      oldData: { name: "Alice" },
+      newData: { name: "Alicia" },
+      description: "Edit users.name",
+    });
+    const q = useDbViewerStore.getState().changesQueue;
+    expect(q).toHaveLength(1);
+    expect(q[0].type).toBe("update");
+    expect(q[0].primaryKey).toEqual({ id: 1 });
+    expect(q[0].oldData).toEqual({ name: "Alice" });
+    expect(q[0].newData).toEqual({ name: "Alicia" });
+  });
+
+  it("setIndexes / setConstraints update store slices", () => {
+    const store = useDbViewerStore.getState();
+    store.setIndexes([{ name: "idx", schema: "public", table: "t", definition: "", is_unique: true, method: "btree", columns: ["id"], size_bytes: 1, tablespace: null }]);
+    store.setConstraints([{ name: "ck", schema: "public", table: "t", contype: "CHECK", definition: "", deferrable: false, validated: true, columns: ["x"] }]);
+    expect(useDbViewerStore.getState().indexes).toHaveLength(1);
+    expect(useDbViewerStore.getState().constraints).toHaveLength(1);
+  });
+
+  it("reset clears indexes and constraints", () => {
+    useDbViewerStore.getState().setIndexes([{ name: "x", schema: "s", table: "t", definition: "", is_unique: false, method: "btree", columns: [], size_bytes: null, tablespace: null }]);
+    useDbViewerStore.getState().reset();
+    expect(useDbViewerStore.getState().indexes).toBeNull();
+  });
 });
 
 describe("refreshTree", () => {
