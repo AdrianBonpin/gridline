@@ -4,8 +4,8 @@ import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import * as cmd from "../../lib/commands";
+import { buildChangePayload } from "../../lib/changePayload";
 import type { QueueItem, QueueStatus } from "../../stores/dbViewerStore";
-import type { ChangeItem } from "../../lib/types";
 
 const statusBg: Record<QueueStatus, string> = {
   pending: "bg-accent/5",
@@ -13,6 +13,22 @@ const statusBg: Record<QueueStatus, string> = {
   failed: "bg-red-500/5",
   cancelled: "bg-surface-raised/50",
 };
+
+function formatChangeLabel(change: QueueItem): string {
+  const schema = change.schema ?? "";
+  const table = change.table ?? "";
+  const fullName = schema ? `${schema}.${table}` : table;
+  switch (change.type) {
+    case "bulk_insert":
+      return change.description ?? `Import ${change.rows?.length ?? 0} rows into ${fullName}`;
+    case "empty_table":
+      return `Empty Table: ${fullName}`;
+    case "drop_table":
+      return `Drop Table: ${fullName}`;
+    default:
+      return change.table ?? "-";
+  }
+}
 
 function capitalizeType(type: string) {
   return type.charAt(0).toUpperCase() + type.slice(1);
@@ -79,13 +95,7 @@ export function ChangesQueuePanel() {
 
     for (const change of pending) {
       try {
-        const payload = {
-          id: change.id,
-          type: change.type,
-          sql: change.sql,
-          status: "pending" as const,
-          description: change.description ?? null,
-        } satisfies ChangeItem;
+        const payload = buildChangePayload(change);
         await cmd.executeChange(connectionId, payload);
         markChangeCommitted(change.id);
         committedCount++;
@@ -115,9 +125,12 @@ export function ChangesQueuePanel() {
 
   return (
     <div className="border-t border-border bg-surface">
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label="Toggle changes panel"
         onClick={() => toggleChangesPanel()}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") toggleChangesPanel(); }}
         className="flex w-full items-center justify-between px-4 py-2 text-sm text-text hover:bg-surface-raised/50 cursor-pointer"
       >
         <div className="flex items-center gap-2">
@@ -147,7 +160,7 @@ export function ChangesQueuePanel() {
         >
           Commit All
         </button>
-      </button>
+      </div>
 
       {expanded && (
         <div className="max-h-48 overflow-y-auto">
@@ -180,7 +193,7 @@ function ChangeRow({
           {capitalizeType(change.type)}
         </span>
         <span className="text-text">
-          {change.table ? change.table : "-"}
+          {formatChangeLabel(change)}
         </span>
       </div>
 

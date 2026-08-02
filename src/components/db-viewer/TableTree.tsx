@@ -98,6 +98,8 @@ export function TableTree({ searchQuery }: { searchQuery?: string }) {
                                 <TableOverflowMenu
                                     schema={table.schema}
                                     table={table.name}
+                                    connectionId={connectionId ?? undefined}
+                                    columns={cols}
                                     onOpenTab={handleOpenTab}
                                 />
                             </div>

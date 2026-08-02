@@ -122,6 +122,8 @@ interface DbViewerState {
     primaryKey?: Record<string, unknown>;
     oldData?: Record<string, unknown> | null;
     newData?: Record<string, unknown> | null;
+    columns?: string[];
+    rows?: unknown[][];
     description?: string | null;
   }) => void;
   cancelChange: (changeId: string) => void;
@@ -329,6 +331,8 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       primaryKey: input.primaryKey,
       oldData: input.oldData ?? null,
       newData: input.newData ?? null,
+      columns: input.columns,
+      rows: input.rows,
       status: "pending",
       description: input.description ?? null,
       createdAt: Date.now(),

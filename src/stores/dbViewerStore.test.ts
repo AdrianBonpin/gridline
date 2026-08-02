@@ -116,6 +116,17 @@ describe("dbViewerStore", () => {
     expect(queue[0].createdAt).toBeGreaterThan(0);
   });
 
+  it("addChange stages a bulk_insert with columns+rows", () => {
+    useDbViewerStore.getState().addChange({
+      type: "bulk_insert", schema: "public", table: "t",
+      columns: ["a", "b"], rows: [[1, 2]], description: "Import",
+    } as any);
+    const q = useDbViewerStore.getState().changesQueue;
+    expect(q[q.length - 1].type).toBe("bulk_insert");
+    expect((q[q.length - 1] as any).columns).toEqual(["a", "b"]);
+    expect((q[q.length - 1] as any).rows).toEqual([[1, 2]]);
+  });
+
   it("cancelChange marks change as cancelled", () => {
     const store = useDbViewerStore.getState();
     store.addChange({ type: "insert", sql: "INSERT INTO users (id) VALUES (1)" });
