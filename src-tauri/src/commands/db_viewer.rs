@@ -735,13 +735,20 @@ fn sqlite_value_to_json(row: &rusqlite::Row, i: usize) -> serde_json::Value {
     }
 }
 
+/// Serialize an i64 as a JSON string to preserve precision across the IPC
+/// boundary (JS `Number` loses integer fidelity beyond 2^53). The frontend
+/// treats numeric columns as strings for edit round-trips.
+pub(crate) fn i64_to_json(v: i64) -> serde_json::Value {
+    serde_json::Value::String(v.to_string())
+}
+
 pub(crate) fn pg_value_to_json(row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
     // Integer types
     if let Ok(Some(v)) = row.try_get::<_, Option<i32>>(i) {
         return serde_json::json!(v);
     }
     if let Ok(Some(v)) = row.try_get::<_, Option<i64>>(i) {
-        return serde_json::json!(v);
+        return i64_to_json(v);
     }
     if let Ok(Some(v)) = row.try_get::<_, Option<i16>>(i) {
         return serde_json::json!(v);
@@ -1987,6 +1994,19 @@ pub async fn get_table_ddl(
 mod tests {
     use super::*;
     use crate::models::db_viewer::Change;
+
+    /// bigint precision: values beyond 2^53 must round-trip as strings.
+    #[test]
+    fn i64_preserves_precision_as_string() {
+        // A bigint beyond 2^53 must round-trip as a string, not a JS number.
+        let big: i64 = 9_007_199_254_740_993; // 2^53 + 1
+        let v = i64_to_json(big);
+        assert_eq!(v, serde_json::Value::String("9007199254740993".to_string()),
+            "bigint must be a string to avoid float precision loss");
+        let small: i64 = 42;
+        let v2 = i64_to_json(small);
+        assert_eq!(v2, serde_json::Value::String("42".to_string()));
+    }
 
     /// Verify the `offset` helper produces correct pagination offsets.
     #[test]
