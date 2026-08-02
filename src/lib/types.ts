@@ -68,6 +68,7 @@ export interface ConnectionInput {
   ssh_user?: string | null;
   ssh_auth_method?: "password" | "key" | null;
   ssh_private_key_path?: string | null;
+  ssh_password?: string | null;
   ssh_passphrase?: string | null;
   // SSL/TLS fields
   ssl_mode?: "disable" | "require" | "verify-ca" | "verify-full" | null;
@@ -98,6 +99,11 @@ export interface Settings {
   table_page_size: number;
   shortcuts: Record<string, string>;
   accent_color: string;
+  editor_font_size: number;
+  editor_font_family: string;
+  editor_word_wrap: "off" | "on";
+  editor_minimap: boolean;
+  editor_tab_size: number;
 }
 
 export type ActiveView = "home" | "settings" | "new-connection" | "db-viewer";
@@ -159,7 +165,9 @@ export type ChangeItemType =
   | "update"
   | "delete"
   | "create_index"
-  | "drop_index";
+  | "drop_index"
+  | "bulk_insert"
+  | "empty_table";
 
 export interface ChangeItem {
   type: ChangeItemType;

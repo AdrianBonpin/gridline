@@ -27,6 +27,9 @@ const MAX_NAME_LEN: usize = 200;
 const MAX_FOLDER_LEN: usize = 100;
 const MAX_QUERY_TEXT_LEN: usize = 1_048_576; // 1 MB
 
+const ALLOWED_EDITOR_FONTS: &[&str] =
+    &["Space Mono", "Fira Code", "Menlo", "Monaco", "Consolas", "JetBrains Mono", "monospace"];
+
 impl Store {
     pub fn from_connection(conn: SqliteConnection) -> Self {
         Self {
@@ -432,6 +435,29 @@ impl Store {
                 default_ports = parsed;
             }
         }
+        let editor_font_size = map
+            .get("editor_font_size")
+            .and_then(|v| v.parse::<i64>().ok())
+            .map(|v| v.clamp(8, 24))
+            .unwrap_or(13);
+        let editor_font_family = map
+            .get("editor_font_family")
+            .cloned()
+            .filter(|v| ALLOWED_EDITOR_FONTS.contains(&v.as_str()))
+            .unwrap_or_else(|| "Space Mono".to_string());
+        let editor_word_wrap = match map.get("editor_word_wrap").map(|v| v.as_str()) {
+            Some("on") => "on".to_string(),
+            _ => "off".to_string(),
+        };
+        let editor_minimap = map
+            .get("editor_minimap")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        let editor_tab_size = map
+            .get("editor_tab_size")
+            .and_then(|v| v.parse::<i64>().ok())
+            .map(|v| v.clamp(2, 8))
+            .unwrap_or(4);
         Ok(Settings {
             confirm_before_delete: confirm,
             default_folder_id,
@@ -455,6 +481,11 @@ impl Store {
                 .get("accent_color")
                 .cloned()
                 .unwrap_or_else(|| "#2563EB".to_string()),
+            editor_font_size,
+            editor_font_family,
+            editor_word_wrap,
+            editor_minimap,
+            editor_tab_size,
         })
     }
 
@@ -836,6 +867,7 @@ mod tests {
                 ssh_user: None,
                 ssh_auth_method: None,
                 ssh_private_key_path: None,
+                ssh_password: None,
                 ssh_passphrase: None,
                 ssl_mode: None,
                 ssl_ca_path: None,
@@ -883,6 +915,7 @@ mod tests {
                 ssh_user: None,
                 ssh_auth_method: None,
                 ssh_private_key_path: None,
+                ssh_password: None,
                 ssh_passphrase: None,
                 ssl_mode: None,
                 ssl_ca_path: None,
@@ -922,6 +955,7 @@ mod tests {
                 ssh_user: None,
                 ssh_auth_method: None,
                 ssh_private_key_path: None,
+                ssh_password: None,
                 ssh_passphrase: None,
                 ssl_mode: None,
                 ssl_ca_path: None,
@@ -960,6 +994,7 @@ mod tests {
                 ssh_user: None,
                 ssh_auth_method: None,
                 ssh_private_key_path: None,
+                ssh_password: None,
                 ssh_passphrase: None,
                 ssl_mode: None,
                 ssl_ca_path: None,
@@ -1022,6 +1057,7 @@ mod tests {
                 ssh_user: Some("tunneluser".into()),
                 ssh_auth_method: Some("Key".into()),
                 ssh_private_key_path: Some("/home/user/.ssh/id_rsa".into()),
+                ssh_password: None,
                 ssh_passphrase: None,
                 ssl_mode: Some("verify-full".into()),
                 ssl_ca_path: Some("/etc/ssl/certs/ca.pem".into()),
@@ -1076,6 +1112,7 @@ mod tests {
                 ssh_user: None,
                 ssh_auth_method: None,
                 ssh_private_key_path: None,
+                ssh_password: None,
                 ssh_passphrase: None,
                 ssl_mode: None,
                 ssl_ca_path: None,
@@ -1127,6 +1164,7 @@ mod tests {
                 ssh_user: None,
                 ssh_auth_method: None,
                 ssh_private_key_path: None,
+                ssh_password: None,
                 ssh_passphrase: None,
                 ssl_mode: None,
                 ssl_ca_path: None,
@@ -1176,6 +1214,7 @@ mod tests {
                 ssh_user: None,
                 ssh_auth_method: None,
                 ssh_private_key_path: None,
+                ssh_password: None,
                 ssh_passphrase: None,
                 ssl_mode: None,
                 ssl_ca_path: None,
@@ -1211,6 +1250,7 @@ mod tests {
                 ssh_user: None,
                 ssh_auth_method: None,
                 ssh_private_key_path: None,
+                ssh_password: None,
                 ssh_passphrase: None,
                 ssl_mode: None,
                 ssl_ca_path: None,
@@ -1258,6 +1298,7 @@ mod tests {
                 ssh_user: None,
                 ssh_auth_method: None,
                 ssh_private_key_path: None,
+                ssh_password: None,
                 ssh_passphrase: None,
                 ssl_mode: None,
                 ssl_ca_path: None,
@@ -1349,5 +1390,46 @@ mod tests {
         let huge_text = "x".repeat(1_048_577); // 1MB + 1 byte
         let result = store.save_query(None, "ok", &huge_text, "");
         assert!(result.is_err(), "Over-size query text should be rejected");
+    }
+
+    #[test]
+    fn editor_settings_defaults_when_unset() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::run_migrations(&conn).unwrap();
+        let store = Store::from_connection(conn);
+        let s = store.get_settings().unwrap();
+        assert_eq!(s.editor_font_size, 13);
+        assert_eq!(s.editor_font_family, "Space Mono");
+        assert_eq!(s.editor_word_wrap, "off");
+        assert!(!s.editor_minimap);
+        assert_eq!(s.editor_tab_size, 4);
+    }
+
+    #[test]
+    fn editor_settings_clamp_out_of_range() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::run_migrations(&conn).unwrap();
+        let store = Store::from_connection(conn);
+        store.update_setting("editor_font_size", "999").unwrap();
+        store.update_setting("editor_tab_size", "1").unwrap();
+        store.update_setting("editor_minimap", "true").unwrap();
+        let s = store.get_settings().unwrap();
+        assert_eq!(s.editor_font_size, 24, "font_size clamps to 24");
+        assert_eq!(s.editor_tab_size, 2, "tab_size clamps to 2");
+        assert!(s.editor_minimap);
+    }
+
+    #[test]
+    fn editor_settings_garbage_and_disallowed_fall_back() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::run_migrations(&conn).unwrap();
+        let store = Store::from_connection(conn);
+        store.update_setting("editor_font_size", "abc").unwrap();
+        store.update_setting("editor_font_family", "Comic Sans").unwrap();
+        store.update_setting("editor_word_wrap", "weird").unwrap();
+        let s = store.get_settings().unwrap();
+        assert_eq!(s.editor_font_size, 13, "garbage -> default");
+        assert_eq!(s.editor_font_family, "Space Mono", "disallowed font -> default");
+        assert_eq!(s.editor_word_wrap, "off", "invalid wrap -> default");
     }
 }

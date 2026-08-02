@@ -135,6 +135,23 @@ pub enum Change {
         sql: String,
         rollback_sql: String,
     },
+    BulkInsert {
+        id: String,
+        schema: String,
+        table: String,
+        columns: Vec<String>,
+        rows: Vec<Vec<serde_json::Value>>,
+    },
+    DropTable {
+        id: String,
+        schema: String,
+        table: String,
+    },
+    EmptyTable {
+        id: String,
+        schema: String,
+        table: String,
+    },
 }
 
 impl Change {
@@ -143,7 +160,10 @@ impl Change {
             Change::Update { id, .. }
             | Change::Insert { id, .. }
             | Change::Delete { id, .. }
-            | Change::AlterTable { id, .. } => id,
+            | Change::AlterTable { id, .. }
+            | Change::BulkInsert { id, .. }
+            | Change::DropTable { id, .. }
+            | Change::EmptyTable { id, .. } => id,
         }
     }
 }
@@ -277,6 +297,35 @@ mod tests {
             "serialized Change::Update should use snake_case tag 'update'; got: {}",
             json
         );
+    }
+
+    #[test]
+    fn change_bulk_insert_roundtrip() {
+        let json = serde_json::json!({
+            "type": "bulk_insert", "id": "x", "schema": "public", "table": "t",
+            "columns": ["a", "b"],
+            "rows": [[1, "y"], [2, "z"]]
+        });
+        let c: Change = serde_json::from_value(json).unwrap();
+        match c {
+            Change::BulkInsert { columns, rows, .. } => {
+                assert_eq!(columns, vec!["a".to_string(), "b".to_string()]);
+                assert_eq!(rows.len(), 2);
+            }
+            _ => panic!("expected BulkInsert"),
+        }
+    }
+
+    #[test]
+    fn change_drop_and_empty_roundtrip() {
+        let drop: Change = serde_json::from_value(serde_json::json!({
+            "type": "drop_table", "id": "d", "schema": "public", "table": "t"
+        })).unwrap();
+        assert_eq!(drop.id(), "d");
+        let empty: Change = serde_json::from_value(serde_json::json!({
+            "type": "empty_table", "id": "e", "schema": "public", "table": "t"
+        })).unwrap();
+        assert_eq!(empty.id(), "e");
     }
 
     #[test]

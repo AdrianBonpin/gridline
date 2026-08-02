@@ -7,6 +7,7 @@ import {
   getDescendantFolderIds,
   getFolderPathLabel,
   isDestructiveQuery,
+  isSchemaModifyingQuery,
   pickDefaultSchema,
 } from "./utils";
 import type { Connection, Folder, Tag } from "./types";
@@ -413,5 +414,26 @@ describe("pickDefaultSchema", () => {
 
   it("returns null for an empty list", () => {
     expect(pickDefaultSchema([])).toBeNull();
+  });
+});
+
+describe("isSchemaModifyingQuery", () => {
+  it("returns true for CREATE / DROP / ALTER / TRUNCATE", () => {
+    expect(isSchemaModifyingQuery("CREATE TABLE t (id int)")).toBe(true);
+    expect(isSchemaModifyingQuery("DROP TABLE t")).toBe(true);
+    expect(isSchemaModifyingQuery("ALTER TABLE t ADD COLUMN c int")).toBe(true);
+    expect(isSchemaModifyingQuery("TRUNCATE TABLE t")).toBe(true);
+  });
+  it("returns false for data-only and read statements", () => {
+    expect(isSchemaModifyingQuery("SELECT * FROM t")).toBe(false);
+    expect(isSchemaModifyingQuery("INSERT INTO t VALUES (1)")).toBe(false);
+    expect(isSchemaModifyingQuery("UPDATE t SET c = 1")).toBe(false);
+    expect(isSchemaModifyingQuery("DELETE FROM t")).toBe(false);
+    expect(isSchemaModifyingQuery("REPLACE INTO t VALUES (1)")).toBe(false);
+    expect(isSchemaModifyingQuery("WITH cte AS (SELECT 1) SELECT * FROM cte")).toBe(false);
+  });
+  it("strips comments before checking", () => {
+    expect(isSchemaModifyingQuery("-- note\nCREATE TABLE t (id int)")).toBe(true);
+    expect(isSchemaModifyingQuery("/* x */ SELECT 1")).toBe(false);
   });
 });

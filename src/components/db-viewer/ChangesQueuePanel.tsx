@@ -1,11 +1,11 @@
-import { useCallback } from "react";
-import { X, Check, ChevronUp, ChevronDown } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Check, X, RotateCcw } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import * as cmd from "../../lib/commands";
+import { buildChangePayload, buildChangeSql } from "../../lib/changePayload";
 import type { QueueItem, QueueStatus } from "../../stores/dbViewerStore";
-import type { ChangeItem } from "../../lib/types";
 
 const statusBg: Record<QueueStatus, string> = {
   pending: "bg-accent/5",
@@ -14,54 +14,40 @@ const statusBg: Record<QueueStatus, string> = {
   cancelled: "bg-surface-raised/50",
 };
 
+function formatChangeLabel(change: QueueItem): string {
+  const schema = change.schema ?? "";
+  const table = change.table ?? "";
+  const fullName = schema ? `${schema}.${table}` : table;
+  switch (change.type) {
+    case "bulk_insert":
+      return change.description ?? `Import ${change.rows?.length ?? 0} rows into ${fullName}`;
+    case "empty_table":
+      return `Empty Table: ${fullName}`;
+    case "drop_table":
+      return `Drop Table: ${fullName}`;
+    default:
+      return change.table ?? "-";
+  }
+}
+
 function capitalizeType(type: string) {
   return type.charAt(0).toUpperCase() + type.slice(1);
 }
 
-function StatusIndicator({ status }: { status: QueueStatus }) {
-  switch (status) {
-    case "pending":
-      return (
-        <div className="flex items-center gap-1.5 text-amber-400">
-          <span className="h-2 w-2 rounded-full bg-amber-400" />
-          <span>Pending</span>
-        </div>
-      );
-    case "committed":
-      return (
-        <div className="flex items-center gap-1.5 text-green-500">
-          <Check className="h-4 w-4" />
-          <span>Committed</span>
-        </div>
-      );
-    case "failed":
-      return (
-        <div className="flex items-center gap-1.5 text-red-500">
-          <X className="h-4 w-4" />
-          <span>Failed</span>
-        </div>
-      );
-    case "cancelled":
-      return (
-        <div className="flex items-center gap-1.5 text-text-muted">
-          <span>Cancelled</span>
-        </div>
-      );
-    default:
-      return null;
-  }
+function tableRef(change: QueueItem): string {
+  if (change.schema && change.table) return `${change.schema}.${change.table}`;
+  return change.table ?? "-";
 }
 
 export function ChangesQueuePanel() {
   const changesQueue = useDbViewerStore((state) => state.changesQueue);
-  const cancelChange = useDbViewerStore((state) => state.cancelChange);
+  const removeChange = useDbViewerStore((state) => state.removeChange);
+  const clearChanges = useDbViewerStore((state) => state.clearChanges);
   const markChangeCommitted = useDbViewerStore((state) => state.markChangeCommitted);
   const markChangeFailed = useDbViewerStore((state) => state.markChangeFailed);
   const notify = useNotificationStore((state) => state.notify);
-  const expanded = useDbViewerStore((state) => state.changesPanelExpanded);
-  const toggleChangesPanel = useDbViewerStore(
-    (state) => state.toggleChangesPanel,
-  );
+
+  const [view, setView] = useState<"visual" | "sql">("visual");
 
   const handleCommitAll = useCallback(async () => {
     const connectionId = useUiStore.getState().activeConnectionId;
@@ -76,19 +62,19 @@ export function ChangesQueuePanel() {
     if (pending.length === 0) return;
 
     let committedCount = 0;
+    let treeDirty = false;
 
     for (const change of pending) {
       try {
-        const payload = {
-          id: change.id,
-          type: change.type,
-          sql: change.sql,
-          status: "pending" as const,
-          description: change.description ?? null,
-        } satisfies ChangeItem;
+        const payload = buildChangePayload(change);
         await cmd.executeChange(connectionId, payload);
         markChangeCommitted(change.id);
         committedCount++;
+        if (change.type === "drop_table") {
+          treeDirty = true;
+          const st = useDbViewerStore.getState();
+          st.closeTabsForTable(change.schema ?? "", change.table ?? "");
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         markChangeFailed(change.id, msg);
@@ -100,102 +86,134 @@ export function ChangesQueuePanel() {
     if (committedCount > 0) {
       notify(`${committedCount} change(s) committed`, "success");
     }
+
+    if (treeDirty) {
+      const st = useDbViewerStore.getState();
+      void st.refreshTree(connectionId, st.currentSchema ?? undefined);
+    }
   }, [markChangeCommitted, markChangeFailed, notify]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void handleCommitAll();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [handleCommitAll]);
 
   if (changesQueue.length === 0) {
     return null;
   }
 
   const pendingCount = changesQueue.filter((c) => c.status === "pending").length;
-  const processedCount = changesQueue.filter(
-    (c) => c.status === "committed" || c.status === "failed",
-  ).length;
-
-  const changeWord = pendingCount === 1 ? "change" : "changes";
 
   return (
-    <div className="border-t border-border bg-surface">
-      <button
-        type="button"
-        onClick={() => toggleChangesPanel()}
-        className="flex w-full items-center justify-between px-4 py-2 text-sm text-text hover:bg-surface-raised/50 cursor-pointer"
-      >
-        <div className="flex items-center gap-2">
-          {expanded ? (
-            <ChevronDown className="h-4 w-4 text-text-muted" />
-          ) : (
-            <ChevronUp className="h-4 w-4 text-text-muted" />
-          )}
-          <span className="font-medium">
-            Changes Queue ({pendingCount} pending {changeWord}, {processedCount}{" "}
-            processed)
-          </span>
-          {pendingCount > 0 && (
-            <span className="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-muted">
-              {pendingCount}
-            </span>
-          )}
+    <div className="flex flex-col">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+        <span className="font-medium text-sm text-text">Pending Changes</span>
+        <div className="flex rounded-md border border-border overflow-hidden">
+          <button
+            type="button"
+            aria-label="Visual"
+            onClick={() => setView("visual")}
+            className={[
+              "px-2 py-0.5 text-xs transition-colors",
+              view === "visual"
+                ? "bg-surface-raised text-text"
+                : "text-text-muted hover:text-text",
+            ].join(" ")}
+          >
+            Visual
+          </button>
+          <button
+            type="button"
+            aria-label="SQL"
+            onClick={() => setView("sql")}
+            className={[
+              "px-2 py-0.5 text-xs transition-colors",
+              view === "sql"
+                ? "bg-surface-raised text-text"
+                : "text-text-muted hover:text-text",
+            ].join(" ")}
+          >
+            SQL
+          </button>
         </div>
+      </div>
+
+      <div className="max-h-64 overflow-y-auto px-2 py-2 space-y-2">
+        {view === "visual" ? (
+          changesQueue.map((change) => (
+            <div
+              key={change.id}
+              className={`rounded-lg border border-border bg-surface-raised/40 px-3 py-2 ${statusBg[change.status]}`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="rounded bg-surface-raised px-1.5 py-0.5 text-xs font-medium text-text-muted">
+                    {capitalizeType(change.type)}
+                  </span>
+                  <span className="text-sm text-text truncate">
+                    {tableRef(change)}
+                  </span>
+                </div>
+                {change.status === "pending" ? (
+                  <button
+                    type="button"
+                    aria-label="Revert change"
+                    title="Revert change"
+                    onClick={() => removeChange(change.id)}
+                    className="rounded p-1 text-text-muted hover:bg-red-500/10 hover:text-red-500 cursor-pointer shrink-0"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </button>
+                ) : change.status === "committed" ? (
+                  <span title="Committed" className="shrink-0 text-green-500">
+                    <Check className="h-4 w-4" />
+                  </span>
+                ) : change.status === "failed" ? (
+                  <span title="Failed" className="shrink-0 text-red-500">
+                    <X className="h-4 w-4" />
+                  </span>
+                ) : null}
+              </div>
+              <div className="mt-1 text-xs text-text-muted truncate">
+                {formatChangeLabel(change)}
+              </div>
+            </div>
+          ))
+        ) : (
+          changesQueue.map((change) => (
+            <pre
+              key={change.id}
+              className="text-xs text-text-muted whitespace-pre-wrap rounded-md bg-canvas px-3 py-2 font-mono border border-border"
+            >
+              {buildChangeSql(change)}
+            </pre>
+          ))
+        )}
+      </div>
+
+      <div className="flex items-center justify-between border-t border-border px-3 py-2">
+        <button
+          type="button"
+          onClick={clearChanges}
+          className="text-xs text-text-muted hover:text-text hover:bg-surface-raised rounded-md px-2 py-1 transition-colors cursor-pointer"
+        >
+          Clear All
+        </button>
         <button
           type="button"
           disabled={pendingCount === 0}
-          onClick={(e) => {
-            e.stopPropagation();
-            handleCommitAll();
-          }}
-          className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+          onClick={handleCommitAll}
+          className="inline-flex items-center rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
         >
-          Commit All
+          Commit All ({pendingCount})
+          <kbd className="ml-1.5 rounded bg-surface-raised px-1 text-[10px]">⌘S</kbd>
         </button>
-      </button>
-
-      {expanded && (
-        <div className="max-h-48 overflow-y-auto">
-          {changesQueue.map((change) => (
-            <ChangeRow
-              key={change.id}
-              change={change}
-              onCancel={() => cancelChange(change.id)}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ChangeRow({
-  change,
-  onCancel,
-}: {
-  change: QueueItem;
-  onCancel: () => void;
-}) {
-  return (
-    <div
-      className={`flex items-center justify-between px-4 py-2 text-sm ${statusBg[change.status]}`}
-    >
-      <div className="flex items-center gap-3">
-        <span className="rounded-md bg-surface-raised px-2 py-0.5 text-xs font-medium text-text-muted">
-          {capitalizeType(change.type)}
-        </span>
-        <span className="text-text">
-          {change.table ? change.table : "-"}
-        </span>
-      </div>
-
-      <div className="flex items-center gap-3">
-        <StatusIndicator status={change.status} />
-        {change.status === "pending" && (
-          <button
-            type="button"
-            aria-label="Cancel"
-            onClick={onCancel}
-            className="rounded p-1 text-text-muted hover:bg-red-500/10 hover:text-red-500 cursor-pointer"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        )}
       </div>
     </div>
   );

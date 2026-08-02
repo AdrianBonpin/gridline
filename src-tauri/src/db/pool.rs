@@ -5,7 +5,7 @@ use std::time::Instant;
 ///
 /// Fields map to connection parameters. For SQLite, `host` stores the
 /// file path and `port` is always `None`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DbConfig {
     pub db_type: String,
     pub host: String,
@@ -17,6 +17,20 @@ pub struct DbConfig {
     pub ssl_ca_path: Option<String>,
     pub ssl_cert_path: Option<String>,
     pub ssl_key_path: Option<String>,
+    #[serde(default)]
+    pub ssh_host: Option<String>,
+    #[serde(default)]
+    pub ssh_port: Option<i64>,
+    #[serde(default)]
+    pub ssh_user: Option<String>,
+    #[serde(default)]
+    pub ssh_auth_method: Option<String>,
+    #[serde(default)]
+    pub ssh_password: Option<String>,
+    #[serde(default)]
+    pub ssh_private_key_path: Option<String>,
+    #[serde(default)]
+    pub ssh_passphrase: Option<String>,
 }
 
 impl DbConfig {
@@ -35,7 +49,34 @@ impl DbConfig {
             ssl_ca_path: None,
             ssl_cert_path: None,
             ssl_key_path: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_password: None,
+            ssh_private_key_path: None,
+            ssh_passphrase: None,
         }
+    }
+
+    /// Build an `SshConfig` from the flat SSH fields, or `None` if no SSH host is set.
+    pub fn ssh_config(&self) -> Option<crate::models::SshConfig> {
+        let host = self.ssh_host.clone()?;
+        if host.is_empty() {
+            return None;
+        }
+        Some(crate::models::SshConfig {
+            host,
+            port: self.ssh_port.unwrap_or(22) as u16,
+            user: self.ssh_user.clone().unwrap_or_default(),
+            auth_method: self
+                .ssh_auth_method
+                .clone()
+                .unwrap_or_else(|| "password".to_string()),
+            password: self.ssh_password.clone(),
+            private_key_path: self.ssh_private_key_path.clone(),
+            passphrase: self.ssh_passphrase.clone(),
+        })
     }
 }
 
@@ -74,6 +115,10 @@ pub(crate) struct DbPoolEntry {
 pub struct ConnectionPoolManager {
     pools: indexmap::IndexMap<String, DbPoolEntry>,
     max_pools: usize,
+    /// Invoked with the id of every pool that gets evicted (LRU overflow in
+    /// `register` or shrinkage in `set_max_pools`). Lets callers free
+    /// associated resources (e.g. SSH tunnels).
+    on_evict: Option<Box<dyn Fn(&str) + Send + Sync>>,
 }
 
 impl ConnectionPoolManager {
@@ -82,7 +127,13 @@ impl ConnectionPoolManager {
         Self {
             pools: indexmap::IndexMap::new(),
             max_pools: 5,
+            on_evict: None,
         }
+    }
+
+    /// Register a callback invoked with the id of every evicted pool.
+    pub fn set_on_evict(&mut self, cb: Box<dyn Fn(&str) + Send + Sync>) {
+        self.on_evict = Some(cb);
     }
 
     /// Set the maximum number of pools before LRU eviction kicks in.
@@ -92,7 +143,11 @@ impl ConnectionPoolManager {
     pub fn set_max_pools(&mut self, max: usize) {
         self.max_pools = max;
         while self.pools.len() > self.max_pools {
-            self.pools.shift_remove_index(0);
+            if let Some((evicted_id, _)) = self.pools.shift_remove_index(0) {
+                if let Some(cb) = &self.on_evict {
+                    cb(&evicted_id);
+                }
+            }
         }
     }
 
@@ -114,7 +169,11 @@ impl ConnectionPoolManager {
 
         // LRU eviction: remove oldest (front) entries until within capacity
         while self.pools.len() > self.max_pools {
-            self.pools.shift_remove_index(0);
+            if let Some((evicted_id, _)) = self.pools.shift_remove_index(0) {
+                if let Some(cb) = &self.on_evict {
+                    cb(&evicted_id);
+                }
+            }
         }
     }
 
@@ -166,10 +225,7 @@ mod tests {
             username: Some("admin".into()),
             password: Some("secret".into()),
             database: Some("mydb".into()),
-            ssl_mode: None,
-            ssl_ca_path: None,
-            ssl_cert_path: None,
-            ssl_key_path: None,
+            ..Default::default()
         };
 
         assert_eq!(cfg.db_type, "PostgreSQL");
@@ -190,6 +246,33 @@ mod tests {
         assert!(cfg.port.is_none());
         assert!(cfg.username.is_none());
         assert!(cfg.database.is_none());
+    }
+
+    #[test]
+    fn db_config_ssh_config_is_none_when_no_host() {
+        let cfg = DbConfig { db_type: "PostgreSQL".into(), host: "h".into(), port: Some(5432),
+            username: None, password: None, database: None, ssl_mode: None, ssl_ca_path: None,
+            ssl_cert_path: None, ssl_key_path: None, ssh_host: None, ssh_port: None, ssh_user: None,
+            ssh_auth_method: None, ssh_password: None, ssh_private_key_path: None, ssh_passphrase: None,
+        };
+        assert!(cfg.ssh_config().is_none());
+    }
+
+    #[test]
+    fn db_config_ssh_config_builds_from_flat_fields() {
+        let cfg = DbConfig { db_type: "PostgreSQL".into(), host: "db".into(), port: Some(5432),
+            username: None, password: None, database: None, ssl_mode: None, ssl_ca_path: None,
+            ssl_cert_path: None, ssl_key_path: None,
+            ssh_host: Some("jump".into()), ssh_port: Some(2222), ssh_user: Some("u".into()),
+            ssh_auth_method: Some("password".into()), ssh_password: Some("pw".into()),
+            ssh_private_key_path: None, ssh_passphrase: None,
+        };
+        let s = cfg.ssh_config().expect("ssh config present");
+        assert_eq!(s.host, "jump");
+        assert_eq!(s.port, 2222);
+        assert_eq!(s.user, "u");
+        assert_eq!(s.auth_method, "password");
+        assert_eq!(s.password.as_deref(), Some("pw"));
     }
 
     // ------------------------------------------------------------------
@@ -260,5 +343,46 @@ mod tests {
         assert!(!manager.contains("b"), "'b' is LRU and should be evicted");
         assert!(manager.contains("c"));
         assert!(manager.contains("d"));
+    }
+
+    #[test]
+    fn pool_invokes_on_evict_with_evicted_id() {
+        let mut manager = ConnectionPoolManager::new();
+        manager.set_max_pools(1);
+        let evicted: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
+        let evicted_cb = evicted.clone();
+        manager.set_on_evict(Box::new(move |id: &str| {
+            evicted_cb.lock().unwrap().push(id.to_string());
+        }));
+        manager.register(
+            "a",
+            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        );
+        manager.register(
+            "b",
+            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        );
+        assert_eq!(evicted.lock().unwrap().as_slice(), ["a".to_string()]);
+    }
+
+    #[test]
+    fn pool_invokes_on_evict_on_max_pools_shrink() {
+        let mut manager = ConnectionPoolManager::new();
+        let evicted: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
+        let evicted_cb = evicted.clone();
+        manager.set_on_evict(Box::new(move |id: &str| {
+            evicted_cb.lock().unwrap().push(id.to_string());
+        }));
+        manager.register(
+            "a",
+            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        );
+        manager.register(
+            "b",
+            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        );
+        // Shrinking max_pools below the current count evicts oldest first.
+        manager.set_max_pools(1);
+        assert_eq!(evicted.lock().unwrap().as_slice(), ["a".to_string()]);
     }
 }

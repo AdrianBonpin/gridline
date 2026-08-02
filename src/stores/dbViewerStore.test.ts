@@ -1,6 +1,13 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useDbViewerStore } from "./dbViewerStore";
 import type { QueryResult, TableInfo } from "../lib/types";
+import * as commands from "../lib/commands";
+
+vi.mock("../lib/commands", () => ({
+  getDatabases: vi.fn(),
+  getSchemas: vi.fn(),
+  getTables: vi.fn(),
+}));
 
 beforeEach(() => {
   useDbViewerStore.getState().reset();
@@ -63,6 +70,26 @@ describe("dbViewerStore", () => {
     expect(state.activeTabId).toBe(state.tabs[0].id);
   });
 
+  it("closeTabsForTable closes matching table tabs and keeps others", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openTab("public", "posts", true);
+    useDbViewerStore.getState().closeTabsForTable("public", "users");
+    const tabs = useDbViewerStore.getState().tabs;
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].table).toBe("posts");
+  });
+
+  it("closeTabsForTable fixes the active tab when it is closed", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    const usersId = useDbViewerStore.getState().tabs[0].id;
+    useDbViewerStore.getState().openTab("public", "posts", true);
+    useDbViewerStore.getState().setActiveTab(usersId);
+    useDbViewerStore.getState().closeTabsForTable("public", "users");
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.activeTabId).toBe(st.tabs[0].id);
+  });
+
   it("setPage updates pagination", () => {
     const store = useDbViewerStore.getState();
     store.openTab("public", "users");
@@ -116,6 +143,17 @@ describe("dbViewerStore", () => {
     expect(queue[0].createdAt).toBeGreaterThan(0);
   });
 
+  it("addChange stages a bulk_insert with columns+rows", () => {
+    useDbViewerStore.getState().addChange({
+      type: "bulk_insert", schema: "public", table: "t",
+      columns: ["a", "b"], rows: [[1, 2]], description: "Import",
+    } as any);
+    const q = useDbViewerStore.getState().changesQueue;
+    expect(q[q.length - 1].type).toBe("bulk_insert");
+    expect((q[q.length - 1] as any).columns).toEqual(["a", "b"]);
+    expect((q[q.length - 1] as any).rows).toEqual([[1, 2]]);
+  });
+
   it("cancelChange marks change as cancelled", () => {
     const store = useDbViewerStore.getState();
     store.addChange({ type: "insert", sql: "INSERT INTO users (id) VALUES (1)" });
@@ -145,6 +183,20 @@ describe("dbViewerStore", () => {
     const change = useDbViewerStore.getState().changesQueue[0];
     expect(change.status).toBe("failed");
     expect(change.error).toBe("Constraint violation");
+  });
+
+  it("removeChange drops the change from the queue", () => {
+    useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 }, description: "x" } as any);
+    const id = useDbViewerStore.getState().changesQueue[0].id;
+    useDbViewerStore.getState().removeChange(id);
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+  });
+
+  it("clearChanges empties the queue", () => {
+    useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 }, description: "x" } as any);
+    useDbViewerStore.getState().addChange({ type: "delete", schema: "public", table: "t", primaryKey: { id: 1 }, description: "y" } as any);
+    useDbViewerStore.getState().clearChanges();
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
   });
 
   it("reset clears all state", () => {
@@ -178,6 +230,37 @@ describe("dbViewerStore", () => {
     expect(state.databases).toEqual(["mydb", "testdb"]);
     expect(state.schemas).toEqual(["public", "private"]);
     expect(state.tables).toEqual(tables);
+  });
+});
+
+describe("refreshTree", () => {
+  it("fetches databases/schemas/tables and populates", async () => {
+    vi.mocked(commands.getDatabases).mockResolvedValue(["mydb"]);
+    vi.mocked(commands.getSchemas).mockResolvedValue(["public"]);
+    vi.mocked(commands.getTables).mockResolvedValue([
+      { name: "users", schema: "public", table_type: "TABLE" },
+    ] as any);
+    useDbViewerStore.setState({ currentSchema: "public" });
+    await useDbViewerStore.getState().refreshTree("c1");
+    expect(useDbViewerStore.getState().databases).toEqual(["mydb"]);
+    expect(useDbViewerStore.getState().schemas).toEqual(["public"]);
+    expect(useDbViewerStore.getState().tables).toHaveLength(1);
+    expect(commands.getTables).toHaveBeenCalledWith("c1", "public");
+  });
+  it("falls back to no schema when currentSchema is null", async () => {
+    vi.mocked(commands.getDatabases).mockResolvedValue([] as any);
+    vi.mocked(commands.getSchemas).mockResolvedValue([] as any);
+    vi.mocked(commands.getTables).mockResolvedValue([] as any);
+    useDbViewerStore.setState({ currentSchema: null });
+    await useDbViewerStore.getState().refreshTree("c1");
+    expect(commands.getTables).toHaveBeenCalledWith("c1", undefined);
+  });
+  it("swallows fetch errors", async () => {
+    vi.mocked(commands.getDatabases).mockResolvedValue([] as any);
+    vi.mocked(commands.getSchemas).mockRejectedValue(new Error("boom"));
+    await expect(
+      useDbViewerStore.getState().refreshTree("c1"),
+    ).resolves.toBeUndefined();
   });
 });
 

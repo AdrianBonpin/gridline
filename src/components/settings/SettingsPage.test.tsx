@@ -33,6 +33,11 @@ vi.mock("../../lib/commands", () => ({
     table_page_size: 50,
     shortcuts: {},
     accent_color: "#2563EB",
+    editor_font_size: 13,
+    editor_font_family: "Space Mono",
+    editor_word_wrap: "off",
+    editor_minimap: false,
+    editor_tab_size: 4,
   }),
   updateSetting: vi.fn().mockResolvedValue(undefined),
   getConnections: vi.fn().mockResolvedValue([]),
@@ -68,6 +73,11 @@ const baseSettings = {
   table_page_size: 50,
   shortcuts: {} as Record<string, string>,
   accent_color: "#2563EB",
+  editor_font_size: 13,
+  editor_font_family: "Space Mono",
+  editor_word_wrap: "off" as const,
+  editor_minimap: false,
+  editor_tab_size: 4,
 };
 
 describe("SettingsPage", () => {
@@ -118,14 +128,18 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "settings-tab-general");
   });
 
-  it("switches to the Editor tab and shows placeholder", async () => {
+  it("switches to the Editor tab and shows editor settings", async () => {
     const user = userEvent.setup();
     render(<SettingsPage />);
     await waitFor(() => {
       expect(screen.getByRole("tab", { name: /editor/i })).toBeInTheDocument();
     });
     await user.click(screen.getByRole("tab", { name: /editor/i }));
-    expect(screen.getByText(/editor settings are coming soon/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/font size/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/font family/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/word wrap/i)).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: /minimap/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/tab size/i)).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /editor/i })).toHaveAttribute("aria-selected", "true");
   });
 

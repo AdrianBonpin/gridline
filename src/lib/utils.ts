@@ -150,6 +150,21 @@ const DESTRUCTIVE_KEYWORDS = new Set([
 ]);
 
 /**
+ * Return the first significant keyword of `sql` (uppercased) after stripping
+ * comments and collapsing whitespace, or null when there is none.
+ */
+export function firstSignificantKeyword(sql: string): string | null {
+  // Strip block comments  /* ... */
+  let stripped = sql.replace(/\/\*[\s\S]*?\*\//g, " ");
+  // Strip line comments  -- ...
+  stripped = stripped.replace(/--[^\n]*/g, " ");
+  // Collapse whitespace
+  const tokens = stripped.trim().split(/\s+/);
+  if (tokens.length === 0 || tokens[0].length === 0) return null;
+  return tokens[0].toUpperCase();
+}
+
+/**
  * Detect whether `sql` is a data-modifying statement by checking the
  * first significant keyword after stripping comments and whitespace.
  *
@@ -158,15 +173,22 @@ const DESTRUCTIVE_KEYWORDS = new Set([
  * accidental data loss, not malicious access.
  */
 export function isDestructiveQuery(sql: string): boolean {
-  // Strip block comments  /* ... */
-  let stripped = sql.replace(/\/\*[\s\S]*?\*\//g, " ");
-  // Strip line comments  -- ...
-  stripped = stripped.replace(/--[^\n]*/g, " ");
-  // Collapse whitespace
-  const tokens = stripped.trim().split(/\s+/);
-  if (tokens.length === 0 || tokens[0].length === 0) return false;
-  const first = tokens[0].toUpperCase();
-  return DESTRUCTIVE_KEYWORDS.has(first);
+  const first = firstSignificantKeyword(sql);
+  return first !== null && DESTRUCTIVE_KEYWORDS.has(first);
+}
+
+const SCHEMA_MODIFYING_KEYWORDS = new Set([
+  "CREATE", "DROP", "ALTER", "TRUNCATE",
+]);
+
+/**
+ * Detect whether `sql` changes the database schema (DDL) by checking the
+ * first significant keyword.  Used to auto-refresh the schema tree after a
+ * successful query run.
+ */
+export function isSchemaModifyingQuery(sql: string): boolean {
+  const k = firstSignificantKeyword(sql);
+  return k !== null && SCHEMA_MODIFYING_KEYWORDS.has(k);
 }
 
 /**

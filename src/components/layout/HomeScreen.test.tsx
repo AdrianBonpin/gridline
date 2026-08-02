@@ -166,5 +166,10 @@ function baseSettings() {
     table_page_size: 50,
     shortcuts: {},
     accent_color: "#2563EB",
+    editor_font_size: 13,
+    editor_font_family: "Space Mono",
+    editor_word_wrap: "off" as const,
+    editor_minimap: false,
+    editor_tab_size: 4,
   };
 }

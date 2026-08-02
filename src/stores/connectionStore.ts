@@ -57,6 +57,14 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     if (input.password) {
       await cmd.saveConnectionPassword(conn.id, input.password);
     }
+    // Persist SSH secrets to OS keychain (not SQLite): password for password
+    // auth, passphrase for private-key auth.
+    if (input.ssh_host && (input.ssh_auth_method ?? "password") === "password" && input.ssh_password) {
+      await cmd.saveConnectionSshPassword(conn.id, input.ssh_password);
+    }
+    if (input.ssh_host && input.ssh_passphrase) {
+      await cmd.saveConnectionSshPassphrase(conn.id, input.ssh_passphrase);
+    }
     set((s) => ({ connections: [...s.connections, conn] }));
   },
   deleteConnection: async (id) => {

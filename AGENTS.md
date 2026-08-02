@@ -193,9 +193,9 @@ cargo test               # Rust tests
 | DB Viewer: Redis browse | ❌ | Test connection works; browsing not wired |
 | Password storage in OS keychain | ✅ | macOS Keychain, Linux Secret Service, Windows Credential Manager |
 | SSH tunnel config UI | ✅ | Host, port, user, auth method, key path, passphrase fields |
-| SSH tunnel runtime | 🟡 | UI exists; backend is a **placeholder** (TODO: ssh2 crate integration) |
+| SSH tunnel runtime | ✅ | Real ssh2 tunnel (password + key auth), binds 127.0.0.1 only, secrets in OS keychain (`ssh_password:<id>` / `ssh_passphrase:<id>`), closed on pool eviction / app exit; TLS downgraded to `require` through the tunnel |
 | SSL/TLS config UI | ✅ | Mode (disable/require/verify-ca/verify-full), cert paths |
-| SSL/TLS runtime | 🟡 | Config persisted; **not yet passed to sqlx/tokio-postgres** |
+| SSL/TLS runtime | ✅ | PostgreSQL all modes via rustls (disable/require/verify-ca/verify-full; **v1: `verify-ca` behaves as `verify-full`** — documented refinement), client certs PKCS#1/PKCS#8/EC, encrypted client keys rejected; MySQL test path maps modes (verify-full → VerifyIdentity) |
 
 ### Home Screen & Organization
 | Feature | Status | Details |
@@ -237,7 +237,10 @@ cargo test               # Rust tests
 | Row selection (checkboxes + select all) | ✅ | Bulk copy (JSON/CSV/SQL) and delete |
 | Export toolbar (JSON, CSV, SQL, Markdown) | ✅ | Client-side Blob download of visible rows |
 | Auto-refresh timer | ✅ | Configurable interval in settings |
-| Changes queue (INSERT, UPDATE, DELETE) | ✅ | Queue changes → Commit All; cancel individual changes. Tab bar shows a **Changes** icon button with a pending-count badge that toggles the bottom panel (the queue dropdown was removed from the table toolbar — one entry point only) |
+| Changes queue (INSERT, UPDATE, DELETE, bulk_insert, empty_table, drop_table) | ✅ | Stage → **Commit All**. Tab bar **Changes** button (amber border + count badge when pending) toggles a **popover** anchored to it: header with **Visual/SQL** toggle (cards showing op badge + table + description + per-change **Revert**, or a generated-SQL preview via `buildChangeSql`), footer **Clear All** + **Commit All (N)** with **⌘S/Ctrl+S** shortcut. Committed cards show a green ✓ (failed ✗); committing `drop_table` auto-closes open tabs of that table |
+| Auto schema-tree refresh | ✅ | Tree auto-refreshes after a successful schema-modifying query run (`CREATE`/`DROP`/`ALTER`/`TRUNCATE` via `isSchemaModifyingQuery`) and after committing `drop_table` via the queue — no manual refresh needed |
+| Data import (CSV/JSON) | ✅ | Table overflow menu → ImportDialog: file pick, parse, preview (first 100 rows), header→column mapping, caps 100k rows / 100 MB; stages a bulk_insert change through the queue → Commit All |
+| Table menu actions | ✅ | Copy table schema (DDL via pg_dump / sqlite_master), Empty Table (DELETE) / Delete Table (DROP) through the queue with confirm, export stubs wired (JSON/CSV/SQL/Markdown) |
 | Edit connection modal (from DB viewer) | ✅ | AnimatedModal with keychain password fetch on test |
 | Connection drop banner | ✅ | Auto-detects broken connections with reconnect prompt |
 | Inline cell editing | ❌ | Cells are read-only; changes via queue Insert button only |
@@ -273,7 +276,7 @@ cargo test               # Rust tests
 | Saved queries (named, organized) | ✅ | v6 `queries` table (nullable `connection_id` for global queries, `folder` field, `ON DELETE CASCADE`); `save_query`/`get_saved_queries`/`update_saved_query`/`delete_saved_query` commands with validation (name ≤200, folder ≤100, text ≤1MB); **SaveQueryDialog** (name + folder, empty-name guard); managed in the Queries view Saved tab |
 | Query favorites / pinning | ✅ | Star toggle per history entry via `set_history_favorite`; favorites-only filter in the Queries view History tab |
 | Queries view | ✅ | Two-pane layout following Explorer: left sidebar (Explorer-styled header — Queries title, History/Saved dropdown, favorites/clear/search icons, animated search) scoped to the **current connection**, right side reuses the shared tabbed query workspace (TabBar + toolbar + editor + results); clicking a history/saved row loads it into the editor |
-| Editor settings (font, tab size, word wrap, minimap) | ❌ | Settings page has "Editor" tab with "coming soon" placeholder |
+| Editor settings (font, tab size, word wrap, minimap) | ✅ | Font size (8–24), font family (allowlist), word wrap, minimap, tab size (2–8) — applied live via Monaco `updateOptions`, no remount |
 
 ### Backup & Restore
 | Feature | Status | Details |
@@ -302,7 +305,7 @@ cargo test               # Rust tests
 | Confirm-before-delete toggle | ✅ | When off, folder/bulk deletes execute without a confirmation dialog |
 | Default ports per DB type | ✅ | New-connection forms prefill the port from `default_ports` per DB type (custom ports in pasted URLs still win) |
 | More keyboard shortcuts | ❌ | Only 2 configurable actions |
-| Editor settings | ❌ | Placeholder tab |
+| Editor settings | ✅ | Five options wired to the settings store + live Monaco `updateOptions` |
 | SSH key management | ❌ | Only path inputs, no key file reading |
 | Settings export/import | ❌ | |
 

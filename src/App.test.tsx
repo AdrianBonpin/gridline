@@ -21,6 +21,11 @@ vi.mock("./lib/commands", () => ({
     table_page_size: 50,
     shortcuts: {},
     accent_color: "#2563EB",
+    editor_font_size: 13,
+    editor_font_family: "Space Mono",
+    editor_word_wrap: "off",
+    editor_minimap: false,
+    editor_tab_size: 4,
   } satisfies Settings),
   testConnection: vi.fn().mockResolvedValue({ ok: true }),
 }));
@@ -112,6 +117,11 @@ describe("App", () => {
       table_page_size: 50,
       shortcuts: {},
       accent_color: "#2563EB",
+      editor_font_size: 13,
+      editor_font_family: "Space Mono",
+      editor_word_wrap: "off",
+      editor_minimap: false,
+      editor_tab_size: 4,
     });
     await waitFor(() => {
       expect(useUiStore.getState().activeFolderId).toBe("folder-1");

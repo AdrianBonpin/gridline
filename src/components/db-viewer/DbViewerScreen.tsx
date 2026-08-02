@@ -4,7 +4,7 @@ import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
-import { isDestructiveQuery } from "../../lib/utils";
+import { isDestructiveQuery, isSchemaModifyingQuery } from "../../lib/utils";
 import { executeQuery } from "../../lib/commands";
 
 const QueryEditor = lazy(() => import("../editor/QueryEditor").then((m) => ({ default: m.QueryEditor })));
@@ -16,7 +16,6 @@ import { TableTree } from "./TableTree";
 import { ObjectExplorerPage } from "./ObjectExplorerPage";
 import { TabBar } from "./TabBar";
 import { VirtualDataGrid } from "../grid/VirtualDataGrid";
-import { ChangesQueuePanel } from "./ChangesQueuePanel";
 import { TableControls } from "./TableControls";
 import { EditConnectionModal } from "./EditConnectionModal";
 import { useDbConnection } from "../../hooks/useDbConnection";
@@ -130,6 +129,10 @@ export function DbViewerScreen({
             const result = await executeQuery(connectionId, sql, tab.page, tab.pageSize);
             setTabData(tabId, result);
             useQueryStore.getState().invalidateHistory(connectionId);
+            if (isSchemaModifyingQuery(sql)) {
+                const st = useDbViewerStore.getState();
+                void st.refreshTree(connectionId, st.currentSchema ?? undefined);
+            }
         } catch (e) {
             setTabError(tabId, e instanceof Error ? e.message : String(e));
             useQueryStore.getState().invalidateHistory(connectionId);
@@ -1056,7 +1059,6 @@ const onQueriesPanelResizeStart = useCallback(
                             }}
                         />
                     ) : null}
-                    {(currentView === "db-viewer" || currentView === "queries") && <ChangesQueuePanel />}
                 </div>
                 {currentConnection && (
                     <EditConnectionModal

@@ -1,6 +1,7 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import Editor, { type OnMount, type BeforeMount } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
+import { useSettingsStore } from "../../stores/settingsStore";
 
 interface QueryEditorProps {
   value: string;
@@ -15,8 +16,38 @@ export function QueryEditor({
   onRun,
   readOnly = false,
 }: QueryEditorProps) {
+  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+
+  const editorFontFamily = useSettingsStore(
+    (s) => s.settings?.editor_font_family ?? "Space Mono",
+  );
+  const editorFontSize = useSettingsStore(
+    (s) => s.settings?.editor_font_size ?? 13,
+  );
+  const editorWordWrap = useSettingsStore(
+    (s) => s.settings?.editor_word_wrap ?? "off",
+  );
+  const editorMinimap = useSettingsStore(
+    (s) => s.settings?.editor_minimap ?? false,
+  );
+  const editorTabSize = useSettingsStore(
+    (s) => s.settings?.editor_tab_size ?? 4,
+  );
+
+  useEffect(() => {
+    editorRef.current?.updateOptions?.({
+      fontFamily: editorFontFamily,
+      fontSize: editorFontSize,
+      wordWrap: editorWordWrap === "on" ? "on" : "off",
+      minimap: { enabled: editorMinimap },
+      tabSize: editorTabSize,
+    });
+    monaco.editor.remeasureFonts();
+  }, [editorFontFamily, editorFontSize, editorWordWrap, editorMinimap, editorTabSize]);
+
   const handleMount: OnMount = useCallback(
     (editor) => {
+      editorRef.current = editor;
       editor.addAction({
         id: "run-query",
         label: "Run Query",
@@ -71,15 +102,16 @@ export function QueryEditor({
         onChange={(v) => onChange(v ?? "")}
         onMount={handleMount}
         options={{
-          minimap: { enabled: false },
-          fontSize: 13,
-          fontFamily: "'Space Mono', 'Fira Code', monospace",
+          minimap: { enabled: editorMinimap },
+          fontSize: editorFontSize,
+          fontFamily: editorFontFamily,
           lineNumbers: "on",
           scrollBeyondLastLine: false,
-          wordWrap: "off",
+          wordWrap: editorWordWrap === "on" ? "on" : "off",
           readOnly,
           placeholder: "Enter your SQL query…",
           automaticLayout: true,
+          tabSize: editorTabSize,
         }}
       />
     </div>

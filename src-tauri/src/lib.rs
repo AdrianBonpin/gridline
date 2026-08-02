@@ -7,10 +7,10 @@ mod models;
 mod store;
 mod commands;
 
-use std::sync::Mutex as StdMutex;
+use std::sync::{Arc, Mutex as StdMutex};
 use tauri::Manager;
 use store::Store;
-use commands::ssh::SshTunnelManager;
+use commands::ssh::{Ssh2Backend, SshTunnelManager};
 use db::pool::ConnectionPoolManager;
 
 pub struct AppState {
@@ -29,6 +29,10 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Install the ring crypto provider so rustls `ClientConfig::builder()` works (no-op if
+    // another provider is already installed).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let store = Store::open("gridline.db").expect("failed to open db");
     let store_ref = StdMutex::new(store);
 
@@ -40,7 +44,7 @@ pub fn run() {
         .manage(AppState {
             db_store: store_ref,
             pool_manager: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
-            ssh_manager: StdMutex::new(SshTunnelManager::new()),
+            ssh_manager: StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend))),
         })
         .setup(move |app| {
             let state = app.state::<AppState>();
@@ -49,6 +53,22 @@ pub fn run() {
                     eprintln!("Failed to set up demo DB: {e}");
                 })
                 .ok();
+
+            // Close the SSH tunnel for a connection when its pool is evicted
+            // (LRU overflow or max-pool shrink). The hook captures a clone of
+            // the app handle and resolves AppState through the manager.
+            let handle = app.handle().clone();
+            state
+                .pool_manager
+                .blocking_lock()
+                .set_on_evict(Box::new(move |id: &str| {
+                    if let Some(s) = handle.try_state::<AppState>() {
+                        if let Ok(mut mgr) = s.ssh_manager.lock() {
+                            mgr.close_tunnel(id);
+                        }
+                    }
+                }));
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -80,6 +100,7 @@ pub fn run() {
             db_viewer::get_table_data,
             db_viewer::get_fk_preview,
             db_viewer::execute_change,
+            db_viewer::get_table_ddl,
             db_viewer::refresh_connection,
             db_viewer::get_functions,
             db_viewer::get_triggers,
@@ -89,6 +110,12 @@ pub fn run() {
             keychain::save_connection_password,
             keychain::get_connection_password,
             keychain::delete_connection_password,
+            keychain::save_connection_ssh_password,
+            keychain::get_connection_ssh_password,
+            keychain::delete_connection_ssh_password,
+            keychain::save_connection_ssh_passphrase,
+            keychain::get_connection_ssh_passphrase,
+            keychain::delete_connection_ssh_passphrase,
             demo::recreate_demo_db,
             backup::detect_pg_tools,
             backup::pg_dump,
@@ -104,6 +131,18 @@ pub fn run() {
             query::update_saved_query,
             query::delete_saved_query,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // Close all SSH tunnels on exit: ExitRequested fires before the
+            // event loop ends, Exit fires after it has.
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                if let Ok(mut mgr) = app_handle.state::<AppState>().ssh_manager.lock() {
+                    mgr.close_all();
+                }
+            }
+        });
 }

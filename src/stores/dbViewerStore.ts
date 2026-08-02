@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo } from "../lib/types";
+import { getDatabases, getSchemas, getTables } from "../lib/commands";
 
 // ─── Local types ────────────────────────────────────────────────
 
@@ -29,6 +30,8 @@ export interface QueueItem {
   primaryKey?: Record<string, unknown>;
   oldData?: Record<string, unknown> | null;
   newData?: Record<string, unknown> | null;
+  columns?: string[];
+  rows?: unknown[][];
   status: QueueStatus;
   error?: string | null;
   description?: string | null;
@@ -99,6 +102,7 @@ interface DbViewerState {
   openQueryTab: () => void;
   setDefaultPageSize: (size: number) => void;
   closeTab: (tabId: string) => void;
+  closeTabsForTable: (schema: string, table: string) => void;
   setActiveTab: (tabId: string) => void;
   setPage: (tabId: string, page: number) => void;
   setPageSize: (tabId: string, pageSize: number) => void;
@@ -120,9 +124,13 @@ interface DbViewerState {
     primaryKey?: Record<string, unknown>;
     oldData?: Record<string, unknown> | null;
     newData?: Record<string, unknown> | null;
+    columns?: string[];
+    rows?: unknown[][];
     description?: string | null;
   }) => void;
   cancelChange: (changeId: string) => void;
+  removeChange: (changeId: string) => void;
+  clearChanges: () => void;
   markChangeCommitted: (changeId: string) => void;
   markChangeFailed: (changeId: string, error: string) => void;
   toggleChangesPanel: () => void;
@@ -138,6 +146,7 @@ interface DbViewerState {
     schemas: string[],
     tables: TableInfo[],
   ) => void;
+  refreshTree: (connectionId: string, schema?: string) => Promise<void>;
   reset: () => void;
 }
 
@@ -213,6 +222,21 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     const remaining = tabs.filter((t) => t.id !== tabId);
     const newActiveId =
       activeTabId === tabId
+        ? remaining.length > 0
+          ? remaining[remaining.length - 1].id
+          : null
+        : activeTabId;
+    set({ tabs: remaining, activeTabId: newActiveId });
+  },
+
+  closeTabsForTable: (schema, table) => {
+    const { tabs, activeTabId } = get();
+    const remaining = tabs.filter(
+      (t) => !(t.tabType === "table" && t.schema === schema && t.table === table),
+    );
+    if (remaining.length === tabs.length) return;
+    const newActiveId =
+      activeTabId !== null && !remaining.some((t) => t.id === activeTabId)
         ? remaining.length > 0
           ? remaining[remaining.length - 1].id
           : null
@@ -327,6 +351,8 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       primaryKey: input.primaryKey,
       oldData: input.oldData ?? null,
       newData: input.newData ?? null,
+      columns: input.columns,
+      rows: input.rows,
       status: "pending",
       description: input.description ?? null,
       createdAt: Date.now(),
@@ -340,6 +366,13 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
         c.id === changeId ? { ...c, status: "cancelled" as const } : c,
       ),
     })),
+
+  removeChange: (changeId) =>
+    set((state) => ({
+      changesQueue: state.changesQueue.filter((c) => c.id !== changeId),
+    })),
+
+  clearChanges: () => set({ changesQueue: [] }),
 
   markChangeCommitted: (changeId) =>
     set((state) => ({
@@ -370,6 +403,22 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
 
   populate: (databases, schemas, tables) =>
     set({ databases, schemas, tables }),
+
+  // Best-effort re-fetch of the schema tree (databases/schemas/tables) so
+  // newly created/dropped objects show up without a manual refresh.  A
+  // failure must never surface to the user.
+  refreshTree: async (connectionId, schema) => {
+    try {
+      const [dbs, scs, tbls] = await Promise.all([
+        getDatabases(connectionId),
+        getSchemas(connectionId),
+        getTables(connectionId, schema ?? get().currentSchema ?? undefined),
+      ]);
+      get().populate(dbs, scs, tbls);
+    } catch {
+      // Best-effort refresh; a failure must not surface to the user.
+    }
+  },
 
   reset: () => {
     tabCounter = 0;
