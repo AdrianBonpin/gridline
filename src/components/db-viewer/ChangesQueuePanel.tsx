@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { X, Check, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -37,40 +37,6 @@ function capitalizeType(type: string) {
 function tableRef(change: QueueItem): string {
   if (change.schema && change.table) return `${change.schema}.${change.table}`;
   return change.table ?? "-";
-}
-
-function StatusIndicator({ status }: { status: QueueStatus }) {
-  switch (status) {
-    case "pending":
-      return (
-        <div className="flex items-center gap-1.5 text-amber-400">
-          <span className="h-2 w-2 rounded-full bg-amber-400" />
-          <span>Pending</span>
-        </div>
-      );
-    case "committed":
-      return (
-        <div className="flex items-center gap-1.5 text-green-500">
-          <Check className="h-4 w-4" />
-          <span>Committed</span>
-        </div>
-      );
-    case "failed":
-      return (
-        <div className="flex items-center gap-1.5 text-red-500">
-          <X className="h-4 w-4" />
-          <span>Failed</span>
-        </div>
-      );
-    case "cancelled":
-      return (
-        <div className="flex items-center gap-1.5 text-text-muted">
-          <span>Cancelled</span>
-        </div>
-      );
-    default:
-      return null;
-  }
 }
 
 export function ChangesQueuePanel() {
@@ -202,11 +168,8 @@ export function ChangesQueuePanel() {
                   </button>
                 )}
               </div>
-              <div className="flex items-center justify-between gap-2 mt-1">
-                <span className="text-xs text-text-muted truncate">
-                  {formatChangeLabel(change)}
-                </span>
-                <StatusIndicator status={change.status} />
+              <div className="mt-1 text-xs text-text-muted truncate">
+                {formatChangeLabel(change)}
               </div>
             </div>
           ))
