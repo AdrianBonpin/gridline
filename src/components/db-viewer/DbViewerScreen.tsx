@@ -32,6 +32,49 @@ import { useQueryStore } from "../../stores/queryStore";
 import * as cmd from "../../lib/commands";
 import type { EnumInfo } from "../../lib/types";
 import type { FkOption } from "../grid/CellEditor";
+import type { QueueItem } from "../../stores/dbViewerStore";
+
+/**
+ * Derive optimistic staged cell values from the changes queue for a table
+ * tab, keyed `${rowIndex}:${colName}` → the staged value (null = NULL).
+ * Rows are matched to queue items via the row locator (PK or ctid/rowid).
+ * Pending + committed updates count (survive until refetch); Clear All
+ * empties the queue so the optimistic display vanishes.
+ */
+export function deriveStagedValues(
+    changesQueue: QueueItem[],
+    schema: string,
+    table: string,
+    rows: unknown[][],
+    getLocator: (row: unknown[]) => Record<string, unknown>,
+): Record<string, string | null> {
+    const map: Record<string, string | null> = {};
+    const updates = changesQueue.filter(
+        (c) =>
+            c.type === "update" &&
+            (c.status === "pending" || c.status === "committed") &&
+            c.schema === schema &&
+            c.table === table &&
+            c.primaryKey &&
+            c.newData,
+    );
+    if (updates.length === 0) return map;
+    rows.forEach((row, rowIdx) => {
+        const loc = getLocator(row);
+        for (const c of updates) {
+            const pk = c.primaryKey!;
+            const matches = Object.entries(pk).every(
+                ([k, v]) => String(loc[k]) === String(v),
+            );
+            if (!matches) continue;
+            const colName = Object.keys(c.newData!)[0];
+            if (!colName) continue;
+            map[`${rowIdx}:${colName}`] =
+                (c.newData![colName] as string | null) ?? null;
+        }
+    });
+    return map;
+}
 
 /**
  * Pick a human-friendly display column for FK option labels from the
@@ -832,34 +875,15 @@ const onQueriesPanelResizeStart = useCallback(
         // truth): keyed `${rowIndex}:${colName}` → optimistic value. Pending +
         // committed updates survive until refetch; Clear All empties the queue
         // so the optimistic display and pending dots vanish immediately.
-        const stagedValues: Record<string, string | null> = {};
-        if (activeTab?.data && activeTab.tabType === "table") {
-            const updates = changesQueue.filter(
-                (c) =>
-                    c.type === "update" &&
-                    (c.status === "pending" || c.status === "committed") &&
-                    c.schema === activeTab.schema &&
-                    c.table === activeTab.table &&
-                    c.primaryKey &&
-                    c.newData,
-            );
-            if (updates.length > 0) {
-                activeTab.data.rows.forEach((row, rowIdx) => {
-                    const loc = getLocator(row) as Record<string, unknown>;
-                    for (const c of updates) {
-                        const pk = c.primaryKey!;
-                        const matches = Object.entries(pk).every(
-                            ([k, v]) => String(loc[k]) === String(v),
-                        );
-                        if (!matches) continue;
-                        const colName = Object.keys(c.newData!)[0];
-                        if (!colName) continue;
-                        stagedValues[`${rowIdx}:${colName}`] =
-                            (c.newData![colName] as string | null) ?? null;
-                    }
-                });
-            }
-        }
+        const stagedValues = activeTab?.data
+            ? deriveStagedValues(
+                  changesQueue,
+                  activeTab.schema,
+                  activeTab.table,
+                  activeTab.data.rows,
+                  getLocator,
+              )
+            : {};
 
         return (
                             <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">

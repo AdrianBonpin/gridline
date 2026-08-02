@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { DbViewerScreen, pickDisplayColumn } from "./DbViewerScreen";
+import {
+    DbViewerScreen,
+    deriveStagedValues,
+    pickDisplayColumn,
+} from "./DbViewerScreen";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import * as commands from "../../lib/commands";
@@ -100,6 +104,46 @@ describe("DbViewerScreen", () => {
             />,
         );
         expect(screen.getByLabelText(/home/i)).toBeInTheDocument();
+    });
+
+    it("deriveStagedValues maps queue updates to optimistic cell values", () => {
+        const queue = [
+            {
+                id: "ch-1", type: "update" as const, sql: "", schema: "public", table: "users",
+                primaryKey: { id: 1 }, oldData: { name: "Alice" }, newData: { name: "Alicia" },
+                status: "pending" as const, createdAt: 0,
+            },
+        ];
+        const rows: unknown[][] = [[1, "Alice"], [2, "Bob"]];
+        const loc = (r: unknown[]) => ({ id: r[0] });
+        expect(deriveStagedValues(queue as any, "public", "users", rows, loc)).toEqual({
+            "0:name": "Alicia",
+        });
+    });
+
+    it("deriveStagedValues ignores failed/other-table changes and handles NULL", () => {
+        const queue = [
+            {
+                id: "ch-1", type: "update" as const, sql: "", schema: "public", table: "users",
+                primaryKey: { id: 1 }, oldData: { name: "Alice" }, newData: { name: null },
+                status: "pending" as const, createdAt: 0,
+            },
+            {
+                id: "ch-2", type: "update" as const, sql: "", schema: "public", table: "orders",
+                primaryKey: { id: 1 }, oldData: { x: 1 }, newData: { x: 2 },
+                status: "pending" as const, createdAt: 0,
+            },
+            {
+                id: "ch-3", type: "update" as const, sql: "", schema: "public", table: "users",
+                primaryKey: { id: 1 }, oldData: { name: "Alice" }, newData: { name: "X" },
+                status: "failed" as const, error: "boom", createdAt: 0,
+            },
+        ];
+        const rows: unknown[][] = [[1, "Alice"]];
+        const loc = (r: unknown[]) => ({ id: r[0] });
+        expect(deriveStagedValues(queue as any, "public", "users", rows, loc)).toEqual({
+            "0:name": null,
+        });
     });
 
     it("renders the New Query button", () => {
