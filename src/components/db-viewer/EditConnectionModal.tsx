@@ -4,7 +4,7 @@ import { Button } from "../ui/Button";
 import { DetailedConnectionForm } from "../connections/DetailedConnectionForm";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useNotificationStore } from "../../stores/notificationStore";
-import { updateConnection, testConnection, saveConnectionPassword } from "../../lib/commands";
+import { updateConnection, testConnection, saveConnectionPassword, saveConnectionSshPassword, saveConnectionSshPassphrase } from "../../lib/commands";
 import type { Connection, ConnectionInput } from "../../lib/types";
 import type { ConnectionFormData } from "../connections/connectionFormData";
 
@@ -34,7 +34,15 @@ export function EditConnectionModal({
     password: null,
     database: connection.database ?? null,
     use_keychain: false,
+    ssh_host: connection.ssh_host ?? null,
+    ssh_port: connection.ssh_port ?? null,
+    ssh_user: connection.ssh_user ?? null,
+    ssh_auth_method:
+      (connection.ssh_auth_method as "password" | "key" | null | undefined) ??
+      null,
+    ssh_private_key: connection.ssh_private_key_path ?? null,
     ssh_password: null,
+    ssh_passphrase: null,
   }));
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -56,11 +64,24 @@ export function EditConnectionModal({
         folder_id: form.folder_id,
         environment: form.environment,
         tag_ids: form.tag_ids,
+        ssh_host: form.ssh_host ?? null,
+        ssh_port: form.ssh_port ?? null,
+        ssh_user: form.ssh_user ?? null,
+        ssh_auth_method: form.ssh_auth_method ?? null,
+        ssh_private_key_path: form.ssh_private_key ?? null,
         ssh_password: form.ssh_password ?? null,
+        ssh_passphrase: form.ssh_passphrase ?? null,
       };
       const updated = await updateConnection(connection.id, input);
       if (form.password) {
         await saveConnectionPassword(connection.id, form.password).catch(() => {});
+      }
+      // Persist SSH secrets to the OS keychain (not SQLite)
+      if (form.ssh_host && (form.ssh_auth_method ?? "password") === "password" && form.ssh_password) {
+        await saveConnectionSshPassword(connection.id, form.ssh_password).catch(() => {});
+      }
+      if (form.ssh_host && form.ssh_passphrase) {
+        await saveConnectionSshPassphrase(connection.id, form.ssh_passphrase).catch(() => {});
       }
       notify("Connection updated", "success");
       onSaved(updated);

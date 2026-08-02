@@ -11,6 +11,8 @@ vi.mock("../lib/commands", () => ({
   getSchemas: vi.fn().mockResolvedValue([]),
   getTables: vi.fn().mockResolvedValue([]),
   getConnectionPassword: vi.fn().mockResolvedValue("pw"),
+  getConnectionSshPassword: vi.fn().mockResolvedValue(null),
+  getConnectionSshPassphrase: vi.fn().mockResolvedValue(null),
 }));
 
 const mockCommands = vi.mocked(commands);
@@ -27,10 +29,10 @@ const mockConnection = {
   keychain_ref: null,
   tag_ids: [],
   environment: null,
-  ssh_host: null,
+  ssh_host: null as string | null,
   ssh_port: null,
   ssh_user: null,
-  ssh_auth_method: null,
+  ssh_auth_method: null as string | null,
   ssh_private_key_path: null,
   ssl_mode: null,
   ssl_ca_path: null,
@@ -65,6 +67,10 @@ describe("useDbConnection", () => {
     mockCommands.getDatabases.mockResolvedValue(["mydb", "otherdb"]);
     mockCommands.getSchemas.mockResolvedValue(["app", "public"]);
     mockCommands.getTables.mockResolvedValue([]);
+    mockCommands.getConnectionSshPassword.mockResolvedValue(null);
+    mockCommands.getConnectionSshPassphrase.mockResolvedValue(null);
+    mockConnection.ssh_host = null;
+    mockConnection.ssh_auth_method = null;
   });
 
   it("connects and smart-selects the public schema when available", async () => {
@@ -149,5 +155,23 @@ describe("useDbConnection", () => {
       "reporting",
     ]);
     expect(useDbViewerStore.getState().currentSchema).toBe("public");
+  });
+
+  it("fetches ssh secrets from keychain before connecting when ssh_host is set", async () => {
+    mockConnection.ssh_host = "bastion.example.com";
+    mockConnection.ssh_auth_method = "password";
+    mockCommands.getConnectionSshPassword.mockResolvedValue("sshpw");
+    mockCommands.getConnectionSshPassphrase.mockResolvedValue(null);
+    render(<Harness />);
+    fireEvent.click(screen.getByText("connect"));
+
+    await waitFor(() => {
+      expect(mockCommands.dbConnect).toHaveBeenCalled();
+    });
+    const config = mockCommands.dbConnect.mock.calls[0][1];
+    expect(mockCommands.getConnectionSshPassword).toHaveBeenCalledWith("c1");
+    expect(mockCommands.getConnectionSshPassphrase).toHaveBeenCalledWith("c1");
+    expect(config.ssh_password).toBe("sshpw");
+    expect(config.ssh_passphrase).toBeNull();
   });
 });

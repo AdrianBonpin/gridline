@@ -113,7 +113,13 @@ export function NewConnectionScreen({
             password: form.password,
             database: form.database,
             use_keychain: form.use_keychain,
+            ssh_host: form.ssh_host ?? null,
+            ssh_port: form.ssh_port ?? null,
+            ssh_user: form.ssh_user ?? null,
+            ssh_auth_method: form.ssh_auth_method ?? null,
+            ssh_private_key_path: form.ssh_private_key ?? null,
             ssh_password: form.ssh_password ?? null,
+            ssh_passphrase: form.ssh_passphrase ?? null,
         };
     }, [form]);
 

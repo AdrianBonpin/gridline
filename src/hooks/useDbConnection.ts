@@ -30,6 +30,12 @@ export function useDbConnection(connectionId: string) {
     }
     try {
       const password = await useConnectionStore.getState().getConnectionPassword(conn.id).catch(() => null);
+      const sshPassword = conn.ssh_host
+        ? await cmd.getConnectionSshPassword(conn.id).catch(() => null)
+        : null;
+      const sshPassphrase = conn.ssh_host
+        ? await cmd.getConnectionSshPassphrase(conn.id).catch(() => null)
+        : null;
       const input: ConnectionInput = {
         name: conn.name,
         db_type: conn.db_type,
@@ -45,6 +51,8 @@ export function useDbConnection(connectionId: string) {
         ssh_auth_method:
           conn.ssh_auth_method as "password" | "key" | null | undefined,
         ssh_private_key_path: conn.ssh_private_key_path,
+        ssh_password: sshPassword,
+        ssh_passphrase: sshPassphrase,
         ssl_mode:
           conn.ssl_mode as
             | "disable"
