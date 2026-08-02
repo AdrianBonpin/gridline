@@ -7,10 +7,10 @@ mod models;
 mod store;
 mod commands;
 
-use std::sync::Mutex as StdMutex;
+use std::sync::{Arc, Mutex as StdMutex};
 use tauri::Manager;
 use store::Store;
-use commands::ssh::SshTunnelManager;
+use commands::ssh::{Ssh2Backend, SshTunnelManager};
 use db::pool::ConnectionPoolManager;
 
 pub struct AppState {
@@ -44,7 +44,7 @@ pub fn run() {
         .manage(AppState {
             db_store: store_ref,
             pool_manager: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
-            ssh_manager: StdMutex::new(SshTunnelManager::new()),
+            ssh_manager: StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend))),
         })
         .setup(move |app| {
             let state = app.state::<AppState>();

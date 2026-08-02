@@ -115,6 +115,10 @@ pub(crate) struct DbPoolEntry {
 pub struct ConnectionPoolManager {
     pools: indexmap::IndexMap<String, DbPoolEntry>,
     max_pools: usize,
+    /// Invoked with the id of every pool that gets evicted (LRU overflow in
+    /// `register` or shrinkage in `set_max_pools`). Lets callers free
+    /// associated resources (e.g. SSH tunnels).
+    on_evict: Option<Box<dyn Fn(&str) + Send + Sync>>,
 }
 
 impl ConnectionPoolManager {
@@ -123,7 +127,13 @@ impl ConnectionPoolManager {
         Self {
             pools: indexmap::IndexMap::new(),
             max_pools: 5,
+            on_evict: None,
         }
+    }
+
+    /// Register a callback invoked with the id of every evicted pool.
+    pub fn set_on_evict(&mut self, cb: Box<dyn Fn(&str) + Send + Sync>) {
+        self.on_evict = Some(cb);
     }
 
     /// Set the maximum number of pools before LRU eviction kicks in.
@@ -133,7 +143,11 @@ impl ConnectionPoolManager {
     pub fn set_max_pools(&mut self, max: usize) {
         self.max_pools = max;
         while self.pools.len() > self.max_pools {
-            self.pools.shift_remove_index(0);
+            if let Some((evicted_id, _)) = self.pools.shift_remove_index(0) {
+                if let Some(cb) = &self.on_evict {
+                    cb(&evicted_id);
+                }
+            }
         }
     }
 
@@ -155,7 +169,11 @@ impl ConnectionPoolManager {
 
         // LRU eviction: remove oldest (front) entries until within capacity
         while self.pools.len() > self.max_pools {
-            self.pools.shift_remove_index(0);
+            if let Some((evicted_id, _)) = self.pools.shift_remove_index(0) {
+                if let Some(cb) = &self.on_evict {
+                    cb(&evicted_id);
+                }
+            }
         }
     }
 
@@ -325,5 +343,46 @@ mod tests {
         assert!(!manager.contains("b"), "'b' is LRU and should be evicted");
         assert!(manager.contains("c"));
         assert!(manager.contains("d"));
+    }
+
+    #[test]
+    fn pool_invokes_on_evict_with_evicted_id() {
+        let mut manager = ConnectionPoolManager::new();
+        manager.set_max_pools(1);
+        let evicted: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
+        let evicted_cb = evicted.clone();
+        manager.set_on_evict(Box::new(move |id: &str| {
+            evicted_cb.lock().unwrap().push(id.to_string());
+        }));
+        manager.register(
+            "a",
+            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        );
+        manager.register(
+            "b",
+            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        );
+        assert_eq!(evicted.lock().unwrap().as_slice(), ["a".to_string()]);
+    }
+
+    #[test]
+    fn pool_invokes_on_evict_on_max_pools_shrink() {
+        let mut manager = ConnectionPoolManager::new();
+        let evicted: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
+        let evicted_cb = evicted.clone();
+        manager.set_on_evict(Box::new(move |id: &str| {
+            evicted_cb.lock().unwrap().push(id.to_string());
+        }));
+        manager.register(
+            "a",
+            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        );
+        manager.register(
+            "b",
+            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        );
+        // Shrinking max_pools below the current count evicts oldest first.
+        manager.set_max_pools(1);
+        assert_eq!(evicted.lock().unwrap().as_slice(), ["a".to_string()]);
     }
 }
