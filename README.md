@@ -25,7 +25,7 @@ Most database GUI clients either lock essential productivity features behind pay
 | SSH tunneling | 🟡 (likely paid) | ✅ | **✅ Full tunnel (password + key auth, keychain)** |
 | OS credential vault | ✅ | ✅ | **Keychain / Secret Service** |
 | Workspace / folder hierarchy | ❌ | ❌ | **Multi-level tree + tags** |
-| Changes queue (stage & commit) | ❌ | ❌ | **✅ Queue → Commit All** (tab-bar **Changes** button with count badge toggles the commit panel) |
+| Changes queue (stage & commit) | ❌ | ❌ | **✅ Queue → Commit All** (tab-bar **Changes** button with count badge toggles a popover: Visual/SQL preview, per-change revert, Clear All, ⌘S commit) |
 | Query history | ✅ (auto-saved) | ✅ | **✅ Toolbar dropdown, favorites, Queries view** |
 | AI assistant | ✅ (BYO key) | ❌ (paid only) | 🔮 *Planned — BYOK* |
 | Open source | ❌ | ✅ (GPLv3) | **✅ (MIT)** |
@@ -103,7 +103,7 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 - **Query Tabs** — dedicated query tabs alongside table tabs, results rendered in the same virtualized data grid, close with Cmd/Ctrl+W
 - **SQL Autocomplete** — keyword + table suggestions from the active schema; typing `table.` suggests that table's columns (schema introspection, cached per schema)
 - **Multi-Tab Workspace** — unlimited named tabs, session persistence across restarts
-- **Changes Queue** — queue INSERT/UPDATE/DELETE changes; preview before committing all. The tab bar's **Changes** button (checklist icon + pending-count badge) toggles the bottom Commit All panel — the single entry point
+- **Changes Queue** — queue INSERT/UPDATE/DELETE/import/drop changes; preview before committing all. The tab bar's **Changes** button (checklist icon + amber pending border + count badge) toggles a popover with a **Visual/SQL** preview toggle, per-change revert, **Clear All** / **Commit All (N)** footer and a **⌘S** shortcut — the single entry point
 - **Smart Default Sort** — auto-detects `updated_at`, `created_at`, `_id` columns for logical initial sorting
 - **Query History** — recent queries per connection in a toolbar dropdown (load / run / favorite / clear), consecutive-identical dedup, retention pruned to 500 per connection
 - **Saved Queries** — save the current query with a name + folder from the toolbar; manage them in the Queries view
