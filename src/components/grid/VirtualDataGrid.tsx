@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Key, Braces, PanelRight } from "lucide-react";
+import { Key, Braces } from "lucide-react";
 import type { ColumnInfo } from "../../lib/types";
 import { abbreviateType } from "../../lib/utils";
 import { FkPreviewPopover } from "../db-viewer/FkPreviewPopover";
@@ -32,7 +32,6 @@ interface VirtualDataGridProps {
   }) => void;
   onOpenRowDetail?: (rowIndex: number) => void;
   getLocator?: (row: unknown[]) => Record<string, unknown>;
-  onOpenFk?: (rowIndex: number) => void;
   readOnly?: boolean;
   /** When set, renders a pending-edit indicator on the staged cell at (row, col). */
   pendingCell?: { row: number; col: number } | null;
@@ -58,7 +57,6 @@ export function VirtualDataGrid({
   onStageEdit,
   onOpenRowDetail,
   getLocator,
-  onOpenFk,
   readOnly = false,
   pendingCell = null,
 }: VirtualDataGridProps) {
@@ -88,7 +86,6 @@ export function VirtualDataGrid({
   const [activeCell, setActiveCell] = useState<CellPos | null>(null);
   const [editingCell, setEditingCell] = useState<CellPos | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ pos: DOMRect; row: number; col: number } | null>(null);
-  const [, setRowDetailIdx] = useState<number | null>(null);
 
   // Reset transient focus state when the data shape changes.
   useEffect(() => {
@@ -96,6 +93,24 @@ export function VirtualDataGrid({
     setEditingCell(null);
     setCtxMenu(null);
   }, [rows.length, columns.length, hiddenColumns.size]);
+
+  // Document-level Escape: cancels in-cell editing even when the editor input
+  // has lost focus, and closes the context menu when open.
+  useEffect(() => {
+    const editing = editingCell != null;
+    const menuOpen = ctxMenu != null;
+    if (!editing && !menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (editing) {
+        setEditingCell(null);
+        setActiveCell(null);
+      }
+      if (menuOpen) setCtxMenu(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [editingCell != null, ctxMenu != null]);
 
   // ── column widths ─────────────────────────────────────
 
@@ -476,7 +491,7 @@ export function VirtualDataGrid({
                 {hasColumns && (
                   <div
                     style={{ width: 40, minWidth: 40 }}
-                    className="flex flex-col items-center justify-center gap-0.5 border-r border-border self-stretch"
+                    className="flex items-center justify-center border-r border-border self-stretch"
                   >
                     <input
                       type="checkbox"
@@ -484,18 +499,6 @@ export function VirtualDataGrid({
                       onChange={() => onToggleRow(virtualRow.index)}
                       className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
                     />
-                    <button
-                      type="button"
-                      title="View row"
-                      className="text-text-muted hover:text-accent"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setRowDetailIdx(virtualRow.index);
-                        onOpenRowDetail?.(virtualRow.index);
-                      }}
-                    >
-                      <PanelRight size={10} />
-                    </button>
                   </div>
                 )}
                 {visibleColumns.map((col, i) => renderCell(col, row, virtualRow.index, i))}
@@ -527,35 +530,66 @@ export function VirtualDataGrid({
       )}
       {/* Cell context menu */}
       {ctxMenu && ctxCol && (
-        <CellContextMenu
-          anchorRect={ctxMenu.pos}
-          editable={isCellEditable(ctxCol, tabType, dbType, readOnly)}
-          isJson={ctxCol.data_type === "jsonb" || ctxCol.data_type === "json"}
-          isFk={ctxCol.is_fk && ctxCol.fk_ref != null}
-          nullable={ctxCol.is_nullable}
-          onCopy={() => {
-            void copyCellValue(ctxMenu.row, ctxMenu.col);
-            setCtxMenu(null);
-          }}
-          onCopyJson={() => {
-            void copyCellValue(ctxMenu.row, ctxMenu.col);
-            setCtxMenu(null);
-          }}
-          onEdit={() => {
-            setActiveCell({ row: ctxMenu.row, col: ctxMenu.col });
-            setEditingCell({ row: ctxMenu.row, col: ctxMenu.col });
-            setCtxMenu(null);
-          }}
-          onSetNull={() => {
-            stageNull(ctxMenu.row, ctxMenu.col);
-            setCtxMenu(null);
-          }}
-          onOpenFk={() => {
-            onOpenFk?.(ctxMenu.row);
-            setCtxMenu(null);
-          }}
-          onClose={() => setCtxMenu(null)}
-        />
+        <>
+          {/* Click-outside-to-close backdrop (below the z-50 menu) */}
+          <div
+            className="fixed inset-0 z-40"
+            data-testid="ctx-backdrop"
+            onClick={() => setCtxMenu(null)}
+          />
+          <CellContextMenu
+            anchorRect={ctxMenu.pos}
+            editable={isCellEditable(ctxCol, tabType, dbType, readOnly)}
+            isJson={ctxCol.data_type === "jsonb" || ctxCol.data_type === "json"}
+            isFk={ctxCol.is_fk && ctxCol.fk_ref != null}
+            nullable={ctxCol.is_nullable}
+            onCopy={() => {
+              void copyCellValue(ctxMenu.row, ctxMenu.col);
+              setCtxMenu(null);
+            }}
+            onCopyJson={() => {
+              void copyCellValue(ctxMenu.row, ctxMenu.col);
+              setCtxMenu(null);
+            }}
+            onViewRow={() => {
+              onOpenRowDetail?.(ctxMenu.row);
+              setCtxMenu(null);
+            }}
+            onSelectRow={() => {
+              onToggleRow(ctxMenu.row);
+              setCtxMenu(null);
+            }}
+            onEdit={() => {
+              setActiveCell({ row: ctxMenu.row, col: ctxMenu.col });
+              setEditingCell({ row: ctxMenu.row, col: ctxMenu.col });
+              setCtxMenu(null);
+            }}
+            onSetNull={() => {
+              stageNull(ctxMenu.row, ctxMenu.col);
+              setCtxMenu(null);
+            }}
+            onOpenFk={() => {
+              if (ctxCol?.is_fk && ctxCol.fk_ref) {
+                // Resolve the column index into `rows` (ctxMenu.col indexes visibleColumns,
+                // which can differ when columns are hidden).
+                const ci = columns.findIndex((c) => c.name === ctxCol.name);
+                const cellValue = rows[ctxMenu.row]?.[ci];
+                if (cellValue !== null && cellValue !== undefined) {
+                  setFkPreview({
+                    connectionId,
+                    schema,
+                    table: ctxCol.fk_ref[0],
+                    column: ctxCol.fk_ref[1],
+                    value: String(cellValue),
+                    anchorRect: ctxMenu.pos,
+                  });
+                }
+              }
+              setCtxMenu(null);
+            }}
+            onClose={() => setCtxMenu(null)}
+          />
+        </>
       )}
     </div>
   );

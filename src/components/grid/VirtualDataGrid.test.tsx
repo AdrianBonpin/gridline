@@ -410,4 +410,82 @@ describe("VirtualDataGrid", () => {
 
     expect(screen.queryByTestId("pending-edit-dot")).toBeNull();
   });
+
+  // ── GRID-A: context menu + editing behavior ─────────────────────────
+
+  it("opens the context menu on right-click and View Row calls onOpenRowDetail", () => {
+    let opened = -1;
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" onOpenRowDetail={(i) => { opened = i; }} />);
+
+    fireEvent.contextMenu(screen.getByText("Alice"));
+    expect(screen.getByText("View Row")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("View Row"));
+    expect(opened).toBe(0);
+  });
+
+  it("context menu Select Row calls onToggleRow with the row index", () => {
+    let toggled = -1;
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={(i) => { toggled = i; }} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" />);
+
+    fireEvent.contextMenu(screen.getByText("Bob"));
+    fireEvent.click(screen.getByText("Select Row"));
+    expect(toggled).toBe(1);
+  });
+
+  it("closes the context menu when clicking the backdrop", () => {
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" />);
+
+    fireEvent.contextMenu(screen.getByText("Alice"));
+    expect(screen.getByText("Copy")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("ctx-backdrop"));
+    expect(screen.queryByText("Copy")).toBeNull();
+  });
+
+  it("cancels in-cell editing with Escape even when the editor input is unfocused", () => {
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" />);
+
+    const cell = screen.getAllByText("Alice")[0];
+    fireEvent.click(cell);
+    fireEvent.keyDown(cell, { key: "Enter" });
+    expect(screen.getByRole("textbox")).toBeInTheDocument();
+
+    // Editor input is not the event target — the document-level listener must cancel.
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("opens the FK preview popover from the context menu", () => {
+    const fkCols: ColumnInfo[] = [
+      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["users", "id"], default_value: null, editable: true, is_generated: false },
+    ];
+    mockGetTotalSize.mockReturnValue(36);
+    mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
+
+    render(<VirtualDataGrid connectionId="conn-1" schema="public" table="orders" rows={[[42]]} columns={fkCols}
+      hiddenColumns={new Set()} selectedRows={new Set()}
+      onToggleRow={() => {}} onToggleAll={() => {}}
+      dbType="postgresql" tabType="table" />);
+
+    fireEvent.contextMenu(screen.getByText("42"));
+    fireEvent.click(screen.getByText("Open FK reference"));
+
+    // Popover header renders the referenced table synchronously.
+    expect(screen.getByText("public.users")).toBeInTheDocument();
+  });
 });
