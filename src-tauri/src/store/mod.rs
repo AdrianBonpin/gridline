@@ -248,7 +248,7 @@ impl Store {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, environment, created_at, updated_at FROM connections ORDER BY name",
+                "SELECT id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, environment, favorite, created_at, updated_at FROM connections ORDER BY name",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -273,9 +273,10 @@ impl Store {
                     ssl_cert_path: row.get(16)?,
                     ssl_key_path: row.get(17)?,
                     environment: row.get(18)?,
+                    favorite: row.get(19)?,
                     tag_ids: vec![],
-                    created_at: row.get(19)?,
-                    updated_at: row.get(20)?,
+                    created_at: row.get(20)?,
+                    updated_at: row.get(21)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -320,6 +321,7 @@ impl Store {
             database: input.database,
             keychain_ref: None,
             environment: input.environment,
+            favorite: false,
             ssh_host: input.ssh_host,
             ssh_port: input.ssh_port,
             ssh_user: input.ssh_user,
@@ -375,6 +377,7 @@ impl Store {
             folder_id: input.folder_id,
             keychain_ref: None,
             environment: input.environment,
+            favorite: false,
             ssh_host: input.ssh_host,
             ssh_port: input.ssh_port,
             ssh_user: input.ssh_user,
