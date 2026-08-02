@@ -489,6 +489,112 @@ fn json_to_sqlite_value(v: &serde_json::Value) -> rusqlite::types::Value {
     }
 }
 
+/// Build the SQL skeleton for a bulk INSERT into PostgreSQL.
+///
+/// Emits `$N` placeholders; callers bind one row of values per execution so
+/// the same statement can be reused for every row in the batch.
+pub fn build_pg_bulk_insert_sql(schema: &str, table: &str, columns: &[String]) -> String {
+    let cols: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c)).collect();
+    let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
+    format!(
+        "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({})",
+        schema,
+        table,
+        cols.join(", "),
+        placeholders.join(", ")
+    )
+}
+
+/// Build a `DROP TABLE` statement (schema-qualified). SQLite accepts the same
+/// qualified form against the `main` schema.
+pub fn build_drop_table_sql(schema: &str, table: &str) -> String {
+    format!("DROP TABLE \"{}\".\"{}\"", schema, table)
+}
+
+/// Build a `DELETE FROM` (empty-table) statement (schema-qualified). SQLite
+/// accepts the same qualified form against the `main` schema.
+pub fn build_empty_table_sql(schema: &str, table: &str) -> String {
+    format!("DELETE FROM \"{}\".\"{}\"", schema, table)
+}
+
+/// Apply a batch of rows to a SQLite table inside a single transaction.
+///
+/// Every row is inserted with its own parameterized statement; on the first
+/// error the whole transaction is rolled back so no partial batch survives.
+pub fn apply_bulk_insert_sqlite(
+    conn: &rusqlite::Connection,
+    table: &str,
+    columns: &[String],
+    rows: &[Vec<serde_json::Value>],
+) -> Result<usize, String> {
+    let sql = build_insert_sql("main", table, columns);
+    conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+    let result = (|| {
+        let mut count = 0;
+        for row in rows {
+            let params: Vec<rusqlite::types::Value> =
+                row.iter().map(json_to_sqlite_value).collect();
+            conn.execute(&sql, rusqlite::params_from_iter(params))
+                .map_err(|e| e.to_string())?;
+            count += 1;
+        }
+        Ok::<usize, String>(count)
+    })();
+    match result {
+        Ok(count) => {
+            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+            Ok(count)
+        }
+        Err(e) => {
+            // Best-effort rollback so a failed batch never persists partially.
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// Apply a batch of rows to a PostgreSQL table inside a single transaction.
+///
+/// The same `$N`-placeholder statement is reused per row with natively bound
+/// values; on the first error the transaction is rolled back.
+pub async fn apply_bulk_insert_pg(
+    client: &tokio_postgres::Client,
+    schema: &str,
+    table: &str,
+    columns: &[String],
+    rows: &[Vec<serde_json::Value>],
+) -> Result<usize, String> {
+    let sql = build_pg_bulk_insert_sql(schema, table, columns);
+    client.batch_execute("BEGIN").await.map_err(|e| e.to_string())?;
+    let mut count = 0;
+    for row in rows {
+        let boxed: Vec<Box<dyn ToSql + Send + Sync>> = row.iter().map(pg_box_value).collect();
+        let refs: Vec<&(dyn ToSql + Sync)> = boxed
+            .iter()
+            .map(|b| {
+                let r: &(dyn ToSql + Sync) = &**b;
+                r
+            })
+            .collect();
+        if let Err(e) = client.execute(&sql, &refs).await {
+            let _ = client.batch_execute("ROLLBACK").await;
+            return Err(e.to_string());
+        }
+        count += 1;
+    }
+    client
+        .batch_execute("COMMIT")
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+/// Sanitize a raw error string before it crosses the IPC boundary: redact
+/// credential-like fragments (connection URLs, `password=...`) and cap length.
+fn sanitize_error(e: &str) -> String {
+    truncate(&redact_secrets(e), 400)
+}
+
 /// Parse a JSON object string (e.g. `{"id": 1}`) into ordered (column, value)
 /// pairs. Insertion order of the JSON object is preserved by `serde_json`.
 fn parse_json_pairs(json: &str) -> Result<Vec<(String, serde_json::Value)>, String> {
@@ -1384,14 +1490,32 @@ pub async fn execute_change(
                     client.execute(sql, &[]).await.map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-                Change::BulkInsert { .. } => {
-                    return Err("bulk_insert changes are not implemented yet".to_string());
+                Change::BulkInsert {
+                    schema,
+                    table,
+                    columns,
+                    rows,
+                    ..
+                } => {
+                    // Single transaction for the whole batch; rolls back on the
+                    // first failed row so no partial batch persists.
+                    return apply_bulk_insert_pg(client, schema, table, columns, rows)
+                        .await
+                        .map(|_| ());
                 }
-                Change::DropTable { .. } => {
-                    return Err("drop_table changes are not implemented yet".to_string());
+                Change::DropTable { schema, table, .. } => {
+                    client
+                        .execute(&build_drop_table_sql(schema, table), &[])
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    return Ok(());
                 }
-                Change::EmptyTable { .. } => {
-                    return Err("empty_table changes are not implemented yet".to_string());
+                Change::EmptyTable { schema, table, .. } => {
+                    client
+                        .execute(&build_empty_table_sql(schema, table), &[])
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    return Ok(());
                 }
             };
 
@@ -1462,14 +1586,25 @@ pub async fn execute_change(
                     conn.execute(sql, []).map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-                Change::BulkInsert { .. } => {
-                    return Err("bulk_insert changes are not implemented yet".to_string());
+                Change::BulkInsert {
+                    table,
+                    columns,
+                    rows,
+                    ..
+                } => {
+                    // Single transaction for the whole batch; rolls back on the
+                    // first failed row so no partial batch persists.
+                    return apply_bulk_insert_sqlite(conn, table, columns, rows).map(|_| ());
                 }
-                Change::DropTable { .. } => {
-                    return Err("drop_table changes are not implemented yet".to_string());
+                Change::DropTable { schema, table, .. } => {
+                    conn.execute(&build_drop_table_sql(schema, table), [])
+                        .map_err(|e| e.to_string())?;
+                    return Ok(());
                 }
-                Change::EmptyTable { .. } => {
-                    return Err("empty_table changes are not implemented yet".to_string());
+                Change::EmptyTable { schema, table, .. } => {
+                    conn.execute(&build_empty_table_sql(schema, table), [])
+                        .map_err(|e| e.to_string())?;
+                    return Ok(());
                 }
             };
 
@@ -1669,6 +1804,68 @@ pub async fn get_extensions(
     }
 }
 
+/// Fetch a table's `CREATE TABLE` DDL for display/copy.
+///
+/// SQLite reads the stored statement from `sqlite_master` directly; PostgreSQL
+/// shells out to the system `pg_dump --schema-only` so the output matches what
+/// `pg_dump` would emit, scoped to the requested schema + table.
+#[tauri::command]
+pub async fn get_table_ddl(
+    connection_id: String,
+    schema: String,
+    table: String,
+    state: State<'_, crate::AppState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Sqlite(conn)) => get_sqlite_ddl(conn, &table),
+        Some(DbHandle::Postgresql(_client, _)) => {
+            // Pull connection metadata so pg_dump reaches the same server the
+            // pool is connected to (host/port/user/dbname + keychain password).
+            let conn_row = state
+                .db_store
+                .lock()
+                .map_err(|e| e.to_string())?
+                .get_connections()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|c| c.id == connection_id)
+                .ok_or_else(|| format!("connection {connection_id} not found"))?;
+            let host = conn_row.host.clone();
+            let port = conn_row.port.unwrap_or(5432) as u16;
+            let user = conn_row.username.unwrap_or_else(|| "postgres".into());
+            let db = conn_row.database.unwrap_or_else(|| "postgres".into());
+            let password =
+                crate::commands::keychain::get_connection_password_internal(&app, &connection_id)?
+                    .unwrap_or_default();
+
+            // SSH-tunneled connections: pg_dump must reach the DB through the
+            // same local loopback listener the app uses, not the remote host.
+            let tunnel_port = state
+                .ssh_manager
+                .lock()
+                .map_err(|e| e.to_string())?
+                .get_local_port(&connection_id);
+            let (dump_host, dump_port) = match tunnel_port {
+                Some(lp) => ("127.0.0.1".to_string(), lp),
+                None => (host, port),
+            };
+
+            // pg_dump is blocking I/O; run it off the async runtime. Credentials
+            // travel via PGPASSWORD, never argv.
+            let ddl = tokio::task::spawn_blocking(move || {
+                get_pg_ddl_via_dump(&schema, &table, &dump_host, dump_port, &user, &db, &password)
+            })
+            .await
+            .map_err(|e| format!("pg_dump task failed: {e}"))??;
+            Ok(sanitize_error(&ddl))
+        }
+        None => Err("Connection not found".into()),
+    }
+}
+
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1821,6 +2018,83 @@ mod tests {
                 "--schema=public".to_string(),
                 "--table=users".to_string()
             ]
+        );
+    }
+
+    /// Verify that a SQLite bulk insert applies every row in a single batch.
+    #[test]
+    fn apply_bulk_insert_sqlite_success() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT)", [])
+            .unwrap();
+        let rows = vec![
+            vec![serde_json::json!(1), serde_json::json!("y")],
+            vec![serde_json::json!(2), serde_json::json!("z")],
+        ];
+        apply_bulk_insert_sqlite(
+            &conn,
+            "t",
+            &["a".to_string(), "b".to_string()],
+            &rows,
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    /// Verify that a SQLite bulk insert rolls back the whole batch when any
+    /// row fails (a non-integer value bound to the INTEGER PRIMARY KEY column
+    /// raises a datatype mismatch).
+    #[test]
+    fn apply_bulk_insert_sqlite_inserts_and_rolls_back() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT)", [])
+            .unwrap();
+        let rows = vec![
+            vec![serde_json::json!(1), serde_json::json!("y")],
+            vec![serde_json::json!("bad"), serde_json::json!("z")],
+        ];
+        let res = apply_bulk_insert_sqlite(
+            &conn,
+            "t",
+            &["a".to_string(), "b".to_string()],
+            &rows,
+        );
+        assert!(res.is_err(), "non-integer PK value should fail");
+        // Rollback: no rows persisted.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "failed batch must roll back all rows");
+    }
+
+    /// Verify that the PostgreSQL bulk-insert skeleton uses `$N` placeholders
+    /// and quotes schema, table, and columns.
+    #[test]
+    fn build_pg_bulk_insert_sql_shape() {
+        let sql = build_pg_bulk_insert_sql(
+            "public",
+            "users",
+            &["id".to_string(), "name".to_string()],
+        );
+        assert_eq!(
+            sql,
+            r#"INSERT INTO "public"."users" ("id", "name") VALUES ($1, $2)"#
+        );
+    }
+
+    /// Verify that the DROP TABLE / DELETE-all SQL helpers quote schema + table.
+    #[test]
+    fn drop_and_empty_table_sql_shapes() {
+        assert_eq!(
+            build_drop_table_sql("public", "users"),
+            r#"DROP TABLE "public"."users""#
+        );
+        assert_eq!(
+            build_empty_table_sql("public", "users"),
+            r#"DELETE FROM "public"."users""#
         );
     }
 }

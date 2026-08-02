@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, ChangeItem, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph } from "./types";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
+import type { ChangePayload } from "./changePayload";
 
 // NOTE on argument key naming:
 // Tauri v2's #[tauri::command] macro converts Rust snake_case parameter names
@@ -109,8 +110,12 @@ export async function getTableData(
   return invoke<QueryResult>("get_table_data", { connectionId, schema, table, page, pageSize, filters, sorts });
 }
 
-export async function executeChange(connectionId: string, change: ChangeItem): Promise<void> {
+export async function executeChange(connectionId: string, change: ChangePayload): Promise<void> {
   return invoke<void>("execute_change", { connectionId, change });
+}
+
+export async function getTableDdl(connectionId: string, schema: string, table: string): Promise<string> {
+  return invoke<string>("get_table_ddl", { connectionId, schema, table });
 }
 
 export async function getFkPreview(
