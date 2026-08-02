@@ -26,12 +26,19 @@ pub fn pg_tables_query(schema: Option<&str>) -> String {
     match schema {
         Some(s) => format!(
             "SELECT table_name, table_type FROM information_schema.tables \
-             WHERE table_schema = '{}' ORDER BY table_name",
-            s
+             WHERE table_schema = '{}' \
+             UNION ALL \
+             SELECT matviewname AS table_name, 'MATERIALIZED VIEW' AS table_type \
+             FROM pg_matviews WHERE schemaname = '{}' \
+             ORDER BY table_name",
+            s, s
         ),
         None => {
             "SELECT table_name, table_type, table_schema FROM information_schema.tables \
              WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
+             UNION ALL \
+             SELECT matviewname AS table_name, 'MATERIALIZED VIEW' AS table_type, schemaname AS table_schema \
+             FROM pg_matviews WHERE schemaname NOT IN ('pg_catalog', 'information_schema') \
              ORDER BY table_schema, table_name"
                 .to_string()
         }
@@ -285,6 +292,61 @@ pub fn pg_extensions_query() -> String {
         .to_string()
 }
 
+/// Query indexes in a schema.
+///
+/// Returns index name, schema, table, definition (`pg_get_indexdef`),
+/// uniqueness, access method, columns CSV, size in bytes, and tablespace.
+pub fn pg_indexes_query(_schema: &str) -> String {
+    format!(
+        "SELECT \
+           i.relname AS index_name, \
+           ns.nspname AS schema, \
+           t.relname AS table_name, \
+           pg_get_indexdef(ix.indexrelid) AS definition, \
+           ix.indisunique AS is_unique, \
+           am.amname AS method, \
+           (SELECT string_agg(a.attname, ', ' ORDER BY ord.ord) \
+            FROM unnest(ix.indkey) WITH ORDINALITY AS ord(attnum, ord) \
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ord.attnum) AS columns, \
+           pg_relation_size(i.oid) AS size_bytes, \
+           ts.spcname AS tablespace \
+         FROM pg_index ix \
+         JOIN pg_class i ON i.oid = ix.indexrelid \
+         JOIN pg_class t ON t.oid = ix.indrelid \
+         JOIN pg_namespace ns ON t.relnamespace = ns.oid \
+         JOIN pg_am am ON i.relam = am.oid \
+         LEFT JOIN pg_tablespace ts ON i.reltablespace = ts.oid \
+         WHERE ns.nspname = $1 \
+         ORDER BY i.relname"
+    )
+}
+
+/// Query CHECK / UNIQUE / EXCLUSION constraints in a schema.
+///
+/// Primary and foreign keys are intentionally excluded — they surface in the
+/// table grid. Returns name, schema, table, contype, definition
+/// (`pg_get_constraintdef`), deferrability, validation, and columns CSV.
+pub fn pg_constraints_query(_schema: &str) -> String {
+    format!(
+        "SELECT \
+           c.conname AS name, \
+           ns.nspname AS schema, \
+           cl.relname AS table_name, \
+           c.contype::text, \
+           pg_get_constraintdef(c.oid) AS definition, \
+           c.condeferrable, \
+           c.convalidated, \
+           (SELECT string_agg(a.attname, ', ' ORDER BY ord.ord) \
+            FROM unnest(c.conkey) WITH ORDINALITY AS ord(attnum, ord) \
+            JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ord.attnum) AS columns \
+         FROM pg_constraint c \
+         JOIN pg_class cl ON c.conrelid = cl.oid \
+         JOIN pg_namespace ns ON cl.relnamespace = ns.oid \
+         WHERE ns.nspname = $1 AND c.contype IN ('c', 'u', 'x') \
+         ORDER BY c.conname"
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -363,6 +425,49 @@ mod tests {
         let sql = pg_databases_query();
         assert!(sql.contains("pg_database"));
         assert!(sql.contains("datistemplate"));
+    }
+
+    #[test]
+    fn pg_indexes_query_is_parameterized_and_joins() {
+        let sql = pg_indexes_query("public");
+        assert!(sql.contains("$1"), "schema must be parameterized; got: {}", sql);
+        assert!(
+            sql.contains("pg_indexes") || sql.contains("pg_index"),
+            "should query pg_index; got: {}",
+            sql
+        );
+        assert!(sql.contains("pg_get_indexdef"), "should include index definition");
+        assert!(sql.contains("indisunique"), "should include uniqueness");
+    }
+
+    #[test]
+    fn pg_constraints_query_filters_check_unique_exclusion() {
+        let sql = pg_constraints_query("public");
+        assert!(sql.contains("$1"), "schema must be parameterized; got: {}", sql);
+        assert!(
+            sql.contains("pg_constraint"),
+            "should query pg_constraint; got: {}",
+            sql
+        );
+        assert!(sql.contains("contype"), "should select contype");
+        assert!(sql.contains("'c'"), "should filter CHECK ('c')");
+        assert!(sql.contains("'u'"), "should filter UNIQUE ('u')");
+        assert!(sql.contains("'x'"), "should filter EXCLUSION ('x')");
+        assert!(sql.contains("pg_get_constraintdef"), "should include definition");
+    }
+
+    #[test]
+    fn pg_tables_query_includes_materialized_views() {
+        let sql = pg_tables_query(Some("public"));
+        assert!(
+            sql.contains("pg_matviews"),
+            "matview UNION must source pg_matviews; got: {}",
+            sql,
+        );
+        assert!(
+            sql.contains("MATERIALIZED VIEW"),
+            "should label materialized views"
+        );
     }
 
     // ---------------------------------------------------------------
