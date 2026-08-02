@@ -214,8 +214,9 @@ cargo test               # Rust tests
 | Drag-and-drop connections to folders | ✅ | Optimistic update with atomic snapshot rollback (race-condition hardened) |
 | Inline tag creation | ✅ | "Create first tag" inline form (name + color) in SearchableTagPicker empty state |
 | Move-to-folder bulk action | ✅ | Selection toolbar → Move to Folder dialog (folder picker, move confirmed via dialog) |
-| Favorites / Recent connections | ✅ | Star toggle per connection card (persisted `favorite` flag); Recent connections row (top 8 via `getRecentConnections`) |
-| Connection status indicator on cards | ✅ | On-demand click-to-test via keychain + `testConnection`, per-card dot with idle/checking/online/offline states |
+| Favorites / Recent connections | ✅ | Star toggle in the connection card ⋮ menu (persisted `favorite` flag); Recent connections row (top 8 via `getRecentConnections`) |
+| Connection status indicator on cards | ✅ | Kebab menu → Test connection with inline idle/checking/online/offline result, on-demand via keychain + `testConnection` |
+| Connection card actions menu (⋮) | ✅ | Kebab dropdown: Favorite toggle, Test connection (inline status), Manage submenu (Edit… / Duplicate / Delete…) |
 
 ### Database Viewer
 | Feature | Status | Details |

@@ -13,12 +13,13 @@ import { ConnectionCard } from "../connections/ConnectionCard";
 import { CreateFolderDialog } from "../folders/CreateFolderDialog";
 import { EditFolderDialog } from "../folders/EditFolderDialog";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { EditConnectionModal } from "../db-viewer/EditConnectionModal";
 import { MoveToFolderDialog } from "../connections/MoveToFolderDialog";
 import { RecentConnectionsStrip } from "../connections/RecentConnectionsStrip";
 import { handleImport, handleExport } from "../../lib/importExport";
 import { getChildFolders } from "../../lib/utils";
 import { useShortcut } from "../../hooks/useShortcut";
-import type { Folder } from "../../lib/types";
+import type { Connection, Folder } from "../../lib/types";
 
 export function HomeScreen() {
     const connections = useFilteredConnections();
@@ -44,9 +45,11 @@ export function HomeScreen() {
     const [folderDialogOpen, setFolderDialogOpen] = useState(false);
     const [editFolder, setEditFolder] = useState<Folder | null>(null);
     const [moveToFolderOpen, setMoveToFolderOpen] = useState(false);
+    const [editingConnection, setEditingConnection] = useState<Connection | null>(null);
     const [confirmDelete, setConfirmDelete] = useState<{
-        type: "folder" | "selected";
+        type: "folder" | "selected" | "connection";
         folder?: Folder;
+        connection?: Connection;
     } | null>(null);
     const [activeDragId, setActiveDragId] = useState<string | null>(null);
     const searchRef = useRef<SearchBarHandle>(null);
@@ -161,6 +164,24 @@ export function HomeScreen() {
         setConfirmDelete(null);
     };
 
+    const handleDuplicateConnection = async (conn: Connection) => {
+        try {
+            await useConnectionStore.getState().duplicateConnection(conn.id);
+        } catch (e) {
+            console.error("Failed to duplicate connection:", e);
+        }
+    };
+
+    const handleDeleteConnection = (conn: Connection) => {
+        if (confirmBeforeDelete) {
+            setConfirmDelete({ type: "connection", connection: conn });
+        } else {
+            void deleteConnection(conn.id).catch((e) => {
+                console.error("Failed to delete connection:", e);
+            });
+        }
+    };
+
     return (
         <main className="min-h-full p-6 bg-canvas select-none max-w-7xl mx-auto">
             <div className="mb-6">
@@ -211,6 +232,9 @@ export function HomeScreen() {
                             ? setConfirmDelete({ type: "folder", folder: f })
                             : executeDeleteFolder(f)
                     }
+                    onEditConnection={setEditingConnection}
+                    onDuplicateConnection={handleDuplicateConnection}
+                    onDeleteConnection={handleDeleteConnection}
                 />
                 <DragOverlay dropAnimation={null}>
                     {activeDragId && connections.find((c) => c.id === activeDragId) ? (
@@ -274,6 +298,14 @@ export function HomeScreen() {
                 }}
                 onClose={() => setMoveToFolderOpen(false)}
             />
+            {editingConnection && (
+                <EditConnectionModal
+                    connection={editingConnection}
+                    open
+                    onClose={() => setEditingConnection(null)}
+                    onSaved={() => {}}
+                />
+            )}
             {confirmDelete?.type === "selected" && (
                 <ConfirmDialog
                     open
@@ -296,6 +328,30 @@ export function HomeScreen() {
                     onCancel={() => setConfirmDelete(null)}
                 />
             )}
+        {confirmDelete?.type === "connection" &&
+                confirmDelete.connection && (
+                    <ConfirmDialog
+                        open
+                        title="Delete Connection"
+                        message={`Are you sure you want to delete "${confirmDelete.connection.name}"?`}
+                        confirmLabel="Delete"
+                        confirmVariant="ghost"
+                        onConfirm={async () => {
+                            try {
+                                await deleteConnection(
+                                    confirmDelete.connection!.id,
+                                );
+                            } catch (e) {
+                                console.error(
+                                    "Failed to delete connection:",
+                                    e,
+                                );
+                            }
+                            setConfirmDelete(null);
+                        }}
+                        onCancel={() => setConfirmDelete(null)}
+                    />
+                )}
         </main>
     );
 }

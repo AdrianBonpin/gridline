@@ -3,6 +3,7 @@ import type { Connection, ConnectionInput, Tag } from "../../lib/types";
 import { DbIcon, DB_LABELS } from "../../lib/dbIcons";
 import { ENV_LABELS, ENV_COLORS } from "../../lib/environment";
 import { TagBadge } from "../tags/TagBadge";
+import { ConnectionCardMenu } from "./ConnectionCardMenu";
 import { Check, GripVertical } from "lucide-react";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraggable } from "@dnd-kit/core";
@@ -13,6 +14,9 @@ interface ConnectionCardProps {
     tags: Tag[];
     onTagToggle?: (id: string) => void;
     onOpenDbViewer?: (connectionId: string) => void;
+    onEdit?: (connection: Connection) => void;
+    onDuplicate?: (connection: Connection) => void;
+    onDelete?: (connection: Connection) => void;
 }
 
 export function buildConfigFromConnection(conn: Connection, password: string | null): ConnectionInput {
@@ -46,6 +50,9 @@ function ConnectionCardBase({
     tags,
     onTagToggle,
     onOpenDbViewer,
+    onEdit,
+    onDuplicate,
+    onDelete,
 }: ConnectionCardProps) {
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const toggleItemSelection = useUiStore((s) => s.toggleItemSelection);
@@ -133,6 +140,12 @@ function ConnectionCardBase({
                     ))}
                 </div>
             </div>
+            <ConnectionCardMenu
+                connection={connection}
+                onEdit={() => onEdit?.(connection)}
+                onDuplicate={() => onDuplicate?.(connection)}
+                onDelete={() => onDelete?.(connection)}
+            />
             <button
                 onClick={(e) => {
                     e.stopPropagation();

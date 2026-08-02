@@ -44,6 +44,24 @@ describe("ConnectionCard", () => {
     render(<ConnectionCard connection={conn} tags={tags} />, { wrapper: Wrapper });
     expect(screen.getByLabelText("Drag to move connection")).toBeInTheDocument();
   });
+  it("mounts the connection actions kebab menu with action callbacks", () => {
+    const onEdit = vi.fn();
+    const onDuplicate = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <ConnectionCard
+        connection={conn}
+        tags={tags}
+        onEdit={onEdit}
+        onDuplicate={onDuplicate}
+        onDelete={onDelete}
+      />,
+      { wrapper: Wrapper },
+    );
+    expect(screen.getByLabelText("Connection actions")).toBeInTheDocument();
+    expect(screen.getByText("Prod DB")).toBeInTheDocument();
+    expect(screen.getByText("prod.example.com:5432")).toBeInTheDocument();
+  });
   it("omits port for sqlite", () => {
     const sqlite = { ...conn, db_type: "sqlite" as const, host: "/data/x.db", port: null };
     render(<ConnectionCard connection={sqlite} tags={tags} />, { wrapper: Wrapper });

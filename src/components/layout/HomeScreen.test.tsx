@@ -148,6 +148,62 @@ describe("HomeScreen", () => {
       expect(screen.getByRole("button", { name: /local db/i })).toBeInTheDocument();
     });
   });
+
+  it("opens EditConnectionModal from the connection card kebab menu", async () => {
+    const user = userEvent.setup();
+    vi.clearAllMocks();
+    useConnectionStore.setState({ connections: [makeConnection("conn-1")] });
+    render(<HomeScreen />);
+
+    await user.click(screen.getByLabelText("Connection actions"));
+    await user.click(screen.getByText("Manage"));
+    await user.click(screen.getByText("Edit…"));
+
+    expect(await screen.findByText("Edit Connection")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Local DB")).toBeInTheDocument();
+  });
+
+  it("shows the confirmation dialog before deleting a connection from the kebab menu by default", async () => {
+    const user = userEvent.setup();
+    vi.clearAllMocks();
+    useConnectionStore.setState({ connections: [makeConnection("conn-1")] });
+    render(<HomeScreen />);
+
+    await user.click(screen.getByLabelText("Connection actions"));
+    await user.click(screen.getByText("Manage"));
+    await user.click(screen.getByText("Delete…"));
+
+    expect(
+      await screen.findByText(/are you sure you want to delete \"Local DB\"/i),
+    ).toBeInTheDocument();
+    const { deleteConnection } = await import("../../lib/commands");
+    expect(deleteConnection).not.toHaveBeenCalled();
+  });
+
+  it("deletes a connection from the kebab menu without confirmation when confirm_before_delete is false", async () => {
+    const user = userEvent.setup();
+    vi.clearAllMocks();
+    useSettingsStore.setState({
+      settings: {
+        ...baseSettings(),
+        confirm_before_delete: false,
+      },
+    });
+    useConnectionStore.setState({ connections: [makeConnection("conn-1")] });
+    render(<HomeScreen />);
+
+    await user.click(screen.getByLabelText("Connection actions"));
+    await user.click(screen.getByText("Manage"));
+    await user.click(screen.getByText("Delete…"));
+
+    const { deleteConnection } = await import("../../lib/commands");
+    await waitFor(() =>
+      expect(deleteConnection).toHaveBeenCalledWith("conn-1"),
+    );
+    expect(
+      screen.queryByText(/are you sure you want to delete/i),
+    ).not.toBeInTheDocument();
+  });
 });
 
 function makeConnection(id: string): Connection {

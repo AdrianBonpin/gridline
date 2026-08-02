@@ -109,6 +109,9 @@ interface ConnectionGridProps {
     onEditFolder?: (folder: Folder) => void;
     onDeleteFolder?: (folder: Folder) => void;
     onOpenDbViewer?: (connectionId: string) => void;
+    onEditConnection?: (conn: Connection) => void;
+    onDuplicateConnection?: (conn: Connection) => void;
+    onDeleteConnection?: (conn: Connection) => void;
 }
 
 export function ConnectionGrid({
@@ -122,6 +125,9 @@ export function ConnectionGrid({
     onEditFolder,
     onDeleteFolder,
     onOpenDbViewer,
+    onEditConnection,
+    onDuplicateConnection,
+    onDeleteConnection,
 }: ConnectionGridProps) {
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const toggleItemSelection = useUiStore((s) => s.toggleItemSelection);
@@ -272,6 +278,9 @@ export function ConnectionGrid({
                             tags={tags}
                             onTagToggle={onTagToggle}
                             onOpenDbViewer={onOpenDbViewer}
+                            onEdit={onEditConnection}
+                            onDuplicate={onDuplicateConnection}
+                            onDelete={onDeleteConnection}
                         />
                     ))}
                 </div>
