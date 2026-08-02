@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, ChevronDown, Table2, Key, Type } from "lucide-react";
+import { ChevronRight, ChevronDown, Table2, Layers, Key, Type } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { TableOverflowMenu } from "./TableOverflowMenu";
@@ -70,6 +70,9 @@ export function TableTree({ searchQuery }: { searchQuery?: string }) {
                 const key = `${table.schema}.${table.name}`;
                 const isExpanded = expanded.has(key);
                 const cols = columnCache[key] ?? table.columns ?? [];
+                const isMatView = (table.table_type as string) === "MATERIALIZED VIEW";
+                const TypeIcon = isMatView ? Layers : Table2;
+                const typeLabel = isMatView ? "Materialized View" : null;
                 return (
                     <div key={key}>
                         <div
@@ -90,10 +93,15 @@ export function TableTree({ searchQuery }: { searchQuery?: string }) {
                                     <ChevronRight size={14} />
                                 )}
                             </button>
-                            <Table2 size={14} className="text-text-muted" />
+                            <TypeIcon size={14} className="text-text-muted" />
                             <span className="flex-1 text-left text-sm text-text group-hover:text-accent truncate">
                                 {table.name}
                             </span>
+                            {typeLabel && (
+                                <span className="text-[10px] text-text-subtle shrink-0">
+                                    {typeLabel}
+                                </span>
+                            )}
                             <div onClick={(e) => e.stopPropagation()}>
                                 <TableOverflowMenu
                                     schema={table.schema}
