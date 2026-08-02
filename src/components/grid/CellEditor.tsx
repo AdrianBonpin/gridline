@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
 
 export interface FkOption {
   value: string; // the referenced column's value (what gets committed)
@@ -35,6 +35,18 @@ export function CellEditor({
   const ref = useRef<HTMLTextAreaElement | HTMLInputElement>(null);
   const enumRef = useRef<HTMLSelectElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const [fkDropdownPos, setFkDropdownPos] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
+
+  useLayoutEffect(() => {
+    if (fkOptions && fkOptions.length > 0 && searchRef.current) {
+      const r = searchRef.current.getBoundingClientRect();
+      setFkDropdownPos({ top: r.bottom + 4, left: r.left, width: r.width });
+    }
+  }, [fkOptions]);
 
   useEffect(() => {
     if (enumValues && enumValues.length > 0) {
@@ -121,7 +133,21 @@ export function CellEditor({
             }
           }}
         />
-        <div className="max-h-28 overflow-y-auto bg-canvas border border-border rounded-md shadow-lg">
+        <div
+          data-testid="fk-options"
+          style={
+            fkDropdownPos
+              ? {
+                  position: "fixed",
+                  top: fkDropdownPos.top,
+                  left: fkDropdownPos.left,
+                  width: fkDropdownPos.width,
+                  zIndex: 50,
+                }
+              : undefined
+          }
+          className="max-h-28 overflow-y-auto bg-canvas border border-border rounded-md shadow-lg"
+        >
           {filtered.length === 0 && (
             <div className="px-2 py-1 text-xs text-text-muted">No matches</div>
           )}

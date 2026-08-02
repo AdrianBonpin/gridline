@@ -118,4 +118,15 @@ describe("CellEditor", () => {
     fireEvent.change(search, { target: { value: "zzz" } });
     expect(screen.getByText("No matches")).toBeInTheDocument();
   });
+
+  it("renders the FK option list as a fixed-position overlay so it is never clipped", () => {
+    const onCommit = vi.fn();
+    render(<CellEditor initialValue="" dataType="integer"
+      fkOptions={[{ value: "1", label: "1 — Alice" }, { value: "2", label: "2 — Bob" }]}
+      onCommit={onCommit} onCancel={vi.fn()} />);
+    const list = screen.getByTestId("fk-options");
+    expect(list.style.position).toBe("fixed");
+    expect(list).toHaveTextContent("1 — Alice");
+    expect(list).toHaveTextContent("2 — Bob");
+  });
 });
