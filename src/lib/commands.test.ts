@@ -24,6 +24,12 @@ import {
   getSavedQueries,
   updateSavedQuery,
   deleteSavedQuery,
+  setConnectionFavorite,
+  recordRecentConnection,
+  getRecentConnections,
+  clearRecentConnections,
+  getIndexes,
+  getConstraints,
 } from "./commands";
 import type { SchemaGraph } from "./types";
 import type { QueryHistoryEntry } from "./commands";
@@ -234,5 +240,55 @@ describe("Query History — v6", () => {
     expect(mockInvoke).toHaveBeenCalledWith("delete_saved_query", {
       id: "q-id",
     });
+  });
+});
+
+describe("v0.5.0 command wrappers", () => {
+  it("setConnectionFavorite invokes set_connection_favorite with camelCase", async () => {
+    const mockInvoke = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(invoke).mockImplementation(mockInvoke);
+
+    await setConnectionFavorite("c1", true);
+    expect(mockInvoke).toHaveBeenCalledWith("set_connection_favorite", { connectionId: "c1", favorite: true });
+  });
+
+  it("recordRecentConnection invokes record_recent_connection", async () => {
+    const mockInvoke = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(invoke).mockImplementation(mockInvoke);
+
+    await recordRecentConnection("c1");
+    expect(mockInvoke).toHaveBeenCalledWith("record_recent_connection", { connectionId: "c1" });
+  });
+
+  it("getRecentConnections invokes get_recent_connections with limit", async () => {
+    const mockInvoke = vi.fn().mockResolvedValue([]);
+    vi.mocked(invoke).mockImplementation(mockInvoke);
+
+    await getRecentConnections(8);
+    expect(mockInvoke).toHaveBeenCalledWith("get_recent_connections", { limit: 8 });
+  });
+
+  it("clearRecentConnections invokes clear_recent_connections", async () => {
+    const mockInvoke = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(invoke).mockImplementation(mockInvoke);
+
+    await clearRecentConnections();
+    expect(mockInvoke).toHaveBeenCalledWith("clear_recent_connections", {});
+  });
+
+  it("getIndexes invokes get_indexes with connectionId + schema", async () => {
+    const mockInvoke = vi.fn().mockResolvedValue([]);
+    vi.mocked(invoke).mockImplementation(mockInvoke);
+
+    await getIndexes("c1", "public");
+    expect(mockInvoke).toHaveBeenCalledWith("get_indexes", { connectionId: "c1", schema: "public" });
+  });
+
+  it("getConstraints invokes get_constraints with connectionId + schema", async () => {
+    const mockInvoke = vi.fn().mockResolvedValue([]);
+    vi.mocked(invoke).mockImplementation(mockInvoke);
+
+    await getConstraints("c1", "public");
+    expect(mockInvoke).toHaveBeenCalledWith("get_constraints", { connectionId: "c1", schema: "public" });
   });
 });

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection } from "./types";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 import type { ChangePayload } from "./changePayload";
 
@@ -268,4 +268,30 @@ export async function updateSavedQuery(
 
 export async function deleteSavedQuery(id: string): Promise<void> {
   return invoke<void>("delete_saved_query", { id });
+}
+
+// ─── v0.5.0: Favorites / Recents / Indexes / Constraints ──────────
+
+export async function setConnectionFavorite(connectionId: string, favorite: boolean): Promise<void> {
+  return invoke<void>("set_connection_favorite", { connectionId, favorite });
+}
+
+export async function recordRecentConnection(connectionId: string): Promise<void> {
+  return invoke<void>("record_recent_connection", { connectionId });
+}
+
+export async function getRecentConnections(limit: number): Promise<RecentConnection[]> {
+  return invoke<RecentConnection[]>("get_recent_connections", { limit });
+}
+
+export async function clearRecentConnections(): Promise<void> {
+  return invoke<void>("clear_recent_connections", {});
+}
+
+export async function getIndexes(connectionId: string, schema?: string): Promise<IndexInfo[]> {
+  return invoke<IndexInfo[]>("get_indexes", { connectionId, schema });
+}
+
+export async function getConstraints(connectionId: string, schema?: string): Promise<ConstraintInfo[]> {
+  return invoke<ConstraintInfo[]>("get_constraints", { connectionId, schema });
 }
