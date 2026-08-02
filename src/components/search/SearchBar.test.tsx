@@ -28,4 +28,14 @@ describe("SearchBar", () => {
     fireEvent.change(input, { target: { value: "postgresql://user@host/db" } });
     expect(onDetectUrl).toHaveBeenCalledWith("postgresql://user@host/db");
   });
+
+  it("clears the search and exits search mode on Escape", () => {
+    useUiStore.setState({ searchQuery: "prod" });
+    render(<SearchBar />);
+    const input = screen.getByPlaceholderText(/search/i);
+    // input mirrors the store value
+    expect((input as HTMLInputElement).value).toBe("prod");
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(useUiStore.getState().searchQuery).toBe("");
+  });
 });
