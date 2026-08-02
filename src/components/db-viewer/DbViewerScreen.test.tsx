@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { DbViewerScreen } from "./DbViewerScreen";
+import { DbViewerScreen, pickDisplayColumn } from "./DbViewerScreen";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import * as commands from "../../lib/commands";
@@ -672,5 +672,20 @@ describe("DbViewerScreen", () => {
                 50,
             ),
         );
+    });
+
+    it("pickDisplayColumn prefers name-like columns over the ref column", () => {
+        const cols = [
+            { name: "id", data_type: "integer" },
+            { name: "email", data_type: "text" },
+            { name: "name", data_type: "text" },
+        ];
+        expect(pickDisplayColumn(cols, "id")).toBe("name");
+        expect(pickDisplayColumn(cols, "id", "email")).toBe("email");
+    });
+
+    it("pickDisplayColumn falls back to the ref column when nothing is name-like", () => {
+        const cols = [{ name: "id", data_type: "integer" }];
+        expect(pickDisplayColumn(cols, "id")).toBe("id");
     });
 });

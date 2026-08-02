@@ -33,6 +33,40 @@ import * as cmd from "../../lib/commands";
 import type { EnumInfo } from "../../lib/types";
 import type { FkOption } from "../grid/CellEditor";
 
+/**
+ * Pick a human-friendly display column for FK option labels from the
+ * referenced table's columns: prefer name-like columns, else the first
+ * text-ish column that isn't the ref column, else the ref column itself.
+ */
+export function pickDisplayColumn(
+    columns: { name: string; data_type: string }[],
+    refCol: string,
+    preferred?: string,
+): string {
+    if (preferred && columns.some((c) => c.name === preferred)) return preferred;
+    const nameLike = [
+        "name",
+        "title",
+        "label",
+        "username",
+        "email",
+        "full_name",
+        "display_name",
+        "first_name",
+        "last_name",
+        "description",
+    ];
+    for (const n of nameLike) {
+        if (columns.some((c) => c.name === n)) return n;
+    }
+    const textish = columns.find(
+        (c) =>
+            c.name !== refCol &&
+            /text|char|name|uuid/i.test(c.data_type),
+    );
+    return textish ? textish.name : refCol;
+}
+
 export interface DbViewerScreenProps {
     connectionId: string;
     onHome: () => void;
@@ -117,6 +151,7 @@ export function DbViewerScreen({
     const [editorOptions, setEditorOptions] = useState<{
         enums: Record<string, string[]>;
         fks: Record<string, FkOption[]>;
+        fkPlaceholders: Record<string, string>;
     } | null>(null);
     const enumCacheRef = useRef<Map<string, EnumInfo[]>>(new Map());
     // Key identifying the (connection, tab, schema) the options were fetched for;
@@ -315,6 +350,7 @@ export function DbViewerScreen({
         void (async () => {
             const enums: Record<string, string[]> = {};
             const fks: Record<string, FkOption[]> = {};
+            const fkPlaceholders: Record<string, string> = {};
 
             // PG enums: fetched once per connection+schema, reused across tabs.
             const cacheKey = `${connectionId}:${tab.schema}`;
@@ -349,10 +385,31 @@ export function DbViewerScreen({
                             (c) => c.name === refCol,
                         );
                         if (refIdx >= 0) {
-                            fks[col.name] = result.rows.map((row) => ({
-                                value: String(row[refIdx]),
-                                label: String(row[refIdx]),
-                            }));
+                            const displayCol = pickDisplayColumn(
+                                result.columns,
+                                refCol,
+                            );
+                            const displayIdx =
+                                displayCol === refCol
+                                    ? refIdx
+                                    : result.columns.findIndex(
+                                          (c) => c.name === displayCol,
+                                      );
+                            fks[col.name] = result.rows.map((row) => {
+                                const refValue = String(row[refIdx]);
+                                const dispValue =
+                                    displayIdx >= 0 && displayIdx !== refIdx
+                                        ? String(row[displayIdx])
+                                        : "";
+                                return {
+                                    value: refValue,
+                                    label:
+                                        dispValue && dispValue !== refValue
+                                            ? `${refValue} — ${dispValue}`
+                                            : refValue,
+                                };
+                            });
+                            fkPlaceholders[col.name] = `Search ${refTable}…`;
                         }
                     } catch {
                         // Skip this FK column; the cell keeps the plain editor.
@@ -362,7 +419,7 @@ export function DbViewerScreen({
 
             // Apply only if no newer fetch superseded this one (tab/schema switched).
             if (editorOptionsKeyRef.current === key) {
-                setEditorOptions({ enums, fks });
+                setEditorOptions({ enums, fks, fkPlaceholders });
             }
         })();
     }, [activeTab, connectionId]);
@@ -953,6 +1010,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                     readOnly={isMatview}
                                                     enumValues={editorOptions?.enums}
                                                     fkOptions={editorOptions?.fks}
+                                                    fkPlaceholders={editorOptions?.fkPlaceholders}
                                                     onToggleRow={(rowIndex) => {
                                                         setSelectedRows(
                                                             (prev) => {
@@ -1102,6 +1160,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 readOnly={isMatview}
                                                 enumValues={editorOptions?.enums}
                                                 fkOptions={editorOptions?.fks}
+                                                fkPlaceholders={editorOptions?.fkPlaceholders}
                                                 onToggleRow={(rowIndex) => {
                                                     setSelectedRows((prev) => {
                                                         const next = new Set(

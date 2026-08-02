@@ -39,6 +39,8 @@ interface VirtualDataGridProps {
   enumValues?: Record<string, string[]>;
   /** Foreign-key reference rows keyed by column NAME → renders a searchable dropdown in the CellEditor. */
   fkOptions?: Record<string, FkOption[]>;
+  /** Placeholder text for the FK search input, keyed by column NAME. */
+  fkPlaceholders?: Record<string, string>;
 }
 
 const ROW_HEIGHT = 36;
@@ -65,6 +67,7 @@ export function VirtualDataGrid({
   pendingCell = null,
   enumValues,
   fkOptions,
+  fkPlaceholders,
 }: VirtualDataGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -349,6 +352,7 @@ export function VirtualDataGrid({
                 nullable={col.is_nullable}
                 enumValues={enumValues?.[col.name]}
                 fkOptions={fkOptions?.[col.name]}
+                fkPlaceholder={fkPlaceholders?.[col.name]}
                 onCommit={commitEdit}
                 onCancel={() => setEditingCell(null)}
               />

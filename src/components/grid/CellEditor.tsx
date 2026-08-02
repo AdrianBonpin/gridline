@@ -11,6 +11,7 @@ interface CellEditorProps {
   nullable?: boolean;
   enumValues?: string[];  // when present → render <select> of these values
   fkOptions?: FkOption[]; // when present → render searchable dropdown
+  fkPlaceholder?: string; // placeholder for the FK search input
   onCommit: (value: string | null) => void;
   onCancel: () => void;
 }
@@ -24,6 +25,7 @@ export function CellEditor({
   nullable,
   enumValues,
   fkOptions,
+  fkPlaceholder,
   onCommit,
   onCancel,
 }: CellEditorProps) {
@@ -104,6 +106,7 @@ export function CellEditor({
         <input
           ref={searchRef}
           aria-label="Search foreign key options"
+          placeholder={fkPlaceholder ?? "Search…"}
           className={inputClass}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -119,6 +122,9 @@ export function CellEditor({
           }}
         />
         <div className="max-h-28 overflow-y-auto bg-canvas border border-border rounded-md shadow-lg">
+          {filtered.length === 0 && (
+            <div className="px-2 py-1 text-xs text-text-muted">No matches</div>
+          )}
           {filtered.map((o) => (
             <button
               key={o.value}

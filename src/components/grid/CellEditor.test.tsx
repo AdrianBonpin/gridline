@@ -107,4 +107,15 @@ describe("CellEditor", () => {
     expect(input.tagName).toBe("TEXTAREA");
     expect(input.className).toContain("h-6");
   });
+
+  it("renders the FK placeholder and a No matches empty state", () => {
+    const onCommit = vi.fn();
+    render(<CellEditor initialValue="" dataType="integer"
+      fkOptions={[{ value: "1", label: "1 — Alice" }]} fkPlaceholder="Search users…"
+      onCommit={onCommit} onCancel={vi.fn()} />);
+    const search = screen.getByLabelText(/search foreign key/i);
+    expect(search).toHaveAttribute("placeholder", "Search users…");
+    fireEvent.change(search, { target: { value: "zzz" } });
+    expect(screen.getByText("No matches")).toBeInTheDocument();
+  });
 });
