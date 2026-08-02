@@ -167,6 +167,7 @@ export function CellEditor({
               top: fkDropdownPos.top,
               left: fkDropdownPos.left,
               width: fkDropdownPos.width,
+              minWidth: fkDropdownPos.width,
               zIndex: 50,
             }}
             className="max-h-28 overflow-y-auto bg-surface border border-border rounded-lg shadow-xl"
