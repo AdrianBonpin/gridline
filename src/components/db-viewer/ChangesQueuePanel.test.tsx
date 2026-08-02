@@ -155,4 +155,26 @@ describe("ChangesQueuePanel", () => {
     await user.click(screen.getByRole("button", { name: /clear all/i }));
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
   });
+
+  it("shows a green check on committed changes after Commit All", async () => {
+    vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 }, description: "Insert row into t" } as any);
+    render(<ChangesQueuePanel />);
+    fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
+    await waitFor(() => expect(screen.getByTitle("Committed")).toBeInTheDocument());
+  });
+
+  it("auto-closes tabs for a table dropped via Commit All", async () => {
+    vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openTab("public", "posts", true);
+    useDbViewerStore.getState().addChange({ type: "drop_table", schema: "public", table: "users", description: "Drop Table: public.users" } as any);
+    render(<ChangesQueuePanel />);
+    fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
+    await waitFor(() => {
+      const tabs = useDbViewerStore.getState().tabs;
+      expect(tabs.some((t) => t.table === "users")).toBe(false);
+      expect(tabs.some((t) => t.table === "posts")).toBe(true);
+    });
+  });
 });

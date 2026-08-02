@@ -102,6 +102,7 @@ interface DbViewerState {
   openQueryTab: () => void;
   setDefaultPageSize: (size: number) => void;
   closeTab: (tabId: string) => void;
+  closeTabsForTable: (schema: string, table: string) => void;
   setActiveTab: (tabId: string) => void;
   setPage: (tabId: string, page: number) => void;
   setPageSize: (tabId: string, pageSize: number) => void;
@@ -221,6 +222,21 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     const remaining = tabs.filter((t) => t.id !== tabId);
     const newActiveId =
       activeTabId === tabId
+        ? remaining.length > 0
+          ? remaining[remaining.length - 1].id
+          : null
+        : activeTabId;
+    set({ tabs: remaining, activeTabId: newActiveId });
+  },
+
+  closeTabsForTable: (schema, table) => {
+    const { tabs, activeTabId } = get();
+    const remaining = tabs.filter(
+      (t) => !(t.tabType === "table" && t.schema === schema && t.table === table),
+    );
+    if (remaining.length === tabs.length) return;
+    const newActiveId =
+      activeTabId !== null && !remaining.some((t) => t.id === activeTabId)
         ? remaining.length > 0
           ? remaining[remaining.length - 1].id
           : null

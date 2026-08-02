@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { RotateCcw } from "lucide-react";
+import { Check, X, RotateCcw } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -70,7 +70,11 @@ export function ChangesQueuePanel() {
         await cmd.executeChange(connectionId, payload);
         markChangeCommitted(change.id);
         committedCount++;
-        if (change.type === "drop_table") treeDirty = true;
+        if (change.type === "drop_table") {
+          treeDirty = true;
+          const st = useDbViewerStore.getState();
+          st.closeTabsForTable(change.schema ?? "", change.table ?? "");
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         markChangeFailed(change.id, msg);
@@ -156,7 +160,7 @@ export function ChangesQueuePanel() {
                     {tableRef(change)}
                   </span>
                 </div>
-                {change.status === "pending" && (
+                {change.status === "pending" ? (
                   <button
                     type="button"
                     aria-label="Revert change"
@@ -166,7 +170,15 @@ export function ChangesQueuePanel() {
                   >
                     <RotateCcw className="h-4 w-4" />
                   </button>
-                )}
+                ) : change.status === "committed" ? (
+                  <span title="Committed" className="shrink-0 text-green-500">
+                    <Check className="h-4 w-4" />
+                  </span>
+                ) : change.status === "failed" ? (
+                  <span title="Failed" className="shrink-0 text-red-500">
+                    <X className="h-4 w-4" />
+                  </span>
+                ) : null}
               </div>
               <div className="mt-1 text-xs text-text-muted truncate">
                 {formatChangeLabel(change)}

@@ -70,6 +70,26 @@ describe("dbViewerStore", () => {
     expect(state.activeTabId).toBe(state.tabs[0].id);
   });
 
+  it("closeTabsForTable closes matching table tabs and keeps others", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openTab("public", "posts", true);
+    useDbViewerStore.getState().closeTabsForTable("public", "users");
+    const tabs = useDbViewerStore.getState().tabs;
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].table).toBe("posts");
+  });
+
+  it("closeTabsForTable fixes the active tab when it is closed", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    const usersId = useDbViewerStore.getState().tabs[0].id;
+    useDbViewerStore.getState().openTab("public", "posts", true);
+    useDbViewerStore.getState().setActiveTab(usersId);
+    useDbViewerStore.getState().closeTabsForTable("public", "users");
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.activeTabId).toBe(st.tabs[0].id);
+  });
+
   it("setPage updates pagination", () => {
     const store = useDbViewerStore.getState();
     store.openTab("public", "users");
