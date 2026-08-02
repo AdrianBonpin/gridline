@@ -5,8 +5,8 @@
 
 use crate::db::pool::{DbConfig, DbHandle};
 use crate::models::db_viewer::{
-    Change, ColumnInfo, EnumInfo, ExtensionInfo, FunctionInfo, QueryResult,
-    SequenceInfo, TableInfo, TriggerInfo,
+    Change, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo,
+    IndexInfo, QueryResult, SequenceInfo, TableInfo, TriggerInfo,
 };
 use std::collections::HashMap;
 use tauri::State;
@@ -88,6 +88,40 @@ fn truncate(s: &str, max: usize) -> String {
 /// - page 5, page_size 25 => offset 100
 pub fn offset(page: i64, page_size: i64) -> i64 {
     (page - 1) * page_size
+}
+
+/// Split a `pg_get_indexdef(...,0,true)` / `pg_attribute` column CSV into a
+/// Vec, trimming whitespace. Splits on commas that are NOT inside parens
+/// (to keep expression-index columns intact).
+pub(crate) fn split_columns_csv(csv: &str) -> Vec<String> {
+    let csv = csv.trim();
+    if csv.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut buf = String::new();
+    for ch in csv.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                buf.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                buf.push(ch);
+            }
+            ',' if depth == 0 => {
+                out.push(buf.trim().to_string());
+                buf.clear();
+            }
+            _ => buf.push(ch),
+        }
+    }
+    if !buf.trim().is_empty() {
+        out.push(buf.trim().to_string());
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1797,6 +1831,85 @@ pub async fn get_functions(
 }
 
 #[tauri::command]
+pub async fn get_indexes(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<IndexInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_indexes_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| IndexInfo {
+                    name: r.get(0),
+                    schema: r.get(1),
+                    table: r.get(2),
+                    definition: r.get(3),
+                    is_unique: r.get(4),
+                    method: r.get::<_, Option<String>>(5).unwrap_or_default(),
+                    columns: split_columns_csv(&r.get::<_, Option<String>>(6).unwrap_or_default()),
+                    size_bytes: r.get::<_, Option<i64>>(7),
+                    tablespace: r.get::<_, Option<String>>(8),
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_constraints(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<ConstraintInfo>, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_constraints_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|r| {
+                    // contype::text decodes as a String ("c" | "u" | "x").
+                    let contype = match r.get::<_, Option<String>>(3).unwrap_or_default().as_str() {
+                        "c" => "CHECK",
+                        "u" => "UNIQUE",
+                        "x" => "EXCLUSION",
+                        other => other,
+                    }
+                    .to_string();
+                    ConstraintInfo {
+                        name: r.get(0),
+                        schema: r.get(1),
+                        table: r.get(2),
+                        contype,
+                        definition: r.get(4),
+                        deferrable: r.get(5),
+                        validated: r.get(6),
+                        columns: split_columns_csv(&r.get::<_, Option<String>>(7).unwrap_or_default()),
+                    }
+                })
+                .collect())
+        }
+        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
 pub async fn get_triggers(
     connection_id: String,
     schema: Option<String>,
@@ -1994,6 +2107,15 @@ pub async fn get_table_ddl(
 mod tests {
     use super::*;
     use crate::models::db_viewer::Change;
+
+    #[test]
+    fn split_columns_csv_handles_commas_and_trims() {
+        assert_eq!(split_columns_csv("id, name, created_at"), vec!["id", "name", "created_at"]);
+        assert_eq!(split_columns_csv("id"), vec!["id"]);
+        assert_eq!(split_columns_csv(""), Vec::<String>::new());
+        // expression index column list may include parens — keep raw, just split on top-level commas
+        assert_eq!(split_columns_csv("lower(name), id"), vec!["lower(name)", "id"]);
+    }
 
     /// bigint precision: values beyond 2^53 must round-trip as strings.
     #[test]
