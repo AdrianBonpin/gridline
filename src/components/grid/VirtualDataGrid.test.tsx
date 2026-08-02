@@ -207,7 +207,7 @@ describe("VirtualDataGrid", () => {
     expect(toggled).toBe(0);
   });
 
-  it("renders FK cells with clickable underline styling", () => {
+  it("renders FK cells with an FK reference icon button", () => {
     const fkCols: ColumnInfo[] = [
       { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["users", "id"], default_value: null, editable: true, is_generated: false },
     ];
@@ -219,9 +219,8 @@ describe("VirtualDataGrid", () => {
       onToggleRow={() => {}} onToggleAll={() => {}}
       dbType="postgresql" tabType="table" />);
 
-    const fkCell = screen.getByText("42");
-    expect(fkCell.className).toContain("cursor-pointer");
-    expect(fkCell.className).toContain("underline");
+    expect(screen.getByText("42")).toBeInTheDocument();
+    expect(screen.getByLabelText("Open FK reference")).toBeInTheDocument();
   });
 
   it("renders JSON cells with preview label", () => {
@@ -486,6 +485,26 @@ describe("VirtualDataGrid", () => {
     fireEvent.click(screen.getByText("Open FK reference"));
 
     // Popover header renders the referenced table synchronously.
+    expect(screen.getByText("public.users")).toBeInTheDocument();
+  });
+
+  it("clicking an FK cell does NOT open the FK preview (only the icon does)", () => {
+    const fkCols: ColumnInfo[] = [
+      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["users", "id"], default_value: null, editable: true, is_generated: false },
+    ];
+    mockGetTotalSize.mockReturnValue(36);
+    mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
+
+    render(<VirtualDataGrid connectionId="conn-1" schema="public" table="orders" rows={[[42]]} columns={fkCols}
+      hiddenColumns={new Set()} selectedRows={new Set()}
+      onToggleRow={() => {}} onToggleAll={() => {}}
+      dbType="postgresql" tabType="table" />);
+
+    fireEvent.click(screen.getByText("42"));
+    expect(screen.queryByText("public.users")).toBeNull();
+
+    // The FK icon button opens the preview popover.
+    fireEvent.click(screen.getByLabelText("Open FK reference"));
     expect(screen.getByText("public.users")).toBeInTheDocument();
   });
 

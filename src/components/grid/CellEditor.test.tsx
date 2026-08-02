@@ -126,6 +126,7 @@ describe("CellEditor", () => {
       onCommit={onCommit} onCancel={vi.fn()} />);
     const list = screen.getByTestId("fk-options");
     expect(list.style.position).toBe("fixed");
+    expect(document.body.contains(list)).toBe(true);
     expect(list).toHaveTextContent("1 — Alice");
     expect(list).toHaveTextContent("2 — Bob");
   });

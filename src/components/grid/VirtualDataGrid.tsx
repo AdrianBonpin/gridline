@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Key, Braces } from "lucide-react";
+import { Key, Braces, ArrowUpRight } from "lucide-react";
 import type { ColumnInfo } from "../../lib/types";
 import { abbreviateType } from "../../lib/utils";
 import { FkPreviewPopover } from "../db-viewer/FkPreviewPopover";
@@ -303,18 +303,15 @@ export function VirtualDataGrid({
           } ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""} ${
             isActive ? "bg-accent/10 ring-1 ring-inset ring-accent outline-none" : ""
           }`}
-          role={isFk || isJson ? "button" : undefined}
-          tabIndex={isFk || isJson ? 0 : -1}
+          role={isJson ? "button" : undefined}
+          tabIndex={isJson ? 0 : -1}
           onKeyDown={
-            isFk || isJson
+            isJson
               ? (e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    if (isFk) handleFkClick(col, cell, e as any);
-                    else if (isJson) {
-                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                      setJsonPopover({ value: cell, anchorRect: rect });
-                    }
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setJsonPopover({ value: cell, anchorRect: rect });
                   }
                 }
               : undefined
@@ -331,8 +328,7 @@ export function VirtualDataGrid({
           }
           onClick={(e) => {
             setActiveCell({ row: rowIndex, col: colIndex });
-            if (isFk) handleFkClick(col, cell, e);
-            else if (isJson) handleJsonClick(e);
+            if (isJson) handleJsonClick(e);
           }}
           onDoubleClick={() => {
             if (editable) setEditingCell({ row: rowIndex, col: colIndex });
@@ -363,6 +359,23 @@ export function VirtualDataGrid({
             <span className="inline-flex items-center gap-0.5">
               <Braces size={10} className="shrink-0" />
               {jp.label}
+            </span>
+          ) : isFk && cell !== null && cell !== undefined ? (
+            <span className="inline-flex items-center gap-1 min-w-0">
+              <span className="truncate">{String(cell)}</span>
+              <button
+                type="button"
+                aria-label="Open FK reference"
+                title={`FK → ${col.fk_ref![0]}.${col.fk_ref![1]}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  handleFkClick(col, cell, e);
+                }}
+                className="shrink-0 text-text-muted hover:text-accent"
+              >
+                <ArrowUpRight size={11} />
+              </button>
             </span>
           ) : (
             String(cell)

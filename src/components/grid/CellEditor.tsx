@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 
 export interface FkOption {
   value: string; // the referenced column's value (what gets committed)
@@ -133,21 +134,19 @@ export function CellEditor({
             }
           }}
         />
-        <div
-          data-testid="fk-options"
-          style={
-            fkDropdownPos
-              ? {
-                  position: "fixed",
-                  top: fkDropdownPos.top,
-                  left: fkDropdownPos.left,
-                  width: fkDropdownPos.width,
-                  zIndex: 50,
-                }
-              : undefined
-          }
-          className="max-h-28 overflow-y-auto bg-canvas border border-border rounded-md shadow-lg"
-        >
+        {fkDropdownPos &&
+        createPortal(
+          <div
+            data-testid="fk-options"
+            style={{
+              position: "fixed",
+              top: fkDropdownPos.top,
+              left: fkDropdownPos.left,
+              width: fkDropdownPos.width,
+              zIndex: 50,
+            }}
+            className="max-h-28 overflow-y-auto bg-canvas border border-border rounded-md shadow-lg"
+          >
           {filtered.length === 0 && (
             <div className="px-2 py-1 text-xs text-text-muted">No matches</div>
           )}
@@ -161,7 +160,9 @@ export function CellEditor({
               {o.label}
             </button>
           ))}
-        </div>
+            </div>,
+            document.body,
+          )}
         {nullable && (
           <label className="flex items-center gap-1 text-[10px] text-text-muted">
             <input
