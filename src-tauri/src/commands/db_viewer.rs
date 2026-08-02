@@ -320,6 +320,16 @@ pub(crate) fn editable_from_att(attgenerated: &str, attidentity: &str) -> bool {
     attgenerated.is_empty() && attidentity != "a"
 }
 
+/// Convert pg_attribute's internal "char" (i8, OID 18) to the 1-char string
+/// used by `editable_from_att`: '' = not set, 's' = STORED, 'v' = VIRTUAL,
+/// 'a' = ALWAYS, 'd' = BY DEFAULT. `None`/`\0` → "" (safe, no panic).
+pub(crate) fn pg_char_to_att(value: Option<i8>) -> String {
+    match value.and_then(|c| char::from_u32(c as u32)) {
+        Some(c) if c != '\0' => c.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// Assemble a PG SELECT statement from pre-formatted select items (already
 /// quoted and optionally `::text`-cast), appending `ctid` when the table has
 /// no primary key so later UPDATE/DELETE queue changes can target the exact
@@ -1190,8 +1200,15 @@ ORDER BY c.ordinal_position"#;
                     let is_fk: bool = r.get(4);
                     let fk_table: Option<String> = r.get(5);
                     let fk_column: Option<String> = r.get(6);
-                    let attgenerated: String = r.get(8);
-                    let attidentity: String = r.get(9);
+                    // pg_attribute.attgenerated/attidentity are PG's internal
+                    // "char" type (OID 18) → tokio-postgres delivers i8, not
+                    // String; deserializing as String panics. Convert safely.
+                    let attgenerated = pg_char_to_att(
+                        r.try_get::<_, Option<i8>>(8).unwrap_or(None),
+                    );
+                    let attidentity = pg_char_to_att(
+                        r.try_get::<_, Option<i8>>(9).unwrap_or(None),
+                    );
                     let is_pk: bool = r.get(3);
                     ColumnInfo {
                         name: r.get(0),
@@ -2383,6 +2400,19 @@ mod tests {
         assert!(editable_from_att("", ""));
         // identity BY DEFAULT ('d') -> editable
         assert!(editable_from_att("", "d"));
+    }
+
+    #[test]
+    fn pg_char_to_att_maps_internal_char_codes_safely() {
+        // pg_attribute "char" arrives as i8; None/\0 -> "", codes -> 1-char string
+        assert_eq!(pg_char_to_att(None), "");
+        assert_eq!(pg_char_to_att(Some(0)), "");
+        assert_eq!(pg_char_to_att(Some(b's' as i8)), "s");
+        assert_eq!(pg_char_to_att(Some(b'v' as i8)), "v");
+        assert_eq!(pg_char_to_att(Some(b'a' as i8)), "a");
+        assert_eq!(pg_char_to_att(Some(b'd' as i8)), "d");
+        // wiring: a STORED generated column must be non-editable through the helper
+        assert!(!editable_from_att(&pg_char_to_att(Some(b's' as i8)), ""));
     }
 
     #[test]
