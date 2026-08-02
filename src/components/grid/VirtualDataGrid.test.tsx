@@ -48,6 +48,48 @@ describe("VirtualDataGrid", () => {
     expect(screen.getByRole("textbox")).toBeInTheDocument();
   });
 
+  it("shows the staged value optimistically after committing an edit", () => {
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    const onStageEdit = vi.fn();
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" onStageEdit={onStageEdit} />);
+    const nameCell = screen.getAllByText("Alice")[0];
+    fireEvent.click(nameCell);
+    fireEvent.keyDown(nameCell, { key: "Enter" });
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "Alicia" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    // staged change fired
+    expect(onStageEdit).toHaveBeenCalledWith(expect.objectContaining({ newData: { name: "Alicia" } }));
+    // grid now shows the new value + a pending dot, not the old one
+    expect(screen.getByText("Alicia")).toBeInTheDocument();
+    expect(screen.getByTestId("pending-edit-dot")).toBeInTheDocument();
+  });
+
+  it("clears staged values when the rows prop refreshes", () => {
+    mockGetTotalSize.mockReturnValue(mockRows.length * 36);
+    mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    const { rerender } = render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" onStageEdit={vi.fn()} />);
+    const nameCell = screen.getAllByText("Alice")[0];
+    fireEvent.click(nameCell);
+    fireEvent.keyDown(nameCell, { key: "Enter" });
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "Alicia" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByText("Alicia")).toBeInTheDocument();
+    // a refetch delivers a NEW rows array → staged values clear, DB value shows
+    const freshRows = mockRows.map((r) => [...r]);
+    rerender(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={freshRows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" onStageEdit={vi.fn()} />);
+    expect(screen.getAllByText("Alice")[0]).toBeInTheDocument();
+    expect(screen.queryByText("Alicia")).toBeNull();
+  });
+
   it("Ctrl+C copies the focused cell value to the clipboard", async () => {
     const writeText = vi.fn();
     Object.assign(navigator, { clipboard: { writeText } });

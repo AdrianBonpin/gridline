@@ -94,6 +94,19 @@ export function VirtualDataGrid({
 
   const [activeCell, setActiveCell] = useState<CellPos | null>(null);
   const [editingCell, setEditingCell] = useState<CellPos | null>(null);
+
+  // Optimistic staged cell values: keyed `${rowIndex}:${colName}` → the value
+  // committed to the changes queue. Shown immediately, cleared when the rows
+  // prop refreshes (post-commit refetch / pagination / sort) so the DB wins.
+  const [stagedCells, setStagedCells] = useState<Map<string, string | null>>(
+    () => new Map(),
+  );
+  const [pendingCellKey, setPendingCellKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    setStagedCells(new Map());
+    setPendingCellKey(null);
+  }, [rows]);
   const [ctxMenu, setCtxMenu] = useState<{ pos: DOMRect; row: number; col: number } | null>(null);
 
   // Reset transient focus state when the data shape changes.
@@ -256,31 +269,42 @@ export function VirtualDataGrid({
     (col: ColumnInfo, row: unknown[], rowIndex: number, colIndex: number) => {
       const ci = columns.findIndex((c) => c.name === col.name);
       const cell = ci >= 0 ? row[ci] : undefined;
-      const isNull = cell === null || cell === undefined;
+      const cellKey = `${rowIndex}:${col.name}`;
+      const staged = stagedCells.get(cellKey);
+      const stagedDefined = staged !== undefined;
+      const displayCell = stagedDefined ? staged : cell;
+      const displayIsNull =
+        displayCell === null || displayCell === undefined;
+      const isNull = displayIsNull;
       const isFk = col.is_fk && col.fk_ref && !isNull;
       const isJson = !isNull && (col.data_type === "jsonb" || col.data_type === "json");
-      const jp = isJson ? jsonPreview(cell) : { label: "", isJson: false };
+      const jp = isJson ? jsonPreview(displayCell) : { label: "", isJson: false };
       const editable = isCellEditable(col, tabType, dbType, readOnly);
       const isActive = activeCell?.row === rowIndex && activeCell?.col === colIndex;
       const isEditing = editingCell?.row === rowIndex && editingCell?.col === colIndex;
-      const isPending = pendingCell?.row === rowIndex && pendingCell?.col === colIndex;
+      const isPending =
+        (pendingCell?.row === rowIndex && pendingCell?.col === colIndex) ||
+        pendingCellKey === cellKey;
 
       const handleJsonClick = (e: React.MouseEvent) => {
         if (isJson) {
           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          setJsonPopover({ value: cell, anchorRect: rect });
+          setJsonPopover({ value: displayCell, anchorRect: rect });
         }
       };
 
       const commitEdit = (committed: string | null) => {
-        if (committed !== (isNull ? null : cell)) {
+        // oldData must be the DB value (the un-staged cell), so the queue's
+        // revert/display stays correct even after repeated edits of the same cell.
+        const dbValue = ci >= 0 ? row[ci] : undefined;
+        if (committed !== (dbValue === null || dbValue === undefined ? null : dbValue)) {
           const locator = getLocator?.(row) ?? {};
           onStageEdit?.(
             cellToUpdateChange({
               schema,
               table,
               primaryKey: locator,
-              oldData: { [col.name]: cell },
+              oldData: { [col.name]: dbValue },
               newData: { [col.name]: committed },
             }) as {
               type: "update";
@@ -292,6 +316,13 @@ export function VirtualDataGrid({
             },
           );
         }
+        setStagedCells((m) => {
+          const next = new Map(m);
+          if (committed === null || committed === undefined) next.set(cellKey, null);
+          else next.set(cellKey, committed);
+          return next;
+        });
+        setPendingCellKey(cellKey);
         setEditingCell(null);
       };
 
@@ -321,10 +352,10 @@ export function VirtualDataGrid({
             isNull
               ? "NULL"
               : isFk
-                ? `FK → ${col.fk_ref![0]}.${col.fk_ref![1]}: ${String(cell)}`
+                ? `FK → ${col.fk_ref![0]}.${col.fk_ref![1]}: ${String(displayCell)}`
                 : isJson
                   ? "Click to view JSON"
-                  : String(cell)
+                  : String(displayCell)
           }
           onClick={(e) => {
             setActiveCell({ row: rowIndex, col: colIndex });
@@ -343,7 +374,7 @@ export function VirtualDataGrid({
           {isEditing ? (
             <div className="absolute inset-0 z-20" onClick={(e) => e.stopPropagation()}>
               <CellEditor
-                initialValue={isNull ? "" : String(cell)}
+                initialValue={isNull ? "" : String(displayCell)}
                 dataType={col.data_type}
                 nullable={col.is_nullable}
                 enumValues={enumValues?.[col.name]}
@@ -360,7 +391,7 @@ export function VirtualDataGrid({
               <Braces size={10} className="shrink-0" />
               {jp.label}
             </span>
-          ) : isFk && cell !== null && cell !== undefined ? (
+          ) : isFk && displayCell !== null && displayCell !== undefined ? (
             <span className="inline-flex items-center gap-1 min-w-0">
               <button
                 type="button"
@@ -369,16 +400,16 @@ export function VirtualDataGrid({
                 onClick={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
-                  handleFkClick(col, cell, e);
+                  handleFkClick(col, displayCell, e);
                 }}
                 className="shrink-0 text-text-muted hover:text-accent"
               >
                 <ArrowUpRight size={11} />
               </button>
-              <span className="truncate">{String(cell)}</span>
+              <span className="truncate">{String(displayCell)}</span>
             </span>
           ) : (
-            String(cell)
+            String(displayCell)
           )}
           {isPending && (
             <span
@@ -389,7 +420,7 @@ export function VirtualDataGrid({
         </div>
       );
     },
-    [activeCell, columns, dbType, editingCell, enumValues, fkOptions, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth, pendingCell],
+    [activeCell, columns, dbType, editingCell, enumValues, fkOptions, fkPlaceholders, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth, pendingCell, stagedCells, pendingCellKey],
   );
 
   // ── context menu helpers ──────────────────────────────
