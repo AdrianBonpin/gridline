@@ -30,6 +30,22 @@ function formatChangeLabel(change: QueueItem): string {
   }
 }
 
+/** Render the old → new value change for update queue items. */
+function formatValueDiff(change: QueueItem): string | null {
+  if (change.type !== "update" || !change.newData) return null;
+  const colName = Object.keys(change.newData)[0];
+  if (!colName) return null;
+  const oldVal =
+    change.oldData && change.oldData[colName] !== undefined
+      ? String(change.oldData[colName])
+      : "NULL";
+  const newVal =
+    change.newData[colName] === null || change.newData[colName] === undefined
+      ? "NULL"
+      : String(change.newData[colName]);
+  return `${colName}: ${oldVal} → ${newVal}`;
+}
+
 function capitalizeType(type: string) {
   return type.charAt(0).toUpperCase() + type.slice(1);
 }
@@ -184,6 +200,17 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
               <div className="mt-1 text-xs text-text-muted truncate">
                 {formatChangeLabel(change)}
               </div>
+              {formatValueDiff(change) && (
+                <div className="mt-0.5 font-mono text-xs text-text">
+                  <span className="text-text-muted line-through">
+                    {formatValueDiff(change)!.split(" → ")[0]}
+                  </span>
+                  <span className="mx-1 text-text-muted">→</span>
+                  <span className="text-accent">
+                    {formatValueDiff(change)!.split(" → ")[1]}
+                  </span>
+                </div>
+              )}
             </div>
           ))
         ) : (

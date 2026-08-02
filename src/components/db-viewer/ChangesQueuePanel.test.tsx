@@ -34,6 +34,22 @@ describe("ChangesQueuePanel", () => {
     expect(screen.getByText(/public.users/i)).toBeInTheDocument();
   });
 
+  it("shows the old → new value diff on update cards", () => {
+    useDbViewerStore.getState().addChange({
+      type: "update",
+      schema: "public",
+      table: "users",
+      primaryKey: { id: 1 },
+      oldData: { name: "Bob" },
+      newData: { name: "Alice" },
+      description: "Update row in users",
+    } as any);
+    render(<ChangesQueuePanel />);
+    // the diff renders old (struck) → new (accent) as separate spans
+    expect(screen.getByText(/name: Bob/)).toBeInTheDocument();
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+  });
+
   it("revert removes the change from the queue", async () => {
     const user = userEvent.setup();
     useDbViewerStore.getState().addChange({

@@ -122,6 +122,7 @@ export function DbViewerScreen({
     const filterRules = activeTab?.filterRules ?? [];
     const sortRules = activeTab?.sortRules ?? [];
     const hiddenColumns = new Set(activeTab?.hiddenColumns ?? []);
+    const changesQueue = useDbViewerStore((s) => s.changesQueue);
     const tables = useDbViewerStore((s) => s.tables);
     const stageCellEdit = useDbViewerStore((s) => s.stageCellEdit);
 
@@ -827,6 +828,39 @@ const onQueriesPanelResizeStart = useCallback(
             return { ctid: row[locatorIndex] };
         };
 
+        // Staged cell values derived from the changes queue (single source of
+        // truth): keyed `${rowIndex}:${colName}` → optimistic value. Pending +
+        // committed updates survive until refetch; Clear All empties the queue
+        // so the optimistic display and pending dots vanish immediately.
+        const stagedValues: Record<string, string | null> = {};
+        if (activeTab?.data && activeTab.tabType === "table") {
+            const updates = changesQueue.filter(
+                (c) =>
+                    c.type === "update" &&
+                    (c.status === "pending" || c.status === "committed") &&
+                    c.schema === activeTab.schema &&
+                    c.table === activeTab.table &&
+                    c.primaryKey &&
+                    c.newData,
+            );
+            if (updates.length > 0) {
+                activeTab.data.rows.forEach((row, rowIdx) => {
+                    const loc = getLocator(row);
+                    for (const c of updates) {
+                        const pk = c.primaryKey!;
+                        const matches = Object.entries(pk).every(
+                            ([k, v]) => String(loc[k]) === String(v),
+                        );
+                        if (!matches) continue;
+                        const colName = Object.keys(c.newData!)[0];
+                        if (!colName) continue;
+                        stagedValues[`${rowIdx}:${colName}`] =
+                            (c.newData![colName] as string | null) ?? null;
+                    }
+                });
+            }
+        }
+
         return (
                             <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
                                 <TabBar onCommitted={handleCommitted} />
@@ -1011,6 +1045,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                     enumValues={editorOptions?.enums}
                                                     fkOptions={editorOptions?.fks}
                                                     fkPlaceholders={editorOptions?.fkPlaceholders}
+                                                    stagedValues={stagedValues}
                                                     onToggleRow={(rowIndex) => {
                                                         setSelectedRows(
                                                             (prev) => {
@@ -1161,6 +1196,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 enumValues={editorOptions?.enums}
                                                 fkOptions={editorOptions?.fks}
                                                 fkPlaceholders={editorOptions?.fkPlaceholders}
+                                                stagedValues={stagedValues}
                                                 onToggleRow={(rowIndex) => {
                                                     setSelectedRows((prev) => {
                                                         const next = new Set(

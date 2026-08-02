@@ -41,6 +41,8 @@ interface VirtualDataGridProps {
   fkOptions?: Record<string, FkOption[]>;
   /** Placeholder text for the FK search input, keyed by column NAME. */
   fkPlaceholders?: Record<string, string>;
+  /** Optimistic staged cell values keyed `${rowIndex}:${colName}` → value (null = NULL), from the changes queue. */
+  stagedValues?: Record<string, string | null>;
 }
 
 const ROW_HEIGHT = 36;
@@ -68,6 +70,7 @@ export function VirtualDataGrid({
   enumValues,
   fkOptions,
   fkPlaceholders,
+  stagedValues,
 }: VirtualDataGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -95,18 +98,13 @@ export function VirtualDataGrid({
   const [activeCell, setActiveCell] = useState<CellPos | null>(null);
   const [editingCell, setEditingCell] = useState<CellPos | null>(null);
 
-  // Optimistic staged cell values: keyed `${rowIndex}:${colName}` → the value
-  // committed to the changes queue. Shown immediately, cleared when the rows
-  // prop refreshes (post-commit refetch / pagination / sort) so the DB wins.
-  const [stagedCells, setStagedCells] = useState<Map<string, string | null>>(
-    () => new Map(),
-  );
+  // Optimistic staged cell values come from the parent via `stagedValues`
+  // (derived from the changes queue), so clearing the queue clears them.
   const [pendingCellKey, setPendingCellKey] = useState<string | null>(null);
 
   useEffect(() => {
-    setStagedCells(new Map());
     setPendingCellKey(null);
-  }, [rows]);
+  }, [stagedValues]);
   const [ctxMenu, setCtxMenu] = useState<{ pos: DOMRect; row: number; col: number } | null>(null);
 
   // Reset transient focus state when the data shape changes.
@@ -270,9 +268,10 @@ export function VirtualDataGrid({
       const ci = columns.findIndex((c) => c.name === col.name);
       const cell = ci >= 0 ? row[ci] : undefined;
       const cellKey = `${rowIndex}:${col.name}`;
-      const staged = stagedCells.get(cellKey);
-      const stagedDefined = staged !== undefined;
-      const displayCell = stagedDefined ? staged : cell;
+      const stagedDefined = stagedValues ? cellKey in stagedValues : false;
+      const displayCell = stagedDefined
+        ? stagedValues![cellKey]
+        : cell;
       const displayIsNull =
         displayCell === null || displayCell === undefined;
       const isNull = displayIsNull;
@@ -284,7 +283,8 @@ export function VirtualDataGrid({
       const isEditing = editingCell?.row === rowIndex && editingCell?.col === colIndex;
       const isPending =
         (pendingCell?.row === rowIndex && pendingCell?.col === colIndex) ||
-        pendingCellKey === cellKey;
+        pendingCellKey === cellKey ||
+        (stagedValues ? cellKey in stagedValues : false);
 
       const handleJsonClick = (e: React.MouseEvent) => {
         if (isJson) {
@@ -316,12 +316,6 @@ export function VirtualDataGrid({
             },
           );
         }
-        setStagedCells((m) => {
-          const next = new Map(m);
-          if (committed === null || committed === undefined) next.set(cellKey, null);
-          else next.set(cellKey, committed);
-          return next;
-        });
         setPendingCellKey(cellKey);
         setEditingCell(null);
       };
@@ -420,7 +414,7 @@ export function VirtualDataGrid({
         </div>
       );
     },
-    [activeCell, columns, dbType, editingCell, enumValues, fkOptions, fkPlaceholders, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth, pendingCell, stagedCells, pendingCellKey],
+    [activeCell, columns, dbType, editingCell, enumValues, fkOptions, fkPlaceholders, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth, pendingCell, stagedValues, pendingCellKey],
   );
 
   // ── context menu helpers ──────────────────────────────

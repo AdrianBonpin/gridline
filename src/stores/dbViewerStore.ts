@@ -419,6 +419,34 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setConstraints: (constraints) => set({ constraints }),
 
   stageCellEdit: (input) => {
+    // Re-staging the same cell replaces the existing pending entry (keeps the
+    // original oldData so revert restores the DB value) instead of stacking
+    // a second queue item.
+    const colName = Object.keys(input.newData)[0];
+    const existing = get().changesQueue.find(
+      (c) =>
+        c.status === "pending" &&
+        c.type === "update" &&
+        c.schema === input.schema &&
+        c.table === input.table &&
+        c.primaryKey &&
+        JSON.stringify(c.primaryKey) === JSON.stringify(input.primaryKey) &&
+        Object.keys(c.newData ?? {})[0] === colName,
+    );
+    if (existing) {
+      set((state) => ({
+        changesQueue: state.changesQueue.map((c) =>
+          c.id === existing.id
+            ? {
+                ...c,
+                newData: input.newData,
+                description: input.description ?? c.description,
+              }
+            : c,
+        ),
+      }));
+      return;
+    }
     get().addChange({
       type: "update",
       schema: input.schema,

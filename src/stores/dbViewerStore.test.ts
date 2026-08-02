@@ -253,6 +253,41 @@ describe("dbViewerStore", () => {
     expect(q[0].newData).toEqual({ name: "Alicia" });
   });
 
+  it("re-staging the same cell replaces the pending entry (keeps original oldData)", () => {
+    const store = useDbViewerStore.getState();
+    store.openTab("public", "users");
+    const tabId = useDbViewerStore.getState().activeTabId!;
+    store.stageCellEdit({
+      tabId, schema: "public", table: "users", primaryKey: { id: 1 },
+      oldData: { name: "Alice" }, newData: { name: "Alicia" },
+      description: "Edit users.name",
+    });
+    store.stageCellEdit({
+      tabId, schema: "public", table: "users", primaryKey: { id: 1 },
+      oldData: { name: "Alice" }, newData: { name: "Alicia 2" },
+      description: "Edit users.name",
+    });
+    const q = useDbViewerStore.getState().changesQueue;
+    expect(q).toHaveLength(1);
+    expect(q[0].newData).toEqual({ name: "Alicia 2" });
+    expect(q[0].oldData).toEqual({ name: "Alice" }); // original DB value preserved
+  });
+
+  it("staging a different cell appends a second entry", () => {
+    const store = useDbViewerStore.getState();
+    store.openTab("public", "users");
+    const tabId = useDbViewerStore.getState().activeTabId!;
+    store.stageCellEdit({
+      tabId, schema: "public", table: "users", primaryKey: { id: 1 },
+      oldData: { name: "Alice" }, newData: { name: "Alicia" },
+    });
+    store.stageCellEdit({
+      tabId, schema: "public", table: "users", primaryKey: { id: 1 },
+      oldData: { age: 30 }, newData: { age: 31 },
+    });
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(2);
+  });
+
   it("setIndexes / setConstraints update store slices", () => {
     const store = useDbViewerStore.getState();
     store.setIndexes([{ name: "idx", schema: "public", table: "t", definition: "", is_unique: true, method: "btree", columns: ["id"], size_bytes: 1, tablespace: null }]);
