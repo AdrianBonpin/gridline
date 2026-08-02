@@ -131,7 +131,7 @@ describe("CellEditor", () => {
     expect(list).toHaveTextContent("2 — Bob");
   });
 
-  it("renders FK options as one-row values only (FK-reference style, cap 3, fixed width)", () => {
+  it("renders FK options as one-row values only (FK-reference style, cap 4, fixed width)", () => {
     const onCommit = vi.fn();
     const cells = Array.from({ length: 6 }, (_, i) => ({
         name: `col${i}`,
@@ -142,11 +142,11 @@ describe("CellEditor", () => {
       onCommit={onCommit} onCancel={vi.fn()} />);
     const list = screen.getByTestId("fk-options");
     // first 3 values shown, column names NOT shown, 4th+ capped
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
         expect(list).toHaveTextContent(`v${i}`);
     }
     expect(list).not.toHaveTextContent("col0");
-    expect(list).not.toHaveTextContent("v3");
+    expect(list).not.toHaveTextContent("v4");
     // fixed 360px width, FK-viewer surface styling
     expect(list.style.width).toBe("360px");
     expect(list.className).toContain("bg-surface");

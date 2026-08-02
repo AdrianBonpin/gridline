@@ -8,7 +8,7 @@ export interface FkOption {
   cells?: { name: string; value: string }[];
 }
 
-const MAX_FK_CELLS = 3;
+const MAX_FK_CELLS = 4;
 const FK_DROPDOWN_WIDTH = 360;
 
 interface CellEditorProps {
