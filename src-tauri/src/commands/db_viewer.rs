@@ -531,11 +531,11 @@ pub fn apply_bulk_insert_sqlite(
     conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
     let result = (|| {
         let mut count = 0;
-        for row in rows {
+        for (i, row) in rows.iter().enumerate() {
             let params: Vec<rusqlite::types::Value> =
                 row.iter().map(json_to_sqlite_value).collect();
             conn.execute(&sql, rusqlite::params_from_iter(params))
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("row {}: {}", i + 1, e))?;
             count += 1;
         }
         Ok::<usize, String>(count)
@@ -567,7 +567,7 @@ pub async fn apply_bulk_insert_pg(
     let sql = build_pg_bulk_insert_sql(schema, table, columns);
     client.batch_execute("BEGIN").await.map_err(|e| e.to_string())?;
     let mut count = 0;
-    for row in rows {
+    for (i, row) in rows.iter().enumerate() {
         let boxed: Vec<Box<dyn ToSql + Send + Sync>> = row.iter().map(pg_box_value).collect();
         let refs: Vec<&(dyn ToSql + Sync)> = boxed
             .iter()
@@ -578,7 +578,7 @@ pub async fn apply_bulk_insert_pg(
             .collect();
         if let Err(e) = client.execute(&sql, &refs).await {
             let _ = client.batch_execute("ROLLBACK").await;
-            return Err(e.to_string());
+            return Err(format!("row {}: {}", i + 1, e));
         }
         count += 1;
     }
@@ -764,7 +764,8 @@ pub async fn db_connect(
             config.ssl_ca_path.as_deref(),
             config.ssl_cert_path.as_deref(),
             config.ssl_key_path.as_deref(),
-        )?;
+        )
+        .map_err(|e| sanitize_error(&e))?;
 
         // SSH tunnel: if configured, open a loopback tunnel to the remote DB
         // and connect through it. The blocking ssh2 handshake runs in
@@ -788,7 +789,8 @@ pub async fn db_connect(
                     )
                 })
                 .await
-                .map_err(|e| format!("Connection failed: {e}"))??;
+                .map_err(|e| format!("Connection failed: {e}"))?
+                .map_err(|e| sanitize_error(&e))?;
                 let lp = tunnel.local_port;
                 state
                     .ssh_manager
@@ -2068,6 +2070,23 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0, "failed batch must roll back all rows");
+    }
+
+    /// Verify that a SQLite bulk insert reports the failing row index (1-based)
+    /// when a row cannot be inserted.
+    #[test]
+    fn apply_bulk_insert_sqlite_error_includes_row_index() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // INTEGER PRIMARY KEY rejects non-integer values (datatype mismatch),
+        // guaranteeing row 2 fails.
+        conn.execute("CREATE TABLE t (a INTEGER PRIMARY KEY)", []).unwrap();
+        let rows = vec![vec![serde_json::json!(1)], vec![serde_json::json!("x")]];
+        let err = apply_bulk_insert_sqlite(&conn, "t", &["a".to_string()], &rows)
+            .unwrap_err();
+        assert!(
+            err.contains("row 2"),
+            "error should name the failing row index (1-based): {err}"
+        );
     }
 
     /// Verify that the PostgreSQL bulk-insert skeleton uses `$N` placeholders

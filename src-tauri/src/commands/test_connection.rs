@@ -28,9 +28,8 @@ pub fn sanitize_error(msg: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         let lower = msg[i..].to_lowercase();
-        if lower.starts_with("postgres://") || lower.starts_with("postgresql://") {
+        if let Some(scheme_end) = url_scheme_end(msg, i) {
             out.push_str("[redacted-url://");
-            let scheme_end = i + msg[i..].find("://").unwrap_or(0) + 3;
             let rest = &msg[scheme_end..];
             let end = match rest.find(['/', '?']) {
                 Some(pos) => scheme_end + pos,
@@ -64,6 +63,32 @@ pub fn sanitize_error(msg: &str) -> String {
     } else {
         out
     }
+}
+
+/// If `msg[i..]` begins a `scheme://authority` URL — a 1-16 char scheme of
+/// alphanumerics/`+`/`-`/`.` preceded by a non-word boundary — return the byte
+/// index just past the `://`. This redacts embedded credentials for any scheme
+/// (`postgres://`, `redis://`, `mysql://`, ...) without matching non-URL text.
+fn url_scheme_end(msg: &str, i: usize) -> Option<usize> {
+    let rest = &msg[i..];
+    let colon = rest.find("://")?;
+    if colon == 0 || colon > 16 {
+        return None;
+    }
+    let scheme = &rest[..colon];
+    if !scheme
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+    {
+        return None;
+    }
+    // Require a boundary before the scheme so mid-word text is not a URL.
+    if let Some(c) = msg[..i].chars().next_back() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            return None;
+        }
+    }
+    Some(i + colon + 3)
 }
 
 /// Validate `DbConfig` before attempting a connection test.
@@ -467,6 +492,22 @@ mod tests {
         assert!(!sanitized.contains("admin"), "should not leak username value");
         assert!(!sanitized.contains("password="), "should remove password= pattern");
         assert!(!sanitized.contains("user="), "should remove user= pattern");
+    }
+
+    #[test]
+    fn sanitize_error_redacts_tunnel_style_urls() {
+        // Tunnel connect errors can carry a URL with embedded credentials, e.g.
+        // the redis:// string built for SSH-tunneled connections.
+        let msg = "SSH tunnel connect failed: redis://:hunter2@127.0.0.1:6379/";
+        let sanitized = sanitize_error(msg);
+        assert!(
+            !sanitized.contains("hunter2"),
+            "must redact URL password: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("SSH tunnel connect failed"),
+            "must keep the diagnostic prefix: {sanitized}"
+        );
     }
 
     // ------------------------------------------------------------------

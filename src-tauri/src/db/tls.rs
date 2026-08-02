@@ -104,6 +104,14 @@ fn load_client_identity(
     cert_path: &str,
     key_path: &str,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), String> {
+    // rustls-pemfile cannot decrypt PKCS#8-encrypted keys, so reject them up
+    // front with a clear message before touching the certificate file.
+    let kb = std::fs::read(key_path).map_err(|e| format!("read key: {e}"))?;
+    if String::from_utf8_lossy(&kb).contains("ENCRYPTED PRIVATE KEY") {
+        return Err(
+            "encrypted client keys are not supported in v1; use an unencrypted PEM key".into(),
+        );
+    }
     let cb = std::fs::read(cert_path).map_err(|e| format!("read cert: {e}"))?;
     let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut std::io::BufReader::new(
         cb.as_slice(),
@@ -116,7 +124,6 @@ fn load_client_identity(
     if certs.is_empty() {
         return Err("no client certificates parsed".into());
     }
-    let kb = std::fs::read(key_path).map_err(|e| format!("read key: {e}"))?;
     let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(kb.as_slice()))
         .map_err(|e| format!("parse key: {e}"))?
         .ok_or_else(|| "no private key parsed".to_string())?
@@ -210,5 +217,36 @@ mod tests {
         let err = build_tls_config(TlsDecision::Require, None, Some("/nonexistent/cert.pem"), None)
             .unwrap_err();
         assert!(err.to_lowercase().contains("cert") || err.to_lowercase().contains("key"));
+    }
+
+    #[test]
+    fn build_tls_rejects_encrypted_key_marker() {
+        // rustls-pemfile cannot decrypt PKCS#8-encrypted keys, so an ENCRYPTED
+        // PRIVATE KEY header must be rejected with a clear error. The cert file
+        // is a dummy: the key check fires before the cert is read.
+        let dir = std::env::temp_dir();
+        let cert_path = dir.join("gl_tls_cert_dummy.pem");
+        let key_path = dir.join("gl_tls_enc_key.pem");
+        std::fs::write(
+            &cert_path,
+            "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &key_path,
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----\nabc\n-----END ENCRYPTED PRIVATE KEY-----\n",
+        )
+        .unwrap();
+        let r = build_tls_config(
+            TlsDecision::Require,
+            None,
+            Some(cert_path.to_str().unwrap()),
+            Some(key_path.to_str().unwrap()),
+        );
+        assert!(r.is_err());
+        assert!(
+            r.unwrap_err().to_lowercase().contains("encrypt"),
+            "must mention encryption"
+        );
     }
 }
