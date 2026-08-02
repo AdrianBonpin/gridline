@@ -98,6 +98,11 @@ export interface Settings {
   table_page_size: number;
   shortcuts: Record<string, string>;
   accent_color: string;
+  editor_font_size: number;
+  editor_font_family: string;
+  editor_word_wrap: "off" | "on";
+  editor_minimap: boolean;
+  editor_tab_size: number;
 }
 
 export type ActiveView = "home" | "settings" | "new-connection" | "db-viewer";

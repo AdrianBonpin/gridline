@@ -13,4 +13,10 @@ pub struct Settings {
     pub table_page_size: i64,
     pub shortcuts: HashMap<String, String>,
     pub accent_color: String,
+    // Editor (Plan A)
+    pub editor_font_size: i64,
+    pub editor_font_family: String,
+    pub editor_word_wrap: String,
+    pub editor_minimap: bool,
+    pub editor_tab_size: i64,
 }

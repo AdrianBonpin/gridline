@@ -15,6 +15,7 @@ import type {
   TableNode,
   GraphColumn,
   Relationship,
+  Settings,
 } from "./types";
 
 describe("ActiveView", () => {
@@ -429,5 +430,19 @@ describe("Schema graph types", () => {
       fk_ref: null,
     };
     expect(col.fk_ref).toBeNull();
+  });
+});
+
+describe("Settings", () => {
+  it("includes the five editor option fields", () => {
+    const s: Settings = {
+      confirm_before_delete: true, default_folder_id: null, theme: "dark",
+      font_size: "medium", default_ports: {}, tag_order: null, table_refresh_rate: 0,
+      table_page_size: 50, shortcuts: {}, accent_color: "#2563EB",
+      editor_font_size: 13, editor_font_family: "Space Mono",
+      editor_word_wrap: "off", editor_minimap: false, editor_tab_size: 4,
+    };
+    expect(s.editor_font_size).toBe(13);
+    expect(s.editor_word_wrap).toBe("off");
   });
 });
