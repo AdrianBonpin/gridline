@@ -13,6 +13,8 @@ import { ConnectionCard } from "../connections/ConnectionCard";
 import { CreateFolderDialog } from "../folders/CreateFolderDialog";
 import { EditFolderDialog } from "../folders/EditFolderDialog";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { MoveToFolderDialog } from "../connections/MoveToFolderDialog";
+import { RecentConnectionsStrip } from "../connections/RecentConnectionsStrip";
 import { handleImport, handleExport } from "../../lib/importExport";
 import { getChildFolders } from "../../lib/utils";
 import { useShortcut } from "../../hooks/useShortcut";
@@ -31,12 +33,17 @@ export function HomeScreen() {
     const deleteFolder = useConnectionStore((s) => s.deleteFolder);
     const deleteConnection = useConnectionStore((s) => s.deleteConnection);
     const loadAll = useConnectionStore((s) => s.loadAll);
+    const moveSelectionToFolder = useConnectionStore((s) => s.moveSelectionToFolder);
+    const recordRecent = useConnectionStore((s) => s.recordRecent);
+    const loadRecent = useConnectionStore((s) => s.loadRecent);
+    const recent = useConnectionStore((s) => s.recent);
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const clearSelection = useUiStore((s) => s.clearSelection);
     const confirmBeforeDelete =
         useSettingsStore((s) => s.settings?.confirm_before_delete ?? true);
     const [folderDialogOpen, setFolderDialogOpen] = useState(false);
     const [editFolder, setEditFolder] = useState<Folder | null>(null);
+    const [moveToFolderOpen, setMoveToFolderOpen] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState<{
         type: "folder" | "selected";
         folder?: Folder;
@@ -51,6 +58,7 @@ export function HomeScreen() {
     const setActiveConnectionId = useUiStore((s) => s.setActiveConnectionId);
 
     const handleOpenDbViewer = (connectionId: string) => {
+        recordRecent(connectionId);
         setActiveConnectionId(connectionId);
         setActiveView("db-viewer");
     };
@@ -119,6 +127,11 @@ export function HomeScreen() {
         }
     }, [folders, activeFolderId, setActiveFolderId]);
 
+    // Load recent connections on mount for the root strip
+    useEffect(() => {
+        loadRecent();
+    }, [loadRecent]);
+
     const executeDeleteSelected = async () => {
         const folderIds = new Set(folders.map((f) => f.id));
         for (const id of selectedItemIds) {
@@ -168,9 +181,13 @@ export function HomeScreen() {
                             ? setConfirmDelete({ type: "selected" })
                             : executeDeleteSelected()
                     }
+                    onMoveToFolder={() => setMoveToFolderOpen(true)}
                     visibleItemIds={visibleItemIds}
                 />
             </div>
+            {activeFolderId === null && !searchQuery && (
+                <RecentConnectionsStrip recents={recent} onOpen={handleOpenDbViewer} />
+            )}
             <DndContext
                 onDragStart={(event) => setActiveDragId(event.active.id as string)}
                 onDragEnd={async (event) => {
@@ -241,6 +258,21 @@ export function HomeScreen() {
                     setEditFolder(null);
                 }}
                 onClose={() => setEditFolder(null)}
+            />
+            <MoveToFolderDialog
+                open={moveToFolderOpen}
+                folders={folders}
+                selectedCount={selectedItemIds.length}
+                onConfirm={async (target) => {
+                    try {
+                        await moveSelectionToFolder(selectedItemIds, target);
+                    } catch (e) {
+                        console.error("Failed to move selection:", e);
+                    }
+                    clearSelection();
+                    setMoveToFolderOpen(false);
+                }}
+                onClose={() => setMoveToFolderOpen(false)}
             />
             {confirmDelete?.type === "selected" && (
                 <ConfirmDialog
