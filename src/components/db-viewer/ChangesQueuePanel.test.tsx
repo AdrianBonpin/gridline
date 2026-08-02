@@ -156,6 +156,21 @@ describe("ChangesQueuePanel", () => {
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
   });
 
+  it("calls onCommitted after a successful commit cycle", async () => {
+    const onCommitted = vi.fn();
+    vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+    render(<ChangesQueuePanel onCommitted={onCommitted} />);
+    fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
+    await waitFor(() => expect(onCommitted).toHaveBeenCalledTimes(1));
+  });
+
   it("shows a green check on committed changes after Commit All", async () => {
     vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
     useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 }, description: "Insert row into t" } as any);

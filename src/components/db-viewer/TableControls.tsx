@@ -4,7 +4,8 @@ import {
   Columns, Check, ChevronLeft, ChevronRight, X, Trash2,
   ChevronDown, FileJson, FileText, Terminal,
 } from "lucide-react";
-import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useDbViewerStore, type FilterRule, type SortRule } from "../../stores/dbViewerStore";
+import { FilterBuilder } from "./FilterBuilder";
 import { Tooltip } from "../ui/Tooltip";
 import { exportData } from "../../lib/exportData";
 import type { ColumnInfo } from "../../lib/types";
@@ -26,19 +27,6 @@ const EXPORT_FORMATS = [
   { label: "SQL", ext: "sql" },
   { label: "Markdown", ext: "md" },
 ] as const;
-
-type FilterRule = {
-  id: string;
-  column: string;
-  operator: "eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt" | "null" | "notnull";
-  value: string;
-};
-
-type SortRule = {
-  id: string;
-  column: string;
-  order: "asc" | "desc";
-};
 
 // ─── helpers ────────────────────────────────────────────
 
@@ -136,6 +124,7 @@ function FilterModal({
           <X size={14} />
         </button>
       </div>
+      <FilterBuilder columns={columns} rules={rules} onChange={onChange} />
       {rules.map((rule) => (
         <div key={rule.id} className="flex items-center gap-1.5 mb-1.5">
           <select
@@ -414,6 +403,8 @@ interface TableControlsProps {
   selectedRows: unknown[][];
   onClearSelection: () => void;
   defaultRefreshRate?: number;
+  /** Hide data-modifying affordances (e.g. for materialized views). */
+  isMatview?: boolean;
   /** "table" = full table toolbar; "query" = export/refresh/columns + timing */
   variant?: "table" | "query";
 }
@@ -435,6 +426,7 @@ export function TableControls({
   selectedRows,
   onClearSelection,
   defaultRefreshRate = 0,
+  isMatview = false,
   variant = "table",
 }: TableControlsProps) {
   const isQuery = variant === "query";
@@ -631,17 +623,21 @@ export function TableControls({
           </>
         ) : (
           <>
-            {/* Insert Row */}
-            <Tooltip content="Insert row" side="bottom">
-              <button
-                type="button"
-                onClick={handleInsertRow}
-                className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
-                aria-label="Insert row"
-              >
-                <Plus size={14} />
-              </button>
-            </Tooltip>
+            {!isMatview && (
+              <>
+                {/* Insert Row */}
+                <Tooltip content="Insert row" side="bottom">
+                  <button
+                    type="button"
+                    onClick={handleInsertRow}
+                    className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-raised hover:text-text transition-colors cursor-pointer"
+                    aria-label="Insert row"
+                  >
+                    <Plus size={14} />
+                  </button>
+                </Tooltip>
+              </>
+            )}
 
             {refreshControl}
 

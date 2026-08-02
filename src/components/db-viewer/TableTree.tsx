@@ -70,7 +70,7 @@ export function TableTree({ searchQuery }: { searchQuery?: string }) {
                 const key = `${table.schema}.${table.name}`;
                 const isExpanded = expanded.has(key);
                 const cols = columnCache[key] ?? table.columns ?? [];
-                const isMatView = (table.table_type as string) === "MATERIALIZED VIEW";
+                const isMatView = table.table_type === "MATERIALIZED VIEW";
                 const TypeIcon = isMatView ? Layers : Table2;
                 const typeLabel = isMatView ? "Materialized View" : null;
                 return (

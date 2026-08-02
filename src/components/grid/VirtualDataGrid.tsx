@@ -33,6 +33,7 @@ interface VirtualDataGridProps {
   onOpenRowDetail?: (rowIndex: number) => void;
   getLocator?: (row: unknown[]) => Record<string, unknown>;
   onOpenFk?: (rowIndex: number) => void;
+  readOnly?: boolean;
 }
 
 const ROW_HEIGHT = 36;
@@ -56,6 +57,7 @@ export function VirtualDataGrid({
   onOpenRowDetail,
   getLocator,
   onOpenFk,
+  readOnly = false,
 }: VirtualDataGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -196,7 +198,7 @@ export function VirtualDataGrid({
 
       if (e.key === "Enter") {
         const col = visibleColumns[activeCell.col];
-        if (col && isCellEditable(col, tabType, dbType)) {
+        if (col && isCellEditable(col, tabType, dbType, readOnly)) {
           e.preventDefault();
           setEditingCell(activeCell);
         }
@@ -231,7 +233,7 @@ export function VirtualDataGrid({
       const isFk = col.is_fk && col.fk_ref && !isNull;
       const isJson = !isNull && (col.data_type === "jsonb" || col.data_type === "json");
       const jp = isJson ? jsonPreview(cell) : { label: "", isJson: false };
-      const editable = isCellEditable(col, tabType, dbType);
+      const editable = isCellEditable(col, tabType, dbType, readOnly);
       const isActive = activeCell?.row === rowIndex && activeCell?.col === colIndex;
       const isEditing = editingCell?.row === rowIndex && editingCell?.col === colIndex;
 
@@ -357,7 +359,7 @@ export function VirtualDataGrid({
   const stageNull = useCallback(
     (row: number, col: number) => {
       const column = visibleColumns[col];
-      if (!column || !isCellEditable(column, tabType, dbType)) return;
+      if (!column || !isCellEditable(column, tabType, dbType, readOnly)) return;
       const ci = columns.findIndex((c) => c.name === column.name);
       const value = rows[row]?.[ci];
       if (value === null || value === undefined) return;
@@ -379,7 +381,7 @@ export function VirtualDataGrid({
         },
       );
     },
-    [columns, dbType, getLocator, onStageEdit, rows, schema, table, tabType, visibleColumns],
+    [columns, dbType, getLocator, onStageEdit, readOnly, rows, schema, table, tabType, visibleColumns],
   );
 
   return (
@@ -517,7 +519,7 @@ export function VirtualDataGrid({
       {ctxMenu && ctxCol && (
         <CellContextMenu
           anchorRect={ctxMenu.pos}
-          editable={isCellEditable(ctxCol, tabType, dbType)}
+          editable={isCellEditable(ctxCol, tabType, dbType, readOnly)}
           isJson={ctxCol.data_type === "jsonb" || ctxCol.data_type === "json"}
           isFk={ctxCol.is_fk && ctxCol.fk_ref != null}
           nullable={ctxCol.is_nullable}

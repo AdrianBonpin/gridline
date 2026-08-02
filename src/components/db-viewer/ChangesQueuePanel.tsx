@@ -39,7 +39,7 @@ function tableRef(change: QueueItem): string {
   return change.table ?? "-";
 }
 
-export function ChangesQueuePanel() {
+export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } = {}) {
   const changesQueue = useDbViewerStore((state) => state.changesQueue);
   const removeChange = useDbViewerStore((state) => state.removeChange);
   const clearChanges = useDbViewerStore((state) => state.clearChanges);
@@ -84,6 +84,7 @@ export function ChangesQueuePanel() {
     }
 
     if (committedCount > 0) {
+      onCommitted?.();
       notify(`${committedCount} change(s) committed`, "success");
     }
 

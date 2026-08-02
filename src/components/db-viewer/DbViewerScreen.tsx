@@ -16,6 +16,7 @@ import { TableTree } from "./TableTree";
 import { ObjectExplorerPage } from "./ObjectExplorerPage";
 import { TabBar } from "./TabBar";
 import { VirtualDataGrid } from "../grid/VirtualDataGrid";
+import { RowDetailDrawer } from "../grid/RowDetailDrawer";
 import { TableControls } from "./TableControls";
 import { EditConnectionModal } from "./EditConnectionModal";
 import { useDbConnection } from "../../hooks/useDbConnection";
@@ -48,6 +49,7 @@ export function DbViewerScreen({
     const [queriesPanelWidth, setQueriesPanelWidth] = useState(280);
     const [searchQuery, setSearchQuery] = useState("");
     const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+    const [rowDetailIdx, setRowDetailIdx] = useState<number | null>(null);
     const [editModalOpen, setEditModalOpen] = useState(false);
     const [destructiveQuery, setDestructiveQuery] = useState<string | null>(null);
     const connections = useConnectionStore((s) => s.connections);
@@ -84,6 +86,18 @@ export function DbViewerScreen({
     const filterRules = activeTab?.filterRules ?? [];
     const sortRules = activeTab?.sortRules ?? [];
     const hiddenColumns = new Set(activeTab?.hiddenColumns ?? []);
+    const tables = useDbViewerStore((s) => s.tables);
+    const stageCellEdit = useDbViewerStore((s) => s.stageCellEdit);
+
+    const isMatview =
+        activeTab && activeTab.tabType === "table"
+            ? tables.some(
+                  (t) =>
+                      t.schema === activeTab.schema &&
+                      t.name === activeTab.table &&
+                      t.table_type === "MATERIALIZED VIEW",
+              )
+            : false;
 
     const setTabData = useDbViewerStore((s) => s.setTabData);
     const setTabError = useDbViewerStore((s) => s.setTabError);
@@ -138,6 +152,31 @@ export function DbViewerScreen({
             useQueryStore.getState().invalidateHistory(connectionId);
         }
     }
+
+    const handleStageEdit = useCallback(
+        (payload: {
+            type: "update";
+            schema: string;
+            table: string;
+            primaryKey: Record<string, unknown>;
+            oldData: Record<string, unknown>;
+            newData: Record<string, unknown>;
+        }) => {
+            if (!activeTab) return;
+            const { type: _, ...rest } = payload;
+            stageCellEdit({ tabId: activeTab.id, ...rest });
+        },
+        [activeTab, stageCellEdit],
+    );
+
+    const handleOpenRowDetail = useCallback((rowIndex: number) => {
+        setRowDetailIdx(rowIndex);
+    }, []);
+
+    const handleCommitted = useCallback(() => {
+        if (!activeTab) return;
+        fetchData(activeTab);
+    }, [activeTab, fetchData]);
 
     // Read the active tab from the store directly so the Monaco keybinding action
     // (which keeps the first onRun closure) always sees the latest query text.
@@ -630,9 +669,25 @@ const onQueriesPanelResizeStart = useCallback(
     const activeTable = activeTab?.table ?? "";
 
     function renderQueryWorkspace() {
+        const getLocator = (row: unknown[]) => {
+            const pkCol = columns.find((c) => c.is_pk);
+            if (pkCol) {
+                const pkIndex = columns.findIndex(
+                    (c) => c.name === pkCol.name,
+                );
+                return { [pkCol.name]: row[pkIndex] };
+            }
+            const dbType = currentConnection?.db_type ?? "postgresql";
+            const locatorIndex = columns.length;
+            if (dbType === "sqlite") {
+                return { rowid: row[locatorIndex] };
+            }
+            return { ctid: row[locatorIndex] };
+        };
+
         return (
                             <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
-                                <TabBar />
+                                <TabBar onCommitted={handleCommitted} />
                                 {!activeTab ? (
                                     <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
                                         {currentView === "queries" ? (
@@ -794,6 +849,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                                     )
                                                                 }
                                                                 variant="query"
+                                                                isMatview={isMatview}
                                                             />
                                                         )}
                                                         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -804,6 +860,12 @@ const onQueriesPanelResizeStart = useCallback(
                                                     columns={columns}
                                                     hiddenColumns={hiddenColumns}
                                                     selectedRows={selectedRows}
+                                                    dbType={currentConnection?.db_type ?? "postgresql"}
+                                                    tabType={activeTab?.tabType ?? "table"}
+                                                    getLocator={getLocator}
+                                                    onStageEdit={isMatview ? undefined : handleStageEdit}
+                                                    onOpenRowDetail={handleOpenRowDetail}
+                                                    readOnly={isMatview}
                                                     onToggleRow={(rowIndex) => {
                                                         setSelectedRows(
                                                             (prev) => {
@@ -934,6 +996,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 onClearSelection={() =>
                                                     setSelectedRows(new Set())
                                                 }
+                                                isMatview={isMatview}
                                             />
                                         )}
                                         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -944,6 +1007,12 @@ const onQueriesPanelResizeStart = useCallback(
                                                 columns={columns}
                                                 hiddenColumns={hiddenColumns}
                                                 selectedRows={selectedRows}
+                                                dbType={currentConnection?.db_type ?? "postgresql"}
+                                                tabType={activeTab?.tabType ?? "table"}
+                                                getLocator={getLocator}
+                                                onStageEdit={isMatview ? undefined : handleStageEdit}
+                                                onOpenRowDetail={handleOpenRowDetail}
+                                                readOnly={isMatview}
                                                 onToggleRow={(rowIndex) => {
                                                     setSelectedRows((prev) => {
                                                         const next = new Set(
@@ -978,6 +1047,16 @@ const onQueriesPanelResizeStart = useCallback(
                                         </div>
                                     </>
                                 )}
+                            {rowDetailIdx !== null && activeTab?.data && (
+                                <RowDetailDrawer
+                                    columns={activeTab.data.columns}
+                                    row={activeTab.data.rows[rowDetailIdx]}
+                                    onClose={() => setRowDetailIdx(null)}
+                                    onCopy={(value) =>
+                                        navigator.clipboard.writeText(value).catch(() => {})
+                                    }
+                                />
+                            )}
                             </div>
         );
     }

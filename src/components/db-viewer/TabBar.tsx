@@ -3,7 +3,7 @@ import { ListChecks, Play, Table2, Terminal, X } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
 
-export function TabBar() {
+export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
   const tabs = useDbViewerStore((state) => state.tabs);
   const activeTabId = useDbViewerStore((state) => state.activeTabId);
   const closeTab = useDbViewerStore((state) => state.closeTab);
@@ -129,7 +129,7 @@ export function TabBar() {
           </button>
           {changesPanelExpanded && (
             <div className="absolute right-0 top-full mt-1.5 z-30 w-[380px] max-w-[calc(100vw-2rem)] rounded-xl bg-surface border border-border shadow-lg overflow-hidden">
-              <ChangesQueuePanel />
+              <ChangesQueuePanel onCommitted={onCommitted} />
             </div>
           )}
         </div>

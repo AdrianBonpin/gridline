@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { DbViewerScreen } from "./DbViewerScreen";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useUiStore } from "../../stores/uiStore";
 import * as commands from "../../lib/commands";
 
 vi.mock("../../hooks/useDbConnection", () => ({
@@ -460,5 +461,99 @@ describe("DbViewerScreen", () => {
                 screen.queryByTestId("refresh-pulse"),
             ).not.toBeInTheDocument(),
         );
+    });
+
+    it("disables Insert Row for a materialized-view tab", async () => {
+        useDbViewerStore.setState({
+            tables: [
+                { name: "mat_users", schema: "public", table_type: "MATERIALIZED VIEW" },
+            ],
+            tabs: [
+                {
+                    id: "tab-mv",
+                    schema: "public",
+                    table: "mat_users",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    data: mockQueryResult,
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "table",
+                },
+            ],
+            activeTabId: "tab-mv",
+        });
+
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+
+        await waitFor(() =>
+            expect(screen.queryByLabelText(/insert row/i)).toBeNull(),
+        );
+    });
+
+    it("refetches the active tab after a successful Commit All", async () => {
+        useUiStore.setState({ activeConnectionId: "c1" });
+        vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+        const getTableData = vi
+            .spyOn(commands, "getTableData")
+            .mockResolvedValue({
+                columns: mockQueryResult.columns,
+                rows: [[2]],
+                total_rows: 1,
+                page: 1,
+                page_size: 50,
+            } as any);
+
+        useDbViewerStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    schema: "public",
+                    table: "users",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    data: mockQueryResult,
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "table",
+                },
+            ],
+            activeTabId: "tab-1",
+            changesQueue: [],
+            changesPanelExpanded: true,
+        });
+        useDbViewerStore.getState().addChange({
+            type: "insert",
+            schema: "public",
+            table: "users",
+            newData: { id: 2, name: "Alice" },
+            description: "Insert row into users",
+        });
+
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
+
+        await waitFor(() => expect(getTableData).toHaveBeenCalledTimes(1));
     });
 });

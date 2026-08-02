@@ -133,7 +133,7 @@ export interface ImportResult {
 export interface TableInfo {
   name: string;
   schema: string;
-  table_type: "TABLE" | "VIEW";
+  table_type: "TABLE" | "VIEW" | "MATERIALIZED VIEW";
   columns?: ColumnInfo[];
 }
 
