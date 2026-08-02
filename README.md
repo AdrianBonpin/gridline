@@ -20,11 +20,19 @@ Most database GUI clients either lock essential productivity features behind pay
 | pg_dump / pg_restore GUI | ❌ | ❌ (paid only) | **First-class UI** |
 | DB-to-DB sync | ❌ | ❌ | **Built-in pipe sync** |
 | Object explorer depth | Tables, views | Tables, views | **Functions, Triggers, Enums, Sequences, Extensions** |
+| Indexes, constraints, matviews, procedures | 🔒 paid | ❌ | **✅ Full object views** |
 | ER diagram / schema visualizer | ❌ (planned) | ❌ (paid only) | **✅ Interactive React Flow** |
-| Inline cell editing | ✅ | ✅ | 🟡 *Upcoming* |
+| Inline cell editing | ✅ | ✅ | **✅ Inline editing** (double-click / Enter, ctid/rowid locator, stale-write guard) |
+| Keyboard cell navigation | ✅ | ✅ | **✅** |
+| Cell copy (right-click / Ctrl+C) | ✅ | ✅ | **✅** |
+| Row detail drawer | ✅ | ✅ | **✅** |
+| Visual filter builder | ✅ | ✅ | **✅** (drag-and-drop, type-aware operators) |
 | SSH tunneling | 🟡 (likely paid) | ✅ | **✅ Full tunnel (password + key auth, keychain)** |
 | OS credential vault | ✅ | ✅ | **Keychain / Secret Service** |
 | Workspace / folder hierarchy | ❌ | ❌ | **Multi-level tree + tags** |
+| Favorites / Recent connections | ✅ | ✅ | **✅ Star + recents row** |
+| Connection status indicator | ❌ | ✅ | **✅ On-demand click-to-test dot** |
+| Bulk move-to-folder | ✅ | ✅ | **✅ Selection toolbar → folder picker** |
 | Changes queue (stage & commit) | ❌ | ❌ | **✅ Queue → Commit All** (tab-bar **Changes** button with count badge toggles a popover: Visual/SQL preview, per-change revert, Clear All, ⌘S commit) |
 | Query history | ✅ (auto-saved) | ✅ | **✅ Toolbar dropdown, favorites, Queries view** |
 | AI assistant | ✅ (BYO key) | ❌ (paid only) | 🔮 *Planned — BYOK* |
@@ -84,6 +92,9 @@ Most database GUI clients either lock essential productivity features behind pay
 - **URI Parser** — paste `postgres://`, `mysql://`, `sqlite://`, or `redis://` connection strings and have all fields auto-populated
 - **Workspace Tree** — multi-level hierarchy: `Workspace → Folder → Connection`, with color-coded tags (red = Production, green = Local)
 - **Credential Security** — passwords stored in the OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), never as plaintext
+- **Favorites & Recent Connections** — star your go-to connections; the Home screen surfaces a Recent row
+- **Connection Status Indicator** — on-demand per-card dot that tests the connection through the keychain + `testConnection` (idle/checking/online/offline)
+- **Bulk Move-to-Folder** — select multiple connections and move them to a folder in one step
 - **Production Safeguards** — read-only locks and high-visibility warnings on connections tagged `Production`
 
 ### PostgreSQL Object Explorer
@@ -95,6 +106,9 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 - **Extensions** — installed extensions with version, schema, and comment
 - **Schema Visualizer (ER Diagram)** — interactive React Flow graph with dagre auto-layout, crow's foot notation (1:1, 1:N, N:M), color-coded relationships, schema selector, zoom controls, collapsible columns (PK/FK/unique-only), cross-schema FK support for PostgreSQL + SQLite
 - **Unified Objects View** — Functions, Triggers, Sequences, Enums, and Extensions share a single sidebar with an object-type dropdown switcher (title position), refresh/search, and db/schema selectors
+- **Indexes & Constraints** — per-table index list (columns, method, unique/partial flags) and CHECK/UNIQUE constraints beyond PK/FK
+- **Materialized Views** — distinct icon in the table tree, browsable (read-only)
+- **Stored Procedures** — dedicated Procedures object type (`prokind='p'`); Functions now filters `prokind='f'`
 
 ### SQL Editor & Query Workbench
 - **Monaco SQL Editor** — lazy-loaded [Monaco Editor](https://microsoft.github.io/monaco-editor/) with SQL syntax highlighting, Cmd/Ctrl+Enter to run
@@ -117,7 +131,11 @@ Full tree-view navigation of all native PostgreSQL schema objects:
 - **FK Preview** — click a foreign key cell to preview the referenced row
 - **JSON/JSONB Viewer** — popover with formatted/raw tabs and copy button
 - **Auto-Refresh** — configurable interval timer
-- *(Inline cell editing and visual filter builder — upcoming)*
+- **Inline Cell Editing** — double-click/Enter to edit cells; changes stage through the queue → Commit All (ctid/rowid locator for no-PK tables, PK/generated/identity read-only, stale-write guard via affected-row-count)
+- **Keyboard Navigation** — arrow keys + Tab/Shift+Tab wrap
+- **Cell Copy + Context Menu** — right-click / Ctrl+C copy on selection
+- **Row Detail Drawer** — right-drawer per-row inspection
+- **Visual Filter Builder** — drag-and-drop column palette with type-aware operators (AND semantics, persists per tab)
 
 ### PostgreSQL Administrative Tools
 - **Visual Backup** — `pg_dump` wrapper with format selector (Plain SQL, Custom, Tar, Directory), file browser, schema filter, no-owner toggle, real-time progress bar
@@ -240,15 +258,12 @@ gridline/
 - **Consolidated Navigation** — merged Functions/Triggers/Sequences/Enums/Extensions into a single Objects view (object-type dropdown) and Backup/Restore/DB Sync into a single Tools view (operation dropdown)
 - **Settings (Redesigned & Fully Wired)** — DB-viewer-styled settings screen (icon+text sidebar, tab-titled header, border-sharp no-card sections, Back returns to origin view); all settings functional: theme (light/dark/system, applied live + native macOS Overlay titlebar sync), font size, **accent color** (circle palette), default folder on startup, confirm-before-delete toggle, default ports prefill; drag-and-drop tag reorder
 - **Editor Settings, SSH/SSL Runtime, Data Import** — Monaco editor options (font size/family, word wrap, minimap, tab size) applied live; real SSH tunnel (`ssh2`, password + key auth, keychain secrets, full lifecycle) and TLS (`rustls`, all modes + client certs) for PostgreSQL/MySQL; CSV/JSON import with preview + column mapping through the changes queue; table-menu loose ends (Copy table schema DDL, Empty/Delete Table via queue, export stubs wired)
-
-### 🟡 In Progress / Upcoming
-- **Inline Cell Editing** — Edit cells directly in the data grid
-- **Visual Filter Builder** — drag-and-drop filter construction
+- **v0.5.0 — Grid Interactivity, Home Polish, Deeper PostgreSQL** — inline cell editing (ctid/rowid locator, stale-write guard), keyboard navigation, cell copy + context menu, row-detail drawer, visual filter builder, bulk move-to-folder, favorites + recents, on-demand connection status indicator, PG Indexes/Constraints/Materialized Views/Stored Procedures object views; version 0.5.0.
 
 ### 🔮 Future
 - **Multi-DB Support** — MySQL browsing, Redis key browser, full MySQL/SQLite/Redis parity with PostgreSQL
 - **Query Workbench** — Multiple result sets, visual query builder
-- **Deeper PostgreSQL** — Indexes, constraints, materialized views, stored procedure view, user/role management
+- **Deeper PostgreSQL** — user/role management, replication
 - **Notebook Reports** — SQL-backed markdown reports with embedded results
 - **AI Integration (BYOK)** — Bring-Your-Own-Key AI assistant: natural-language → SQL generation, query explanations, schema summaries, error suggestions. Key stored in OS keychain; only user's chosen provider sees SQL/text.
 

@@ -213,9 +213,9 @@ cargo test               # Rust tests
 | Bulk select + delete connections/folders | ✅ | Checkbox selection with confirmation dialog |
 | Drag-and-drop connections to folders | ✅ | Optimistic update with atomic snapshot rollback (race-condition hardened) |
 | Inline tag creation | ✅ | "Create first tag" inline form (name + color) in SearchableTagPicker empty state |
-| Move-to-folder bulk action | ❌ | |
-| Favorites / Recent connections | ❌ | |
-| Connection status indicator on cards | ❌ | |
+| Move-to-folder bulk action | ✅ | Selection toolbar → Move to Folder dialog (folder picker, move confirmed via dialog) |
+| Favorites / Recent connections | ✅ | Star toggle per connection card (persisted `favorite` flag); Recent connections row (top 8 via `getRecentConnections`) |
+| Connection status indicator on cards | ✅ | On-demand click-to-test via keychain + `testConnection`, per-card dot with idle/checking/online/offline states |
 
 ### Database Viewer
 | Feature | Status | Details |
@@ -231,6 +231,7 @@ cargo test               # Rust tests
 | Smart default sort | ✅ | 12-tier priority: updated_at → created_at → *_at → *_id → seq/rank/version |
 | Data grid pagination | ✅ | Page nav, page size selector persisted in settings |
 | Column filtering (server-side) | ✅ | eq, neq, contains, starts, ends, gt, lt, null, notnull pushed to SQL WHERE |
+| Visual filter builder | ✅ | Drag-and-drop column palette (@dnd-kit) with type-aware operators (textish → contains, else eq), AND semantics, persists in tab `filterRules` |
 | Column sorting (server-side) | ✅ | Multi-column asc/desc pushed to SQL ORDER BY |
 | Column show/hide | ✅ | Toggle visibility per column |
 | Column resize (drag handle) | ✅ | Double-click to auto-fit |
@@ -243,11 +244,11 @@ cargo test               # Rust tests
 | Table menu actions | ✅ | Copy table schema (DDL via pg_dump / sqlite_master), Empty Table (DELETE) / Delete Table (DROP) through the queue with confirm, export stubs wired (JSON/CSV/SQL/Markdown) |
 | Edit connection modal (from DB viewer) | ✅ | AnimatedModal with keychain password fetch on test |
 | Connection drop banner | ✅ | Auto-detects broken connections with reconnect prompt |
-| Inline cell editing | ❌ | Cells are read-only; changes via queue Insert button only |
+| Inline cell editing | ✅ | Double-click/Enter edits a cell; commit stages an `update` change in the queue → Commit All. No-PK tables use ctid/rowid locator; PK/generated/identity columns and views/matviews are read-only. Stale-write protection via affected-row-count check. |
 | Virtualized data grid | ✅ | Row-level virtualization via @tanstack/react-virtual `useVirtualizer`; handles 100k+ rows |
-| Row detail / expandable row view | ❌ | |
-| Keyboard cell navigation (arrow keys, Tab) | ❌ | |
-| Cell-level copy (right-click or Ctrl+C) | ❌ | Only bulk copy via toolbar |
+| Row detail / expandable row view | ✅ | RowDetailDrawer: right-drawer per row |
+| Keyboard cell navigation (arrow keys, Tab) | ✅ | Arrow keys + Tab/Shift+Tab wrap (`keyboardNav`) |
+| Cell-level copy (right-click or Ctrl+C) | ✅ | CellContextMenu: right-click / Ctrl/Cmd+C on selection |
 
 ### Object Explorer (non-table objects)
 | Feature | Status | Details |
@@ -258,10 +259,10 @@ cargo test               # Rust tests
 | Sequences | ✅ | Full detail view: current value, increment, start, min/max, cycle flag. Schema-filtered via information_schema.sequences. |
 | Enums | ✅ | Full detail view: numbered bordered list matching Arguments style. Schema-filtered via pg_type WHERE typtype='e'. |
 | Extensions | ✅ | Full detail view: version, schema, comment. Queried from pg_extension (no schema filter — extensions are DB-scoped). |
-| Indexes (per table) | ❌ | |
-| Constraints (CHECK, UNIQUE beyond PK/FK) | ❌ | |
-| Materialized views | ❌ | Not distinguished from regular views |
-| Stored procedures | 🟡 | Included in Functions via p.prokind IN ('f','p'); no separate view yet |
+| Indexes (per table) | ✅ | Per-table index list with columns, method, unique/partial flags (via pg_indexes) |
+| Constraints (CHECK, UNIQUE beyond PK/FK) | ✅ | CHECK/UNIQUE constraints beyond PK/FK, introspected via information_schema |
+| Materialized views | ✅ | Distinct icon in table tree, browsable, read-only (via pg_matviews) |
+| Stored procedures | ✅ | Procedures object type filters prokind='p'; Functions now filters kind='f' |
 | Schema visualizer (ER diagram) | ✅ | Full React Flow ER diagram with dagre auto-layout, crow's foot notation, schema selector, legend with cardinality colors, collapsible columns (PK/FK/unique-only), cross-schema FK support. PostgreSQL (single round-trip LATERAL query) + SQLite (PRAGMA). Uses @xyflow/react + dagre. |
 
 ### Query Editor
