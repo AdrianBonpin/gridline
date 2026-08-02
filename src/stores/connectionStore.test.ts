@@ -190,3 +190,53 @@ describe("moveConnection", () => {
     expect(callCount).toBe(2);
   });
 });
+
+describe("favorites / recents / move-selection", () => {
+  it("toggleFavorite optimistically flips favorite and persists", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c1", favorite: false })] });
+    vi.spyOn(commands, "setConnectionFavorite").mockResolvedValue(undefined);
+    await useConnectionStore.getState().toggleFavorite("c1");
+    expect(useConnectionStore.getState().connections[0].favorite).toBe(true);
+    expect(commands.setConnectionFavorite).toHaveBeenCalledWith("c1", true);
+  });
+
+  it("toggleFavorite rolls back on failure", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c1", favorite: false })] });
+    vi.spyOn(commands, "setConnectionFavorite").mockRejectedValue(new Error("boom"));
+    await expect(useConnectionStore.getState().toggleFavorite("c1")).rejects.toThrow("boom");
+    expect(useConnectionStore.getState().connections[0].favorite).toBe(false);
+  });
+
+  it("loadAll sorts favorites first within the returned list", async () => {
+    const fav = makeConn({ id: "a", name: "A", favorite: true });
+    const norm = makeConn({ id: "b", name: "B", favorite: false });
+    vi.spyOn(commands, "getConnections").mockResolvedValue([norm, fav]);
+    vi.spyOn(commands, "getFolders").mockResolvedValue([]);
+    vi.spyOn(commands, "getTags").mockResolvedValue([]);
+    vi.spyOn(commands, "getSettings").mockResolvedValue({} as any);
+    await useConnectionStore.getState().loadAll();
+    const ids = useConnectionStore.getState().connections.map((c) => c.id);
+    expect(ids[0]).toBe("a");
+  });
+
+  it("recordRecent calls the command once", async () => {
+    vi.spyOn(commands, "recordRecentConnection").mockResolvedValue(undefined);
+    await useConnectionStore.getState().recordRecent("c1");
+    expect(commands.recordRecentConnection).toHaveBeenCalledWith("c1");
+  });
+
+  it("moveSelectionToFolder moves connections and reparents folders", async () => {
+    useConnectionStore.setState({
+      connections: [makeConn({ id: "c1", folder_id: null })],
+      folders: [{ id: "f1", name: "f", parent_id: null, tag_ids: [], created_at: "", updated_at: "" }],
+    });
+    const originalMoveConnection = useConnectionStore.getState().moveConnection;
+    vi.spyOn(useConnectionStore.getState(), "moveConnection").mockResolvedValue(undefined);
+    vi.spyOn(commands, "updateFolder").mockResolvedValue({} as any);
+    await useConnectionStore.getState().moveSelectionToFolder(["c1", "f1"], "target");
+    expect(useConnectionStore.getState().connections[0].folder_id).toBe("target");
+    expect(useConnectionStore.getState().folders[0].parent_id).toBe("target");
+    // Restore the real action so the mock doesn't linger on future state objects
+    useConnectionStore.setState({ moveConnection: originalMoveConnection });
+  });
+});
