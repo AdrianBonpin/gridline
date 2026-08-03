@@ -315,8 +315,9 @@ cargo test               # Rust tests
 ### Demo & Onboarding
 | Feature | Status | Details |
 | :--- | :---: | :--- |
-| Demo SQLite database (auto-seeded) | ✅ | users, products, orders, order_items tables |
-| Re-add demo DB button | ✅ | Settings → Advanced |
+| Demo SQLite database (auto-seeded) | ✅ | Feature-rich e-commerce demo (SQLite) exercising every SQLite-available feature: users/products/categories (self-FK)/addresses/orders/order_items (composite PK)/audit_log (500 rows, pagination + virtualization + JSON `details`)/files (BLOB)/page_views (no PK → rowid editing)/app_settings (TEXT PK)/marketing_campaigns (empty → Empty Table change)/order_summary VIEW. JSON columns declared lowercase `json` (popover works), CHECK/UNIQUE/defaults/indexes surface in copied DDL, smart-sort tiers covered (updated_at/created_at/last_login_at/*_id/quantity), nullable FKs + long text for the smart editors. Version-stamped via `PRAGMA user_version`; stale demo files auto-recreate on launch |
+| Re-add demo DB button | ✅ | Settings → General → Demo; re-creates the connection (same app-data-dir file as startup) |
+| Regenerate demo DB button | ✅ | Settings → General → Demo; confirm dialog, drops the live pool handle, wipes + re-seeds the demo file (clears any edits made against the demo) |
 | Getting started / onboarding flow | ❌ | |
 | Welcome tooltips / tour | ❌ | |
 

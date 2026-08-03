@@ -123,6 +123,7 @@ pub fn run() {
             keychain::get_connection_ssh_passphrase,
             keychain::delete_connection_ssh_passphrase,
             demo::recreate_demo_db,
+            demo::regenerate_demo_db,
             backup::detect_pg_tools,
             backup::pg_dump,
             backup::pg_restore,

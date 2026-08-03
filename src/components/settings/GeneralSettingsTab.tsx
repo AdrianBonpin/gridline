@@ -1,11 +1,14 @@
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useConnectionStore } from "../../stores/connectionStore";
+import { useNotificationStore } from "../../stores/notificationStore";
 import { Select } from "../ui/Select";
 import { ThemePicker } from "../ui/ThemePicker";
 import { AccentPicker } from "../ui/AccentPicker";
 import { SettingsRow } from "../ui/SettingsRow";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import * as cmd from "../../lib/commands";
 import type { FontSize } from "../../lib/types";
+import { useState } from "react";
 
 const FONT_SIZE_OPTIONS: { value: FontSize; label: string }[] = [
   { value: "small", label: "Small" },
@@ -32,6 +35,10 @@ const PAGE_SIZE_OPTIONS = [
 export function GeneralSettingsTab() {
   const { settings, updateSetting, load } = useSettingsStore();
   const folders = useConnectionStore((s) => s.folders);
+  const loadAll = useConnectionStore((s) => s.loadAll);
+  const notify = useNotificationStore((s) => s.notify);
+  const [confirmRegenerate, setConfirmRegenerate] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
 
   if (!settings) return null;
 
@@ -42,10 +49,26 @@ export function GeneralSettingsTab() {
 
   const handleReAddDemo = async () => {
     try {
-      await cmd.recreateDemoDb();
+      const msg = await cmd.recreateDemoDb();
       await load();
+      await loadAll();
+      notify(msg, "success");
     } catch (e) {
-      // ignore
+      notify(e instanceof Error ? e.message : String(e), "error");
+    }
+  };
+
+  const handleRegenerateDemo = async () => {
+    setConfirmRegenerate(false);
+    setRegenerating(true);
+    try {
+      const msg = await cmd.regenerateDemoDb();
+      await loadAll();
+      notify(msg, "success");
+    } catch (e) {
+      notify(e instanceof Error ? e.message : String(e), "error");
+    } finally {
+      setRegenerating(false);
     }
   };
 
@@ -140,7 +163,28 @@ export function GeneralSettingsTab() {
               Re-add demo
             </button>
           </SettingsRow>
+          <SettingsRow
+            title="Regenerate demo database"
+            description="Reset the demo to its original state. Any edits or changes you made against the demo are lost."
+          >
+            <button
+              type="button"
+              onClick={() => setConfirmRegenerate(true)}
+              disabled={regenerating}
+              className="rounded-lg border border-red-500/30 px-3 py-1.5 text-sm text-red-300 hover:bg-red-500/10 hover:text-red-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {regenerating ? "Regenerating…" : "Regenerate demo"}
+            </button>
+          </SettingsRow>
         </div>
+        <ConfirmDialog
+          open={confirmRegenerate}
+          title="Regenerate demo database?"
+          message="This deletes the current demo file and re-seeds it with fresh data. Any edits or changes you made against the demo will be lost."
+          confirmLabel="Regenerate"
+          onConfirm={handleRegenerateDemo}
+          onCancel={() => setConfirmRegenerate(false)}
+        />
       </section>
     </div>
   );

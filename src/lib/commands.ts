@@ -76,6 +76,10 @@ export async function recreateDemoDb(): Promise<string> {
   return invoke<string>("recreate_demo_db");
 }
 
+export async function regenerateDemoDb(): Promise<string> {
+  return invoke<string>("regenerate_demo_db");
+}
+
 // ─── DB Viewer Lifecycle ────────────────────────────────────────
 
 export async function dbConnect(connectionId: string, input: ConnectionInput): Promise<void> {
