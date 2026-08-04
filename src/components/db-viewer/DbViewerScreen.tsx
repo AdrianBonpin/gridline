@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
-import { ChevronDown, ChevronUp, Table2, Terminal, AlertCircle } from "lucide-react";
+import { ChevronDown, ChevronUp, Table2, Terminal, AlertCircle, Database } from "lucide-react";
 import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
-import { DbViewerSidebar } from "./DbViewerSidebar";
+import { DbViewerSidebar, NAV_CAPABILITY_KEY } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { isDestructiveQuery, isSchemaModifyingQuery } from "../../lib/utils";
 import { executeQuery } from "../../lib/commands";
+import { getCapabilities } from "../../lib/dbCapabilities";
 
 const QueryEditor = lazy(() => import("../editor/QueryEditor").then((m) => ({ default: m.QueryEditor })));
 import { QueryToolbar } from "../editor/QueryToolbar";
@@ -173,6 +174,10 @@ export function DbViewerScreen({
     const connections = useConnectionStore((s) => s.connections);
     const currentConnection =
         connections.find((c) => c.id === connectionId) ?? null;
+    const capabilities = getCapabilities(currentConnection?.db_type ?? "postgresql");
+    const isRedisUnsupported = (currentConnection?.db_type ?? "postgresql") === "redis" && !capabilities.explorer;
+    const viewCapabilityKey = NAV_CAPABILITY_KEY[currentView] ?? "explorer";
+    const viewSupported = capabilities[viewCapabilityKey];
     const settings = useSettingsStore((s) => s.settings);
     const setDefaultPageSize = useDbViewerStore((s) => s.setDefaultPageSize);
     const clearColumnFilter = useDbViewerStore((s) => s.clearColumnFilter);
@@ -1359,6 +1364,7 @@ const onQueriesPanelResizeStart = useCallback(
                 <DbViewerSidebar
                     currentView={currentView}
                     onNavigate={handleNavigate}
+                    capabilities={capabilities}
                 />
                 <div className="flex-1 flex flex-col min-h-0">
                     {connectionError && connectionError !== dismissedError && (
@@ -1371,7 +1377,17 @@ const onQueriesPanelResizeStart = useCallback(
                             onDismiss={() => setDismissedError(connectionError)}
                         />
                     )}
-                    {currentView === "db-viewer" ? (
+                    {isRedisUnsupported ? (
+                        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
+                            <Database size={32} />
+                            <span>Redis browsing isn&apos;t supported yet — this connection can be tested and used from the Home screen.</span>
+                        </div>
+                    ) : !viewSupported ? (
+                        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
+                            <Database size={32} />
+                            <span className="capitalize">{currentView.replace("-", " ")} is unsupported for {currentConnection?.db_type}</span>
+                        </div>
+                    ) : currentView === "db-viewer" ? (
                         <div className="flex flex-1 min-h-0 overflow-hidden">
                             <div
                                 className="border-r border-border flex flex-col shrink-0"
