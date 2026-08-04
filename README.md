@@ -324,28 +324,17 @@ gridline/
 
 ## Roadmap
 
-### ✅ Completed
+The full plan — in-development (v0.7.0), next-up, queue, and shipped history — lives in **[ROADMAP.md](./ROADMAP.md)**.
 
-- Tauri 2.0 + React 19 + TypeScript 5.8 project shell
-- PostgreSQL and SQLite browse/query support
-- Connection management with URI parser, SSH tunnels, TLS, OS keychain
-- Workspace tree, folders, tags, favorites, recents
-- Multi-tab DB viewer with virtualized grid, server-side filtering/sorting
-- FK preview, JSON popover, inline cell editing, changes queue
-- Query editor with Monaco, autocomplete, destructive-query guard
-- Query history, saved queries, and Queries view
-- Full PostgreSQL object explorer + schema visualizer
-- Backup, restore, and DB-to-DB sync tools
-- Settings redesign with theme, accent color, editor options
-- Built-in **Gridline Demo (SQLite)** database
+Highlights of what's next:
 
-### 🔮 Future
+- **Full Object Management** — CRUD on functions, triggers, sequences, enums, extensions, and views without the Query tab, plus schema CRUD, global object search, and copy-as-DDL
+- **Full Redis support** — key browser, type-aware value editors, TTL management
+- **More database types** — MariaDB, TimescaleDB, and friends
+- **Managed DB support** — PlanetScale, Turso (Supabase/Neon presets ship in v0.7.0)
+- **AI integration (BYOK)** — natural-language → SQL, chat, summaries, charts
 
-- **Multi-DB parity** — MySQL browsing, Redis key browser
-- **Query workbench** — multiple result sets, visual query builder
-- **Deeper PostgreSQL** — user/role management, replication views
-- **Notebook reports** — SQL-backed markdown reports with embedded results
-- **AI assistant (BYOK)** — bring-your-own-key natural-language → SQL, query explanations, and schema summaries
+✅ **[View the full roadmap →](./ROADMAP.md)**
 
 ---
 

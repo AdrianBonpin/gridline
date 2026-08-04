@@ -187,6 +187,8 @@ cargo test               # Rust tests
 
 ✅ = Complete &nbsp; 🟡 = Partial/Stub &nbsp; ❌ = Not Started
 
+Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of truth for what's next); this table reflects the current codebase and may lag planned work. See also the [architectural spec for the in-flight v0.7.0 work](./docs/superpowers/specs/2026-08-04-architectural-spec.md).
+
 ### Connection Management
 | Feature | Status | Details |
 | :--- | :---: | :--- |
@@ -335,6 +337,8 @@ cargo test               # Rust tests
 
 ## Related Documents
 
+- [Project Roadmap](./ROADMAP.md) — source of truth for planned work (in-development, next-up, queue, shipped)
+- [Architectural Spec: v0.7.0 connection-screen revamp](./docs/superpowers/specs/2026-08-04-architectural-spec.md) — current in-flight work
 - [Tauri 2.0 Documentation](https://tauri.app/develop/)
 - [sqlx Documentation](https://docs.rs/sqlx)
 - [Monaco Editor API](https://microsoft.github.io/monaco-editor/api/)

@@ -1,0 +1,146 @@
+# Gridline Roadmap
+
+Status legend: ✅ Shipped · 🏗️ In development · 🎯 Next up · 📋 In the queue · 🔮 Planned
+
+This file is the **source of truth** for what Gridline is building. [AGENTS.md](./AGENTS.md) and [README.md](./README.md) link here — keep this current as priorities shift.
+
+**Current in-flight work:** v0.7.0 on `feat/connection-screen-revamp` — see [docs/superpowers/specs/2026-08-04-architectural-spec.md](./docs/superpowers/specs/2026-08-04-architectural-spec.md) for the full architectural spec.
+
+---
+
+## 🏗️ In development (v0.7.0)
+
+Everything in the connection-screen-revamp spec:
+
+- **New Connection screen revamp** — a single progressive flow: connection-string input + 2-column provider tab grid → expands into the full configuration form (label, tags/env/folder, General + SSH·SSL tabs). Removes the simple/detailed toggle.
+- **Full MySQL DB viewer support** — connect (incl. SSL + SSH), browse databases/tables/columns/FKs, run queries, paginate, inline cell editing + changes queue (insert/update/delete/bulk/empty/drop), DDL copy (`SHOW CREATE TABLE`), CSV/JSON import.
+- **DB viewer capability gating** — pure `dbCapabilities.ts` matrix per DB type; unsupported views show a clean "not supported" state instead of broken UI. Redis browsing explicitly gated off this iteration.
+- **Supabase & NeonDB managed-PG presets** — provider cards with in-app setup instructions; persist as `postgresql` with an SSL hint.
+- **SQLite file-path mode** — URI field becomes a file-path input with `Browse…`.
+- **Tag overflow scroll** — connection cards show ≤3 tags, then scroll horizontally.
+- **Input styling sweep** — `rounded-full` → `rounded-lg` on all form controls.
+- **Version bump** 0.6.0 → **0.7.0**.
+
+Explicitly **out of scope** for 0.7.0 (deferred, tracked below): Redis key browsing, MySQL Objects/ERD views, backup/restore/sync for MySQL + SQLite, multiple result sets, SSH key-file management, settings import/export, onboarding tour.
+
+## 🎯 Next up
+
+### Full Object Management (PostgreSQL)
+
+Gridline can already **browse** every PostgreSQL object type (functions, triggers, sequences, enums, extensions, views, materialized views, procedures, indexes, constraints). Next up: full **CRUD** on those objects without ever touching the Query tab.
+
+- Right-click any object → create / edit / drop with a generated-SQL preview before applying
+- Enums: add/remove values, rename types
+- Functions & procedures: edit signature + body, drop overloads by signature
+- Triggers: create/edit/disable/enable, timing + event pickers
+- Sequences: alter increment/start/min/max/cycle, restart
+- Extensions: install/uninstall, schema reassignment
+- Views & materialized views: edit definition, refresh matviews
+- Indexes & constraints: create/drop per table with column pickers
+- Staged through the changes queue (with confirmation) — never a surprise DDL
+- **Out of scope this release:** the MySQL "Objects" view stays deferred (see In the queue) — this iteration is PostgreSQL-only
+
+### Shipping alongside (companions)
+
+- **Schema CRUD** — create/rename/drop schemas from the object tree
+- **Global object search** — Cmd+K-style search across tables, functions, triggers, sequences, and extensions by name
+- **Copy as DDL for any object** — `CREATE FUNCTION` / `CREATE TRIGGER` / … via the same DDL-generation used for edit/drop previews (also covers the "Table structure export" queue item)
+- **Object dependencies** — `pg_depend`-based "what depends on this object?" view, shown before drops so nothing breaks silently
+
+### Admin follow-up (after object management)
+
+- **PostgreSQL users/roles + grants management** — create roles and set privileges from a UI (DB Pro has this at 0% on their roadmap — a differentiator to hold)
+- **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
+
+## 📋 In the queue
+
+### Full Redis Support
+
+Connection + test work today; **key browsing is explicitly not part of 0.7.0** — it stays gated behind an "unsupported" state. Goal: first-class Redis like the PG/SQLite/MySQL viewers.
+
+- Key browser (pattern search, filter by type, TTL display, key count)
+- Value editors per type: string, list, hash, set, zset, stream, JSON
+- Inline add / edit / delete keys, TTL management, flush
+- Key expiry tracking and live refresh
+
+### Additional Database Types
+
+- **MariaDB** (wire-compatible with MySQL — should largely fall out of the 0.7.0 MySQL work)
+- **TimescaleDB** (PostgreSQL extension — largely free once PG browsing is solid; surface hypertables/compression in the object tree)
+- Candidates after that: CockroachDB, DuckDB, SQL Server, MongoDB (drivers are heavier lifts — revisit with demand)
+
+### Managed Database Support (beyond Supabase / Neon)
+
+Supabase and NeonDB presets ship in v0.7.0. Remaining candidates:
+
+- **PlanetScale** (Vitess/MySQL)
+- **Turso** (libSQL)
+- Provider detection guidance: paste a provider URL → Gridline auto-fills host/port/SSL mode; provider "connect" docs linked from the connection form
+
+### Query Workbench Upgrades
+
+- **Multiple result sets** — one query, multiple result tabs (stacked/scrollable) instead of only the last result *(deferred from 0.7.0)*
+- **Cancel long-running queries** — per-connection cancel button (`pg_cancel_backend` and equivalents) instead of waiting or killing the app
+- **Result streaming to file** — export 500k+ rows without loading them all into memory
+- **Visual query builder** — drag-and-drop tables/joins/filters that generate SQL (TablePlus has one; DB Pro plans one)
+
+### Schema & Data Tooling
+
+- **SQLite `.dump` support** — match the pg_dump UX for SQLite
+- **Schema diff / compare** — two-database structure diff that pairs naturally with DB-to-DB sync
+- **MySQL Objects view + schema visualizer** — functions/triggers/sequences/enums/extensions browsing and ER diagram for MySQL *(deferred from 0.7.0 and out of scope for the object-management release — PostgreSQL-only for now)*
+- **Backup/Restore/Sync for MySQL & SQLite** — pg_dump tooling is PostgreSQL-only today *(deferred from 0.7.0)*
+- **More export formats** — Excel (.xlsx), JSONL, Parquet alongside CSV/JSON/SQL/Markdown
+
+## 🔮 Planned
+
+### AI Integration (BYOK)
+
+Bring-your-own-key — no bundled model, no paywall, key stored in the OS keychain like DB passwords.
+
+- Natural-language → SQL generation (schema-aware)
+- Chat with your database (explain query results, error messages)
+- Query explanations and schema summaries
+- AI-generated charts from result sets
+- Privacy-first: only the SQL/text you choose is sent to your provider; write-queries blocked by default, destructive actions confirmed before execution
+
+### Website & Docs
+
+- Landing page with screenshots, feature tour, and download links
+- User documentation (connection setup, SSH/TLS, backup/sync, changes queue)
+- Blog / changelog feed
+
+### UI/UX Improvements (rolling)
+
+Continuous polish, tracked as issues rather than one-off milestones:
+
+- Empty states, error surfacing, and microcopy
+- Keyboard shortcut audit + more configurable actions
+- Performance passes on the grid, object tree, and large schemas
+- Accessibility (contrast, focus states, screen-reader labels)
+- Session restore — reopen tabs and query state from the last session
+- Light-theme parity pass — dark is first-class; polish the light theme to match
+
+Deferred from 0.7.0, slated for this bucket:
+
+- **Onboarding tour** — first-run walkthrough built around the Gridline Demo database; contextual tooltips per screen
+- **Settings export/import** — share theme, accent, editor options, page sizes, and defaults across machines (JSON file)
+- **SSH key management** — read/generate key pairs and paste private keys directly in the SSH tab (today: path inputs only)
+- **In-app changelog** — "What's new" panel fed from bundled release notes
+
+---
+
+## ✅ Shipped
+
+- Tauri 2.0 + React 19 + TypeScript 5.8 project shell
+- PostgreSQL and SQLite browse/query support
+- Connection management with URI parser, SSH tunnels, TLS, OS keychain
+- Workspace tree, folders, tags, favorites, recents
+- Multi-tab DB viewer with virtualized grid, server-side filtering/sorting
+- FK preview, JSON popover, inline cell editing, changes queue
+- Query editor with Monaco, autocomplete, destructive-query guard
+- Query history, saved queries, and Queries view
+- Full PostgreSQL object explorer + schema visualizer
+- Backup, restore, and DB-to-DB sync tools
+- Settings redesign with theme, accent color, editor options
+- Built-in **Gridline Demo (SQLite)** database
