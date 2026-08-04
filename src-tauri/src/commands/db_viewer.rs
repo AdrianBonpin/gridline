@@ -728,7 +728,7 @@ pub async fn apply_bulk_insert_pg(
 
 /// Sanitize a raw error string before it crosses the IPC boundary: redact
 /// credential-like fragments (connection URLs, `password=...`) and cap length.
-fn sanitize_error(e: &str) -> String {
+pub(crate) fn sanitize_error(e: &str) -> String {
     truncate(&redact_secrets(e), 400)
 }
 

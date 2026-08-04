@@ -12,6 +12,7 @@
 use crate::db::pool::DbHandle;
 use crate::models::db_viewer::{ColumnInfo, QueryResult};
 use serde::{Deserialize, Serialize};
+use sqlx::{Column, Row};
 use std::time::Instant;
 use tauri::State;
 use uuid::Uuid;
@@ -100,7 +101,7 @@ pub(crate) async fn execute_query_inner(
             execute_pg_query(client, query, page, page_size).await
         }
         Some(DbHandle::Sqlite(conn)) => execute_sqlite_query(conn, query, page, page_size),
-        Some(DbHandle::MySql(_)) => Err("MySQL query execution not yet supported".to_string()),
+        Some(DbHandle::MySql(pool)) => execute_mysql_query(pool, query, page, page_size).await,
         None => {
             let elapsed = start.elapsed().as_millis() as i64;
             let err = "Connection not found".to_string();
@@ -494,6 +495,152 @@ fn sqlite_value_to_json(row: &rusqlite::Row, i: usize) -> serde_json::Value {
         Ok(ValueRef::Blob(v)) => serde_json::Value::String(format!("[{}B blob]", v.len())),
         Err(_) => serde_json::Value::Null,
     }
+}
+
+// ---------------------------------------------------------------------------
+// MySQL execution
+// ---------------------------------------------------------------------------
+
+/// Wrap a user query for pagination: `SELECT * FROM (<q>) AS _gridline_data LIMIT ? OFFSET ?`.
+pub(crate) fn mysql_wrap_data(query: &str) -> String {
+    format!(
+        "SELECT * FROM ({}) AS _gridline_data LIMIT ? OFFSET ?",
+        query.trim()
+    )
+}
+
+/// Wrap a user query for counting: `SELECT COUNT(*) FROM (<q>) AS _gridline_cnt`.
+pub(crate) fn mysql_wrap_count(query: &str) -> String {
+    format!("SELECT COUNT(*) FROM ({}) AS _gridline_cnt", query.trim())
+}
+
+/// Convert a sqlx MySql row cell to serde_json::Value (via the `json` feature).
+fn mysql_cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
+    row.try_get::<Option<serde_json::Value>, _>(i)
+        .map(|o| o.unwrap_or(serde_json::Value::Null))
+        .unwrap_or(serde_json::Value::Null)
+}
+
+async fn execute_mysql_query(
+    pool: &sqlx::MySqlPool,
+    query: &str,
+    page: i64,
+    page_size: i64,
+) -> Result<QueryResult, String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err("Query cannot be empty".to_string());
+    }
+    let off = (page.saturating_sub(1).max(0)) * page_size;
+
+    // Try the wrapped count first; fall back to raw on failure.
+    let total_rows: i64 = match sqlx::query_scalar::<_, i64>(&mysql_wrap_count(trimmed))
+        .fetch_one(pool)
+        .await
+    {
+        Ok(n) => n,
+        Err(_) => return execute_mysql_raw(pool, trimmed, page, page_size, off).await,
+    };
+
+    let data_rows = match sqlx::query(&mysql_wrap_data(trimmed))
+        .bind(page_size)
+        .bind(off)
+        .fetch_all(pool)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(_) => return execute_mysql_raw(pool, trimmed, page, page_size, off).await,
+    };
+
+    let columns: Vec<ColumnInfo> = match data_rows.first() {
+        Some(first) => first
+            .columns()
+            .iter()
+            .map(|c| ColumnInfo {
+                name: c.name().to_string(),
+                data_type: c.type_info().to_string(),
+                is_nullable: true,
+                is_pk: false,
+                is_fk: false,
+                fk_ref: None,
+                default_value: None,
+                editable: true,
+                is_generated: false,
+            })
+            .collect(),
+        None => return execute_mysql_raw(pool, trimmed, page, page_size, off).await,
+    };
+
+    let rows: Vec<Vec<serde_json::Value>> = data_rows
+        .iter()
+        .map(|r| (0..r.len()).map(|i| mysql_cell_to_json(r, i)).collect())
+        .collect();
+
+    Ok(QueryResult {
+        columns,
+        rows,
+        total_rows,
+        page,
+        page_size,
+        execution_time_ms: None,
+    })
+}
+
+/// Raw fallback (no wrapping). Runs the query as-is and slices client-side,
+/// mirroring the PG `simple_query` raw path. Used when wrapping fails
+/// (e.g., multi-statement or non-selectable SQL).
+async fn execute_mysql_raw(
+    pool: &sqlx::MySqlPool,
+    query: &str,
+    page: i64,
+    page_size: i64,
+    off: i64,
+) -> Result<QueryResult, String> {
+    let rows = sqlx::query(query)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
+
+    let columns: Vec<ColumnInfo> = match rows.first() {
+        Some(first) => first
+            .columns()
+            .iter()
+            .map(|c| ColumnInfo {
+                name: c.name().to_string(),
+                data_type: c.type_info().to_string(),
+                is_nullable: true,
+                is_pk: false,
+                is_fk: false,
+                fk_ref: None,
+                default_value: None,
+                editable: true,
+                is_generated: false,
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+
+    let all_rows: Vec<Vec<serde_json::Value>> = rows
+        .iter()
+        .map(|r| (0..r.len()).map(|i| mysql_cell_to_json(r, i)).collect())
+        .collect();
+    let total_rows = all_rows.len() as i64;
+    let uoff = off as usize;
+    let ulimit = page_size as usize;
+    let sliced: Vec<Vec<serde_json::Value>> = if uoff < all_rows.len() {
+        all_rows.into_iter().skip(uoff).take(ulimit).collect()
+    } else {
+        Vec::new()
+    };
+
+    Ok(QueryResult {
+        columns,
+        rows: sliced,
+        total_rows,
+        page,
+        page_size,
+        execution_time_ms: None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -959,5 +1106,23 @@ mod tests {
             DbHandle::Sqlite(conn) => conn,
             _ => panic!("Expected Sqlite handle"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // MySQL wrapper SQL shapes
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn mysql_wrapped_query_shape_has_limit_offset_placeholders() {
+        // The wrapped-data SQL must use MySQL `?` placeholders (not $1/$2).
+        let q = mysql_wrap_data("SELECT * FROM t");
+        assert!(q.contains("LIMIT ? OFFSET ?"));
+        assert!(q.contains("AS _gridline_data"));
+    }
+
+    #[test]
+    fn mysql_wrapped_count_shape_uses_subquery_alias() {
+        let q = mysql_wrap_count("SELECT * FROM t");
+        assert_eq!(q, "SELECT COUNT(*) FROM (SELECT * FROM t) AS _gridline_cnt");
     }
 }
