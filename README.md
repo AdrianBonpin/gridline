@@ -44,6 +44,14 @@ Grab the installer for your OS from the latest release (v0.7.0):
 
 > Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below. All installers are **unsigned** — see the [notes](#which-file-should-i-download) on first-launch warnings.
 
+<!--
+  MAINTENANCE: The two download tables — the top "Download" section and the
+  "Which file should I download?" section in Getting Started — HARDCODE the
+  current version (v0.7.0) in the asset filenames and direct download links.
+  When cutting a new release, update BOTH tables to the new version BEFORE
+  tagging. See AGENTS.md → Development Workflow → Releases.
+-->
+
 ---
 
 ## What is Gridline?

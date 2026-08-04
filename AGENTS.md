@@ -149,6 +149,15 @@ cargo build              # Rust backend only (from src-tauri/)
 cargo test               # Rust tests
 ```
 
+### Releases
+
+Cut a release from the **`prod`** branch (never feature branches) by tagging it — `git tag vN.M.N && git push origin vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub).
+
+**Before tagging**, keep everything in sync:
+- Version number across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`
+- `src/lib/version.test.ts` and `src/lib/docs-coverage.test.ts` if they assert the version
+- **Both README download tables** — the top **Download** section and the **Which file should I download?** section in Getting Started — they **hardcode** the current version in the asset filenames + direct `releases/download/...` links and must be bumped to the new version
+
 ### Adding a Tauri Command
 
 1. Define the command function in the appropriate `src-tauri/src/commands/` module
