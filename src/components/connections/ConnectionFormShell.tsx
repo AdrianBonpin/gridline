@@ -20,7 +20,7 @@ export function ConnectionFormShell({
     children,
 }: ConnectionFormShellProps) {
     return (
-        <div className="min-h-full bg-canvas">
+        <div className="h-full overflow-y-auto bg-canvas">
             <div className="max-w-lg mx-auto p-8">
                 <Button
                     variant="ghost"
