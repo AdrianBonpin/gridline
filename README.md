@@ -160,22 +160,26 @@ Gridline is built for developers and small teams who manage multiple database en
 
 ## Why Gridline vs the alternatives?
 
-| Capability                     | DB Pro (Free)  |  Beekeeper (Free)  |                       Gridline                        |
-| :----------------------------- | :------------: | :----------------: | :---------------------------------------------------: |
-| Open tabs                      |       3        |     Unlimited      |                     **Unlimited**                     |
-| Saved connections              |       2        |     Unlimited      |                     **Unlimited**                     |
-| Saved queries                  |       5        |     Unlimited      |                     **Unlimited**                     |
-| Data export (CSV, JSON, SQL)   |  ❌ paid only  |     Basic only     |             **JSON, CSV, SQL, Markdown**              |
-| `pg_dump` / `pg_restore` GUI   |       ❌       |    ❌ paid only    |                  **First-class UI**                   |
-| DB-to-DB sync                  |       ❌       |         ❌         |                **Built-in pipe sync**                 |
-| Object explorer depth          | Tables, views  |   Tables, views    | **Functions, Triggers, Enums, Sequences, Extensions** |
-| ER diagram / schema visualizer |       ❌       |    ❌ paid only    |               **✅ React Flow + dagre**               |
-| SSH tunneling                  | 🔒 likely paid |         ✅         |         **✅ Password + key auth, keychain**          |
-| OS credential vault            |       ✅       |         ✅         |  **Keychain / Secret Service / Credential Manager**   |
-| Workspace / folder hierarchy   |       ❌       |         ❌         |              **Multi-level tree + tags**              |
-| Changes queue (stage → commit) |       ❌       |         ❌         |               **✅ Queue → Commit All**               |
-| Desktop shell size             |     Native     | Electron (~250 MB) |                **Tauri 2.0 (~40 MB)**                 |
-| Open source                    |       ❌       |      ✅ GPLv3      |                   **✅ Apache 2.0**                   |
+Capabilities below are fact-checked against each vendor's official docs and pricing (May 2026).
+
+| Capability                     |        DB Pro (Free)         |        Beekeeper (Free)         |      TablePlus (Free)       |                          Gridline                          |
+| :----------------------------- | :--------------------------: | :-----------------------------: | :-------------------------: | :--------------------------------------------------------: |
+| Open tabs                      |              3               |           Unlimited             |              2              |                      **Unlimited**                         |
+| Saved connections              |              2               |           Unlimited             |          Unlimited          |                      **Unlimited**                         |
+| Saved queries                  |              5               |           Unlimited             |          Unlimited          |                      **Unlimited**                         |
+| Data export (CSV, JSON, SQL)   |     ✅ (unlimited = paid)     |         Basic only              |             ✅              |              **JSON, CSV, SQL, Markdown**                  |
+| `pg_dump` / `pg_restore` GUI   |              ❌              |        ❌ paid only             |             ✅              |                   **First-class UI**                       |
+| DB-to-DB sync                  |              ❌              |                ❌                |             ❌              |                 **Built-in pipe sync**                     |
+| Object explorer depth          | Tables, views, indexes, enums | Tables, views, routines, triggers | Tables, views, functions, procedures | **Functions, Triggers, Sequences, Enums, Extensions + full detail** |
+| ER diagram / schema visualizer |        ✅ view-only          |        ❌ paid only             |             ❌              |                **✅ React Flow + dagre**                   |
+| SSH tunneling                  |        ❌ paid only          |                ✅                |             ✅              |        **✅ Password + key auth, keychain**                |
+| OS credential vault            |              ✅              |                ✅                |             ✅              |   **Keychain / Secret Service / Credential Manager**       |
+| Workspace / folder hierarchy   |  ✅ query/dash folders + tags |     ✅ (5.7+, local)             |             ❌              |              **Multi-level tree + tags**                   |
+| Changes queue (stage → commit) |              ❌              |        ✅ Apply/Discard          |         ✅ Safe mode         |              **✅ Queue → Commit All**                     |
+| Desktop shell size             |           Electron            |      Electron (~250 MB)         |           Native            |                 **Tauri 2.0 (~40 MB)**                     |
+| Open source                    |              ❌              |          ✅ GPLv3                |             ❌              |                     **✅ Apache 2.0**                      |
+
+*Notes: DB Pro is an Electron app (launched Nov 2025) whose marketing copy overclaims — its free plan caps connections/tabs/saved queries (FAQ inconsistently claims "unlimited local connections") and gates data imports + SSH tunneling to paid, though CSV/JSON export does work on the free tier; Beekeeper's free Community edition genuinely offers unlimited tabs/connections/queries but gates backup/restore, file import, multi-table export, ERD, AI, and premium DB connectors behind paid tiers; TablePlus's free tier includes every feature but caps you at 2 open tabs / 2 windows / 2 advanced filters.*
 
 ---
 
