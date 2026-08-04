@@ -1,5 +1,6 @@
 import { forwardRef } from "react";
 import type { KeyboardEvent } from "react";
+import { INPUT_ROUNDING } from "../../lib/uiConstants";
 
 interface InputProps {
   value?: string;
@@ -17,7 +18,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
     return (
       <input
         ref={ref}
-        className={`w-full rounded-full bg-surface border border-border px-4 py-2 text-sm text-text placeholder-text-muted/60 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer ${className}`}
+        className={`w-full ${INPUT_ROUNDING} bg-surface border border-border px-4 py-2 text-sm text-text placeholder-text-muted/60 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer ${className}`}
         onChange={(e) => onChange?.(e.target.value)}
         onKeyDown={(e) => onKeyDown?.(e)}
         {...rest}

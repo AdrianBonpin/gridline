@@ -1,6 +1,7 @@
 import { useState, forwardRef } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import type { KeyboardEvent } from "react";
+import { INPUT_ROUNDING } from "../../lib/uiConstants";
 
 interface PasswordInputProps {
   value?: string;
@@ -18,7 +19,7 @@ export const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(
         <input
           ref={ref}
           type={visible ? "text" : "password"}
-          className={`w-full rounded-full bg-surface border border-border px-4 py-2 pr-10 text-sm text-text placeholder-text-muted/60 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer ${className}`}
+          className={`w-full ${INPUT_ROUNDING} bg-surface border border-border px-4 py-2 pr-10 text-sm text-text placeholder-text-muted/60 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer ${className}`}
           onChange={(e) => onChange?.(e.target.value)}
           onKeyDown={(e) => onKeyDown?.(e)}
           {...rest}
