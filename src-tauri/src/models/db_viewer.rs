@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct FilterRule {
     pub id: String,
     pub column: String,
-    pub operator: String,  // "eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt" | "null" | "notnull"
+    pub operator: String, // "eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt" | "null" | "notnull"
     pub value: String,
 }
 
@@ -14,7 +14,7 @@ pub struct FilterRule {
 pub struct SortRule {
     pub id: String,
     pub column: String,
-    pub order: String,  // "asc" | "desc"
+    pub order: String, // "asc" | "desc"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,11 +347,13 @@ mod tests {
     fn change_drop_and_empty_roundtrip() {
         let drop: Change = serde_json::from_value(serde_json::json!({
             "type": "drop_table", "id": "d", "schema": "public", "table": "t"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(drop.id(), "d");
         let empty: Change = serde_json::from_value(serde_json::json!({
             "type": "empty_table", "id": "e", "schema": "public", "table": "t"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(empty.id(), "e");
     }
 
@@ -376,9 +378,15 @@ mod tests {
     #[test]
     fn column_info_has_editability_fields() {
         let c = ColumnInfo {
-            name: "id".into(), data_type: "integer".into(), is_nullable: false,
-            is_pk: true, is_fk: false, fk_ref: None, default_value: None,
-            editable: false, is_generated: false,
+            name: "id".into(),
+            data_type: "integer".into(),
+            is_nullable: false,
+            is_pk: true,
+            is_fk: false,
+            fk_ref: None,
+            default_value: None,
+            editable: false,
+            is_generated: false,
         };
         let json = serde_json::to_string(&c).unwrap();
         assert!(json.contains("\"editable\":false"));
@@ -513,7 +521,10 @@ mod tests {
 
         let json = serde_json::to_string(&graph).unwrap();
         assert!(json.contains("users"), "should contain table name");
-        assert!(json.contains("orders"), "should contain relationship source table");
+        assert!(
+            json.contains("orders"),
+            "should contain relationship source table"
+        );
         assert!(json.contains("1:N"), "should contain cardinality");
         assert!(json.contains("is_pk"), "should contain is_pk field");
         assert!(json.contains("is_fk"), "should contain is_fk field");
@@ -552,7 +563,10 @@ mod tests {
             fk_ref: None,
         };
         let json = serde_json::to_string(&col_none).unwrap();
-        assert!(json.contains("null"), "fk_ref=None should serialize as null");
+        assert!(
+            json.contains("null"),
+            "fk_ref=None should serialize as null"
+        );
 
         // fk_ref = Some(...)
         let col_some = GraphColumn {

@@ -104,6 +104,7 @@ interface DbViewerState {
   openQueryTab: () => void;
   setDefaultPageSize: (size: number) => void;
   closeTab: (tabId: string) => void;
+  reorderTab: (fromIndex: number, toIndex: number) => void;
   closeTabsForTable: (schema: string, table: string) => void;
   setActiveTab: (tabId: string) => void;
   setPage: (tabId: string, page: number) => void;
@@ -242,6 +243,25 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
           : null
         : activeTabId;
     set({ tabs: remaining, activeTabId: newActiveId });
+  },
+
+  // Move a tab to a new index (drag-to-reorder). The active tab is tracked by
+  // id, so it follows the moved tab automatically.
+  reorderTab: (fromIndex, toIndex) => {
+    const { tabs } = get();
+    if (
+      fromIndex < 0 ||
+      fromIndex >= tabs.length ||
+      toIndex < 0 ||
+      toIndex >= tabs.length ||
+      fromIndex === toIndex
+    ) {
+      return;
+    }
+    const next = [...tabs];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved);
+    set({ tabs: next });
   },
 
   closeTabsForTable: (schema, table) => {

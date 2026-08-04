@@ -1,5 +1,5 @@
-pub mod pool;
 pub mod introspection;
+pub mod pool;
 pub mod tls;
 
 #[allow(unused_imports)]

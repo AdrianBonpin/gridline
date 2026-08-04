@@ -20,11 +20,7 @@ fn validate(input: &ConnectionInput) -> Result<(), String> {
     if input.db_type != "sqlite" {
         match input.port {
             Some(p) if (1..=65535).contains(&p) => {}
-            _ => {
-                return Err(
-                    "port must be an integer between 1 and 65535 for this db_type".into(),
-                )
-            }
+            _ => return Err("port must be an integer between 1 and 65535 for this db_type".into()),
         }
     }
     if let Some(u) = &input.username {

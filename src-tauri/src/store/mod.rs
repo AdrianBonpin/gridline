@@ -27,8 +27,15 @@ const MAX_NAME_LEN: usize = 200;
 const MAX_FOLDER_LEN: usize = 100;
 const MAX_QUERY_TEXT_LEN: usize = 1_048_576; // 1 MB
 
-const ALLOWED_EDITOR_FONTS: &[&str] =
-    &["Space Mono", "Fira Code", "Menlo", "Monaco", "Consolas", "JetBrains Mono", "monospace"];
+const ALLOWED_EDITOR_FONTS: &[&str] = &[
+    "Space Mono",
+    "Fira Code",
+    "Menlo",
+    "Monaco",
+    "Consolas",
+    "JetBrains Mono",
+    "monospace",
+];
 
 impl Store {
     pub fn from_connection(conn: SqliteConnection) -> Self {
@@ -50,7 +57,9 @@ impl Store {
     pub fn get_folders(&self) -> Result<Vec<Folder>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT id, name, parent_id, created_at, updated_at FROM folders ORDER BY name")
+            .prepare(
+                "SELECT id, name, parent_id, created_at, updated_at FROM folders ORDER BY name",
+            )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -402,7 +411,11 @@ impl Store {
         Ok(())
     }
 
-    pub fn update_connection(&self, id: &str, input: ConnectionInput) -> Result<Connection, String> {
+    pub fn update_connection(
+        &self,
+        id: &str,
+        input: ConnectionInput,
+    ) -> Result<Connection, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = Self::now();
         conn.execute(
@@ -416,13 +429,17 @@ impl Store {
             ],
         ).map_err(|e| e.to_string())?;
         // Update tags
-        conn.execute("DELETE FROM connection_tags WHERE connection_id = ?1", params![id])
-            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM connection_tags WHERE connection_id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
         for tag_id in &input.tag_ids {
             conn.execute(
                 "INSERT OR IGNORE INTO connection_tags (connection_id, tag_id) VALUES (?1, ?2)",
                 params![id, tag_id],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
         Ok(Connection {
             id: id.to_string(),
@@ -459,10 +476,7 @@ impl Store {
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                ))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|e| e.to_string())?;
         for r in rows.filter_map(|r| r.ok()) {
@@ -490,9 +504,7 @@ impl Store {
         default_ports.insert("redis".to_string(), Some(6379i64));
         default_ports.insert("sqlite".to_string(), None);
         if let Some(ports_json) = map.get("default_ports") {
-            if let Ok(parsed) =
-                serde_json::from_str::<HashMap<String, Option<i64>>>(ports_json)
-            {
+            if let Ok(parsed) = serde_json::from_str::<HashMap<String, Option<i64>>>(ports_json) {
                 default_ports = parsed;
             }
         }
@@ -627,18 +639,19 @@ impl Store {
         offset: i64,
     ) -> Result<Vec<crate::commands::query::QueryHistoryEntry>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-            if let Some(cid) = connection_id {
-                (
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(cid) =
+            connection_id
+        {
+            (
                     "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at, favorite FROM query_history WHERE connection_id = ?1 ORDER BY executed_at DESC LIMIT ?2 OFFSET ?3".to_string(),
                     vec![Box::new(cid.to_string()), Box::new(limit), Box::new(offset)],
                 )
-            } else {
-                (
+        } else {
+            (
                     "SELECT id, connection_id, query_text, execution_time_ms, row_count, status, error_message, executed_at, favorite FROM query_history ORDER BY executed_at DESC LIMIT ?1 OFFSET ?2".to_string(),
                     vec![Box::new(limit), Box::new(offset)],
                 )
-            };
+        };
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
@@ -656,7 +669,8 @@ impl Store {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// Delete all query history rows, optionally filtered by `connection_id`.
@@ -733,20 +747,22 @@ impl Store {
         connection_id: Option<&str>,
     ) -> Result<Vec<SavedQueryRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-            if let Some(cid) = connection_id {
-                (
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(cid) =
+            connection_id
+        {
+            (
                     "SELECT id, connection_id, name, query_text, folder, created_at, updated_at FROM queries WHERE connection_id = ?1 ORDER BY updated_at DESC".to_string(),
                     vec![Box::new(cid.to_string())],
                 )
-            } else {
-                (
+        } else {
+            (
                     "SELECT id, connection_id, name, query_text, folder, created_at, updated_at FROM queries ORDER BY updated_at DESC".to_string(),
                     vec![],
                 )
-            };
+        };
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
             .query_map(rusqlite::params_from_iter(&refs), |row| {
                 Ok(SavedQueryRow {
@@ -760,7 +776,8 @@ impl Store {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn update_saved_query(
@@ -802,11 +819,9 @@ impl Store {
             idx += 1;
         }
 
-        let sql = format!(
-            "UPDATE queries SET {} WHERE id = ?{idx}",
-            sets.join(", "),
-        );
-        let mut all_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let sql = format!("UPDATE queries SET {} WHERE id = ?{idx}", sets.join(", "),);
+        let mut all_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         let id_param: Box<dyn rusqlite::types::ToSql> = Box::new(id.to_string());
         all_refs.push(id_param.as_ref());
 
@@ -864,7 +879,8 @@ mod tests {
     fn create_and_get_folder() {
         let store = fresh_store();
         let folder = store
-            .create_folder(FolderInput { tag_ids: None,
+            .create_folder(FolderInput {
+                tag_ids: None,
                 name: "Work".into(),
                 parent_id: None,
             })
@@ -880,13 +896,15 @@ mod tests {
     fn create_nested_folders() {
         let store = fresh_store();
         let parent = store
-            .create_folder(FolderInput { tag_ids: None,
+            .create_folder(FolderInput {
+                tag_ids: None,
                 name: "root".into(),
                 parent_id: None,
             })
             .unwrap();
         let child = store
-            .create_folder(FolderInput { tag_ids: None,
+            .create_folder(FolderInput {
+                tag_ids: None,
                 name: "child".into(),
                 parent_id: Some(parent.id.clone()),
             })
@@ -996,7 +1014,8 @@ mod tests {
     fn delete_folder_sets_connection_folder_null() {
         let store = fresh_store();
         let folder = store
-            .create_folder(FolderInput { tag_ids: None,
+            .create_folder(FolderInput {
+                tag_ids: None,
                 name: "f".into(),
                 parent_id: None,
             })
@@ -1078,10 +1097,7 @@ mod tests {
         assert_eq!(settings.font_size, "medium");
         assert!(settings.confirm_before_delete);
         assert_eq!(settings.accent_color, "#2563EB");
-        assert_eq!(
-            settings.default_ports.get("postgresql"),
-            Some(&Some(5432))
-        );
+        assert_eq!(settings.default_ports.get("postgresql"), Some(&Some(5432)));
     }
 
     #[test]
@@ -1140,10 +1156,7 @@ mod tests {
             Some("/home/user/.ssh/id_rsa")
         );
         assert_eq!(got[0].ssl_mode.as_deref(), Some("verify-full"));
-        assert_eq!(
-            got[0].ssl_ca_path.as_deref(),
-            Some("/etc/ssl/certs/ca.pem")
-        );
+        assert_eq!(got[0].ssl_ca_path.as_deref(), Some("/etc/ssl/certs/ca.pem"));
         assert_eq!(
             got[0].ssl_cert_path.as_deref(),
             Some("/etc/ssl/certs/client-cert.pem")
@@ -1186,21 +1199,53 @@ mod tests {
 
         // First insert
         store
-            .insert_query_history("h1", &conn.id, "SELECT 1", Some(10), Some(5), "success", None)
+            .insert_query_history(
+                "h1",
+                &conn.id,
+                "SELECT 1",
+                Some(10),
+                Some(5),
+                "success",
+                None,
+            )
             .unwrap();
         // Consecutive identical — should UPDATE, not INSERT
         store
-            .insert_query_history("h2", &conn.id, "SELECT 1", Some(20), Some(8), "success", None)
+            .insert_query_history(
+                "h2",
+                &conn.id,
+                "SELECT 1",
+                Some(20),
+                Some(8),
+                "success",
+                None,
+            )
             .unwrap();
         // There should still be 1 row (not 2), with updated stats
         let rows = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
-        assert_eq!(rows.len(), 1, "Consecutive identical queries should dedup to one row");
-        assert_eq!(rows[0].execution_time_ms, Some(20), "Stats should update after dedup");
+        assert_eq!(
+            rows.len(),
+            1,
+            "Consecutive identical queries should dedup to one row"
+        );
+        assert_eq!(
+            rows[0].execution_time_ms,
+            Some(20),
+            "Stats should update after dedup"
+        );
         assert_eq!(rows[0].id, "h1", "Original ID should persist after dedup");
 
         // Different query — should INSERT a new row
         store
-            .insert_query_history("h3", &conn.id, "SELECT 2", Some(5), Some(0), "success", None)
+            .insert_query_history(
+                "h3",
+                &conn.id,
+                "SELECT 2",
+                Some(5),
+                Some(0),
+                "success",
+                None,
+            )
             .unwrap();
         let rows2 = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
         assert_eq!(rows2.len(), 2, "Different query should create a new row");
@@ -1253,8 +1298,14 @@ mod tests {
         assert_eq!(rows.len(), 500, "Should be pruned to 500 rows");
         // Oldest rows (ph0..ph9) should be pruned; most recent (ph509) kept
         let all_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-        assert!(!all_ids.contains(&"ph0".to_string()), "Oldest rows should be pruned");
-        assert!(all_ids.contains(&"ph509".to_string()), "Most recent rows should be kept");
+        assert!(
+            !all_ids.contains(&"ph0".to_string()),
+            "Oldest rows should be pruned"
+        );
+        assert!(
+            all_ids.contains(&"ph509".to_string()),
+            "Most recent rows should be kept"
+        );
     }
 
     #[test]
@@ -1286,7 +1337,15 @@ mod tests {
             })
             .unwrap();
         store
-            .insert_query_history("fh1", &conn.id, "SELECT 1", Some(5), Some(1), "success", None)
+            .insert_query_history(
+                "fh1",
+                &conn.id,
+                "SELECT 1",
+                Some(5),
+                Some(1),
+                "success",
+                None,
+            )
             .unwrap();
         let rows = store.get_query_history(Some(&conn.id), 10, 0).unwrap();
         assert_eq!(rows.len(), 1);
@@ -1322,7 +1381,15 @@ mod tests {
             })
             .unwrap();
         store
-            .insert_query_history("ft1", &conn.id, "SELECT 1", Some(5), Some(1), "success", None)
+            .insert_query_history(
+                "ft1",
+                &conn.id,
+                "SELECT 1",
+                Some(5),
+                Some(1),
+                "success",
+                None,
+            )
             .unwrap();
 
         // Toggle on
@@ -1532,11 +1599,16 @@ mod tests {
         crate::store::migrations::run_migrations(&conn).unwrap();
         let store = Store::from_connection(conn);
         store.update_setting("editor_font_size", "abc").unwrap();
-        store.update_setting("editor_font_family", "Comic Sans").unwrap();
+        store
+            .update_setting("editor_font_family", "Comic Sans")
+            .unwrap();
         store.update_setting("editor_word_wrap", "weird").unwrap();
         let s = store.get_settings().unwrap();
         assert_eq!(s.editor_font_size, 13, "garbage -> default");
-        assert_eq!(s.editor_font_family, "Space Mono", "disallowed font -> default");
+        assert_eq!(
+            s.editor_font_family, "Space Mono",
+            "disallowed font -> default"
+        );
         assert_eq!(s.editor_word_wrap, "off", "invalid wrap -> default");
     }
 }

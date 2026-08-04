@@ -5,8 +5,8 @@
 
 use crate::db::pool::{DbConfig, DbHandle};
 use crate::models::db_viewer::{
-    Change, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo,
-    IndexInfo, QueryResult, SequenceInfo, TableInfo, TriggerInfo,
+    Change, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, IndexInfo,
+    QueryResult, SequenceInfo, TableInfo, TriggerInfo,
 };
 use std::collections::HashMap;
 use tauri::State;
@@ -43,11 +43,7 @@ fn redact_secrets(s: &str) -> String {
             || s[i..].to_lowercase().starts_with("postgresql://")
         {
             // Skip the scheme.
-            let scheme_end = i
-                + s[i..]
-                    .find("://")
-                    .unwrap_or(0)
-                + 3;
+            let scheme_end = i + s[i..].find("://").unwrap_or(0) + 3;
             out.push_str("[redacted-url://");
             // Find end of authority (next '/'. '/', or end).
             let rest = &s[scheme_end..];
@@ -175,7 +171,9 @@ pub fn get_pg_ddl_via_dump(
     password: &str,
 ) -> Result<String, String> {
     if !pg_dump_available() {
-        return Err("pg_dump not found. Install PostgreSQL client tools to copy table schema.".into());
+        return Err(
+            "pg_dump not found. Install PostgreSQL client tools to copy table schema.".into(),
+        );
     }
     let mut cmd = std::process::Command::new("pg_dump");
     cmd.args([
@@ -186,7 +184,9 @@ pub fn get_pg_ddl_via_dump(
     ]);
     cmd.args(build_pg_dump_ddl_args(schema, table));
     cmd.env("PGPASSWORD", password);
-    let out = cmd.output().map_err(|e| format!("pg_dump spawn failed: {e}"))?;
+    let out = cmd
+        .output()
+        .map_err(|e| format!("pg_dump spawn failed: {e}"))?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -249,7 +249,9 @@ fn build_pg_filter_clause(
 }
 
 /// Build a WHERE clause from filter rules for SQLite (positional ? params).
-fn build_sqlite_filter_clause(filters: &[crate::models::db_viewer::FilterRule]) -> (String, Vec<String>) {
+fn build_sqlite_filter_clause(
+    filters: &[crate::models::db_viewer::FilterRule],
+) -> (String, Vec<String>) {
     let mut clauses = String::new();
     let mut params: Vec<String> = Vec::new();
 
@@ -331,39 +333,53 @@ pub(crate) fn pg_char_to_att(value: Option<i8>) -> String {
 }
 
 /// Assemble a PG SELECT statement from pre-formatted select items (already
-/// quoted and optionally `::text`-cast), appending `ctid` when the table has
-/// no primary key so later UPDATE/DELETE queue changes can target the exact
-/// row. `ctid` is appended last so it does not shift visible column order.
-fn build_pg_select_from_items(schema: &str, table: &str, items: Vec<String>, has_pk: bool) -> String {
+/// quoted and optionally `::text`-cast), appending `ctid` when `append_locator`
+/// is true (a no-PK *physical table*) so later UPDATE/DELETE queue changes can
+/// target the exact row. Views expose no `ctid`, so callers must pass `false`
+/// for them. `ctid` is appended last so it does not shift visible column order.
+fn build_pg_select_from_items(
+    schema: &str,
+    table: &str,
+    items: Vec<String>,
+    append_locator: bool,
+) -> String {
     let mut all_cols = items;
-    if !has_pk {
+    if append_locator {
         all_cols.push("ctid".to_string());
     }
-    format!("SELECT {} FROM \"{}\".\"{}\"", all_cols.join(", "), schema, table)
+    format!(
+        "SELECT {} FROM \"{}\".\"{}\"",
+        all_cols.join(", "),
+        schema,
+        table
+    )
 }
 
-/// Build the PG data SELECT, appending `ctid` only when the table has no PK.
+/// Build the PG data SELECT, appending `ctid` only when `append_locator` is
+/// true (no-PK physical tables). Never true for views.
 pub(crate) fn build_pg_data_select(
     schema: &str,
     table: &str,
     visible_cols: &[String],
-    has_pk: bool,
+    append_locator: bool,
 ) -> String {
     let base_cols: Vec<String> = visible_cols.iter().map(|c| format!("\"{}\"", c)).collect();
-    build_pg_select_from_items(schema, table, base_cols, has_pk)
+    build_pg_select_from_items(schema, table, base_cols, append_locator)
 }
 
-/// Build the SQLite data SELECT, appending `rowid` only when the table has no
-/// PK. The table is unqualified; SQLite browsing in this app is always scoped
-/// to the `main` schema, where an unqualified name resolves identically.
+/// Build the SQLite data SELECT, appending `rowid` when `append_locator` is
+/// true (a no-PK *physical table*) so later UPDATE/DELETE queue changes can
+/// target the exact row. Views expose no `rowid`, so callers must pass `false`
+/// for them. The table is unqualified; SQLite browsing in this app is always
+/// scoped to the `main` schema, where an unqualified name resolves identically.
 pub(crate) fn build_sqlite_data_select(
     table: &str,
     visible_cols: &[String],
-    has_pk: bool,
+    append_locator: bool,
 ) -> String {
     let base_cols: Vec<String> = visible_cols.iter().map(|c| format!("\"{}\"", c)).collect();
     let mut all_cols = base_cols;
-    if !has_pk {
+    if append_locator {
         all_cols.push("rowid".to_string());
     }
     format!("SELECT {} FROM \"{}\"", all_cols.join(", "), table)
@@ -683,7 +699,10 @@ pub async fn apply_bulk_insert_pg(
     rows: &[Vec<serde_json::Value>],
 ) -> Result<usize, String> {
     let sql = build_pg_bulk_insert_sql(schema, table, columns);
-    client.batch_execute("BEGIN").await.map_err(|e| e.to_string())?;
+    client
+        .batch_execute("BEGIN")
+        .await
+        .map_err(|e| e.to_string())?;
     let mut count = 0;
     for (i, row) in rows.iter().enumerate() {
         let boxed: Vec<Box<dyn ToSql + Send + Sync>> = row.iter().map(pg_box_value).collect();
@@ -721,7 +740,10 @@ fn parse_json_pairs(json: &str) -> Result<Vec<(String, serde_json::Value)>, Stri
     let obj = v
         .as_object()
         .ok_or_else(|| "change JSON must be an object".to_string())?;
-    Ok(obj.iter().map(|(k, val)| (k.clone(), val.clone())).collect())
+    Ok(obj
+        .iter()
+        .map(|(k, val)| (k.clone(), val.clone()))
+        .collect())
 }
 ///
 /// Each inner `Vec<serde_json::Value>` represents one row, where the values
@@ -768,13 +790,8 @@ fn sqlite_value_to_json(row: &rusqlite::Row, i: usize) -> serde_json::Value {
         Ok(ValueRef::Null) => serde_json::Value::Null,
         Ok(ValueRef::Integer(v)) => serde_json::json!(v),
         Ok(ValueRef::Real(v)) => serde_json::json!(v),
-        Ok(ValueRef::Text(v)) => serde_json::Value::String(
-            String::from_utf8_lossy(v).to_string(),
-        ),
-        Ok(ValueRef::Blob(v)) => serde_json::Value::String(format!(
-            "[{}B blob]",
-            v.len()
-        )),
+        Ok(ValueRef::Text(v)) => serde_json::Value::String(String::from_utf8_lossy(v).to_string()),
+        Ok(ValueRef::Blob(v)) => serde_json::Value::String(format!("[{}B blob]", v.len())),
         Err(_) => serde_json::Value::Null,
     }
 }
@@ -941,8 +958,7 @@ pub async fn db_connect(
         let result = match tls {
             None => connect_pg_with(&pgconfig, tokio_postgres::NoTls).await,
             Some(cc) => {
-                let connector =
-                    tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
+                let connector = tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
                 connect_pg_with(&pgconfig, connector).await
             }
         };
@@ -1090,7 +1106,8 @@ pub async fn get_tables(
                     })
                 })
                 .map_err(|e| e.to_string())?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())
         }
         None => Err("Connection not found".to_string()),
     }
@@ -1123,22 +1140,38 @@ pub async fn get_table_data(
             let order_clause = build_order_clause(&sorts);
 
             // Get total count (with filters applied)
-            let count_query =
-                format!("SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}", schema, table, filter_clause);
+            let count_query = format!(
+                "SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}",
+                schema, table, filter_clause
+            );
             let count_row = if filter_params.is_empty() {
                 client
                     .query_one(&count_query, &[])
                     .await
                     .map_err(|e| e.to_string())?
             } else {
-                let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                    filter_params.iter().map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = filter_params
+                    .iter()
+                    .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+                    .collect();
                 client
                     .query_one(&count_query, &param_refs)
                     .await
                     .map_err(|e| e.to_string())?
             };
             let total_rows: i64 = count_row.get(0);
+
+            // Views expose no `ctid`; detect them so no row-locator is appended
+            // to the data SELECT and columns stay read-only.
+            let is_view: bool = client
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
+                     WHERE table_schema = $1 AND table_name = $2 AND table_type = 'VIEW')",
+                    &[&schema, &table],
+                )
+                .await
+                .map(|r| r.get::<_, bool>(0))
+                .unwrap_or(false);
 
             // Get column info with FK detection and enum type names
             let col_query = r#"SELECT
@@ -1203,12 +1236,9 @@ ORDER BY c.ordinal_position"#;
                     // pg_attribute.attgenerated/attidentity are PG's internal
                     // "char" type (OID 18) → tokio-postgres delivers i8, not
                     // String; deserializing as String panics. Convert safely.
-                    let attgenerated = pg_char_to_att(
-                        r.try_get::<_, Option<i8>>(8).unwrap_or(None),
-                    );
-                    let attidentity = pg_char_to_att(
-                        r.try_get::<_, Option<i8>>(9).unwrap_or(None),
-                    );
+                    let attgenerated =
+                        pg_char_to_att(r.try_get::<_, Option<i8>>(8).unwrap_or(None));
+                    let attidentity = pg_char_to_att(r.try_get::<_, Option<i8>>(9).unwrap_or(None));
                     let is_pk: bool = r.get(3);
                     ColumnInfo {
                         name: r.get(0),
@@ -1222,7 +1252,9 @@ ORDER BY c.ordinal_position"#;
                             None
                         },
                         default_value: r.get::<_, Option<String>>(7),
-                        editable: editable_from_att(&attgenerated, &attidentity) && !is_pk,
+                        editable: editable_from_att(&attgenerated, &attidentity)
+                            && !is_pk
+                            && !is_view,
                         is_generated: !attgenerated.is_empty(),
                     }
                 })
@@ -1232,15 +1264,41 @@ ORDER BY c.ordinal_position"#;
             // Custom/enum types need explicit ::text cast because tokio-postgres
             // FromSql<String> rejects custom type OIDs even in simple query mode.
             let standard_pg_types: &[&str] = &[
-                "uuid", "text", "varchar", "char", "bpchar", "name",
-                "int2", "int4", "int8", "smallint", "integer", "bigint",
-                "float4", "float8", "real", "double precision",
-                "numeric", "decimal", "money",
-                "bool", "boolean",
-                "date", "time", "timetz", "timestamp", "timestamptz",
-                "interval", "json", "jsonb", "bytea", "oid",
-                "timestamp without time zone", "timestamp with time zone",
-                "time without time zone", "time with time zone",
+                "uuid",
+                "text",
+                "varchar",
+                "char",
+                "bpchar",
+                "name",
+                "int2",
+                "int4",
+                "int8",
+                "smallint",
+                "integer",
+                "bigint",
+                "float4",
+                "float8",
+                "real",
+                "double precision",
+                "numeric",
+                "decimal",
+                "money",
+                "bool",
+                "boolean",
+                "date",
+                "time",
+                "timetz",
+                "timestamp",
+                "timestamptz",
+                "interval",
+                "json",
+                "jsonb",
+                "bytea",
+                "oid",
+                "timestamp without time zone",
+                "timestamp with time zone",
+                "time without time zone",
+                "time with time zone",
             ];
             let has_pk = columns.iter().any(|c| c.is_pk);
             let select_items: Vec<String> = columns
@@ -1257,10 +1315,14 @@ ORDER BY c.ordinal_position"#;
                 .collect();
             // `ctid` is appended last for no-PK tables so later UPDATE/DELETE
             // queue changes can target the exact row. It stays out of `columns`.
+            // Views are excluded — they expose no ctid and are read-only.
             let data_query = format!(
                 "{} WHERE 1=1{} {} LIMIT {} OFFSET {}",
-                build_pg_select_from_items(&schema, &table, select_items, has_pk),
-                filter_clause, order_clause, ps, off
+                build_pg_select_from_items(&schema, &table, select_items, !has_pk && !is_view),
+                filter_clause,
+                order_clause,
+                ps,
+                off
             );
             let data_rows = if filter_params.is_empty() {
                 client
@@ -1268,8 +1330,10 @@ ORDER BY c.ordinal_position"#;
                     .await
                     .map_err(|e| e.to_string())?
             } else {
-                let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                    filter_params.iter().map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = filter_params
+                    .iter()
+                    .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+                    .collect();
                 client
                     .query(&data_query, &param_refs)
                     .await
@@ -1290,19 +1354,36 @@ ORDER BY c.ordinal_position"#;
             })
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            // Views expose no `rowid`; detect them so no row-locator is appended
+            // to the data SELECT and columns stay read-only.
+            let is_view: bool = conn
+                .query_row(
+                    "SELECT type = 'view' FROM sqlite_master WHERE name = ?1 AND type IN ('table', 'view')",
+                    [&table],
+                    |r| r.get::<_, bool>(0),
+                )
+                .unwrap_or(false);
+
             // Build filter clause (shared by COUNT and data queries)
             let (filter_clause, filter_vals) = build_sqlite_filter_clause(&filters);
             let order_clause = build_order_clause(&sorts);
 
-            let count_query =
-                format!("SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}", schema, table, filter_clause);
+            let count_query = format!(
+                "SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}",
+                schema, table, filter_clause
+            );
             let total_rows: i64 = if filter_vals.is_empty() {
                 conn.query_row(&count_query, [], |r| r.get(0))
                     .map_err(|e| e.to_string())?
             } else {
-                let refs: Vec<&dyn rusqlite::types::ToSql> = filter_vals.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
-                conn.query_row(&count_query, rusqlite::params_from_iter(&refs), |r| r.get(0))
-                    .map_err(|e| e.to_string())?
+                let refs: Vec<&dyn rusqlite::types::ToSql> = filter_vals
+                    .iter()
+                    .map(|v| v as &dyn rusqlite::types::ToSql)
+                    .collect();
+                conn.query_row(&count_query, rusqlite::params_from_iter(&refs), |r| {
+                    r.get(0)
+                })
+                .map_err(|e| e.to_string())?
             };
 
             // Get column metadata via PRAGMA table_info
@@ -1311,10 +1392,10 @@ ORDER BY c.ordinal_position"#;
             let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
                 .query_map([], |row| {
                     Ok((
-                        row.get::<_, String>(1)?,   // name
-                        row.get::<_, String>(2)?,   // type
-                        row.get::<_, bool>(3)?,     // notnull
-                        row.get::<_, bool>(5)?,     // pk
+                        row.get::<_, String>(1)?,         // name
+                        row.get::<_, String>(2)?,         // type
+                        row.get::<_, bool>(3)?,           // notnull
+                        row.get::<_, bool>(5)?,           // pk
                         row.get::<_, Option<String>>(4)?, // dflt_value
                     ))
                 })
@@ -1329,9 +1410,9 @@ ORDER BY c.ordinal_position"#;
                     fk_stmt
                         .query_map([], |row| {
                             Ok((
-                                row.get::<_, String>(3)?,  // from (column)
-                                row.get::<_, String>(2)?,  // table
-                                row.get::<_, String>(4)?,  // to (column)
+                                row.get::<_, String>(3)?, // from (column)
+                                row.get::<_, String>(2)?, // table
+                                row.get::<_, String>(4)?, // to (column)
                             ))
                         })
                         .map_err(|e| e.to_string())?
@@ -1348,13 +1429,17 @@ ORDER BY c.ordinal_position"#;
                     let fk = fk_map.get(name);
                     ColumnInfo {
                         name: name.clone(),
-                        data_type: if dtype.is_empty() { "TEXT".to_string() } else { dtype.clone() },
+                        data_type: if dtype.is_empty() {
+                            "TEXT".to_string()
+                        } else {
+                            dtype.clone()
+                        },
                         is_nullable: !notnull,
                         is_pk: *is_pk,
                         is_fk: fk.is_some(),
                         fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
                         default_value: default_val.clone(),
-                        editable: !*is_pk,
+                        editable: !*is_pk && !is_view,
                         is_generated: false,
                     }
                 })
@@ -1363,12 +1448,16 @@ ORDER BY c.ordinal_position"#;
             // Get data (with filters and sorts applied).
             // `rowid` is appended last for no-PK tables so later UPDATE/DELETE
             // queue changes can target the exact row. It stays out of `columns`.
+            // Views are excluded — they expose no rowid and are read-only.
             let visible_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
             let has_pk = columns.iter().any(|c| c.is_pk);
             let data_query = format!(
                 "{} WHERE 1=1{} {} LIMIT {} OFFSET {}",
-                build_sqlite_data_select(&table, &visible_names, has_pk),
-                filter_clause, order_clause, ps, off
+                build_sqlite_data_select(&table, &visible_names, !has_pk && !is_view),
+                filter_clause,
+                order_clause,
+                ps,
+                off
             );
             let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
             let col_count = stmt.column_count();
@@ -1385,7 +1474,10 @@ ORDER BY c.ordinal_position"#;
                 .filter_map(|r| r.ok())
                 .collect()
             } else {
-                let refs: Vec<&dyn rusqlite::types::ToSql> = filter_vals.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                let refs: Vec<&dyn rusqlite::types::ToSql> = filter_vals
+                    .iter()
+                    .map(|v| v as &dyn rusqlite::types::ToSql)
+                    .collect();
                 stmt.query_map(rusqlite::params_from_iter(&refs), |row| {
                     let mut vals = Vec::new();
                     for i in 0..col_count {
@@ -1561,7 +1653,11 @@ ORDER BY c.ordinal_position"#;
                     let fk = fk_map.get(name);
                     ColumnInfo {
                         name: name.clone(),
-                        data_type: if dtype.is_empty() { "TEXT".to_string() } else { dtype.clone() },
+                        data_type: if dtype.is_empty() {
+                            "TEXT".to_string()
+                        } else {
+                            dtype.clone()
+                        },
                         is_nullable: !notnull,
                         is_pk: *is_pk,
                         is_fk: fk.is_some(),
@@ -1733,8 +1829,7 @@ pub async fn execute_change(
                     ..
                 } => {
                     let pairs = parse_json_pairs(data)?;
-                    let columns: Vec<String> =
-                        pairs.iter().map(|(c, _)| c.clone()).collect();
+                    let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
                     (
                         build_insert_sql(schema, table, &columns),
                         pairs.iter().map(|(_, v)| v.clone()).collect(),
@@ -1800,7 +1895,10 @@ pub async fn refresh_connection(
     let mut pm = state.pool_manager.lock().await;
     match pm.get(&connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
-            client.query_one("SELECT 1", &[]).await.map_err(|e| e.to_string())?;
+            client
+                .query_one("SELECT 1", &[])
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(())
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
@@ -1901,13 +1999,14 @@ pub async fn get_constraints(
                 .iter()
                 .map(|r| {
                     // contype::text decodes as a String ("c" | "u" | "x").
-                    let contype = match r.get::<_, Option<String>>(3).unwrap_or_default().as_str() {
-                        "c" => "CHECK",
-                        "u" => "UNIQUE",
-                        "x" => "EXCLUSION",
-                        other => other,
-                    }
-                    .to_string();
+                    let contype =
+                        match r.get::<_, Option<String>>(3).unwrap_or_default().as_str() {
+                            "c" => "CHECK",
+                            "u" => "UNIQUE",
+                            "x" => "EXCLUSION",
+                            other => other,
+                        }
+                        .to_string();
                     ConstraintInfo {
                         name: r.get(0),
                         schema: r.get(1),
@@ -1916,7 +2015,9 @@ pub async fn get_constraints(
                         definition: r.get(4),
                         deferrable: r.get(5),
                         validated: r.get(6),
-                        columns: split_columns_csv(&r.get::<_, Option<String>>(7).unwrap_or_default()),
+                        columns: split_columns_csv(
+                            &r.get::<_, Option<String>>(7).unwrap_or_default(),
+                        ),
                     }
                 })
                 .collect())
@@ -1986,7 +2087,8 @@ pub async fn get_sequences(
                     max_value: r.get::<_, Option<String>>(4).unwrap_or_default(),
                     increment: r.get::<_, Option<String>>(5).unwrap_or_default(),
                     current_value: r.get::<_, Option<String>>(6).unwrap_or_default(),
-                    cycle: r.get::<_, Option<String>>(7)
+                    cycle: r
+                        .get::<_, Option<String>>(7)
                         .map(|s| s == "YES")
                         .unwrap_or(false),
                 })
@@ -2035,10 +2137,7 @@ pub async fn get_extensions(
     match pm.get(&connection_id) {
         Some(DbHandle::Postgresql(client, _)) => {
             let query = crate::db::introspection::pg_extensions_query();
-            let rows = client
-                .query(&query, &[])
-                .await
-                .map_err(|e| e.to_string())?;
+            let rows = client.query(&query, &[]).await.map_err(|e| e.to_string())?;
             Ok(rows
                 .iter()
                 .map(|r| ExtensionInfo {
@@ -2105,7 +2204,9 @@ pub async fn get_table_ddl(
             // pg_dump is blocking I/O; run it off the async runtime. Credentials
             // travel via PGPASSWORD, never argv.
             let ddl = tokio::task::spawn_blocking(move || {
-                get_pg_ddl_via_dump(&schema, &table, &dump_host, dump_port, &user, &db, &password)
+                get_pg_ddl_via_dump(
+                    &schema, &table, &dump_host, dump_port, &user, &db, &password,
+                )
             })
             .await
             .map_err(|e| format!("pg_dump task failed: {e}"))??;
@@ -2114,7 +2215,6 @@ pub async fn get_table_ddl(
         None => Err("Connection not found".into()),
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -2127,11 +2227,17 @@ mod tests {
 
     #[test]
     fn split_columns_csv_handles_commas_and_trims() {
-        assert_eq!(split_columns_csv("id, name, created_at"), vec!["id", "name", "created_at"]);
+        assert_eq!(
+            split_columns_csv("id, name, created_at"),
+            vec!["id", "name", "created_at"]
+        );
         assert_eq!(split_columns_csv("id"), vec!["id"]);
         assert_eq!(split_columns_csv(""), Vec::<String>::new());
         // expression index column list may include parens — keep raw, just split on top-level commas
-        assert_eq!(split_columns_csv("lower(name), id"), vec!["lower(name)", "id"]);
+        assert_eq!(
+            split_columns_csv("lower(name), id"),
+            vec!["lower(name)", "id"]
+        );
     }
 
     /// bigint precision: values beyond 2^53 must round-trip as strings.
@@ -2140,8 +2246,11 @@ mod tests {
         // A bigint beyond 2^53 must round-trip as a string, not a JS number.
         let big: i64 = 9_007_199_254_740_993; // 2^53 + 1
         let v = i64_to_json(big);
-        assert_eq!(v, serde_json::Value::String("9007199254740993".to_string()),
-            "bigint must be a string to avoid float precision loss");
+        assert_eq!(
+            v,
+            serde_json::Value::String("9007199254740993".to_string()),
+            "bigint must be a string to avoid float precision loss"
+        );
         let small: i64 = 42;
         let v2 = i64_to_json(small);
         assert_eq!(v2, serde_json::Value::String("42".to_string()));
@@ -2303,13 +2412,7 @@ mod tests {
             vec![serde_json::json!(1), serde_json::json!("y")],
             vec![serde_json::json!(2), serde_json::json!("z")],
         ];
-        apply_bulk_insert_sqlite(
-            &conn,
-            "t",
-            &["a".to_string(), "b".to_string()],
-            &rows,
-        )
-        .unwrap();
+        apply_bulk_insert_sqlite(&conn, "t", &["a".to_string(), "b".to_string()], &rows).unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
             .unwrap();
@@ -2328,12 +2431,7 @@ mod tests {
             vec![serde_json::json!(1), serde_json::json!("y")],
             vec![serde_json::json!("bad"), serde_json::json!("z")],
         ];
-        let res = apply_bulk_insert_sqlite(
-            &conn,
-            "t",
-            &["a".to_string(), "b".to_string()],
-            &rows,
-        );
+        let res = apply_bulk_insert_sqlite(&conn, "t", &["a".to_string(), "b".to_string()], &rows);
         assert!(res.is_err(), "non-integer PK value should fail");
         // Rollback: no rows persisted.
         let count: i64 = conn
@@ -2349,10 +2447,10 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         // INTEGER PRIMARY KEY rejects non-integer values (datatype mismatch),
         // guaranteeing row 2 fails.
-        conn.execute("CREATE TABLE t (a INTEGER PRIMARY KEY)", []).unwrap();
+        conn.execute("CREATE TABLE t (a INTEGER PRIMARY KEY)", [])
+            .unwrap();
         let rows = vec![vec![serde_json::json!(1)], vec![serde_json::json!("x")]];
-        let err = apply_bulk_insert_sqlite(&conn, "t", &["a".to_string()], &rows)
-            .unwrap_err();
+        let err = apply_bulk_insert_sqlite(&conn, "t", &["a".to_string()], &rows).unwrap_err();
         assert!(
             err.contains("row 2"),
             "error should name the failing row index (1-based): {err}"
@@ -2363,11 +2461,8 @@ mod tests {
     /// and quotes schema, table, and columns.
     #[test]
     fn build_pg_bulk_insert_sql_shape() {
-        let sql = build_pg_bulk_insert_sql(
-            "public",
-            "users",
-            &["id".to_string(), "name".to_string()],
-        );
+        let sql =
+            build_pg_bulk_insert_sql("public", "users", &["id".to_string(), "name".to_string()]);
         assert_eq!(
             sql,
             r#"INSERT INTO "public"."users" ("id", "name") VALUES ($1, $2)"#
@@ -2417,21 +2512,69 @@ mod tests {
 
     #[test]
     fn pg_locator_select_adds_ctid() {
-        let sql = build_pg_data_select("public", "no_pk", &["id".into(), "name".into()], false);
-        assert!(sql.contains("ctid"), "no-PK table must select ctid; got: {}", sql);
-        assert!(sql.contains("\"public\""), "schema must be quoted; got: {}", sql);
+        let sql = build_pg_data_select("public", "no_pk", &["id".into(), "name".into()], true);
+        assert!(
+            sql.contains("ctid"),
+            "no-PK table must select ctid; got: {}",
+            sql
+        );
+        assert!(
+            sql.contains("\"public\""),
+            "schema must be quoted; got: {}",
+            sql
+        );
     }
 
     #[test]
     fn pg_locator_select_omits_ctid_when_pk_present() {
-        let sql = build_pg_data_select("public", "with_pk", &["id".into(), "name".into()], true);
-        assert!(!sql.contains("ctid"), "PK table must NOT select ctid; got: {}", sql);
+        let sql = build_pg_data_select("public", "with_pk", &["id".into(), "name".into()], false);
+        assert!(
+            !sql.contains("ctid"),
+            "PK table must NOT select ctid; got: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn pg_locator_select_omits_ctid_for_view() {
+        // Views expose no ctid — the locator must never be appended for them.
+        let sql = build_pg_data_select("public", "order_summary", &["order_id".into()], false);
+        assert!(
+            !sql.contains("ctid"),
+            "view must NOT select ctid; got: {}",
+            sql
+        );
+        assert!(
+            sql.contains("order_summary"),
+            "view name must be present; got: {}",
+            sql
+        );
     }
 
     #[test]
     fn sqlite_locator_select_adds_rowid_for_no_pk() {
-        let sql = build_sqlite_data_select("no_pk", &["id".into(), "name".into()], false);
-        assert!(sql.contains("rowid"), "no-PK sqlite table must select rowid; got: {}", sql);
+        let sql = build_sqlite_data_select("no_pk", &["id".into(), "name".into()], true);
+        assert!(
+            sql.contains("rowid"),
+            "no-PK sqlite table must select rowid; got: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn sqlite_locator_select_omits_rowid_for_view() {
+        // Views expose no rowid — the locator must never be appended for them.
+        let sql = build_sqlite_data_select("order_summary", &["order_id".into()], false);
+        assert!(
+            !sql.contains("rowid"),
+            "view must NOT select rowid; got: {}",
+            sql
+        );
+        assert!(
+            sql.contains("order_summary"),
+            "view name must be present; got: {}",
+            sql
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2444,7 +2587,11 @@ mod tests {
         let locator = vec![("ctid".to_string(), serde_json::json!("(0,1)"))];
         let data = vec![("name".to_string(), serde_json::json!("Bob"))];
         let (sql, params) = build_pg_update_sql("public", "no_pk", &locator, &data).unwrap();
-        assert!(sql.contains("\"ctid\" = $"), "locator update must WHERE on ctid; got: {}", sql);
+        assert!(
+            sql.contains("\"ctid\" = $"),
+            "locator update must WHERE on ctid; got: {}",
+            sql
+        );
         assert_eq!(params.len(), 2); // 1 SET value + 1 WHERE value
     }
 
@@ -2453,8 +2600,16 @@ mod tests {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
         let data = vec![("name".to_string(), serde_json::json!("Bob"))];
         let (sql, _params) = build_pg_update_sql("public", "users", &pk, &data).unwrap();
-        assert!(sql.contains("\"id\" = $"), "PK update must WHERE on id; got: {}", sql);
-        assert!(!sql.contains("ctid"), "PK update must NOT use ctid; got: {}", sql);
+        assert!(
+            sql.contains("\"id\" = $"),
+            "PK update must WHERE on id; got: {}",
+            sql
+        );
+        assert!(
+            !sql.contains("ctid"),
+            "PK update must NOT use ctid; got: {}",
+            sql
+        );
     }
 
     #[test]
@@ -2463,13 +2618,22 @@ mod tests {
         let pk: Vec<(String, serde_json::Value)> = vec![];
         let data = vec![("name".to_string(), serde_json::json!("Bob"))];
         let result = build_pg_update_sql("public", "no_pk", &pk, &data);
-        assert!(result.is_err(), "empty primary_key must be rejected, not produce broken SQL");
+        assert!(
+            result.is_err(),
+            "empty primary_key must be rejected, not produce broken SQL"
+        );
     }
 
     #[test]
     fn affected_row_count_message_for_zero_rows() {
-        assert_eq!(affected_count_error(0u64), Some("row was modified or removed by another session".to_string()));
+        assert_eq!(
+            affected_count_error(0u64),
+            Some("row was modified or removed by another session".to_string())
+        );
         assert_eq!(affected_count_error(1u64), None);
-        assert_eq!(affected_count_error(2u64), Some("ambiguous row match".to_string()));
+        assert_eq!(
+            affected_count_error(2u64),
+            Some("ambiguous row match".to_string())
+        );
     }
 }

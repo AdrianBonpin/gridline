@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
-import { ChevronDown, ChevronUp, Table2, Terminal } from "lucide-react";
+import { ChevronDown, ChevronUp, Table2, Terminal, AlertCircle } from "lucide-react";
 import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar } from "./DbViewerSidebar";
@@ -217,6 +217,19 @@ export function DbViewerScreen({
                       t.table_type === "MATERIALIZED VIEW",
               )
             : false;
+    // Regular views (SQLite + PG) are read-only like matviews: they expose no
+    // row locator (no ctid/rowid) and cannot be modified via SQLite, so hide
+    // all data-modifying affordances for them as well.
+    const isView =
+        activeTab && activeTab.tabType === "table"
+            ? tables.some(
+                  (t) =>
+                      t.schema === activeTab.schema &&
+                      t.name === activeTab.table &&
+                      t.table_type === "VIEW",
+              )
+            : false;
+    const readOnlyTable = isMatview || isView;
 
     const setTabData = useDbViewerStore((s) => s.setTabData);
     const setTabError = useDbViewerStore((s) => s.setTabError);
@@ -1105,7 +1118,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                                     )
                                                                 }
                                                                 variant="query"
-                                                                isMatview={isMatview}
+                                                                isMatview={readOnlyTable}
                                                             />
                                                         )}
                                                         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -1120,9 +1133,9 @@ const onQueriesPanelResizeStart = useCallback(
                                                     dbType={currentConnection?.db_type ?? "postgresql"}
                                                     tabType={activeTab?.tabType ?? "table"}
                                                     getLocator={getLocator}
-                                                    onStageEdit={isMatview ? undefined : handleStageEdit}
+                                                    onStageEdit={readOnlyTable ? undefined : handleStageEdit}
                                                     onOpenRowDetail={handleOpenRowDetail}
-                                                    readOnly={isMatview}
+                                                    readOnly={readOnlyTable}
                                                     enumValues={editorOptions?.enums}
                                                     fkOptions={editorOptions?.fks}
                                                     fkPlaceholders={editorOptions?.fkPlaceholders}
@@ -1217,6 +1230,17 @@ const onQueriesPanelResizeStart = useCallback(
                                     </Suspense>
                                 ) : (
                                     <>
+                                        {activeTab?.error && (
+                                            <div
+                                                role="alert"
+                                                className="flex items-center gap-2 px-3 py-2 text-xs text-red-400 border-b border-border bg-surface-raised"
+                                            >
+                                                <AlertCircle size={14} className="shrink-0" />
+                                                <span className="truncate">
+                                                    {activeTab.error}
+                                                </span>
+                                            </div>
+                                        )}
                                         {activeTab?.data && (
                                             <TableControls
                                                 connectionId={connectionId}
@@ -1258,7 +1282,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 onClearSelection={() =>
                                                     setSelectedRows(new Set())
                                                 }
-                                                isMatview={isMatview}
+                                                isMatview={readOnlyTable}
                                             />
                                         )}
                                         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -1273,9 +1297,9 @@ const onQueriesPanelResizeStart = useCallback(
                                                 dbType={currentConnection?.db_type ?? "postgresql"}
                                                 tabType={activeTab?.tabType ?? "table"}
                                                 getLocator={getLocator}
-                                                onStageEdit={isMatview ? undefined : handleStageEdit}
+                                                onStageEdit={readOnlyTable ? undefined : handleStageEdit}
                                                 onOpenRowDetail={handleOpenRowDetail}
-                                                readOnly={isMatview}
+                                                readOnly={readOnlyTable}
                                                 enumValues={editorOptions?.enums}
                                                 fkOptions={editorOptions?.fks}
                                                 fkPlaceholders={editorOptions?.fkPlaceholders}

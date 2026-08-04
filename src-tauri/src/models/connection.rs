@@ -91,19 +91,31 @@ mod tests {
         assert_eq!(deserialized.port, Some(5432));
         assert_eq!(deserialized.username, Some("admin".to_string()));
         assert_eq!(deserialized.folder_id, Some("folder1".to_string()));
-        assert_eq!(deserialized.tag_ids, vec!["tag1".to_string(), "tag2".to_string()]);
+        assert_eq!(
+            deserialized.tag_ids,
+            vec!["tag1".to_string(), "tag2".to_string()]
+        );
         assert_eq!(deserialized.password, Some("secret123".to_string()));
         assert_eq!(deserialized.database, Some("mydb".to_string()));
-        assert_eq!(deserialized.ssh_host, Some("jumphost.example.com".to_string()));
+        assert_eq!(
+            deserialized.ssh_host,
+            Some("jumphost.example.com".to_string())
+        );
         assert_eq!(deserialized.ssh_port, Some(2222));
         assert_eq!(deserialized.ssh_user, Some("tunnel".to_string()));
         assert_eq!(deserialized.ssh_auth_method, Some("Key".to_string()));
-        assert_eq!(deserialized.ssh_private_key_path, Some("/path/to/key".to_string()));
+        assert_eq!(
+            deserialized.ssh_private_key_path,
+            Some("/path/to/key".to_string())
+        );
         assert_eq!(deserialized.ssh_password, Some("ssh-pw".to_string()));
         assert_eq!(deserialized.ssh_passphrase, Some("passphrase".to_string()));
         assert_eq!(deserialized.ssl_mode, Some("require".to_string()));
         assert_eq!(deserialized.ssl_ca_path, Some("/path/to/ca".to_string()));
-        assert_eq!(deserialized.ssl_cert_path, Some("/path/to/cert".to_string()));
+        assert_eq!(
+            deserialized.ssl_cert_path,
+            Some("/path/to/cert".to_string())
+        );
         assert_eq!(deserialized.ssl_key_path, Some("/path/to/key".to_string()));
     }
 
@@ -136,20 +148,38 @@ mod tests {
         };
 
         let json = serde_json::to_string(&conn).unwrap();
-        assert!(!json.contains("password"), "Connection JSON should not contain password field");
+        assert!(
+            !json.contains("password"),
+            "Connection JSON should not contain password field"
+        );
     }
 
     #[test]
     fn connection_serializes_favorite_field() {
         let conn = Connection {
-            id: "x".into(), name: "n".into(), db_type: "postgresql".into(),
-            host: "h".into(), port: Some(5432), username: None, database: None,
-            folder_id: None, keychain_ref: None, environment: None,
-            ssh_host: None, ssh_port: None, ssh_user: None, ssh_auth_method: None,
-            ssh_private_key_path: None, ssl_mode: None, ssl_ca_path: None,
-            ssl_cert_path: None, ssl_key_path: None, tag_ids: vec![],
+            id: "x".into(),
+            name: "n".into(),
+            db_type: "postgresql".into(),
+            host: "h".into(),
+            port: Some(5432),
+            username: None,
+            database: None,
+            folder_id: None,
+            keychain_ref: None,
+            environment: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_private_key_path: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            tag_ids: vec![],
             favorite: true,
-            created_at: "2024-01-01T00:00:00Z".into(), updated_at: "2024-01-01T00:00:00Z".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+            updated_at: "2024-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_string(&conn).unwrap();
         assert!(json.contains("\"favorite\":true"));

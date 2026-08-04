@@ -99,9 +99,7 @@ pub(crate) async fn execute_query_inner(
         Some(DbHandle::Postgresql(client, _)) => {
             execute_pg_query(client, query, page, page_size).await
         }
-        Some(DbHandle::Sqlite(conn)) => {
-            execute_sqlite_query(conn, query, page, page_size)
-        }
+        Some(DbHandle::Sqlite(conn)) => execute_sqlite_query(conn, query, page, page_size),
         None => {
             let elapsed = start.elapsed().as_millis() as i64;
             let err = "Connection not found".to_string();
@@ -205,16 +203,10 @@ async fn execute_pg_query(
         "SELECT * FROM ({}) AS _gridline_data LIMIT $1 OFFSET $2",
         trimmed
     );
-    let wrapped_count = format!(
-        "SELECT COUNT(*) FROM ({}) AS _gridline_cnt",
-        trimmed
-    );
+    let wrapped_count = format!("SELECT COUNT(*) FROM ({}) AS _gridline_cnt", trimmed);
 
     // Try the wrapped count query first — if this fails we fall back to raw.
-    let total_rows: i64 = match client
-        .query_one(&wrapped_count, &[])
-        .await
-    {
+    let total_rows: i64 = match client.query_one(&wrapped_count, &[]).await {
         Ok(row) => row.get::<_, i64>(0),
         Err(_) => {
             // Wrapping failed — fall back to raw execution.
@@ -343,11 +335,7 @@ async fn execute_pg_raw(
     let ulimit = page_size as usize;
 
     let rows: Vec<Vec<serde_json::Value>> = if uoffset < all_rows.len() {
-        all_rows
-            .into_iter()
-            .skip(uoffset)
-            .take(ulimit)
-            .collect()
+        all_rows.into_iter().skip(uoffset).take(ulimit).collect()
     } else {
         Vec::new()
     };
@@ -386,10 +374,7 @@ fn execute_sqlite_query(
         "SELECT * FROM ({}) AS _gridline_data LIMIT {} OFFSET {}",
         trimmed, page_size, off
     );
-    let wrapped_count = format!(
-        "SELECT COUNT(*) FROM ({}) AS _gridline_cnt",
-        trimmed
-    );
+    let wrapped_count = format!("SELECT COUNT(*) FROM ({}) AS _gridline_cnt", trimmed);
 
     // Try the wrapped count query first.
     let total_rows: i64 = match conn.query_row(&wrapped_count, [], |row| row.get::<_, i64>(0)) {
@@ -478,11 +463,7 @@ fn execute_sqlite_raw(
     let ulimit = page_size as usize;
 
     let rows: Vec<Vec<serde_json::Value>> = if uoffset < all_rows.len() {
-        all_rows
-            .into_iter()
-            .skip(uoffset)
-            .take(ulimit)
-            .collect()
+        all_rows.into_iter().skip(uoffset).take(ulimit).collect()
     } else {
         Vec::new()
     };
@@ -508,12 +489,8 @@ fn sqlite_value_to_json(row: &rusqlite::Row, i: usize) -> serde_json::Value {
         Ok(ValueRef::Null) => serde_json::Value::Null,
         Ok(ValueRef::Integer(v)) => serde_json::json!(v),
         Ok(ValueRef::Real(v)) => serde_json::json!(v),
-        Ok(ValueRef::Text(v)) => {
-            serde_json::Value::String(String::from_utf8_lossy(v).to_string())
-        }
-        Ok(ValueRef::Blob(v)) => {
-            serde_json::Value::String(format!("[{}B blob]", v.len()))
-        }
+        Ok(ValueRef::Text(v)) => serde_json::Value::String(String::from_utf8_lossy(v).to_string()),
+        Ok(ValueRef::Blob(v)) => serde_json::Value::String(format!("[{}B blob]", v.len())),
         Err(_) => serde_json::Value::Null,
     }
 }
@@ -580,7 +557,12 @@ pub(crate) fn update_saved_query_inner(
     folder: Option<String>,
 ) -> Result<(), String> {
     let store = db_store.lock().map_err(|e| e.to_string())?;
-    store.update_saved_query(&id, name.as_deref(), query_text.as_deref(), folder.as_deref())
+    store.update_saved_query(
+        &id,
+        name.as_deref(),
+        query_text.as_deref(),
+        folder.as_deref(),
+    )
 }
 
 pub(crate) fn delete_saved_query_inner(
@@ -671,7 +653,13 @@ pub async fn update_saved_query(
     patch: UpdateSavedQueryPatch,
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    update_saved_query_inner(&state.db_store, id, patch.name, patch.query_text, patch.folder)
+    update_saved_query_inner(
+        &state.db_store,
+        id,
+        patch.name,
+        patch.query_text,
+        patch.folder,
+    )
 }
 
 #[tauri::command]
@@ -768,9 +756,13 @@ mod tests {
         let conn = test_sqlite_handle();
 
         // Page 1: 2 rows
-        let result =
-            execute_sqlite_query(&unwrap_sqlite(&conn), "SELECT * FROM users ORDER BY id", 1, 2)
-                .unwrap();
+        let result = execute_sqlite_query(
+            &unwrap_sqlite(&conn),
+            "SELECT * FROM users ORDER BY id",
+            1,
+            2,
+        )
+        .unwrap();
 
         assert_eq!(result.total_rows, 3);
         assert_eq!(result.rows.len(), 2);
@@ -780,9 +772,13 @@ mod tests {
         assert_eq!(result.page_size, 2);
 
         // Page 2: 1 row
-        let result2 =
-            execute_sqlite_query(&unwrap_sqlite(&conn), "SELECT * FROM users ORDER BY id", 2, 2)
-                .unwrap();
+        let result2 = execute_sqlite_query(
+            &unwrap_sqlite(&conn),
+            "SELECT * FROM users ORDER BY id",
+            2,
+            2,
+        )
+        .unwrap();
 
         assert_eq!(result2.total_rows, 3);
         assert_eq!(result2.rows.len(), 1);

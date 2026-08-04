@@ -1,45 +1,117 @@
-# Gridline
+<p align="center">
+  <img src="./screenshots/data-grid.png" alt="Gridline data grid with FK preview" width="92%" style="border-radius: 14px;" />
+</p>
 
-A modern, open-source, high-performance database GUI client for PostgreSQL and beyond. Built with Tauri 2.0, Rust, and React — lightweight by design, powerful by default.
+<h1>Gridline</h1>
 
-> **Inspired by DB Pro and Beekeeper Studio's best ideas. Freed from their paywalls.** No caps on tabs, connections, or saved queries. Deep PostgreSQL tooling (`pg_dump`, `pg_restore`, DB-to-DB sync) that commercial alternatives lock behind paywalls or leave to the CLI.
+<p>
+  <i>A lightweight, open-source database GUI for PostgreSQL and SQLite.</i><br />
+  Unlimited connections, tabs, and saved queries — with first-class <code>pg_dump</code>, <code>pg_restore</code>, and DB-to-DB sync.
+</p>
+
+<p>
+  <sub><b>Data Grid & FK Preview</b> — browse 50+ real demo orders and inspect related rows in one click.</sub>
+</p>
+
+<p>
+  <a href="https://tauri.app/"><img src="https://img.shields.io/badge/Tauri-24C8DB?style=for-the-badge&logo=tauri&logoColor=white" alt="Tauri" /></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white" alt="Rust" /></a>
+  <a href="https://react.dev/"><img src="https://img.shields.io/badge/react-%2320232a.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB" alt="React" /></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-D22128.svg?style=for-the-badge" alt="Apache 2.0 License" /></a>
+  <a href="https://github.com/adrianbonpin/gridline/stargazers"><img src="https://img.shields.io/github/stars/adrianbonpin/gridline?style=for-the-badge&logo=github&label=Stars" alt="GitHub stars" /></a>
+</p>
+
+<p>
+  <a href="https://github.com/adrianbonpin/gridline/releases"><img src="https://img.shields.io/badge/Download_Latest_Release-2ea44f?style=for-the-badge&logo=github&logoColor=white" alt="Download Latest" /></a>
+  <a href="https://github.com/adrianbonpin/gridline/issues/new"><img src="https://img.shields.io/badge/Open_an_Issue-%23E4405F.svg?style=for-the-badge&logo=github&logoColor=white" alt="Open an Issue" /></a>
+</p>
 
 ---
 
-## Why Gridline?
+## What is Gridline?
 
-Most database GUI clients either lock essential productivity features behind paywalls or treat PostgreSQL administration as an afterthought. Gridline is different:
+Gridline is a modern, open-source database GUI client built with [Tauri 2.0](https://tauri.app), Rust, and React. It is lightweight by design (~40 MB baseline), powerful by default, and free from the paywalls that limit commercial alternatives.
 
-| Capability | DB Pro (Free) | Beekeeper (Free) | Gridline |
-| :--- | :---: | :---: | :---: |
-| Open tabs | 3 | Unlimited | **Unlimited** |
-| Saved connections | 2 | Unlimited | **Unlimited** |
-| Saved queries | 5 | Unlimited | **Unlimited** |
-| Data export (CSV, JSON, SQL) | ❌ (paid only) | Basic only | **JSON, CSV, SQL, Markdown** |
-| Data import (CSV, JSON) | ❌ (paid only) | ✅ | **✅ CSV/JSON + column mapping** |
-| pg_dump / pg_restore GUI | ❌ | ❌ (paid only) | **First-class UI** |
-| DB-to-DB sync | ❌ | ❌ | **Built-in pipe sync** |
-| Object explorer depth | Tables, views | Tables, views | **Functions, Triggers, Enums, Sequences, Extensions** |
-| Indexes, constraints, matviews, procedures | 🔒 paid | ❌ | **✅ Full object views** |
-| ER diagram / schema visualizer | ❌ (planned) | ❌ (paid only) | **✅ Interactive React Flow** |
-| Inline cell editing | ✅ | ✅ | **✅ Inline editing** (double-click / Enter, ctid/rowid locator, stale-write guard; optimistic staged values + pending dot from the changes queue; smart editors — PG enum dropdowns and searchable FK dropdowns of referenced rows) |
-| Keyboard cell navigation | ✅ | ✅ | **✅** (arrows + Tab wrap, Esc cancels editing) |
-| Cell copy (right-click / Ctrl+C) | ✅ | ✅ | **✅** (context menu: Copy / Copy JSON / Edit / Set NULL / Open FK / View Row / Select Row) |
-| Row detail drawer | ✅ | ✅ | **✅** (via context menu View Row) |
-| Visual filter builder | ✅ | ✅ | **✅** (drag-and-drop, type-aware operators) |
-| SSH tunneling | 🟡 (likely paid) | ✅ | **✅ Full tunnel (password + key auth, keychain)** |
-| OS credential vault | ✅ | ✅ | **Keychain / Secret Service** |
-| Workspace / folder hierarchy | ❌ | ❌ | **Multi-level tree + tags** |
-| Favorites / Recent connections | ✅ | ✅ | **✅ Star + recents row** |
-| Connection status indicator | ❌ | ✅ | **✅ On-demand click-to-test dot** |
-| Bulk move-to-folder | ✅ | ✅ | **✅ Selection toolbar → folder picker** |
-| Changes queue (stage & commit) | ❌ | ❌ | **✅ Queue → Commit All** (tab-bar **Changes** button with count badge toggles a popover: Visual/SQL preview, per-change revert, Clear All, ⌘S commit) |
-| Query history | ✅ (auto-saved) | ✅ | **✅ Toolbar dropdown, favorites, Queries view** |
-| AI assistant | ✅ (BYO key) | ❌ (paid only) | 🔮 *Planned — BYOK* |
-| Open source | ❌ | ✅ (GPLv3) | **✅ (MIT)** |
-| Desktop shell | Native webview | Electron (~250MB) | **Tauri 2.0 (~40MB)** |
+- **No caps** on connections, tabs, or saved queries.
+- **Deep PostgreSQL tooling** — visual `pg_dump`, `pg_restore`, and DB-to-DB sync.
+- **Full object explorer** — not just tables, but functions, triggers, sequences, enums, extensions, materialized views, and procedures.
+- **Interactive ER diagram** — explore relationships visually with crow's-foot cardinality notation.
+- **Production-safe editing** — stage INSERT/UPDATE/DELETE changes, review the generated SQL, then commit all at once.
 
-> 🟡 = In progress or planned. **Bold** = Gridline's strongest differentiators.
+The app ships with a built-in **Gridline Demo (SQLite)** database, so you can explore every feature immediately without setting up a server.
+
+---
+
+## Who is it for?
+
+Gridline is built for developers and small teams who manage multiple database environments:
+
+- **Full-stack developers** switching between local, staging, and production databases.
+- **Platform / DBAs** who need `pg_dump`, `pg_restore`, and sync tooling in a native UI.
+- **Teams that want native speed** without Electron bloat or seat licenses.
+
+---
+
+## Recent Changes
+
+- **2026-08-04:** Revamped the built-in SQLite demo database with realistic e-commerce data (20 users, 24 products, 50 orders, 100 page views, 500 audit rows) and renamed it to **Gridline Demo (SQLite)**.
+- **2026-07-XX:** Added inline cell editing with a stage-first changes queue, row-detail drawer, keyboard navigation, and cell-level copy.
+- **2026-07-XX:** Added visual filter builder with drag-and-drop column palette and type-aware operators.
+- **2026-07-XX:** Added schema visualizer with React Flow + dagre, crow's-foot notation, and cross-schema FK support.
+- **2026-07-XX:** Added query history dropdown, saved queries, and a two-pane Queries view.
+- **2026-06-XX:** Added settings redesign with live theme, accent color, font size, editor options, and tag reorder.
+- **2026-06-XX:** Added SSH tunneling (password + key auth) and full PostgreSQL TLS runtime for production connections.
+
+> See the full history in the [roadmap](#roadmap) below or the [git log](./commits).
+
+---
+
+## Key Features
+
+### Connections & Workspace
+
+- **URI auto-fill** — paste `postgres://`, `mysql://`, `sqlite://`, or `redis://` strings and have all fields populate automatically.
+- **Workspace tree** — multi-level folders, color-coded tags, favorites, and recent connections.
+- **OS keychain storage** — passwords and SSH secrets live in macOS Keychain / Linux Secret Service / Windows Credential Manager, never in plaintext.
+- **SSH tunneling** — real `ssh2` tunnels with password or key authentication.
+- **TLS / SSL** — full PostgreSQL/MySQL TLS modes plus client-certificate support.
+- **Connection status** — on-demand per-card test with real server version and latency.
+
+### Schema Explorer
+
+- **Tables, views, and materialized views** — column metadata, PK/FK, defaults, nullable flags.
+- **Functions & procedures** — syntax-highlighted source, argument signatures, overload disambiguation.
+- **Triggers, sequences, enums, extensions** — unified **Objects** view with type switcher.
+- **Indexes & constraints** — per-table index details plus CHECK/UNIQUE constraints beyond PK/FK.
+- **Schema visualizer** — interactive ER diagram with auto-layout, cardinality legend, and collapsible columns.
+
+### Data Grid
+
+- **Virtualized rows** — handles 100k+ rows via `@tanstack/react-virtual`.
+- **Server-side filtering & sorting** — pushed to SQL `WHERE`/`ORDER BY`.
+- **FK preview** — click the ↗ icon on a foreign-key cell to inspect the referenced row or open a filtered tab.
+- **JSON/JSONB viewer** — formatted and raw tabs with copy.
+- **Inline cell editing** — double-click or press Enter; changes stage through the queue before commit.
+- **Smart editors** — enum dropdowns for PG enum columns, searchable FK dropdowns for related rows.
+- **Visual filter builder** — drag-and-drop columns with type-aware operators.
+- **Export** — JSON, CSV, SQL, and Markdown downloads of visible rows.
+- **Auto-refresh** — configurable interval timer.
+
+### Query Workbench
+
+- **Monaco SQL editor** — lazy-loaded, with keywords + table/column autocomplete.
+- **Custom query execution** — arbitrary SQL with destructive-query confirmation.
+- **Query tabs** — unlimited tabs, close with `Cmd/Ctrl+W`.
+- **Query history** — per-connection, with favorites and pruning.
+- **Saved queries** — name, folder, and manage them in the Queries view.
+- **Changes queue** — stage edits, review generated SQL, revert per change, then commit all.
+
+### PostgreSQL Admin Tools
+
+- **Visual Backup** — `pg_dump` wrapper with format selector, schema filter, no-owner toggle, real-time progress.
+- **Visual Restore** — `pg_restore` wrapper with clean toggle and destructive confirmation.
+- **DB-to-DB Sync** — pipe `pg_dump` → `pg_restore` between two connections.
 
 ---
 
@@ -50,34 +122,34 @@ Most database GUI clients either lock essential productivity features behind pay
 <table>
   <tr>
     <td align="center" width="50%">
-      <a href="./screenshots/home.png">
-        <img src="./screenshots/home.png" alt="Saved connections home screen" width="100%" style="border-radius: 10px;" />
+      <a href="./screenshots/query-editor.png">
+        <img src="./screenshots/query-editor.png" alt="Query editor" width="100%" style="border-radius: 12px;" />
       </a>
       <br />
-      <sub><b>Home Screen</b> — organized folders, tags, and quick search</sub>
+      <sub><b>Query Editor</b></sub>
     </td>
     <td align="center" width="50%">
-      <a href="./screenshots/data-grid.png">
-        <img src="./screenshots/data-grid.png" alt="Data grid with FK preview" width="100%" style="border-radius: 10px;" />
+      <a href="./screenshots/er-diagram.png">
+        <img src="./screenshots/er-diagram.png" alt="ER diagram" width="100%" style="border-radius: 12px;" />
       </a>
       <br />
-      <sub><b>Data Grid</b> — virtualized rows, column controls, and FK preview</sub>
+      <sub><b>Schema Visualizer</b></sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
-      <a href="./screenshots/er-diagram.png">
-        <img src="./screenshots/er-diagram.png" alt="Interactive ER diagram" width="100%" style="border-radius: 10px;" />
+      <a href="./screenshots/json-popover.png">
+        <img src="./screenshots/json-popover.png" alt="JSON popover" width="100%" style="border-radius: 12px;" />
       </a>
       <br />
-      <sub><b>Schema Visualizer</b> — interactive ER diagram with cardinality legend</sub>
+      <sub><b>JSON Viewer</b></sub>
     </td>
     <td align="center" width="50%">
-      <a href="./screenshots/enums.png">
-        <img src="./screenshots/enums.png" alt="Enum detail view" width="100%" style="border-radius: 10px;" />
+      <a href="./screenshots/home.png">
+        <img src="./screenshots/home.png" alt="Home screen" width="100%" style="border-radius: 12px;" />
       </a>
       <br />
-      <sub><b>Object Explorer</b> — deep PostgreSQL objects like enums, functions, and triggers</sub>
+      <sub><b>Home Screen</b></sub>
     </td>
   </tr>
 </table>
@@ -86,112 +158,100 @@ Most database GUI clients either lock essential productivity features behind pay
 
 ---
 
-## Features
+## Why Gridline vs the alternatives?
 
-### Connection & Workspace Management
-- **URI Parser** — paste `postgres://`, `mysql://`, `sqlite://`, or `redis://` connection strings and have all fields auto-populated
-- **Workspace Tree** — multi-level hierarchy: `Workspace → Folder → Connection`, with color-coded tags (red = Production, green = Local)
-- **Credential Security** — passwords stored in the OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), never as plaintext
-- **Favorites & Recent Connections** — star your go-to connections; the Home screen surfaces a Recent row
-- **Connection Status Indicator** — on-demand per-card dot that tests the connection through the keychain + `testConnection` (idle/checking/online/offline)
-- **Bulk Move-to-Folder** — select multiple connections and move them to a folder in one step
-- **Production Safeguards** — read-only locks and high-visibility warnings on connections tagged `Production`
-
-### PostgreSQL Object Explorer
-Full tree-view navigation of all native PostgreSQL schema objects:
-- **Tables & Views** — columns, types, defaults, nullability, primary/foreign keys with popover preview
-- **Functions & Procedures** — source code with syntax highlighting and line numbers, argument signatures, return types, overload support
-- **Triggers & Rules** — event bindings with inline definition inspection, color-coded enabled/disabled status
-- **Sequences & Enums** — current values, increments, cycle flags; enum labels in bordered list view
-- **Extensions** — installed extensions with version, schema, and comment
-- **Schema Visualizer (ER Diagram)** — interactive React Flow graph with dagre auto-layout, crow's foot notation (1:1, 1:N, N:M), color-coded relationships, schema selector, zoom controls, collapsible columns (PK/FK/unique-only), cross-schema FK support for PostgreSQL + SQLite
-- **Unified Objects View** — Functions, Triggers, Sequences, Enums, and Extensions share a single sidebar with an object-type dropdown switcher (title position), refresh/search, and db/schema selectors
-- **Indexes & Constraints** — per-table index list (columns, method, unique/partial flags) and CHECK/UNIQUE constraints beyond PK/FK
-- **Materialized Views** — distinct icon in the table tree, browsable (read-only)
-- **Stored Procedures** — dedicated Procedures object type (`prokind='p'`); Functions now filters `prokind='f'`
-
-### SQL Editor & Query Workbench
-- **Monaco SQL Editor** — lazy-loaded [Monaco Editor](https://microsoft.github.io/monaco-editor/) with SQL syntax highlighting, Cmd/Ctrl+Enter to run
-- **Custom Query Execution** — run arbitrary SQL on PostgreSQL + SQLite via the Rust `execute_query` command; subquery-wrapped pagination with automatic raw fallback for CTEs/multi-statement SQL
-- **Destructive Query Guard** — confirmation dialog for INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/REPLACE before execution
-- **Query Tabs** — dedicated query tabs alongside table tabs, results rendered in the same virtualized data grid, close with Cmd/Ctrl+W
-- **SQL Autocomplete** — keyword + table suggestions from the active schema; typing `table.` suggests that table's columns (schema introspection, cached per schema)
-- **Multi-Tab Workspace** — unlimited named tabs, session persistence across restarts
-- **Changes Queue** — queue INSERT/UPDATE/DELETE/import/drop changes; preview before committing all. The tab bar's **Changes** button (checklist icon + amber pending border + count badge) toggles a popover with a **Visual/SQL** preview toggle, per-change revert, **Clear All** / **Commit All (N)** footer and a **⌘S** shortcut — the single entry point
-- **Smart Default Sort** — auto-detects `updated_at`, `created_at`, `_id` columns for logical initial sorting
-- **Query History** — recent queries per connection in a toolbar dropdown (load / run / favorite / clear), consecutive-identical dedup, retention pruned to 500 per connection
-- **Saved Queries** — save the current query with a name + folder from the toolbar; manage them in the Queries view
-- **Queries View** — two-pane workspace: an Explorer-styled sidebar with History / Saved Queries (per-connection scope, favorites filter, animated search) beside the tabbed query editor; click any row to load it into the editor
-
-### Data Grid & Schema Browser
-- **Virtualized Grid** — row-level virtualization via `@tanstack/react-virtual` handles 100k+ rows
-- **Column Management** — resize with drag handles (double-click to auto-fit), show/hide per column, multi-column sort
-- **Server-Side Filtering & Sorting** — filters and sorts pushed to SQL WHERE/ORDER BY
-- **Export** — JSON, CSV, SQL, Markdown via toolbar
-- **FK Preview** — ↗ icon at the start of FK cells (or context menu → Open FK reference) opens a popover with the referenced row; opens a filtered tab on demand
-- **JSON/JSONB Viewer** — popover with formatted/raw tabs and copy button
-- **Auto-Refresh** — configurable interval timer
-- **Inline Cell Editing** — double-click/Enter to edit cells; changes stage through the queue → Commit All (ctid/rowid locator for no-PK tables, PK/generated/identity read-only, stale-write guard via affected-row-count). Cells show the staged value + an amber pending dot immediately (queue is the source of truth; dot clears on commit, values survive until refetch); queue cards show an old → new diff; re-editing a cell replaces its queue entry
-- **Smart Cell Editors** — PG enum columns edit via a dropdown of enum labels; FK columns edit via a searchable dropdown of referenced rows (one row per option showing the first 4 referenced columns, FK-popover styling)
-- **Keyboard Navigation** — arrow keys + Tab/Shift+Tab wrap; Esc cancels editing even when the editor has lost focus
-- **Cell Copy + Context Menu** — right-click / Ctrl+C copy; menu items: Copy, Copy JSON, Edit, Set NULL, Open FK reference, View Row, Select Row; closes on outside click/Esc
-- **Visual Filter Builder** — drag-and-drop column palette with type-aware operators (AND semantics, persists per tab)
-
-### PostgreSQL Administrative Tools
-- **Visual Backup** — `pg_dump` wrapper with format selector (Plain SQL, Custom, Tar, Directory), file browser, schema filter, no-owner toggle, real-time progress bar
-- **Visual Restore** — `pg_restore` wrapper with file browser, format, clean toggle, destructive confirmation checkbox
-- **DB-to-DB Sync** — pipe `pg_dump` → `pg_restore` between two connections with source/target pickers, schema filter, flow indicator
-- **Unified Tools View** — Backup, Restore, and DB-to-DB Sync grouped under one **Tools** view with an operation-switcher dropdown
-
-### App Portability
-- **Export** — save all workspaces, folders, saved queries, tags, and non-sensitive metadata to a single JSON archive
-- **Import** — restore your exact workspace setup on any machine instantly
+| Capability                     | DB Pro (Free)  |  Beekeeper (Free)  |                       Gridline                        |
+| :----------------------------- | :------------: | :----------------: | :---------------------------------------------------: |
+| Open tabs                      |       3        |     Unlimited      |                     **Unlimited**                     |
+| Saved connections              |       2        |     Unlimited      |                     **Unlimited**                     |
+| Saved queries                  |       5        |     Unlimited      |                     **Unlimited**                     |
+| Data export (CSV, JSON, SQL)   |  ❌ paid only  |     Basic only     |             **JSON, CSV, SQL, Markdown**              |
+| `pg_dump` / `pg_restore` GUI   |       ❌       |    ❌ paid only    |                  **First-class UI**                   |
+| DB-to-DB sync                  |       ❌       |         ❌         |                **Built-in pipe sync**                 |
+| Object explorer depth          | Tables, views  |   Tables, views    | **Functions, Triggers, Enums, Sequences, Extensions** |
+| ER diagram / schema visualizer |       ❌       |    ❌ paid only    |               **✅ React Flow + dagre**               |
+| SSH tunneling                  | 🔒 likely paid |         ✅         |         **✅ Password + key auth, keychain**          |
+| OS credential vault            |       ✅       |         ✅         |  **Keychain / Secret Service / Credential Manager**   |
+| Workspace / folder hierarchy   |       ❌       |         ❌         |              **Multi-level tree + tags**              |
+| Changes queue (stage → commit) |       ❌       |         ❌         |               **✅ Queue → Commit All**               |
+| Desktop shell size             |     Native     | Electron (~250 MB) |                **Tauri 2.0 (~40 MB)**                 |
+| Open source                    |       ❌       |      ✅ GPLv3      |                   **✅ Apache 2.0**                   |
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology | Role |
-| :--- | :--- | :--- |
-| **Desktop Shell** | [Tauri 2.0](https://tauri.app) | Native desktop container (~40MB RAM baseline) |
-| **Backend** | Rust + [tokio](https://tokio.rs) | Async runtime, connection pooling, CLI tool execution |
-| **Database Drivers** | [sqlx](https://github.com/launchbadge/sqlx) / [tokio-postgres](https://github.com/sfackler/rust-postgres) | Pure-Rust async PostgreSQL (MySQL, SQLite to follow) |
-| **CLI Integration** | `std::process::Command` | Wraps system `pg_dump` / `pg_restore` binaries |
-| **Frontend** | [React 19](https://react.dev) + [TypeScript](https://www.typescriptlang.org) | Component-based UI |
-| **Styling** | [Tailwind CSS](https://tailwindcss.com) | Utility-first, dark mode, glassmorphic design |
-| **State** | [Zustand](https://zustand.docs.pmnd.rs) / [Jotai](https://jotai.org) | Lightweight client-state for tabs, connections, queries |
-| **Code Editor** | [Monaco Editor](https://microsoft.github.io/monaco-editor/) | IDE-grade SQL editing with Cmd+Enter execution, lazy-loaded |
-| **Data Grid** | [TanStack Virtual](https://tanstack.com/virtual) | Virtualized row rendering for 100k+ rows |
-| **Local DB** | SQLite via [rusqlite](https://github.com/rusqlite/rusqlite) | User settings, saved queries, workspace state |
+| Layer               | Technology                                                                                                | Role                                             |
+| :------------------ | :-------------------------------------------------------------------------------------------------------- | :----------------------------------------------- |
+| **Desktop shell**   | [Tauri 2.0](https://tauri.app)                                                                            | Native webview container (~40 MB baseline)       |
+| **Backend**         | Rust + [tokio](https://tokio.rs)                                                                          | Async runtime, connection pooling, CLI execution |
+| **DB drivers**      | [sqlx](https://github.com/launchbadge/sqlx) / [tokio-postgres](https://github.com/sfackler/rust-postgres) | Pure-Rust PostgreSQL (SQLite via rusqlite)       |
+| **CLI integration** | `std::process::Command`                                                                                   | Wraps system `pg_dump` / `pg_restore`            |
+| **Frontend**        | [React 19](https://react.dev) + [TypeScript](https://www.typescriptlang.org)                              | Component-based UI                               |
+| **Styling**         | [Tailwind CSS](https://tailwindcss.com)                                                                   | Utility-first, dark mode, glassmorphic design    |
+| **State**           | [Zustand](https://zustand.docs.pmnd.rs) / Jotai                                                           | Domain stores                                    |
+| **Editor**          | [Monaco Editor](https://microsoft.github.io/monaco-editor/)                                               | IDE-grade SQL editing                            |
+| **Data grid**       | [TanStack Virtual](https://tanstack.com/virtual)                                                          | 100k+ row virtualization                         |
+| **Local store**     | SQLite via [rusqlite](https://github.com/rusqlite/rusqlite)                                               | Settings, saved queries, workspace state         |
+
+---
+
+## Getting Started
+
+### Download a release
+
+Pre-built installers for macOS, Windows, and Linux are published on the [Releases](https://github.com/adrianbonpin/gridline/releases) page.
+
+> ⚠️ Gridline is under active development. Expect rough edges and please [open issues](https://github.com/adrianbonpin/gridline/issues/new) when you hit them.
+
+### Build from source
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/adrianbonpin/gridline.git
+cd gridline
+
+# 2. Install frontend dependencies
+bun install
+
+# 3. Run in development mode with hot-reload
+bun run tauri dev
+
+# 4. Build for production
+bun run tauri build
+```
+
+### System requirements
+
+- **macOS:** 13 (Ventura) or newer
+- **Windows:** 10 or newer
+- **Linux:** Ubuntu 22.04+ or equivalent modern distribution
+- **RAM:** 8 GB recommended
+- **PostgreSQL client tools:** `pg_dump` and `pg_restore` are required for admin features
 
 ---
 
 ## Development
 
-### Prerequisites
-- [Rust](https://rustup.rs) (latest stable)
-- [Bun](https://bun.sh) (or Node.js + npm)
-- Tauri system dependencies ([see guide](https://tauri.app/start/prerequisites/))
-- PostgreSQL client tools (`pg_dump`, `pg_restore`) for admin features
-
-### Setup
-
 ```bash
-# Clone
-git clone https://github.com/adrianbonpin/gridline.git
-cd gridline
+# Frontend only (Vite dev server)
+bun run dev
 
-# Install frontend dependencies
-bun install
-
-# Run in development mode (hot-reload)
+# Full Tauri app with hot-reload
 bun run tauri dev
 
-# Build for production
+# Production build
 bun run tauri build
+
+# Rust backend only
+cd src-tauri
+cargo build
+
+# Run tests
+cargo test
 ```
 
-### Project Structure
+### Project structure
 
 ```
 gridline/
@@ -217,64 +277,61 @@ gridline/
 └── vite.config.ts
 ```
 
-### Architecture
-
-```
-┌──────────────────────────────────────────────────┐
-│                    Tauri Shell                     │
-│  ┌─────────────────┐   ┌────────────────────────┐ │
-│  │   React (WebView)│   │     Rust Backend       │ │
-│  │                  │   │                        │ │
-│  │  • Monaco Editor │◄──►│ • sqlx/tokio-postgres  │ │
-│  │  • Glide Grid    │IPC│ • Connection pool      │ │
-│  │  • Tailwind UI   │   │ • pg_dump/restore      │ │
-│  │  • Zustand state │   │ • SQLite (local)       │ │
-│  │                  │   │ • OS Keychain          │ │
-│  └─────────────────┘   └────────────────────────┘ │
-└──────────────────────────────────────────────────┘
-                          │
-                          ▼
-              ┌─────────────────────┐
-              │  PostgreSQL / MySQL  │
-              │  SQLite / Redis      │
-              └─────────────────────┘
-```
-
 ---
 
 ## Roadmap
 
 ### ✅ Completed
-- **Phase 1 — Core Shell** — Tauri 2.0 + React project, glassmorphic dark-first UI, Zustand state management, SQLite local persistence, OS keychain credentials
-- **Phase 2 — Connection Management** — Rust connection pool (`sqlx`/`tokio-postgres`), PostgreSQL + SQLite browse/query, URI parser with auto-population, SSH/SSL config UI, connection testing for all DB types
-- **Phase 3 — Schema Explorer** — Full PostgreSQL `pg_catalog`/`information_schema` introspection, object tree (Tables, Views, Functions, Triggers, Enums, Sequences, Extensions), per-type detail views, FK preview popover, JSON/JSONB viewer
-- **Phase 4 — Data Grid & Filters** — Virtualized grid (`@tanstack/react-virtual`, 100k+ rows), server-side sorting/filtering, column show/hide, column resize, export (JSON/CSV/SQL/Markdown), auto-refresh, pagination
-- **Phase 5 — Admin Tools** — `pg_dump`/`pg_restore` UI wrappers with real-time progress, DB-to-DB sync, backup/restore format selectors
-- **Phase 6 — Schema Visualizer** — Interactive ER diagram with React Flow + dagre, crow's foot notation, schema selector, legend, collapsible column views, PostgreSQL + SQLite support
-- **Home Screen & Organization** — Connection cards by folder, folders CRUD, tags CRUD with colors, global search (Cmd+K), import/export connections (JSON), bulk select/delete, DB type filter, feature-rich demo SQLite database (12 objects incl. a view, 500-row audit table, JSON/BLOB/composite-PK/no-PK/empty tables) with re-add + regenerate actions in Settings
-- **Query Editor (Core)** — Monaco SQL editor with Cmd+Enter execution, `execute_query` Rust command (PostgreSQL + SQLite, subquery pagination with raw fallback), query tabs in the DB viewer, destructive query confirmation dialog, `query_history` persistence backend
-- **Home Screen Filters** — Tag filter with OR semantics, folder cards matching tags or containing matching connections, DB type filter hiding empty folders, environment filter (All/Production/Staging/Development/None), global search across all folders with "Showing Search Results" breadcrumb + Clear
-- **Query History & Saved Queries** — toolbar history dropdown (load / run / favorite / clear), favorites, consecutive-identical dedup + 500-retention pruning, SaveQueryDialog, and a two-pane Queries view (History / Saved Queries sidebar scoped per connection + tabbed query workspace)
-- **Consolidated Navigation** — merged Functions/Triggers/Sequences/Enums/Extensions into a single Objects view (object-type dropdown) and Backup/Restore/DB Sync into a single Tools view (operation dropdown)
-- **Settings (Redesigned & Fully Wired)** — DB-viewer-styled settings screen (icon+text sidebar, tab-titled header, border-sharp no-card sections, Back returns to origin view); all settings functional: theme (light/dark/system, applied live + native macOS Overlay titlebar sync), font size, **accent color** (circle palette), default folder on startup, confirm-before-delete toggle, default ports prefill; drag-and-drop tag reorder
-- **Editor Settings, SSH/SSL Runtime, Data Import** — Monaco editor options (font size/family, word wrap, minimap, tab size) applied live; real SSH tunnel (`ssh2`, password + key auth, keychain secrets, full lifecycle) and TLS (`rustls`, all modes + client certs) for PostgreSQL/MySQL; CSV/JSON import with preview + column mapping through the changes queue; table-menu loose ends (Copy table schema DDL, Empty/Delete Table via queue, export stubs wired)
-- **v0.5.0 — Grid Interactivity, Home Polish, Deeper PostgreSQL** — inline cell editing (ctid/rowid locator, stale-write guard), keyboard navigation, cell copy + context menu, row-detail drawer, visual filter builder, bulk move-to-folder, favorites + recents, on-demand connection status indicator, PG Indexes/Constraints/Materialized Views/Stored Procedures object views; version 0.5.0.
+
+- Tauri 2.0 + React 19 + TypeScript 5.8 project shell
+- PostgreSQL and SQLite browse/query support
+- Connection management with URI parser, SSH tunnels, TLS, OS keychain
+- Workspace tree, folders, tags, favorites, recents
+- Multi-tab DB viewer with virtualized grid, server-side filtering/sorting
+- FK preview, JSON popover, inline cell editing, changes queue
+- Query editor with Monaco, autocomplete, destructive-query guard
+- Query history, saved queries, and Queries view
+- Full PostgreSQL object explorer + schema visualizer
+- Backup, restore, and DB-to-DB sync tools
+- Settings redesign with theme, accent color, editor options
+- Built-in **Gridline Demo (SQLite)** database
 
 ### 🔮 Future
-- **Multi-DB Support** — MySQL browsing, Redis key browser, full MySQL/SQLite/Redis parity with PostgreSQL
-- **Query Workbench** — Multiple result sets, visual query builder
-- **Deeper PostgreSQL** — user/role management, replication
-- **Notebook Reports** — SQL-backed markdown reports with embedded results
-- **AI Integration (BYOK)** — Bring-Your-Own-Key AI assistant: natural-language → SQL generation, query explanations, schema summaries, error suggestions. Key stored in OS keychain; only user's chosen provider sees SQL/text.
+
+- **Multi-DB parity** — MySQL browsing, Redis key browser
+- **Query workbench** — multiple result sets, visual query builder
+- **Deeper PostgreSQL** — user/role management, replication views
+- **Notebook reports** — SQL-backed markdown reports with embedded results
+- **AI assistant (BYOK)** — bring-your-own-key natural-language → SQL, query explanations, and schema summaries
+
+---
+
+## Table of Contents
+
+- [What is Gridline?](#what-is-gridline)
+- [Who is it for?](#who-is-it-for)
+- [Recent Changes](#recent-changes)
+- [Key Features](#key-features)
+- [Screenshots](#screenshots)
+- [Why Gridline vs the alternatives?](#why-gridline-vs-the-alternatives)
+- [Tech Stack](#tech-stack)
+- [Getting Started](#getting-started)
+- [Development](#development)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Contributing
+
+Contributions, bug reports, and feature ideas are welcome. Gridline is Apache 2.0-licensed and intentionally stays open — no paywalled tiers, no bundled proprietary services.
+
+- Open a [GitHub Issue](https://github.com/adrianbonpin/gridline/issues/new) for bugs or ideas.
+- Submit a pull request. Keep Tauri commands thin, type IPC boundaries explicitly, and follow the existing Rust/React conventions.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](./LICENSE) for details.
-
----
-
-<p align="center">
-  <sub>Built with ♥ for developers who believe powerful tools should be free.</sub>
-</p>
+Apache 2.0 — see [LICENSE](./LICENSE) for details.
