@@ -338,6 +338,7 @@ pub async fn get_schema_graph(
             })
         }
         Some(DbHandle::Sqlite(conn)) => build_sqlite_schema_graph(conn, &schema),
+        Some(DbHandle::MySql(_)) => Err("Schema visualizer not supported for MySQL".to_string()),
         None => Err("Connection not found".into()),
     }
 }

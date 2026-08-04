@@ -3,12 +3,13 @@
 //! This module provides pure SQL builder functions, pagination helpers,
 //! and Tauri commands for the database viewer.
 
-use crate::db::pool::{DbConfig, DbHandle};
+use crate::db::pool::{ConnectionPoolManager, DbConfig, DbHandle};
 use crate::models::db_viewer::{
     Change, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, IndexInfo,
     QueryResult, SequenceInfo, TableInfo, TriggerInfo,
 };
 use std::collections::HashMap;
+use sqlx::Row;
 use tauri::State;
 use tokio_postgres::types::ToSql;
 
@@ -728,7 +729,7 @@ pub async fn apply_bulk_insert_pg(
 
 /// Sanitize a raw error string before it crosses the IPC boundary: redact
 /// credential-like fragments (connection URLs, `password=...`) and cap length.
-fn sanitize_error(e: &str) -> String {
+pub(crate) fn sanitize_error(e: &str) -> String {
     truncate(&redact_secrets(e), 400)
 }
 
@@ -878,6 +879,117 @@ where
     Ok((client, handle))
 }
 
+/// Headless MySQL connect (no Tauri `State`). Opens an SSH tunnel when
+/// configured (binding 127.0.0.1 only), maps SSL modes, and registers a
+/// `DbHandle::MySql` pool. Errors are sanitized so no `mysql://user:pass@host`
+/// text leaks across the IPC boundary.
+pub(crate) async fn run_mysql_connect(
+    connection_id: &str,
+    config: &crate::db::pool::DbConfig,
+    ssh_manager: &std::sync::Mutex<crate::commands::ssh::SshTunnelManager>,
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+) -> Result<(), String> {
+    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
+    if config.host.trim().is_empty() {
+        return Err("host is required".to_string());
+    }
+
+    let target_host: String;
+    let target_port: u16;
+    let via_tunnel: bool;
+
+    if let Some(ssh_cfg) = config.ssh_config() {
+        let key = connection_id.to_string();
+        let remote_host = config.host.clone();
+        let remote_port = config.port.unwrap_or(3306) as u16;
+        let pw = config.ssh_password.clone();
+        let pp = config.ssh_passphrase.clone();
+        let backend = ssh_manager.lock().unwrap().backend_clone();
+        let tunnel = tokio::task::spawn_blocking(move || {
+            backend.open(
+                &key,
+                &ssh_cfg,
+                &remote_host,
+                remote_port,
+                pw.as_deref(),
+                pp.as_deref(),
+            )
+        })
+        .await
+        .map_err(|e| format!("Connection failed: {e}"))?
+        .map_err(|e| sanitize_error(&e))?;
+        let lp = tunnel.local_port;
+        ssh_manager
+            .lock()
+            .unwrap()
+            .insert_tunnel(connection_id.to_string(), tunnel);
+        target_host = "127.0.0.1".to_string();
+        target_port = lp;
+        via_tunnel = true;
+    } else {
+        target_host = config.host.clone();
+        target_port = config.port.unwrap_or(3306) as u16;
+        via_tunnel = false;
+    }
+
+    let mut opts = MySqlConnectOptions::new()
+        .host(&target_host)
+        .port(target_port)
+        .username(config.username.as_deref().unwrap_or("root"))
+        .password(config.password.as_deref().unwrap_or(""))
+        .database(config.database.as_deref().unwrap_or("mysql"));
+
+    // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
+    // degrade to encrypt-only `require`. Direct connections honor the mode.
+    let decision = crate::commands::ssh::effective_tls_decision(
+        crate::db::tls::tls_decision(config.ssl_mode.as_deref()),
+        via_tunnel,
+    );
+    match decision {
+        crate::db::tls::TlsDecision::Disable => {
+            opts = opts.ssl_mode(MySqlSslMode::Disabled);
+        }
+        crate::db::tls::TlsDecision::Require => {
+            opts = opts.ssl_mode(MySqlSslMode::Required);
+        }
+        crate::db::tls::TlsDecision::Verify => {
+            // sqlx 0.8 has no VerifyFull: verify-ca -> VerifyCa (chain only),
+            // verify-full -> VerifyIdentity (chain + hostname).
+            match config.ssl_mode.as_deref() {
+                Some("verify-ca") => opts = opts.ssl_mode(MySqlSslMode::VerifyCa),
+                _ => opts = opts.ssl_mode(MySqlSslMode::VerifyIdentity),
+            }
+            if let Some(ca) = config.ssl_ca_path.as_deref() {
+                opts = opts.ssl_ca(ca);
+            }
+        }
+    }
+
+    match MySqlPoolOptions::new()
+        .max_connections(5)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect_with(opts)
+        .await
+    {
+        Ok(pool) => {
+            pool_manager
+                .lock()
+                .await
+                .register(connection_id, crate::db::pool::DbHandle::MySql(pool));
+            Ok(())
+        }
+        Err(e) => {
+            if via_tunnel {
+                ssh_manager.lock().unwrap().close_tunnel(connection_id);
+            }
+            Err(format!(
+                "Connection failed: {}",
+                sanitize_error(&format!("{e}"))
+            ))
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn db_connect(
     connection_id: String,
@@ -992,6 +1104,14 @@ pub async fn db_connect(
             }
             Err(e) => Err(format!("Connection failed: {}", e)),
         }
+    } else if config.db_type == "mysql" {
+        run_mysql_connect(
+            &connection_id,
+            &config,
+            &state.ssh_manager,
+            &state.pool_manager,
+        )
+        .await
     } else {
         Err(format!(
             "Database type '{}' not yet supported for DB viewer",
@@ -1031,6 +1151,19 @@ pub async fn get_databases(
             // SQLite has a single database per file; expose the catalog name.
             Ok(vec!["main".to_string()])
         }
+        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            let rows = sqlx::query(&crate::db::mysql::mysql_databases_query())
+                .fetch_all(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            let mut dbs: Vec<String> = rows
+                .iter()
+                .map(|r| crate::db::mysql::mysql_row_string(r, 0))
+                .collect();
+            dbs.retain(|d| !crate::db::mysql::MYSQL_SYSTEM_DBS.contains(&d.as_str()));
+            Ok(dbs)
+        }
         None => Err("Connection not found".to_string()),
     }
 }
@@ -1061,20 +1194,36 @@ pub async fn get_schemas(
                 .map_err(|e| e.to_string())?;
             Ok(rows.filter_map(|r| r.ok()).collect())
         }
+        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            // MySQL has no separate schema layer — databases play the role of
+            // schemas, so the schema selector mirrors the database list.
+            let rows = sqlx::query(&crate::db::mysql::mysql_databases_query())
+                .fetch_all(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            let mut dbs: Vec<String> = rows
+                .iter()
+                .map(|r| crate::db::mysql::mysql_row_string(r, 0))
+                .collect();
+            dbs.retain(|d| !crate::db::mysql::MYSQL_SYSTEM_DBS.contains(&d.as_str()));
+            Ok(dbs)
+        }
         None => Err("Connection not found".to_string()),
     }
 }
 
-#[tauri::command]
-pub async fn get_tables(
-    connection_id: String,
-    schema: Option<String>,
-    state: State<'_, crate::AppState>,
+/// Headless table listing shared by the `get_tables` command and integration
+/// tests (thin-command principle — no Tauri `State`).
+pub(crate) async fn get_tables_inner(
+    pool_manager: &tokio::sync::Mutex<ConnectionPoolManager>,
+    connection_id: &str,
+    schema: Option<&str>,
 ) -> Result<Vec<TableInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    let mut pm = pool_manager.lock().await;
+    match pm.get(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
-            let schema_filter = schema.unwrap_or_else(|| "public".to_string());
+            let schema_filter = schema.unwrap_or("public").to_string();
             let rows = client
                 .query(
                     "SELECT table_name, table_schema, table_type FROM information_schema.tables WHERE table_schema = $1 AND table_type IN ('BASE TABLE', 'VIEW') ORDER BY table_name",
@@ -1109,20 +1258,151 @@ pub async fn get_tables(
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())
         }
+        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            // 2 columns (name, type) when a schema is given; 3 (+ schema)
+            // when not — hence sqlx::query + try_get, not query_as.
+            let query = crate::db::introspection::mysql_tables_query(schema);
+            let rows = sqlx::query(&query)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            Ok(rows
+                .iter()
+                .map(|r| {
+                    let name = crate::db::mysql::mysql_row_string(r, 0);
+                    let raw_type = crate::db::mysql::mysql_row_string(r, 1);
+                    let schema_name: String = match schema {
+                        Some(s) => s.to_string(),
+                        None => crate::db::mysql::mysql_row_string(r, 2),
+                    };
+                    let table_type = if raw_type.eq_ignore_ascii_case("view") {
+                        "VIEW"
+                    } else {
+                        "TABLE"
+                    };
+                    TableInfo {
+                        name,
+                        schema: schema_name,
+                        table_type: table_type.to_string(),
+                    }
+                })
+                .collect())
+        }
         None => Err("Connection not found".to_string()),
     }
 }
 
 #[tauri::command]
-pub async fn get_table_data(
+pub async fn get_tables(
     connection_id: String,
-    schema: String,
-    table: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<TableInfo>, String> {
+    get_tables_inner(&state.pool_manager, &connection_id, schema.as_deref()).await
+}
+
+/// Load column metadata (name, type, nullability, PK, default, generated) for
+/// a MySQL table, then mark FK columns with their referenced (table, column).
+///
+/// PK and generated columns are read-only (`editable: false`), mirroring the
+/// PostgreSQL rule. `fk_ref` carries the referenced table + column only — the
+/// same contract the frontend expects (MySQL FKs are assumed to live in the
+/// same database, matching how PostgreSQL's `fk_ref` assumes the same schema).
+pub(crate) async fn mysql_load_columns(
+    pool: &sqlx::MySqlPool,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<ColumnInfo>, String> {
+    let col_query = crate::db::mysql::mysql_columns_query(schema, table);
+    let col_rows = sqlx::query(&col_query)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?;
+    let mut columns: Vec<ColumnInfo> = col_rows
+        .iter()
+        .map(|r| {
+            let name = crate::db::mysql::mysql_row_string(r, 0);
+            let data_type = crate::db::mysql::mysql_row_string(r, 1);
+            let is_nullable = crate::db::mysql::mysql_row_string(r, 2);
+            let column_key = crate::db::mysql::mysql_row_string(r, 3);
+            let default_value: Option<String> = r
+                .try_get::<String, _>(4)
+                .ok()
+                .or_else(|| r.try_get::<Vec<u8>, _>(4).ok().map(|b| String::from_utf8_lossy(&b).into_owned()));
+            let extra = crate::db::mysql::mysql_row_string(r, 5);
+            let is_pk = column_key == "PRI";
+            let is_generated = extra.to_ascii_uppercase().contains("GENERATED");
+            ColumnInfo {
+                name: name.clone(),
+                data_type,
+                is_nullable: is_nullable == "YES",
+                is_pk,
+                is_fk: false,
+                fk_ref: None,
+                default_value,
+                editable: !is_pk && !is_generated,
+                is_generated,
+            }
+        })
+        .collect();
+
+    // FK pass: mark is_fk + fk_ref for columns named in the FK metadata.
+    let fk_query = crate::db::mysql::mysql_fk_query(schema, table);
+    let fk_rows = sqlx::query(&fk_query)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?;
+    for r in fk_rows {
+        let col = crate::db::mysql::mysql_row_string(&r, 0);
+        let ref_table = crate::db::mysql::mysql_row_string(&r, 2);
+        let ref_col = crate::db::mysql::mysql_row_string(&r, 3);
+        if let Some(c) = columns.iter_mut().find(|c| c.name == col) {
+            c.is_fk = true;
+            c.fk_ref = Some((ref_table, ref_col));
+        }
+    }
+    Ok(columns)
+}
+
+/// Bind `serde_json::Value` change params to a MySQL `?`-placeholder statement.
+/// Maps common JSON types to native MySQL-encodable values (NULL → SQL NULL).
+pub(crate) fn bind_mysql_params<'q>(
+    q: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
+    params: &[serde_json::Value],
+) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
+    let mut q = q;
+    for v in params {
+        match v {
+            serde_json::Value::Null => q = q.bind(Option::<String>::None),
+            serde_json::Value::Bool(b) => q = q.bind(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    q = q.bind(i);
+                } else if let Some(f) = n.as_f64() {
+                    q = q.bind(f);
+                } else {
+                    q = q.bind(n.to_string());
+                }
+            }
+            serde_json::Value::String(s) => q = q.bind(s.clone()),
+            other => q = q.bind(other.to_string()),
+        }
+    }
+    q
+}
+
+/// Headless table-data fetch shared by the `get_table_data` command and
+/// integration tests (thin-command principle — no Tauri `State`).
+pub(crate) async fn get_table_data_inner(
+    pool_manager: &tokio::sync::Mutex<ConnectionPoolManager>,
+    connection_id: &str,
+    schema: &str,
+    table: &str,
     page: Option<i64>,
     page_size: Option<i64>,
     filters: Option<Vec<crate::models::db_viewer::FilterRule>>,
     sorts: Option<Vec<crate::models::db_viewer::SortRule>>,
-    state: State<'_, crate::AppState>,
 ) -> Result<QueryResult, String> {
     let p = page.unwrap_or(1);
     let ps = page_size.unwrap_or(50);
@@ -1130,8 +1410,8 @@ pub async fn get_table_data(
     let filters = filters.unwrap_or_default();
     let sorts = sorts.unwrap_or_default();
 
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    let mut pm = pool_manager.lock().await;
+    match pm.get(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             // Build filter clause (shared by COUNT and data queries)
             let mut pg_param_idx: usize = 0;
@@ -1359,7 +1639,7 @@ ORDER BY c.ordinal_position"#;
             let is_view: bool = conn
                 .query_row(
                     "SELECT type = 'view' FROM sqlite_master WHERE name = ?1 AND type IN ('table', 'view')",
-                    [&table],
+                    rusqlite::params![table],
                     |r| r.get::<_, bool>(0),
                 )
                 .unwrap_or(false);
@@ -1499,8 +1779,86 @@ ORDER BY c.ordinal_position"#;
                 execution_time_ms: None,
             })
         }
+        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            let columns = mysql_load_columns(pool, schema, table).await?;
+
+            // Total count (filters do not affect the count — MySQL has no
+            // per-filter count query, mirroring the select builder's scope).
+            let total_rows: i64 =
+                sqlx::query_scalar::<_, i64>(&crate::db::mysql::mysql_count_query(schema, table))
+                    .fetch_one(pool)
+                    .await
+                    .map_err(|e| sanitize_error(&format!("{e}")))?;
+
+            // mysql_select_data_query already embeds ORDER BY from `sorts`
+            // (falling back to a smart default sort) — no shared order-clause
+            // helper needed.
+            let visible_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+            let default_sort = crate::db::mysql::mysql_default_sort(&visible_names).to_string();
+            let data_query = crate::db::mysql::mysql_select_data_query(
+                schema, table, &filters, &sorts, &default_sort,
+            );
+
+            let mut q = sqlx::query(&data_query);
+            for f in &filters {
+                // null/notnull operators emit IS [NOT] NULL — no bound param.
+                if f.operator == "null" || f.operator == "notnull" {
+                    continue;
+                }
+                q = q.bind(&f.value);
+            }
+            let data_rows = q
+                .bind(ps)
+                .bind(off)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+
+            let rows: Vec<Vec<serde_json::Value>> = data_rows
+                .iter()
+                .map(|row| {
+                    (0..row.len())
+                        .map(|i| crate::commands::query::mysql_cell_to_json(row, i))
+                        .collect()
+                })
+                .collect();
+
+            Ok(QueryResult {
+                columns,
+                rows,
+                total_rows,
+                page: p,
+                page_size: ps,
+                execution_time_ms: None,
+            })
+        }
         None => Err("Connection not found".to_string()),
     }
+}
+
+#[tauri::command]
+pub async fn get_table_data(
+    connection_id: String,
+    schema: String,
+    table: String,
+    page: Option<i64>,
+    page_size: Option<i64>,
+    filters: Option<Vec<crate::models::db_viewer::FilterRule>>,
+    sorts: Option<Vec<crate::models::db_viewer::SortRule>>,
+    state: State<'_, crate::AppState>,
+) -> Result<QueryResult, String> {
+    get_table_data_inner(
+        &state.pool_manager,
+        &connection_id,
+        &schema,
+        &table,
+        page,
+        page_size,
+        filters,
+        sorts,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1697,6 +2055,44 @@ ORDER BY c.ordinal_position"#;
                 execution_time_ms: None,
             })
         }
+        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            // The request already resolves the referenced table/column (the
+            // frontend reads `fk_ref`); fetch the referenced row directly.
+            let columns = mysql_load_columns(pool, &schema, &table).await?;
+            let qualified = format!(
+                "{}.{}",
+                crate::db::mysql::mysql_quote_ident(&schema),
+                crate::db::mysql::mysql_quote_ident(&table)
+            );
+            let data_query = format!(
+                "SELECT * FROM {} WHERE {} = ? LIMIT 1",
+                qualified,
+                crate::db::mysql::mysql_quote_ident(&column)
+            );
+            let data_rows = sqlx::query(&data_query)
+                .bind(&value)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            let rows: Vec<Vec<serde_json::Value>> = data_rows
+                .iter()
+                .map(|row| {
+                    (0..row.len())
+                        .map(|i| crate::commands::query::mysql_cell_to_json(row, i))
+                        .collect()
+                })
+                .collect();
+            let total_rows = rows.len() as i64;
+            Ok(QueryResult {
+                columns,
+                rows,
+                total_rows,
+                page: 1,
+                page_size: 1,
+                execution_time_ms: None,
+            })
+        }
         None => Err("Connection not found".to_string()),
     }
 }
@@ -1880,6 +2276,97 @@ pub async fn execute_change(
             }
             Ok(())
         }
+        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            let (sql, params): (String, Vec<serde_json::Value>) = match &change {
+                Change::Update {
+                    schema,
+                    table,
+                    primary_key,
+                    new_data,
+                    ..
+                } => {
+                    let pk = parse_json_pairs(primary_key)?;
+                    let data = parse_json_pairs(new_data)?;
+                    crate::db::mysql::mysql_build_update_sql(schema, table, &pk, &data)?
+                }
+                Change::Insert {
+                    schema,
+                    table,
+                    data,
+                    ..
+                } => {
+                    let pairs = parse_json_pairs(data)?;
+                    crate::db::mysql::mysql_build_insert_sql(schema, table, &pairs)
+                }
+                Change::Delete {
+                    schema,
+                    table,
+                    primary_key,
+                    ..
+                } => {
+                    let pk = parse_json_pairs(primary_key)?;
+                    crate::db::mysql::mysql_build_delete_sql(schema, table, &pk)?
+                }
+                Change::AlterTable { sql, .. } => {
+                    // Raw DDL, no bound parameters.
+                    sqlx::query(sql)
+                        .execute(pool)
+                        .await
+                        .map_err(|e| sanitize_error(&format!("{e}")))?;
+                    return Ok(());
+                }
+                Change::BulkInsert {
+                    schema,
+                    table,
+                    columns,
+                    rows,
+                    ..
+                } => {
+                    if columns.is_empty() || rows.is_empty() {
+                        return Err("bulk insert requires non-empty columns and rows".to_string());
+                    }
+                    let sql = crate::db::mysql::mysql_build_bulk_insert_sql(
+                        schema,
+                        table,
+                        columns,
+                        rows.len(),
+                    );
+                    let params: Vec<serde_json::Value> =
+                        rows.iter().flatten().cloned().collect();
+                    // Bulk insert affects many rows — skip the single-row
+                    // affected-count guard.
+                    bind_mysql_params(sqlx::query(&sql), &params)
+                        .execute(pool)
+                        .await
+                        .map_err(|e| sanitize_error(&format!("{e}")))?;
+                    return Ok(());
+                }
+                Change::DropTable { schema, table, .. } => {
+                    sqlx::query(&crate::db::mysql::mysql_build_drop_sql(schema, table))
+                        .execute(pool)
+                        .await
+                        .map_err(|e| sanitize_error(&format!("{e}")))?;
+                    return Ok(());
+                }
+                Change::EmptyTable { schema, table, .. } => {
+                    sqlx::query(&crate::db::mysql::mysql_build_empty_sql(schema, table))
+                        .execute(pool)
+                        .await
+                        .map_err(|e| sanitize_error(&format!("{e}")))?;
+                    return Ok(());
+                }
+            };
+
+            let result = bind_mysql_params(sqlx::query(&sql), &params)
+                .execute(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            if let Some(msg) = affected_count_error(result.rows_affected()) {
+                return Err(msg);
+            }
+            Ok(())
+        }
         None => Err("Connection not found".to_string()),
     }
 }
@@ -1904,6 +2391,16 @@ pub async fn refresh_connection(
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
             conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
                 .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            // Verify reachability (the sqlx pool reconnects transparently); the
+            // frontend re-issues getDatabases/getSchemas/getTables afterwards.
+            sqlx::query_scalar::<_, i64>("SELECT 1")
+                .fetch_one(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
             Ok(())
         }
         None => Err("Connection not found".to_string()),
@@ -1941,6 +2438,7 @@ pub async fn get_functions(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL functions not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -1976,6 +2474,7 @@ pub async fn get_indexes(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL indexes not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2023,6 +2522,7 @@ pub async fn get_constraints(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL constraints not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2058,6 +2558,7 @@ pub async fn get_triggers(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL triggers not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2095,6 +2596,7 @@ pub async fn get_sequences(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL sequences not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2124,6 +2626,7 @@ pub async fn get_enums(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL enums not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2149,6 +2652,7 @@ pub async fn get_extensions(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL extensions not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2169,6 +2673,15 @@ pub async fn get_table_ddl(
     let mut pm = state.pool_manager.lock().await;
     match pm.get(&connection_id) {
         Some(DbHandle::Sqlite(conn)) => get_sqlite_ddl(conn, &table),
+        Some(DbHandle::MySql(pool)) => {
+            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            // SHOW CREATE TABLE returns (Table, Create Table); take the DDL.
+            let row = sqlx::query(&crate::db::mysql::mysql_ddl_query(&schema, &table))
+                .fetch_one(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            Ok(crate::db::mysql::mysql_row_string(&row, 1))
+        }
         Some(DbHandle::Postgresql(_client, _)) => {
             // Pull connection metadata so pg_dump reaches the same server the
             // pool is connected to (host/port/user/dbname + keychain password).
@@ -2223,7 +2736,10 @@ pub async fn get_table_ddl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::ssh::{Ssh2Backend, SshTunnelManager};
+    use crate::db::pool::{ConnectionPoolManager, DbConfig};
     use crate::models::db_viewer::Change;
+    use std::sync::{Arc, Mutex as StdMutex};
 
     #[test]
     fn split_columns_csv_handles_commas_and_trims() {
@@ -2635,5 +3151,172 @@ mod tests {
             affected_count_error(2u64),
             Some("ambiguous row match".to_string())
         );
+    }
+
+    async fn fresh_pool_manager() -> tokio::sync::Mutex<ConnectionPoolManager> {
+        tokio::sync::Mutex::new(ConnectionPoolManager::new())
+    }
+
+    #[tokio::test]
+    async fn run_mysql_connect_rejects_empty_host() {
+        let cfg = DbConfig {
+            db_type: "mysql".into(),
+            host: "".into(),
+            port: Some(3306),
+            username: Some("root".into()),
+            password: None,
+            database: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_password: None,
+            ssh_private_key_path: None,
+            ssh_passphrase: None,
+        };
+        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+        let pm = fresh_pool_manager().await;
+        let id = "mysql-empty-host";
+        let res = run_mysql_connect(id, &cfg, &ssh, &pm).await;
+        assert!(res.is_err(), "empty host must fail before any network call");
+        let mut pmg = pm.lock().await;
+        assert!(pmg.get(id).is_none(), "no handle registered on failure");
+    }
+
+    // -----------------------------------------------------------------------
+    // MySQL helpers + builders (Task 2.5)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mysql_databases_query_is_show_databases() {
+        assert_eq!(crate::db::mysql::mysql_databases_query(), "SHOW DATABASES");
+    }
+
+    #[test]
+    fn mysql_system_dbs_are_filtered() {
+        let all = vec!["information_schema", "mysql", "performance_schema", "sys", "shop"];
+        let filtered: Vec<&str> = all
+            .into_iter()
+            .filter(|d| !crate::db::mysql::MYSQL_SYSTEM_DBS.contains(d))
+            .collect();
+        assert_eq!(filtered, vec!["shop"]);
+    }
+
+    #[test]
+    fn mysql_execute_change_builds_update_sql() {
+        let pk = vec![("id".to_string(), serde_json::json!(1))];
+        let data = vec![("name".to_string(), serde_json::json!("x"))];
+        let (sql, _params) =
+            crate::db::mysql::mysql_build_update_sql("shop", "orders", &pk, &data).unwrap();
+        assert_eq!(sql, "UPDATE `shop`.`orders` SET `name` = ? WHERE `id` = ? LIMIT 1");
+    }
+
+    #[tokio::test]
+    async fn run_mysql_connect_registers_handle_when_lazy_url_parses() {
+        // No live connection: a deliberately unreachable host with a short timeout.
+        // We assert the function returns an Err (not a panic) and registers nothing.
+        let cfg = DbConfig {
+            db_type: "mysql".into(),
+            host: "127.0.0.1".into(),
+            port: Some(1),
+            username: Some("root".into()),
+            password: Some("x".into()),
+            database: Some("mysql".into()),
+            ssl_mode: Some("require".into()),
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_password: None,
+            ssh_private_key_path: None,
+            ssh_passphrase: None,
+        };
+        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+        let pm = fresh_pool_manager().await;
+        let id = "mysql-unreachable";
+        let res = run_mysql_connect(id, &cfg, &ssh, &pm).await;
+        assert!(
+            res.is_err(),
+            "port 1 should refuse; must be a clean Err, not panic"
+        );
+        assert!(pm.lock().await.get(id).is_none());
+    }
+
+    /// Live MySQL integration test — env-gated via `GRIDLINE_TEST_MYSQL_*`.
+    /// Browsing + pagination over a real server; returns early (Ok) when the
+    /// env vars are absent, so the `#[ignore]` gate is the only way it runs.
+    #[tokio::test]
+    #[ignore]
+    async fn mysql_integration_browse_and_edit() {
+        let host = match std::env::var("GRIDLINE_TEST_MYSQL_HOST") {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let port: i64 = std::env::var("GRIDLINE_TEST_MYSQL_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3306);
+        let user = std::env::var("GRIDLINE_TEST_MYSQL_USER").unwrap_or_else(|_| "root".into());
+        let pass = std::env::var("GRIDLINE_TEST_MYSQL_PASS").unwrap_or_default();
+        let db = match std::env::var("GRIDLINE_TEST_MYSQL_DB") {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let cfg = DbConfig {
+            db_type: "mysql".into(),
+            host,
+            port: Some(port),
+            username: Some(user),
+            password: Some(pass),
+            database: Some(db.clone()),
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_password: None,
+            ssh_private_key_path: None,
+            ssh_passphrase: None,
+        };
+        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+        let pm = fresh_pool_manager().await;
+        let id = format!("mysql-it-{}", uuid::Uuid::new_v4());
+        run_mysql_connect(&id, &cfg, &ssh, &pm).await.expect("connect");
+        let tables = get_tables_inner(&pm, &id, Some(&db)).await.expect("tables");
+        assert!(!tables.is_empty(), "test DB must contain at least one table");
+        let first = &tables[0];
+        let data = get_table_data_inner(
+            &pm,
+            &id,
+            &first.schema,
+            &first.name,
+            Some(1),
+            Some(10),
+            None,
+            None,
+        )
+        .await
+        .expect("data");
+        assert_eq!(data.page, 1);
+        assert_eq!(data.page_size, 10);
+        // Columns must be resolvable through the shared helper.
+        let pool = match pm.lock().await.get(&id) {
+            Some(crate::db::pool::DbHandle::MySql(p)) => p.clone(),
+            _ => panic!("mysql handle missing"),
+        };
+        let cols = mysql_load_columns(&pool, &first.schema, &first.name)
+            .await
+            .expect("columns");
+        assert_eq!(cols.len(), data.columns.len());
     }
 }

@@ -8,7 +8,9 @@ import {
 } from "./DbViewerScreen";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useConnectionStore } from "../../stores/connectionStore";
 import * as commands from "../../lib/commands";
+import type { Connection } from "../../lib/types";
 
 vi.mock("../../hooks/useDbConnection", () => ({
     useDbConnection: (_connectionId: string) => ({
@@ -92,6 +94,7 @@ const mockQueryResult = {
 describe("DbViewerScreen", () => {
     beforeEach(() => {
         useDbViewerStore.getState().reset();
+        useConnectionStore.setState({ connections: [] });
         useDbViewerStore.setState({
             databases: ["mydb"],
             schemas: ["public"],
@@ -596,6 +599,46 @@ describe("DbViewerScreen", () => {
         );
     });
 
+    it("shows the table toolbar while a table tab is still loading its first data", () => {
+        useDbViewerStore.setState({
+            tabs: [
+                {
+                    id: "tab-loading",
+                    schema: "public",
+                    table: "users",
+                    page: 1,
+                    pageSize: 50,
+                    loading: true,
+                    error: null,
+                    data: null, // first fetch still in flight
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: false,
+                    tabType: "table",
+                },
+            ],
+            activeTabId: "tab-loading",
+        });
+
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+
+        // Toolbar must be visible immediately while data is still loading,
+        // so the user sees the loading state instead of an empty pane.
+        expect(
+            screen.getByLabelText(/refresh table/i),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByLabelText(/column filters/i),
+        ).toBeInTheDocument();
+    });
+
     it("disables Insert Row for a materialized-view tab", async () => {
         useDbViewerStore.setState({
             tables: [
@@ -820,5 +863,89 @@ describe("DbViewerScreen", () => {
     it("pickDisplayColumn falls back to the ref column when nothing is name-like", () => {
         const cols = [{ name: "id", data_type: "integer" }];
         expect(pickDisplayColumn(cols, "id")).toBe("id");
+    });
+
+    it("shows a Redis unsupported state when a redis connection is active", () => {
+        useConnectionStore.setState({
+            connections: [
+                {
+                    id: "redis-1",
+                    name: "Redis",
+                    db_type: "redis",
+                    host: "localhost",
+                    port: 6379,
+                    username: null,
+                    folder_id: null,
+                    keychain_ref: null,
+                    tag_ids: [],
+                    favorite: false,
+                    created_at: "2024-01-01T00:00:00Z",
+                    updated_at: "2024-01-01T00:00:00Z",
+                } as Connection,
+            ],
+        });
+        render(
+            <DbViewerScreen
+                connectionId="redis-1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        expect(
+            screen.getByText(/redis browsing isn't supported/i),
+        ).toBeInTheDocument();
+    });
+
+    it("guards the Objects view for MySQL (capability false)", () => {
+        useConnectionStore.setState({
+            connections: [
+                {
+                    id: "c1",
+                    name: "Postgres",
+                    db_type: "postgresql",
+                    host: "localhost",
+                    port: 5432,
+                    username: "user",
+                    folder_id: null,
+                    keychain_ref: null,
+                    tag_ids: [],
+                    favorite: false,
+                    created_at: "2024-01-01T00:00:00Z",
+                    updated_at: "2024-01-01T00:00:00Z",
+                } as Connection,
+                {
+                    id: "mysql-1",
+                    name: "MySQL",
+                    db_type: "mysql",
+                    host: "localhost",
+                    port: 3306,
+                    username: "user",
+                    folder_id: null,
+                    keychain_ref: null,
+                    tag_ids: [],
+                    favorite: false,
+                    created_at: "2024-01-01T00:00:00Z",
+                    updated_at: "2024-01-01T00:00:00Z",
+                } as Connection,
+            ],
+        });
+        const { rerender } = render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        fireEvent.click(screen.getByLabelText(/objects/i));
+        rerender(
+            <DbViewerScreen
+                connectionId="mysql-1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        expect(
+            screen.getByText(/objects is unsupported for mysql/i),
+        ).toBeInTheDocument();
     });
 });

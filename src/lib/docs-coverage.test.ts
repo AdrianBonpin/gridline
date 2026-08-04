@@ -4,7 +4,7 @@ import { describe, it, expect } from "vitest";
 import agents from "../../AGENTS.md?raw";
 import readme from "../../README.md?raw";
 
-describe("v0.6.0 docs coverage", () => {
+describe("v0.7.0 docs coverage", () => {
   it("AGENTS.md marks inline cell editing complete", () => {
     expect(agents).toContain("Inline cell editing");
     expect(agents).toMatch(/Inline cell editing \| ✅/);
@@ -24,14 +24,15 @@ describe("v0.6.0 docs coverage", () => {
     expect(agents).toMatch(/Connection status indicator on cards \| ✅/);
     expect(agents).toMatch(/Move-to-folder bulk action \| ✅/);
   });
-  it("README declares v0.6.0", () => {
-    expect(readme).toContain("0.6.0");
+  it("README declares v0.7.0", () => {
+    expect(readme).toContain("0.7.0");
   });
   it("README marks inline editing complete (not Upcoming)", () => {
     // Key Features lists inline editing as a shipped feature
     expect(readme).toMatch(/- \*\*Inline cell editing\*\* —/);
-    // comparison-table row for the stage→commit queue carries the ✅ marker
-    expect(readme).toMatch(/Changes queue \(stage → commit\)\s*\|[^|]*❌[^|]*\|[^|]*❌[^|]*\|\s*\*\*✅ Queue → Commit All\*\*/);
+    // comparison-table row for the stage→commit queue carries the Gridline ✅ marker
+    // (5-column table: Feature | DB Pro | Beekeeper | TablePlus | Gridline)
+    expect(readme).toMatch(/Changes queue \(stage → commit\)\s*\|[^|]*❌[^|]*\|[^|]*\|[^|]*\|\s*\*\*✅ Queue → Commit All\*\*/);
     expect(readme).not.toMatch(/Inline cell editing.*Upcoming/);
   });
 });

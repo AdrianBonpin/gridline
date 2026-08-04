@@ -26,6 +26,8 @@ const BASE_FORM: ConnectionFormData = {
 function StatefulForm(
   props: Omit<DetailedConnectionFormProps, "form" | "onChange"> & {
     onChange?: (updates: Partial<ConnectionFormData>) => void;
+    folders?: unknown;
+    tags?: unknown;
   },
 ) {
   const [form, setForm] = useState<ConnectionFormData>(BASE_FORM);
@@ -51,5 +53,25 @@ describe("DetailedConnectionForm", () => {
     await user.type(screen.getByLabelText(/port/i), "5432");
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ host: "localhost" }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ port: 5432 }));
+  });
+
+  it("renders only General and SSH / SSL tabs (no Tags & Env)", () => {
+    render(<StatefulForm folders={[]} tags={[]} onChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /^general$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ssh \/ ssl/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /tags & env/i })).not.toBeInTheDocument();
+  });
+
+  it("renders the metadata row (Connection Label) above the tabs", () => {
+    render(<StatefulForm folders={[]} tags={[]} onChange={() => {}} />);
+    expect(screen.getByLabelText(/connection label/i)).toBeInTheDocument();
+  });
+
+  it("updates host via the General tab", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<StatefulForm folders={[]} tags={[]} onChange={onChange} />);
+    await user.type(screen.getByLabelText(/host/i), "localhost");
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ host: "localhost" }));
   });
 });

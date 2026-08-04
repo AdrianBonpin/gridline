@@ -5,6 +5,7 @@ import { DetailedConnectionForm } from "../connections/DetailedConnectionForm";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { updateConnection, testConnection, saveConnectionPassword, saveConnectionSshPassword, saveConnectionSshPassphrase } from "../../lib/commands";
+import { detectProviderFromHost } from "../../lib/connectionString";
 import type { Connection, ConnectionInput } from "../../lib/types";
 import type { ConnectionFormData } from "../connections/connectionFormData";
 
@@ -21,6 +22,8 @@ export function EditConnectionModal({
   onClose,
   onSaved,
 }: EditConnectionModalProps) {
+  const managedPreset = detectProviderFromHost(connection.host);
+
   const [form, setForm] = useState<ConnectionFormData>(() => ({
     name: connection.name,
     environment: (connection.environment as ConnectionFormData["environment"]) ?? null,
@@ -132,7 +135,7 @@ export function EditConnectionModal({
     <AnimatedModal open={open} onClose={onClose}>
       <div className="w-full min-w-md max-w-lg max-h-[80vh] overflow-y-auto">
         <h3 className="font-heading text-text text-lg mb-4">Edit Connection</h3>
-        <DetailedConnectionForm form={form} onChange={(updates) => setForm((prev) => ({ ...prev, ...updates }))} />
+        <DetailedConnectionForm form={form} onChange={(updates) => setForm((prev) => ({ ...prev, ...updates }))} managedPreset={managedPreset} />
         <div className="flex justify-end gap-2 mt-4">
           <Button variant="ghost" onClick={handleTest} disabled={testing}>
             {testing ? "Testing..." : "Test"}

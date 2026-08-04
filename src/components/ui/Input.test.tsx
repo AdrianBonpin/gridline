@@ -14,4 +14,11 @@ describe("Input", () => {
     await userEvent.type(screen.getByPlaceholderText("x"), "hi");
     expect(fn).toHaveBeenLastCalledWith("hi");
   });
+
+  it("uses the shared rounded (non-pill) radius", () => {
+    const { container } = render(<Input value="" onChange={() => {}} aria-label="x" />);
+    const input = container.querySelector("input")!;
+    expect(input.className).toContain("rounded-lg");
+    expect(input.className).not.toContain("rounded-full");
+  });
 });

@@ -73,6 +73,31 @@ describe("useDbConnection", () => {
     mockConnection.ssh_auth_method = null;
   });
 
+  it("sets schemaTreeLoading around the connect fetch", async () => {
+    mockCommands.getSchemas.mockImplementation(
+      () => new Promise((res) => setTimeout(() => res(["public"]), 50)),
+    );
+    render(<Harness />);
+    fireEvent.click(screen.getByText("connect"));
+
+    await waitFor(() =>
+      expect(useDbViewerStore.getState().schemaTreeLoading).toBe(true),
+    );
+    await waitFor(() =>
+      expect(useDbViewerStore.getState().schemaTreeLoading).toBe(false),
+    );
+  });
+
+  it("clears schemaTreeLoading when connect throws", async () => {
+    mockCommands.getSchemas.mockRejectedValue(new Error("boom"));
+    render(<Harness />);
+    fireEvent.click(screen.getByText("connect"));
+
+    await waitFor(() =>
+      expect(useDbViewerStore.getState().schemaTreeLoading).toBe(false),
+    );
+  });
+
   it("connects and smart-selects the public schema when available", async () => {
     render(<Harness />);
     fireEvent.click(screen.getByText("connect"));

@@ -8,11 +8,21 @@ import {
     Share2,
 } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
+import { DB_CAPABILITIES, type DbCapabilities } from "../../lib/dbCapabilities";
 
 export interface DbViewerSidebarProps {
     currentView: string;
     onNavigate: (view: string) => void;
+    capabilities?: DbCapabilities;
 }
+
+export const NAV_CAPABILITY_KEY: Record<string, keyof DbCapabilities> = {
+    "db-viewer": "explorer",
+    queries: "queries",
+    "schema-visualizer": "visualizer",
+    objects: "objects",
+    tools: "tools",
+};
 
 interface NavItem {
     id: string;
@@ -24,6 +34,7 @@ interface NavItem {
 export function DbViewerSidebar({
     currentView,
     onNavigate,
+    capabilities = DB_CAPABILITIES.postgresql,
 }: DbViewerSidebarProps) {
     const topItems: NavItem[] = [
         { id: "db-viewer", label: "Explorer", icon: <Database size={16} /> },
@@ -40,6 +51,10 @@ export function DbViewerSidebar({
         { id: "objects", label: "Objects", icon: <Boxes size={16} /> },
         { id: "tools", label: "Tools", icon: <DatabaseBackup size={16} /> },
     ];
+
+    const visibleTopItems = topItems.filter(
+        (item) => capabilities[NAV_CAPABILITY_KEY[item.id]]
+    );
 
     const bottomItems: NavItem[] = [
         { id: "home", label: "Home", icon: <Home size={16} /> },
@@ -73,7 +88,7 @@ export function DbViewerSidebar({
     return (
         <div className="w-14 h-full bg-canvas border-r border-border flex flex-col items-center py-3 gap-2 shrink-0">
             <div className="flex flex-col gap-2 flex-1">
-                {topItems.map(renderItem)}
+                {visibleTopItems.map(renderItem)}
             </div>
             <div className="flex flex-col gap-2">
                 {bottomItems.map(renderItem)}

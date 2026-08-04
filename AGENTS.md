@@ -8,10 +8,15 @@ Guidance for AI coding agents working on **Gridline**.
 
 Gridline is an **open-source, cross-platform database GUI client** for PostgreSQL (with MySQL, SQLite, and Redis to follow). It is built as a **Tauri 2.0 desktop app** — a lightweight native shell (~40MB baseline) around a React web frontend, with a Rust backend handling all database operations, CLI tool orchestration, and local persistence.
 
-**Core differentiators from commercial alternatives (DB Pro, TablePlus, etc.):**
-- No paywalls — unlimited tabs, connections, and saved queries by default
-- First-class PostgreSQL administration: `pg_dump`, `pg_restore`, DB-to-DB sync
-- Full object explorer: Functions, Triggers, Sequences, Enums, Extensions — not just tables
+**Core differentiators from commercial alternatives (DB Pro, TablePlus, Beekeeper Studio):**
+- **Everything free, nothing paywalled** — where DB Pro caps free users at 2 connections / 3 tabs / 5 saved queries, TablePlus caps at 2 open tabs + 2 windows, and Beekeeper reserves backup/restore, file import, multi-table export, ERD, and several DB connectors (Oracle, MongoDB, ClickHouse…) for paid tiers, Gridline ships the full feature set with no limits on tabs, connections, or saved queries
+- **DB-to-DB sync** — pipe-based `pg_dump` → `pg_restore` between two live connections; none of the alternatives (DB Pro, TablePlus, Beekeeper) offer direct DB-to-DB sync — they only back up to / restore from files
+- **Deeper PostgreSQL object explorer** — full detail views for Functions, Triggers, Sequences, Enums, and Extensions; Beekeeper and TablePlus show tables/views/routines/triggers but no sequences, enums, or extensions (Beekeeper can't even display routine definitions — issue #329 open since 2020), while DB Pro's tree stops at tables, views, indexes, and enums
+
+**Competitor reality check (verified 2026-05, from vendor docs/pricing/repos — keep this accurate):**
+- **DB Pro** (dbpro.app): **Electron app** (founder-confirmed on HN; launched Nov 2025) — not native despite "native macOS, Windows, Linux apps" marketing copy. Free plan = 2 connections / 5 saved queries / 3 open tabs / 2 dashboards / 2 table tags; data imports + SSH tunneling are paid-only per the pricing table/FAQ, while CSV/JSON export **does work on the free tier** (paid plans advertise "unlimited exports"; FAQ inconsistently claims "unlimited local connections"). Has query folders, dashboard folders, and table tags (roadmap 100%). No backup/restore (no pg_dump/pg_restore anywhere) and no DB-to-DB sync — the "Deeper Database Management" roadmap (indexes, users, constraints, VACUUM/ANALYZE) is still 0%. Schema tree: tables, views, indexes, relationships, and enums (since v1.6.0); MSSQL also lists stored procedures — no functions, triggers, sequences, or extensions on PG. Timeline: v1.0 Nov 2025 → v1.4 MSSQL/SSH/Keychain/Neon (Jan 2026) → v1.6 Redis/enums (Feb 2026) → self-hosted Studio (Mar 2026). Marketing overclaims ("native", Neon listed before it shipped) and known bugs (strict TLS verification blocks some Supabase pooler connections).
+- **Beekeeper Studio**: free Community edition = unlimited connections, no tab limits, saved queries, local folders (5.7+), staged Apply/Discard edits, basic query-result export. Paid-only: pg_dump/pg_restore backup/restore, file import, multi-table export, ERD, AI shell, JSON sidebar, cloud workspaces, and premium DB connectors (Oracle, MongoDB, ClickHouse, DuckDB…). Sidebar shows tables/views/matviews/routines/triggers — no sequences, enums, or extensions.
+- **TablePlus**: free = 2 open tabs / 2 windows / 2 advanced filters, but every other feature is included (incl. pg_dump/mysqldump backup GUI). No DB-to-DB sync, no ERD, no folder hierarchy. Sidebar: tables, views, functions, procedures.
 
 **Target audience:** Developers managing multiple database environments across projects (Personal, Work, Client). The workspace/folder hierarchy is a first-class concept.
 
@@ -182,15 +187,18 @@ cargo test               # Rust tests
 
 ✅ = Complete &nbsp; 🟡 = Partial/Stub &nbsp; ❌ = Not Started
 
+Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of truth for what's next); this table reflects the current codebase and may lag planned work. See also the [architectural spec for the in-flight v0.7.0 work](./docs/superpowers/specs/2026-08-04-architectural-spec.md).
+
 ### Connection Management
 | Feature | Status | Details |
 | :--- | :---: | :--- |
 | Connections CRUD (PostgreSQL, MySQL, SQLite, Redis) | ✅ | Full create/read/update/delete with form validation |
+| New Connection screen (revamped) | ✅ | Two-stage entry → configured flow: Connection URI + 6-card provider grid (PostgreSQL / MySQL / SQLite / Redis / Supabase / NeonDB) with an OR divider → expands into label + tags/env/folder + General|SSH·SSL tabs. Supabase & NeonDB are managed-PostgreSQL presets (persist as `postgresql`) with in-app setup guides + SSL hints; SQLite swaps the URI field for a file-path + Browse input (v0.7.0) |
 | Connection testing (all DB types) | ✅ | PostgreSQL, MySQL, SQLite, Redis all testable |
 | DB Viewer: PostgreSQL browse + query | ✅ | Schemas, tables, paginated data, FK preview, JSON viewer |
 | DB Viewer: SQLite browse + query | ✅ | Full support via rusqlite |
-| DB Viewer: MySQL browse | ❌ | Test connection works; browsing not wired |
-| DB Viewer: Redis browse | ❌ | Test connection works; browsing not wired |
+| DB Viewer: MySQL browse + query + edit | ✅ | Full viewer: connect (SSL + SSH tunnel), databases/tables/columns/FKs, query + pagination, inline cell editing + changes queue, DDL copy (`SHOW CREATE TABLE`), CSV/JSON import — added in v0.7.0. PK-only editing (no ctid equivalent); VARBINARY `information_schema` columns decoded correctly |
+| DB Viewer: Redis browse | ❌ | Connection + test only; browsing gated off with a clean "not supported" state (v0.7.0) |
 | Password storage in OS keychain | ✅ | macOS Keychain, Linux Secret Service, Windows Credential Manager |
 | SSH tunnel config UI | ✅ | Host, port, user, auth method, key path, passphrase fields |
 | SSH tunnel runtime | ✅ | Real ssh2 tunnel (password + key auth), binds 127.0.0.1 only, secrets in OS keychain (`ssh_password:<id>` / `ssh_passphrase:<id>`), closed on pool eviction / app exit; TLS downgraded to `require` through the tunnel |
@@ -203,6 +211,7 @@ cargo test               # Rust tests
 | Connection cards grid (by folder) | ✅ | Grouped display, single-click to open DB viewer |
 | Folders CRUD | ✅ | Nested folders, reparent on delete, breadcrumb nav |
 | Tags CRUD | ✅ | Colors, drag reorder, filter connections by tag |
+| Tag overflow scroll on cards | ✅ | Connection cards show up to 3 tags, then the row scrolls horizontally (v0.7.0) |
 | Tag filter dropdown | ✅ | ActionRow Tags button → dropdown with checkboxes, active-count badge, Manage tags → Settings. **OR semantics** — a connection shows if it has ANY selected tag (not all) |
 | Folder tag matching | ✅ | When any filter is active, folder cards show only if the folder matches a selected tag OR contains matching connections (directly or in subfolders) |
 | DB type filter (Postgres/MySQL/SQLite/Redis) | ✅ | Dropdown with checkboxes + Clear all; folder cards hidden when their contents don't match the DB type |
@@ -222,7 +231,9 @@ cargo test               # Rust tests
 | Feature | Status | Details |
 | :--- | :---: | :--- |
 | Multi-tab table browser | ✅ | Open tables in tabs, close with Cmd/Ctrl+W |
-| Schema/database selector | ✅ | Ghost-style dropdowns, single-row layout |
+| DB viewer capability gating | ✅ | `dbCapabilities.ts` matrix per `db_type` (PG full; SQLite explorer/queries/visualizer/editing/import; MySQL explorer/queries/editing/import; Redis none); unsupported views show a clean "not supported" state. Redis browsing gated off (v0.7.0) |
+| Schema/database selector | ✅ | Ghost-style dropdowns, single-row layout; schema dropdown + tables tree show a loading state while the schema tree is still fetching, instead of an empty "no tables" state (v0.7.0) |
+| Table toolbar during load | ✅ | Toolbar renders immediately when a tab opens while data is still fetching, so the loading state is visible (v0.7.0) |
 | Refresh database (spin + success/error feedback) | ✅ | Re-fetches databases, schemas, and tables |
 | Search tables filter | ✅ | Animated input, real-time filter by name, auto-hide on blur |
 | Column metadata (PK, FK, type, nullable, default) | ✅ | Expand table row to see columns with icons. ENUM/custom types resolved via udt_name, cast ::text for data retrieval. |
@@ -330,6 +341,8 @@ cargo test               # Rust tests
 
 ## Related Documents
 
+- [Project Roadmap](./ROADMAP.md) — source of truth for planned work (in-development, next-up, queue, shipped)
+- [Architectural Spec: v0.7.0 connection-screen revamp](./docs/superpowers/specs/2026-08-04-architectural-spec.md) — current in-flight work
 - [Tauri 2.0 Documentation](https://tauri.app/develop/)
 - [sqlx Documentation](https://docs.rs/sqlx)
 - [Monaco Editor API](https://microsoft.github.io/monaco-editor/api/)

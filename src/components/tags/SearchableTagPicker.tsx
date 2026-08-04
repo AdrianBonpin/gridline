@@ -24,7 +24,7 @@ export function SearchableTagPicker({ tags, selectedTagIds, onToggle }: Searchab
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search tags..."
-          className="w-full rounded-full bg-surface border border-border pl-7 pr-3 py-1.5 text-xs text-text placeholder-text-muted/60 focus:outline-none focus:border-accent transition-colors"
+          className="w-full rounded-lg bg-surface border border-border pl-7 pr-3 py-1.5 text-xs text-text placeholder-text-muted/60 focus:outline-none focus:border-accent transition-colors"
         />
       </div>
       <div className="max-h-32 overflow-y-auto space-y-1">
@@ -100,7 +100,7 @@ function InlineTagCreator({ onCreated }: { onCreated: (tagId: string) => void })
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="Tag name"
-        className="w-full rounded-full bg-surface border border-border px-3 py-1.5 text-xs text-text placeholder-text-muted/60 focus:outline-none focus:border-accent transition-colors"
+        className="w-full rounded-lg bg-surface border border-border px-3 py-1.5 text-xs text-text placeholder-text-muted/60 focus:outline-none focus:border-accent transition-colors"
         autoFocus
         onKeyDown={(e) => {
           if (e.key === "Enter") handleCreate();

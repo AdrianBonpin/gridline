@@ -3,8 +3,8 @@ name: Release
 # Builds Gridline installers for macOS (Apple Silicon + Intel), Windows, and
 # Linux, then uploads them to a draft GitHub Release.
 #
-# Trigger: push a version tag from the `main` branch (production), e.g.
-#   git checkout main && git pull
+# Trigger: push a version tag from the `prod` branch (production), e.g.
+#   git checkout prod && git pull
 #   git tag v0.5.0 && git push origin v0.5.0
 #
 # SIGNING STATUS: builds are UNSIGNED for now (no code-signing certs yet —

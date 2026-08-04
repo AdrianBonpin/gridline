@@ -1,25 +1,20 @@
 import { ChevronLeft } from "lucide-react";
 import { Button } from "../ui/Button";
-import type { NewConnectionMode } from "../../lib/types";
 import type { ReactNode } from "react";
 
 interface ConnectionFormShellProps {
-    mode: NewConnectionMode;
     onBack: () => void;
     onTest: () => void;
     onSave: () => void;
-    onToggleMode: () => void;
     testLoading?: boolean;
     saveLoading?: boolean;
     children: ReactNode;
 }
 
 export function ConnectionFormShell({
-    mode,
     onBack,
     onTest,
     onSave,
-    onToggleMode,
     testLoading,
     saveLoading,
     children,
@@ -54,16 +49,6 @@ export function ConnectionFormShell({
                         {saveLoading ? "Saving..." : "Save Connection"}
                     </Button>
                 </div>
-
-                <button
-                    type="button"
-                    onClick={onToggleMode}
-                    className="w-full mt-4 text-sm text-text-muted hover:text-text transition-colors cursor-pointer"
-                >
-                    {mode === "simple"
-                        ? "Configure manually instead →"
-                        : "← Back to connection string"}
-                </button>
             </div>
         </div>
     );

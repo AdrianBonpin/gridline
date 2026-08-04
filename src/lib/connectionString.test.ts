@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseConnectionString, looksLikeConnectionString } from "./connectionString";
+import { parseConnectionString, looksLikeConnectionString, detectProviderFromHost } from "./connectionString";
 
 describe("parseConnectionString", () => {
   it("parses a PostgreSQL URL", () => {
@@ -38,15 +38,27 @@ describe("parseConnectionString", () => {
     });
   });
 
-  it("parses a SQLite file URL", () => {
+  it("parses a SQLite file URL — path maps to host (v0.7.0 fix)", () => {
     const result = parseConnectionString("sqlite:///path/to/db.sqlite");
     expect(result).toEqual({
       db_type: "sqlite",
-      host: "localhost",
+      host: "/path/to/db.sqlite",
       port: null,
       username: null,
       password: null,
-      database: "/path/to/db.sqlite",
+      database: null,
+    });
+  });
+
+  it("parses a SQLite file: URL — path maps to host", () => {
+    const result = parseConnectionString("file:///Users/me/data.db");
+    expect(result).toEqual({
+      db_type: "sqlite",
+      host: "/Users/me/data.db",
+      port: null,
+      username: null,
+      password: null,
+      database: null,
     });
   });
 
@@ -124,3 +136,17 @@ describe("looksLikeConnectionString", () => {
     expect(looksLikeConnectionString("production database")).toBe(false);
   });
 });
+
+describe("detectProviderFromHost", () => {
+    it("detects Supabase by host suffix", () => {
+      expect(detectProviderFromHost("db.abcdefghijklmnopqrst.supabase.co")).toBe("supabase");
+      expect(detectProviderFromHost("aws-us-east-1.pooler.supabase.com")).toBeNull();
+    });
+    it("detects NeonDB by host suffix", () => {
+      expect(detectProviderFromHost("ep-cool-darkness-a1b2c3d4-pooler.us-east-2.aws.neon.tech")).toBe("neon");
+    });
+    it("returns null for plain Postgres hosts", () => {
+      expect(detectProviderFromHost("localhost")).toBeNull();
+      expect(detectProviderFromHost("prod.example.com")).toBeNull();
+    });
+  });

@@ -13,6 +13,7 @@ interface SelectDropdownProps {
   placeholder?: string;
   variant?: "pill" | "ghost";
   "aria-label"?: string;
+  disabled?: boolean;
 }
 
 export function SelectDropdown({
@@ -22,11 +23,16 @@ export function SelectDropdown({
   placeholder = "Select…",
   variant = "pill",
   "aria-label": ariaLabel,
+  disabled = false,
 }: SelectDropdownProps) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const selectedLabel =
     options.find((opt) => opt.value === value)?.label ?? placeholder;
+
+  const disabledButtonClass = variant === "ghost"
+    ? " opacity-50 cursor-not-allowed"
+    : " disabled:opacity-50 disabled:cursor-not-allowed";
 
   useEffect(() => {
     if (!open) return;
@@ -62,9 +68,10 @@ export function SelectDropdown({
     <div className="relative" ref={menuRef}>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => !disabled && setOpen((o) => !o)}
         aria-label={ariaLabel}
-        className={buttonClass}
+        disabled={disabled}
+        className={buttonClass + (disabled ? disabledButtonClass : "")}
       >
         <span className="truncate">{selectedLabel}</span>
         <ChevronDown

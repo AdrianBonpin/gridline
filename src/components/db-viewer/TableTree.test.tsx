@@ -70,4 +70,18 @@ describe("TableTree", () => {
     expect(state.tabs).toHaveLength(1);
     expect(state.tabs[0]).toMatchObject({ schema: "public", table: "users" });
   });
+
+  it("shows Loading when schema tree is loading and no tables are present", () => {
+    useDbViewerStore.setState({ schemaTreeLoading: true });
+    render(<TableTree />);
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    expect(screen.queryByText("No tables")).not.toBeInTheDocument();
+  });
+
+  it("shows No tables when not loading and no tables are present", () => {
+    useDbViewerStore.setState({ schemaTreeLoading: false });
+    render(<TableTree />);
+    expect(screen.getByText("No tables")).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+  });
 });

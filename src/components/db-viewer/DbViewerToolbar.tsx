@@ -43,6 +43,7 @@ export function DbViewerToolbar({
     const searchInputRef = useRef<HTMLInputElement>(null);
     const searchContainerRef = useRef<HTMLDivElement>(null);
     const populate = useDbViewerStore((s) => s.populate);
+    const schemaTreeLoading = useDbViewerStore((s) => s.schemaTreeLoading);
 
     // Focus input when search opens
     useEffect(() => {
@@ -95,7 +96,7 @@ export function DbViewerToolbar({
     }, [connectionId, refreshing, populate]);
 
     const hasBelow =
-      searchOpen || databases.length > 1 || schemas.length > 1;
+      searchOpen || databases.length > 1 || schemas.length > 1 || schemaTreeLoading;
 
     return (
         <div
@@ -193,7 +194,7 @@ export function DbViewerToolbar({
                     )}
                 </div>
             </div>
-            {(databases.length > 1 || schemas.length > 1) && (
+            {(databases.length > 1 || schemas.length > 1 || schemaTreeLoading) && (
                 <div className="flex items-center gap-2">
                     {databases.length > 1 && (
                         <SelectDropdown
@@ -208,20 +209,22 @@ export function DbViewerToolbar({
                             variant="ghost"
                         />
                     )}
-                    {databases.length > 1 && schemas.length > 1 && (
+                    {databases.length > 1 && (schemas.length > 1 || schemaTreeLoading) && (
                         <span className="text-border">|</span>
                     )}
-                    {schemas.length > 1 && (
+                    {(schemas.length > 1 || schemaTreeLoading) && (
                         <SelectDropdown
-                            value={currentSchema ?? ""}
-                            onChange={setCurrentSchema}
-                            options={schemas.map((s) => ({
-                                value: s,
-                                label: s,
-                            }))}
-                            placeholder="Select schema"
+                            value={schemaTreeLoading ? "" : (currentSchema ?? "")}
+                            onChange={schemaTreeLoading ? () => {} : setCurrentSchema}
+                            options={
+                                schemaTreeLoading
+                                    ? [{ value: "", label: "Loading…" }]
+                                    : schemas.map((s) => ({ value: s, label: s }))
+                            }
+                            placeholder={schemaTreeLoading ? "Loading…" : "Select schema"}
                             aria-label="Select schema"
                             variant="ghost"
+                            disabled={schemaTreeLoading}
                         />
                     )}
                 </div>

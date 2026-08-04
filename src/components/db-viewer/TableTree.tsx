@@ -10,6 +10,7 @@ import * as cmd from "../../lib/commands";
 export function TableTree({ searchQuery }: { searchQuery?: string }) {
     const tables = useDbViewerStore((s) => s.tables);
     const currentSchema = useDbViewerStore((s) => s.currentSchema);
+    const schemaTreeLoading = useDbViewerStore((s) => s.schemaTreeLoading);
     const openTab = useDbViewerStore((s) => s.openTab);
     const connectionId = useUiStore((s) => s.activeConnectionId);
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -63,7 +64,7 @@ export function TableTree({ searchQuery }: { searchQuery?: string }) {
         <div>
             {filteredTables.length === 0 && (
                 <div className="px-3 py-2 text-sm text-text-muted">
-                    No tables
+                    {schemaTreeLoading ? "Loading…" : "No tables"}
                 </div>
             )}
             {filteredTables.map((table) => {

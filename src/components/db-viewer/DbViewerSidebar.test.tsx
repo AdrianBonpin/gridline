@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DbViewerSidebar } from "./DbViewerSidebar";
 import { TooltipProvider } from "../ui/Tooltip";
+import { DB_CAPABILITIES } from "../../lib/dbCapabilities";
 
 describe("DbViewerSidebar", () => {
   it("renders all navigation icons", () => {
@@ -67,5 +68,57 @@ describe("DbViewerSidebar", () => {
       </TooltipProvider>
     );
     expect(screen.getByLabelText("Tools")).toBeInTheDocument();
+  });
+
+  it("shows all 5 tools for PostgreSQL (default capabilities)", () => {
+    render(
+      <TooltipProvider>
+        <DbViewerSidebar currentView="db-viewer" onNavigate={() => {}} />
+      </TooltipProvider>
+    );
+    expect(screen.getByLabelText(/explorer/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Queries")).toBeInTheDocument();
+    expect(screen.getByLabelText(/schema visualizer/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/objects/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/tools/i)).toBeInTheDocument();
+  });
+
+  it("hides Objects and Tools for SQLite", () => {
+    render(
+      <TooltipProvider>
+        <DbViewerSidebar currentView="db-viewer" onNavigate={() => {}} capabilities={DB_CAPABILITIES.sqlite} />
+      </TooltipProvider>
+    );
+    expect(screen.getByLabelText(/explorer/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Queries")).toBeInTheDocument();
+    expect(screen.getByLabelText(/schema visualizer/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/objects/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/tools/i)).not.toBeInTheDocument();
+  });
+
+  it("hides Objects, Visualizer, and Tools for MySQL", () => {
+    render(
+      <TooltipProvider>
+        <DbViewerSidebar currentView="db-viewer" onNavigate={() => {}} capabilities={DB_CAPABILITIES.mysql} />
+      </TooltipProvider>
+    );
+    expect(screen.getByLabelText(/explorer/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Queries")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/schema visualizer/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/objects/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/tools/i)).not.toBeInTheDocument();
+  });
+
+  it("shows no top nav items for Redis (unsupported browsing)", () => {
+    render(
+      <TooltipProvider>
+        <DbViewerSidebar currentView="db-viewer" onNavigate={() => {}} capabilities={DB_CAPABILITIES.redis} />
+      </TooltipProvider>
+    );
+    expect(screen.queryByLabelText(/explorer/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Queries")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/schema visualizer/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/home/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/settings/i)).toBeInTheDocument();
   });
 });

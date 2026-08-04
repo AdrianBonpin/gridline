@@ -5,7 +5,7 @@
 <h1>Gridline</h1>
 
 <p>
-  <i>A lightweight, open-source database GUI for PostgreSQL and SQLite.</i><br />
+  <i>A lightweight, open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis.</i><br />
   Unlimited connections, tabs, and saved queries — with first-class <code>pg_dump</code>, <code>pg_restore</code>, and DB-to-DB sync.
 </p>
 
@@ -35,6 +35,7 @@ Gridline is a modern, open-source database GUI client built with [Tauri 2.0](htt
 
 - **No caps** on connections, tabs, or saved queries.
 - **Deep PostgreSQL tooling** — visual `pg_dump`, `pg_restore`, and DB-to-DB sync.
+- **Full MySQL + SQLite browsing** — connect, browse, query, and edit MySQL and SQLite the same way you do PostgreSQL.
 - **Full object explorer** — not just tables, but functions, triggers, sequences, enums, extensions, materialized views, and procedures.
 - **Interactive ER diagram** — explore relationships visually with crow's-foot cardinality notation.
 - **Production-safe editing** — stage INSERT/UPDATE/DELETE changes, review the generated SQL, then commit all at once.
@@ -55,6 +56,7 @@ Gridline is built for developers and small teams who manage multiple database en
 
 ## Recent Changes
 
+- **2026-08-04:** v0.7.0 — revamped the New Connection screen into a two-stage flow with a 6-provider grid (PostgreSQL, MySQL, SQLite, Redis, Supabase, NeonDB; managed presets ship with setup guides + SSL hints) and added full MySQL DB viewer support (connect, browse, query, inline cell editing + changes queue, DDL copy).
 - **2026-08-04:** Revamped the built-in SQLite demo database with realistic e-commerce data (20 users, 24 products, 50 orders, 100 page views, 500 audit rows) and renamed it to **Gridline Demo (SQLite)**.
 - **2026-07-XX:** Added inline cell editing with a stage-first changes queue, row-detail drawer, keyboard navigation, and cell-level copy.
 - **2026-07-XX:** Added visual filter builder with drag-and-drop column palette and type-aware operators.
@@ -72,6 +74,7 @@ Gridline is built for developers and small teams who manage multiple database en
 ### Connections & Workspace
 
 - **URI auto-fill** — paste `postgres://`, `mysql://`, `sqlite://`, or `redis://` strings and have all fields populate automatically.
+- **Provider grid** — pick PostgreSQL, MySQL, SQLite, Redis, Supabase, or NeonDB; managed presets surface in-app setup guides and an SSL hint.
 - **Workspace tree** — multi-level folders, color-coded tags, favorites, and recent connections.
 - **OS keychain storage** — passwords and SSH secrets live in macOS Keychain / Linux Secret Service / Windows Credential Manager, never in plaintext.
 - **SSH tunneling** — real `ssh2` tunnels with password or key authentication.
@@ -160,22 +163,26 @@ Gridline is built for developers and small teams who manage multiple database en
 
 ## Why Gridline vs the alternatives?
 
-| Capability                     | DB Pro (Free)  |  Beekeeper (Free)  |                       Gridline                        |
-| :----------------------------- | :------------: | :----------------: | :---------------------------------------------------: |
-| Open tabs                      |       3        |     Unlimited      |                     **Unlimited**                     |
-| Saved connections              |       2        |     Unlimited      |                     **Unlimited**                     |
-| Saved queries                  |       5        |     Unlimited      |                     **Unlimited**                     |
-| Data export (CSV, JSON, SQL)   |  ❌ paid only  |     Basic only     |             **JSON, CSV, SQL, Markdown**              |
-| `pg_dump` / `pg_restore` GUI   |       ❌       |    ❌ paid only    |                  **First-class UI**                   |
-| DB-to-DB sync                  |       ❌       |         ❌         |                **Built-in pipe sync**                 |
-| Object explorer depth          | Tables, views  |   Tables, views    | **Functions, Triggers, Enums, Sequences, Extensions** |
-| ER diagram / schema visualizer |       ❌       |    ❌ paid only    |               **✅ React Flow + dagre**               |
-| SSH tunneling                  | 🔒 likely paid |         ✅         |         **✅ Password + key auth, keychain**          |
-| OS credential vault            |       ✅       |         ✅         |  **Keychain / Secret Service / Credential Manager**   |
-| Workspace / folder hierarchy   |       ❌       |         ❌         |              **Multi-level tree + tags**              |
-| Changes queue (stage → commit) |       ❌       |         ❌         |               **✅ Queue → Commit All**               |
-| Desktop shell size             |     Native     | Electron (~250 MB) |                **Tauri 2.0 (~40 MB)**                 |
-| Open source                    |       ❌       |      ✅ GPLv3      |                   **✅ Apache 2.0**                   |
+Capabilities below are fact-checked against each vendor's official docs and pricing (May 2026).
+
+| Capability                     |        DB Pro (Free)         |        Beekeeper (Free)         |      TablePlus (Free)       |                          Gridline                          |
+| :----------------------------- | :--------------------------: | :-----------------------------: | :-------------------------: | :--------------------------------------------------------: |
+| Open tabs                      |              3               |           Unlimited             |              2              |                      **Unlimited**                         |
+| Saved connections              |              2               |           Unlimited             |          Unlimited          |                      **Unlimited**                         |
+| Saved queries                  |              5               |           Unlimited             |          Unlimited          |                      **Unlimited**                         |
+| Data export (CSV, JSON, SQL)   |     ✅ (unlimited = paid)     |         Basic only              |             ✅              |              **JSON, CSV, SQL, Markdown**                  |
+| `pg_dump` / `pg_restore` GUI   |              ❌              |        ❌ paid only             |             ✅              |                   **First-class UI**                       |
+| DB-to-DB sync                  |              ❌              |                ❌                |             ❌              |                 **Built-in pipe sync**                     |
+| Object explorer depth          | Tables, views, indexes, enums | Tables, views, routines, triggers | Tables, views, functions, procedures | **Functions, Triggers, Sequences, Enums, Extensions + full detail** |
+| ER diagram / schema visualizer |        ✅ view-only          |        ❌ paid only             |             ❌              |                **✅ React Flow + dagre**                   |
+| SSH tunneling                  |        ❌ paid only          |                ✅                |             ✅              |        **✅ Password + key auth, keychain**                |
+| OS credential vault            |              ✅              |                ✅                |             ✅              |   **Keychain / Secret Service / Credential Manager**       |
+| Workspace / folder hierarchy   |  ✅ query/dash folders + tags |     ✅ (5.7+, local)             |             ❌              |              **Multi-level tree + tags**                   |
+| Changes queue (stage → commit) |              ❌              |        ✅ Apply/Discard          |         ✅ Safe mode         |              **✅ Queue → Commit All**                     |
+| Desktop shell size             |           Electron            |      Electron (~250 MB)         |           Native            |                 **Tauri 2.0 (~40 MB)**                     |
+| Open source                    |              ❌              |          ✅ GPLv3                |             ❌              |                     **✅ Apache 2.0**                      |
+
+*Notes: DB Pro is an Electron app (launched Nov 2025) whose marketing copy overclaims — its free plan caps connections/tabs/saved queries (FAQ inconsistently claims "unlimited local connections") and gates data imports + SSH tunneling to paid, though CSV/JSON export does work on the free tier; Beekeeper's free Community edition genuinely offers unlimited tabs/connections/queries but gates backup/restore, file import, multi-table export, ERD, AI, and premium DB connectors behind paid tiers; TablePlus's free tier includes every feature but caps you at 2 open tabs / 2 windows / 2 advanced filters.*
 
 ---
 
@@ -185,7 +192,7 @@ Gridline is built for developers and small teams who manage multiple database en
 | :------------------ | :-------------------------------------------------------------------------------------------------------- | :----------------------------------------------- |
 | **Desktop shell**   | [Tauri 2.0](https://tauri.app)                                                                            | Native webview container (~40 MB baseline)       |
 | **Backend**         | Rust + [tokio](https://tokio.rs)                                                                          | Async runtime, connection pooling, CLI execution |
-| **DB drivers**      | [sqlx](https://github.com/launchbadge/sqlx) / [tokio-postgres](https://github.com/sfackler/rust-postgres) | Pure-Rust PostgreSQL (SQLite via rusqlite)       |
+| **DB drivers**      | [sqlx](https://github.com/launchbadge/sqlx) / [tokio-postgres](https://github.com/sfackler/rust-postgres) | PostgreSQL via tokio-postgres; MySQL via sqlx; SQLite via rusqlite |
 | **CLI integration** | `std::process::Command`                                                                                   | Wraps system `pg_dump` / `pg_restore`            |
 | **Frontend**        | [React 19](https://react.dev) + [TypeScript](https://www.typescriptlang.org)                              | Component-based UI                               |
 | **Styling**         | [Tailwind CSS](https://tailwindcss.com)                                                                   | Utility-first, dark mode, glassmorphic design    |
@@ -216,27 +223,27 @@ Code signing **will be added in the future** (Apple Developer Program + a Window
 
 #### Which file should I download?
 
-Each release contains **one file per platform** — you only need the one that matches your computer. (If a newer version is available, swap `0.6.0` for the version shown in the release title.)
+Each release contains **one file per platform** — you only need the one that matches your computer. (If a newer version is available, swap `0.7.0` for the version shown in the release title.)
 
 | Your system | Download this | Notes |
 | :--- | :--- | :--- |
-| macOS **Apple Silicon** (M1/M2/M3/M4…) | `Gridline_0.6.0_aarch64.dmg` | `aarch64` = Apple's own chip |
-| macOS **Intel** | `Gridline_0.6.0_x64.dmg` | `x64` = Intel/AMD |
-| **Windows** (most PCs) | `Gridline_0.6.0_x64-setup.exe` | The `.msi` is an alternate installer (for enterprises/IT admins) |
-| **Debian / Ubuntu** | `Gridline_0.6.0_amd64.deb` | Install: `sudo apt install ./Gridline_0.6.0_amd64.deb` |
-| **Fedora / RHEL / openSUSE** | `Gridline-0.6.0-1.x86_64.rpm` | Install: `sudo dnf install Gridline-0.6.0-1.x86_64.rpm` |
-| **Any other Linux** | `Gridline_0.6.0_amd64.AppImage` | Works on every distro: `chmod +x` the file, then double-click it |
+| macOS **Apple Silicon** (M1/M2/M3/M4…) | `Gridline_0.7.0_aarch64.dmg` | `aarch64` = Apple's own chip |
+| macOS **Intel** | `Gridline_0.7.0_x64.dmg` | `x64` = Intel/AMD |
+| **Windows** (most PCs) | `Gridline_0.7.0_x64-setup.exe` | The `.msi` is an alternate installer (for enterprises/IT admins) |
+| **Debian / Ubuntu** | `Gridline_0.7.0_amd64.deb` | Install: `sudo apt install ./Gridline_0.7.0_amd64.deb` |
+| **Fedora / RHEL / openSUSE** | `Gridline-0.7.0-1.x86_64.rpm` | Install: `sudo dnf install Gridline-0.7.0-1.x86_64.rpm` |
+| **Any other Linux** | `Gridline_0.7.0_amd64.AppImage` | Works on every distro: `chmod +x` the file, then double-click it |
 
 **Not sure if your Mac is Intel or Apple Silicon?** Click the **Apple menu** → **About This Mac**. If it shows "Apple M1/M2/M3/M4…" download the `aarch64` file; if it shows an Intel chip, download `x64`. Downloading the wrong one won't run.
 
 #### How releases are made
 
-Cutting a release is one command — CI builds everything. **Releases are cut from `main`, which is the production branch** — only push release tags from `main`, never from feature branches:
+Cutting a release is one command — CI builds everything. **Releases are cut from `prod`, which is the production branch** — only push release tags from `prod`, never from feature branches:
 
 ```bash
-git checkout main && git pull
-git tag v0.6.0
-git push origin v0.6.0
+git checkout prod && git pull
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 GitHub Actions (`.github/workflows/release.yml`) builds installers for **Apple Silicon, Intel Macs, Windows, and Linux**, then opens a **draft release** on the [Releases](https://github.com/adrianbonpin/gridline/releases) page — review it and hit **Publish release**.
@@ -320,28 +327,17 @@ gridline/
 
 ## Roadmap
 
-### ✅ Completed
+The full plan — in-development (v0.7.0), next-up, queue, and shipped history — lives in **[ROADMAP.md](./ROADMAP.md)**.
 
-- Tauri 2.0 + React 19 + TypeScript 5.8 project shell
-- PostgreSQL and SQLite browse/query support
-- Connection management with URI parser, SSH tunnels, TLS, OS keychain
-- Workspace tree, folders, tags, favorites, recents
-- Multi-tab DB viewer with virtualized grid, server-side filtering/sorting
-- FK preview, JSON popover, inline cell editing, changes queue
-- Query editor with Monaco, autocomplete, destructive-query guard
-- Query history, saved queries, and Queries view
-- Full PostgreSQL object explorer + schema visualizer
-- Backup, restore, and DB-to-DB sync tools
-- Settings redesign with theme, accent color, editor options
-- Built-in **Gridline Demo (SQLite)** database
+Highlights of what's next:
 
-### 🔮 Future
+- **Full Object Management** — CRUD on functions, triggers, sequences, enums, extensions, and views without the Query tab, plus schema CRUD, global object search, and copy-as-DDL
+- **Full Redis support** — key browser, type-aware value editors, TTL management
+- **More database types** — MariaDB, TimescaleDB, and friends
+- **Managed DB support** — PlanetScale, Turso (Supabase/Neon presets shipped in v0.7.0)
+- **AI integration (BYOK)** — natural-language → SQL, chat, summaries, charts
 
-- **Multi-DB parity** — MySQL browsing, Redis key browser
-- **Query workbench** — multiple result sets, visual query builder
-- **Deeper PostgreSQL** — user/role management, replication views
-- **Notebook reports** — SQL-backed markdown reports with embedded results
-- **AI assistant (BYOK)** — bring-your-own-key natural-language → SQL, query explanations, and schema summaries
+✅ **[View the full roadmap →](./ROADMAP.md)**
 
 ---
 
@@ -366,7 +362,7 @@ gridline/
 
 Contributions, bug reports, and feature ideas are welcome. Gridline is Apache 2.0-licensed and intentionally stays open — no paywalled tiers, no bundled proprietary services.
 
-- Open a [GitHub Issue](https://github.com/adrianbonpin/gridline/issues/new) for bugs or ideas.
+- Report a bug via the **[issue template](.github/ISSUE_TEMPLATE/bug_report.md)** — it walks you through environment details (OS, Gridline version, DB type/version, connection method) so we can reproduce issues quickly. Opening a [new issue](https://github.com/AdrianBonpin/gridline/issues/new) pre-fills the template automatically.
 - Submit a pull request. Keep Tauri commands thin, type IPC boundaries explicitly, and follow the existing Rust/React conventions.
 
 ---

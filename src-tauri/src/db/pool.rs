@@ -82,9 +82,10 @@ impl DbConfig {
 
 /// A handle to an active database connection.
 ///
-/// Supports `Sqlite` (synchronous via `rusqlite`) and
-/// `Postgresql` (async via `tokio-postgres`). MySQL and Redis
-/// variants will be added in later tasks.
+/// Supports `Sqlite` (synchronous via `rusqlite`), `Postgresql` (async via
+/// `tokio-postgres`), and `MySql` (async via `sqlx`). Redis has no DB-viewer
+/// support. Eviction relies on each variant's `Drop`: `MySqlPool` closes its
+/// connections when dropped (mirroring `Postgresql`'s `JoinHandle` abort).
 #[derive(Debug)]
 pub enum DbHandle {
     /// A synchronous SQLite connection via `rusqlite`.
@@ -92,6 +93,8 @@ pub enum DbHandle {
     /// An asynchronous PostgreSQL connection via `tokio-postgres`.
     /// Stores the client handle and the background connection task.
     Postgresql(tokio_postgres::Client, tokio::task::JoinHandle<()>),
+    /// An asynchronous MySQL connection pool via `sqlx`.
+    MySql(sqlx::MySqlPool),
 }
 
 /// Internal entry stored in the pool manager.
@@ -413,5 +416,28 @@ mod tests {
         // Shrinking max_pools below the current count evicts oldest first.
         manager.set_max_pools(1);
         assert_eq!(evicted.lock().unwrap().as_slice(), ["a".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn mysql_handle_can_be_registered_and_evicted() {
+        // Lazy pool: parses the URL without connecting (no network touch).
+        let pool = sqlx::mysql::MySqlPoolOptions::new()
+            .connect_lazy("mysql://__gridline_test__:3306/__none__")
+            .expect("lazy pool parses url without connecting");
+        let mut manager = ConnectionPoolManager::new();
+        manager.set_max_pools(1);
+        manager.register("mysql-conn", DbHandle::MySql(pool));
+        assert!(matches!(
+            manager.get("mysql-conn"),
+            Some(DbHandle::MySql(_))
+        ));
+        // Registering a second connection evicts the first (max_pools=1).
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        manager.register("sqlite-conn", DbHandle::Sqlite(sqlite));
+        assert!(manager.get("mysql-conn").is_none());
+        assert!(matches!(
+            manager.get("sqlite-conn"),
+            Some(DbHandle::Sqlite(_))
+        ));
     }
 }
