@@ -517,9 +517,20 @@ pub(crate) fn mysql_wrap_count(query: &str) -> String {
 /// Convert a sqlx MySql row cell to serde_json::Value (via the `json` feature).
 /// Shared with the DB-viewer commands (pub(crate)).
 pub(crate) fn mysql_cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
-    row.try_get::<Option<serde_json::Value>, _>(i)
-        .map(|o| o.unwrap_or(serde_json::Value::Null))
-        .unwrap_or(serde_json::Value::Null)
+    if let Ok(Some(v)) = row.try_get::<Option<serde_json::Value>, _>(i) {
+        return v;
+    }
+    if let Ok(s) = row.try_get::<Option<String>, _>(i) {
+        return s
+            .map(|s| serde_json::Value::String(s))
+            .unwrap_or(serde_json::Value::Null);
+    }
+    if let Ok(b) = row.try_get::<Option<Vec<u8>>, _>(i) {
+        return b
+            .map(|b| serde_json::Value::String(String::from_utf8_lossy(&b).into_owned()))
+            .unwrap_or(serde_json::Value::Null);
+    }
+    serde_json::Value::Null
 }
 
 async fn execute_mysql_query(

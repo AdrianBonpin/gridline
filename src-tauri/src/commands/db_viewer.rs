@@ -1159,7 +1159,7 @@ pub async fn get_databases(
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
             let mut dbs: Vec<String> = rows
                 .iter()
-                .map(|r| r.try_get::<String, _>(0).unwrap_or_default())
+                .map(|r| crate::db::mysql::mysql_row_string(r, 0))
                 .collect();
             dbs.retain(|d| !crate::db::mysql::MYSQL_SYSTEM_DBS.contains(&d.as_str()));
             Ok(dbs)
@@ -1204,7 +1204,7 @@ pub async fn get_schemas(
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
             let mut dbs: Vec<String> = rows
                 .iter()
-                .map(|r| r.try_get::<String, _>(0).unwrap_or_default())
+                .map(|r| crate::db::mysql::mysql_row_string(r, 0))
                 .collect();
             dbs.retain(|d| !crate::db::mysql::MYSQL_SYSTEM_DBS.contains(&d.as_str()));
             Ok(dbs)
@@ -1270,15 +1270,11 @@ pub(crate) async fn get_tables_inner(
             Ok(rows
                 .iter()
                 .map(|r| {
-                    let name: String = r.try_get(0).unwrap_or_default();
-                    let raw_type: String = r.try_get(1).unwrap_or_default();
+                    let name = crate::db::mysql::mysql_row_string(r, 0);
+                    let raw_type = crate::db::mysql::mysql_row_string(r, 1);
                     let schema_name: String = match schema {
                         Some(s) => s.to_string(),
-                        None => r
-                            .try_get::<Option<String>, _>(2)
-                            .ok()
-                            .flatten()
-                            .unwrap_or_default(),
+                        None => crate::db::mysql::mysql_row_string(r, 2),
                     };
                     let table_type = if raw_type.eq_ignore_ascii_case("view") {
                         "VIEW"
@@ -1326,12 +1322,15 @@ pub(crate) async fn mysql_load_columns(
     let mut columns: Vec<ColumnInfo> = col_rows
         .iter()
         .map(|r| {
-            let name: String = r.try_get(0).unwrap_or_default();
-            let data_type: String = r.try_get(1).unwrap_or_default();
-            let is_nullable: String = r.try_get(2).unwrap_or_default();
-            let column_key: String = r.try_get(3).unwrap_or_default();
-            let default_value: Option<String> = r.try_get(4).ok().flatten();
-            let extra: String = r.try_get(5).unwrap_or_default();
+            let name = crate::db::mysql::mysql_row_string(r, 0);
+            let data_type = crate::db::mysql::mysql_row_string(r, 1);
+            let is_nullable = crate::db::mysql::mysql_row_string(r, 2);
+            let column_key = crate::db::mysql::mysql_row_string(r, 3);
+            let default_value: Option<String> = r
+                .try_get::<String, _>(4)
+                .ok()
+                .or_else(|| r.try_get::<Vec<u8>, _>(4).ok().map(|b| String::from_utf8_lossy(&b).into_owned()));
+            let extra = crate::db::mysql::mysql_row_string(r, 5);
             let is_pk = column_key == "PRI";
             let is_generated = extra.to_ascii_uppercase().contains("GENERATED");
             ColumnInfo {
@@ -1355,9 +1354,9 @@ pub(crate) async fn mysql_load_columns(
         .await
         .map_err(|e| sanitize_error(&format!("{e}")))?;
     for r in fk_rows {
-        let col: String = r.try_get(0).unwrap_or_default();
-        let ref_table: String = r.try_get(2).unwrap_or_default();
-        let ref_col: String = r.try_get(3).unwrap_or_default();
+        let col = crate::db::mysql::mysql_row_string(&r, 0);
+        let ref_table = crate::db::mysql::mysql_row_string(&r, 2);
+        let ref_col = crate::db::mysql::mysql_row_string(&r, 3);
         if let Some(c) = columns.iter_mut().find(|c| c.name == col) {
             c.is_fk = true;
             c.fk_ref = Some((ref_table, ref_col));
@@ -2677,14 +2676,11 @@ pub async fn get_table_ddl(
         Some(DbHandle::MySql(pool)) => {
             let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
             // SHOW CREATE TABLE returns (Table, Create Table); take the DDL.
-            let row =
-                sqlx::query_as::<_, (String, String)>(&crate::db::mysql::mysql_ddl_query(
-                    &schema, &table,
-                ))
+            let row = sqlx::query(&crate::db::mysql::mysql_ddl_query(&schema, &table))
                 .fetch_one(pool)
                 .await
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
-            Ok(row.1)
+            Ok(crate::db::mysql::mysql_row_string(&row, 1))
         }
         Some(DbHandle::Postgresql(_client, _)) => {
             // Pull connection metadata so pg_dump reaches the same server the

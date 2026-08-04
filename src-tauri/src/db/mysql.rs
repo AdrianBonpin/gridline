@@ -3,6 +3,7 @@
 //! call site. Mirrors the PG builders in `commands/db_viewer.rs` but with
 //! MySQL quoting and `LIMIT 1` on single-row UPDATE/DELETE.
 use crate::models::db_viewer::{FilterRule, SortRule};
+use sqlx::Row;
 
 /// `SHOW DATABASES` — the browsing branches filter system DBs client-side
 /// (see [`MYSQL_SYSTEM_DBS`]).
@@ -16,6 +17,19 @@ pub const MYSQL_SYSTEM_DBS: [&str; 4] = ["information_schema", "mysql", "perform
 /// Quote a MySQL identifier with backticks, doubling any embedded backticks.
 pub fn mysql_quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
+}
+
+/// Decode a MySQL row cell as a String. `information_schema` / `SHOW`
+/// metadata columns can surface as VARBINARY (bytes) depending on the
+/// connection charset, so fall back from String to a UTF-8 lossy decode.
+pub fn mysql_row_string(row: &sqlx::mysql::MySqlRow, i: usize) -> String {
+    if let Ok(s) = row.try_get::<String, _>(i) {
+        return s;
+    }
+    if let Ok(b) = row.try_get::<Vec<u8>, _>(i) {
+        return String::from_utf8_lossy(&b).into_owned();
+    }
+    String::new()
 }
 
 /// information_schema.columns query for a table — returns column metadata in
