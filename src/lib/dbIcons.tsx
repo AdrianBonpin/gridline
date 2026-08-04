@@ -1,4 +1,4 @@
-import { siPostgresql, siMysql, siSqlite, siRedis } from "simple-icons";
+import { siPostgresql, siMysql, siSqlite, siRedis, siSupabase, siNeon } from "simple-icons";
 import type { DbType } from "./types";
 
 // Brand colors from simple-icons
@@ -57,3 +57,41 @@ export const DB_ICONS: Record<DbType, string> = {
   redis: "⚡",
   sqlite: "🗄️",
 };
+
+// ── Managed-PostgreSQL provider icons (Supabase, NeonDB) ──────────
+// These are NOT DbType values; connections persist as db_type="postgresql".
+type ProviderIconId = "supabase" | "neon";
+
+const PROVIDER_ICON_DATA: Record<ProviderIconId, { hex: string; path: string }> = {
+  supabase: { hex: `#${siSupabase.hex}`, path: siSupabase.path },
+  neon: { hex: `#${siNeon.hex}`, path: siNeon.path },
+};
+
+export const PROVIDER_LABELS: Record<ProviderIconId, string> = {
+  supabase: "Supabase",
+  neon: "NeonDB",
+};
+
+interface ProviderIconProps {
+  id: ProviderIconId;
+  size?: number;
+  className?: string;
+}
+
+export function ProviderIcon({ id, size = 20, className }: ProviderIconProps) {
+  const data = PROVIDER_ICON_DATA[id];
+  if (!data) return <span className="text-lg">❓</span>;
+  return (
+    <svg
+      role="img"
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      className={className}
+      fill={data.hex}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path d={data.path} />
+    </svg>
+  );
+}
