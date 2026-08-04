@@ -55,11 +55,11 @@ describe("DetailedConnectionForm", () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ port: 5432 }));
   });
 
-  it("renders only General and SSH / SSL tabs (no Tags & Env)", () => {
+  it("renders General, Tags & Env, and SSH / SSL tabs", () => {
     render(<StatefulForm folders={[]} tags={[]} onChange={vi.fn()} />);
     expect(screen.getByRole("button", { name: /^general$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /tags & env/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /ssh \/ ssl/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /tags & env/i })).not.toBeInTheDocument();
   });
 
   it("renders the metadata row (Connection Label) above the tabs", () => {

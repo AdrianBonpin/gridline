@@ -21,12 +21,13 @@ export function GeneralTab({ form, onChange, managedPreset }: GeneralTabProps) {
         {isSqlite ? (
           <SqlitePathInput value={form.host} onChange={(value) => onChange({ host: value })} />
         ) : (
-          <input
+          <textarea
             value={form.connection_string}
             onChange={(e) => onChange({ connection_string: e.target.value })}
             placeholder="postgresql://user:password@host:5432/database"
             aria-label="Connection URI"
-            className={`w-full ${INPUT_ROUNDING} bg-surface border border-border px-4 py-2 text-sm text-text font-mono placeholder-text-muted/60 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors`}
+            rows={1}
+            className={`w-full ${INPUT_ROUNDING} bg-surface border border-border px-4 py-2 text-sm text-text font-mono placeholder-text-muted/60 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors resize-none overflow-x-auto whitespace-nowrap`}
           />
         )}
         {managedPreset && (
@@ -50,7 +51,7 @@ export function GeneralTab({ form, onChange, managedPreset }: GeneralTabProps) {
             </div>
             <div className="w-28">
               <label className="block text-sm text-text mb-1.5">Port</label>
-              <Input type="number" value={form.port?.toString() ?? ""} onChange={(value) => onChange({ port: value === "" ? null : Number(value) })} placeholder="5432" aria-label="Port" />
+              <Input type="number" value={form.port?.toString() ?? ""} onChange={(value) => onChange({ port: value === "" ? null : Number(value) })} placeholder="5432" aria-label="Port" className="[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]" />
             </div>
           </div>
           <div>

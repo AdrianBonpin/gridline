@@ -294,14 +294,15 @@ export function NewConnectionScreen({
                         />
                     </div>
                 ) : (
-                    <input
+                    <textarea
                         value={form.connection_string}
                         onChange={(e) =>
                             handleConnectionStringChange(e.target.value)
                         }
                         placeholder="postgresql://user:password@host:5432/database"
                         aria-label={isEntry ? "Connection URI" : undefined}
-                        className={`w-full ${INPUT_ROUNDING} bg-surface border border-border px-4 py-3 text-sm text-text font-mono placeholder-text-muted/60 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors ${
+                        rows={1}
+                        className={`w-full ${INPUT_ROUNDING} bg-surface border border-border px-4 py-3 text-sm text-text font-mono placeholder-text-muted/60 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors resize-none overflow-x-auto whitespace-nowrap ${
                             isEntry ? "" : "sr-only"
                         }`}
                     />
