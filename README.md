@@ -235,10 +235,10 @@ Each release contains **one file per platform** — you only need the one that m
 
 #### How releases are made
 
-Cutting a release is one command — CI builds everything. **Releases are cut from `main`, which is the production branch** — only push release tags from `main`, never from feature branches:
+Cutting a release is one command — CI builds everything. **Releases are cut from `prod`, which is the production branch** — only push release tags from `prod`, never from feature branches:
 
 ```bash
-git checkout main && git pull
+git checkout prod && git pull
 git tag v0.6.0
 git push origin v0.6.0
 ```
