@@ -6,18 +6,18 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ---
 
-## 🏗️ In development (0.7.0)
+## ✅ Shipped (0.7.0)
 
 - **New Connection screen revamp** — a single progressive flow: connection-string input + 2-column provider tab grid → expands into the full configuration form (label, tags/env/folder, General + SSH·SSL tabs). Removes the simple/detailed toggle.
 - **Full MySQL DB viewer support** — connect (incl. SSL + SSH), browse databases/tables/columns/FKs, run queries, paginate, inline cell editing + changes queue (insert/update/delete/bulk/empty/drop), DDL copy (`SHOW CREATE TABLE`), CSV/JSON import.
-- **DB viewer capability gating** — pure `dbCapabilities.ts` matrix per DB type; unsupported views show a clean "not supported" state instead of broken UI. Redis browsing explicitly gated off this iteration.
+- **DB viewer capability gating** — pure `dbCapabilities.ts` matrix per DB type; unsupported views show a clean "not supported" state instead of broken UI. Redis browsing explicitly gated off.
 - **Supabase & NeonDB managed-PG presets** — provider cards with in-app setup instructions; persist as `postgresql` with an SSL hint.
 - **SQLite file-path mode** — URI field becomes a file-path input with `Browse…`.
 - **Tag overflow scroll** — connection cards show ≤3 tags, then scroll horizontally.
 - **Input styling sweep** — `rounded-full` → `rounded-lg` on all form controls.
 - **Version bump** 0.6.0 → **0.7.0**.
 
-Explicitly **out of scope** for 0.7.0 (deferred, tracked below): Redis key browsing, MySQL Objects/ERD views, backup/restore/sync for MySQL + SQLite, multiple result sets, SSH key-file management, settings import/export, onboarding tour.
+**Not in 0.7.0** (deferred, tracked below): Redis key browsing, MySQL Objects/ERD views, backup/restore/sync for MySQL + SQLite, multiple result sets, SSH key-file management, settings import/export, onboarding tour.
 
 ## 🎯 Next up
 
@@ -67,7 +67,7 @@ Connection + test work today; **key browsing is explicitly not part of 0.7.0** �
 
 ### Managed Database Support (beyond Supabase / Neon)
 
-Supabase and NeonDB presets ship in v0.7.0. Remaining candidates:
+Supabase and NeonDB presets shipped in v0.7.0. Remaining candidates:
 
 - **PlanetScale** (Vitess/MySQL)
 - **Turso** (libSQL)
@@ -130,6 +130,9 @@ Deferred from 0.7.0, slated for this bucket:
 
 - Tauri 2.0 + React 19 + TypeScript 5.8 project shell
 - PostgreSQL and SQLite browse/query support
+- Full MySQL DB viewer — connect, browse, query, edit + changes queue (v0.7.0)
+- New Connection screen revamp — provider grid + Supabase/NeonDB managed-pg presets (v0.7.0)
+- DB viewer capability gating + Redis unsupported state (v0.7.0)
 - Connection management with URI parser, SSH tunnels, TLS, OS keychain
 - Workspace tree, folders, tags, favorites, recents
 - Multi-tab DB viewer with virtualized grid, server-side filtering/sorting

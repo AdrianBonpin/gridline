@@ -193,11 +193,12 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Feature | Status | Details |
 | :--- | :---: | :--- |
 | Connections CRUD (PostgreSQL, MySQL, SQLite, Redis) | ✅ | Full create/read/update/delete with form validation |
+| New Connection screen (revamped) | ✅ | Two-stage entry → configured flow: Connection URI + 6-card provider grid (PostgreSQL / MySQL / SQLite / Redis / Supabase / NeonDB) with an OR divider → expands into label + tags/env/folder + General|SSH·SSL tabs. Supabase & NeonDB are managed-PostgreSQL presets (persist as `postgresql`) with in-app setup guides + SSL hints; SQLite swaps the URI field for a file-path + Browse input (v0.7.0) |
 | Connection testing (all DB types) | ✅ | PostgreSQL, MySQL, SQLite, Redis all testable |
 | DB Viewer: PostgreSQL browse + query | ✅ | Schemas, tables, paginated data, FK preview, JSON viewer |
 | DB Viewer: SQLite browse + query | ✅ | Full support via rusqlite |
-| DB Viewer: MySQL browse | ❌ | Test connection works; browsing not wired |
-| DB Viewer: Redis browse | ❌ | Test connection works; browsing not wired |
+| DB Viewer: MySQL browse + query + edit | ✅ | Full viewer: connect (SSL + SSH tunnel), databases/tables/columns/FKs, query + pagination, inline cell editing + changes queue, DDL copy (`SHOW CREATE TABLE`), CSV/JSON import — added in v0.7.0. PK-only editing (no ctid equivalent); VARBINARY `information_schema` columns decoded correctly |
+| DB Viewer: Redis browse | ❌ | Connection + test only; browsing gated off with a clean "not supported" state (v0.7.0) |
 | Password storage in OS keychain | ✅ | macOS Keychain, Linux Secret Service, Windows Credential Manager |
 | SSH tunnel config UI | ✅ | Host, port, user, auth method, key path, passphrase fields |
 | SSH tunnel runtime | ✅ | Real ssh2 tunnel (password + key auth), binds 127.0.0.1 only, secrets in OS keychain (`ssh_password:<id>` / `ssh_passphrase:<id>`), closed on pool eviction / app exit; TLS downgraded to `require` through the tunnel |
@@ -210,6 +211,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Connection cards grid (by folder) | ✅ | Grouped display, single-click to open DB viewer |
 | Folders CRUD | ✅ | Nested folders, reparent on delete, breadcrumb nav |
 | Tags CRUD | ✅ | Colors, drag reorder, filter connections by tag |
+| Tag overflow scroll on cards | ✅ | Connection cards show up to 3 tags, then the row scrolls horizontally (v0.7.0) |
 | Tag filter dropdown | ✅ | ActionRow Tags button → dropdown with checkboxes, active-count badge, Manage tags → Settings. **OR semantics** — a connection shows if it has ANY selected tag (not all) |
 | Folder tag matching | ✅ | When any filter is active, folder cards show only if the folder matches a selected tag OR contains matching connections (directly or in subfolders) |
 | DB type filter (Postgres/MySQL/SQLite/Redis) | ✅ | Dropdown with checkboxes + Clear all; folder cards hidden when their contents don't match the DB type |
@@ -229,7 +231,9 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Feature | Status | Details |
 | :--- | :---: | :--- |
 | Multi-tab table browser | ✅ | Open tables in tabs, close with Cmd/Ctrl+W |
-| Schema/database selector | ✅ | Ghost-style dropdowns, single-row layout |
+| DB viewer capability gating | ✅ | `dbCapabilities.ts` matrix per `db_type` (PG full; SQLite explorer/queries/visualizer/editing/import; MySQL explorer/queries/editing/import; Redis none); unsupported views show a clean "not supported" state. Redis browsing gated off (v0.7.0) |
+| Schema/database selector | ✅ | Ghost-style dropdowns, single-row layout; schema dropdown + tables tree show a loading state while the schema tree is still fetching, instead of an empty "no tables" state (v0.7.0) |
+| Table toolbar during load | ✅ | Toolbar renders immediately when a tab opens while data is still fetching, so the loading state is visible (v0.7.0) |
 | Refresh database (spin + success/error feedback) | ✅ | Re-fetches databases, schemas, and tables |
 | Search tables filter | ✅ | Animated input, real-time filter by name, auto-hide on blur |
 | Column metadata (PK, FK, type, nullable, default) | ✅ | Expand table row to see columns with icons. ENUM/custom types resolved via udt_name, cast ::text for data retrieval. |

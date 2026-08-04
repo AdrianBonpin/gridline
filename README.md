@@ -5,7 +5,7 @@
 <h1>Gridline</h1>
 
 <p>
-  <i>A lightweight, open-source database GUI for PostgreSQL and SQLite.</i><br />
+  <i>A lightweight, open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis.</i><br />
   Unlimited connections, tabs, and saved queries — with first-class <code>pg_dump</code>, <code>pg_restore</code>, and DB-to-DB sync.
 </p>
 
@@ -35,6 +35,7 @@ Gridline is a modern, open-source database GUI client built with [Tauri 2.0](htt
 
 - **No caps** on connections, tabs, or saved queries.
 - **Deep PostgreSQL tooling** — visual `pg_dump`, `pg_restore`, and DB-to-DB sync.
+- **Full MySQL + SQLite browsing** — connect, browse, query, and edit MySQL and SQLite the same way you do PostgreSQL.
 - **Full object explorer** — not just tables, but functions, triggers, sequences, enums, extensions, materialized views, and procedures.
 - **Interactive ER diagram** — explore relationships visually with crow's-foot cardinality notation.
 - **Production-safe editing** — stage INSERT/UPDATE/DELETE changes, review the generated SQL, then commit all at once.
@@ -55,6 +56,7 @@ Gridline is built for developers and small teams who manage multiple database en
 
 ## Recent Changes
 
+- **2026-08-04:** v0.7.0 — revamped the New Connection screen into a two-stage flow with a 6-provider grid (PostgreSQL, MySQL, SQLite, Redis, Supabase, NeonDB; managed presets ship with setup guides + SSL hints) and added full MySQL DB viewer support (connect, browse, query, inline cell editing + changes queue, DDL copy).
 - **2026-08-04:** Revamped the built-in SQLite demo database with realistic e-commerce data (20 users, 24 products, 50 orders, 100 page views, 500 audit rows) and renamed it to **Gridline Demo (SQLite)**.
 - **2026-07-XX:** Added inline cell editing with a stage-first changes queue, row-detail drawer, keyboard navigation, and cell-level copy.
 - **2026-07-XX:** Added visual filter builder with drag-and-drop column palette and type-aware operators.
@@ -72,6 +74,7 @@ Gridline is built for developers and small teams who manage multiple database en
 ### Connections & Workspace
 
 - **URI auto-fill** — paste `postgres://`, `mysql://`, `sqlite://`, or `redis://` strings and have all fields populate automatically.
+- **Provider grid** — pick PostgreSQL, MySQL, SQLite, Redis, Supabase, or NeonDB; managed presets surface in-app setup guides and an SSL hint.
 - **Workspace tree** — multi-level folders, color-coded tags, favorites, and recent connections.
 - **OS keychain storage** — passwords and SSH secrets live in macOS Keychain / Linux Secret Service / Windows Credential Manager, never in plaintext.
 - **SSH tunneling** — real `ssh2` tunnels with password or key authentication.
@@ -189,7 +192,7 @@ Capabilities below are fact-checked against each vendor's official docs and pric
 | :------------------ | :-------------------------------------------------------------------------------------------------------- | :----------------------------------------------- |
 | **Desktop shell**   | [Tauri 2.0](https://tauri.app)                                                                            | Native webview container (~40 MB baseline)       |
 | **Backend**         | Rust + [tokio](https://tokio.rs)                                                                          | Async runtime, connection pooling, CLI execution |
-| **DB drivers**      | [sqlx](https://github.com/launchbadge/sqlx) / [tokio-postgres](https://github.com/sfackler/rust-postgres) | Pure-Rust PostgreSQL (SQLite via rusqlite)       |
+| **DB drivers**      | [sqlx](https://github.com/launchbadge/sqlx) / [tokio-postgres](https://github.com/sfackler/rust-postgres) | PostgreSQL via tokio-postgres; MySQL via sqlx; SQLite via rusqlite |
 | **CLI integration** | `std::process::Command`                                                                                   | Wraps system `pg_dump` / `pg_restore`            |
 | **Frontend**        | [React 19](https://react.dev) + [TypeScript](https://www.typescriptlang.org)                              | Component-based UI                               |
 | **Styling**         | [Tailwind CSS](https://tailwindcss.com)                                                                   | Utility-first, dark mode, glassmorphic design    |
@@ -220,16 +223,16 @@ Code signing **will be added in the future** (Apple Developer Program + a Window
 
 #### Which file should I download?
 
-Each release contains **one file per platform** — you only need the one that matches your computer. (If a newer version is available, swap `0.6.0` for the version shown in the release title.)
+Each release contains **one file per platform** — you only need the one that matches your computer. (If a newer version is available, swap `0.7.0` for the version shown in the release title.)
 
 | Your system | Download this | Notes |
 | :--- | :--- | :--- |
-| macOS **Apple Silicon** (M1/M2/M3/M4…) | `Gridline_0.6.0_aarch64.dmg` | `aarch64` = Apple's own chip |
-| macOS **Intel** | `Gridline_0.6.0_x64.dmg` | `x64` = Intel/AMD |
-| **Windows** (most PCs) | `Gridline_0.6.0_x64-setup.exe` | The `.msi` is an alternate installer (for enterprises/IT admins) |
-| **Debian / Ubuntu** | `Gridline_0.6.0_amd64.deb` | Install: `sudo apt install ./Gridline_0.6.0_amd64.deb` |
-| **Fedora / RHEL / openSUSE** | `Gridline-0.6.0-1.x86_64.rpm` | Install: `sudo dnf install Gridline-0.6.0-1.x86_64.rpm` |
-| **Any other Linux** | `Gridline_0.6.0_amd64.AppImage` | Works on every distro: `chmod +x` the file, then double-click it |
+| macOS **Apple Silicon** (M1/M2/M3/M4…) | `Gridline_0.7.0_aarch64.dmg` | `aarch64` = Apple's own chip |
+| macOS **Intel** | `Gridline_0.7.0_x64.dmg` | `x64` = Intel/AMD |
+| **Windows** (most PCs) | `Gridline_0.7.0_x64-setup.exe` | The `.msi` is an alternate installer (for enterprises/IT admins) |
+| **Debian / Ubuntu** | `Gridline_0.7.0_amd64.deb` | Install: `sudo apt install ./Gridline_0.7.0_amd64.deb` |
+| **Fedora / RHEL / openSUSE** | `Gridline-0.7.0-1.x86_64.rpm` | Install: `sudo dnf install Gridline-0.7.0-1.x86_64.rpm` |
+| **Any other Linux** | `Gridline_0.7.0_amd64.AppImage` | Works on every distro: `chmod +x` the file, then double-click it |
 
 **Not sure if your Mac is Intel or Apple Silicon?** Click the **Apple menu** → **About This Mac**. If it shows "Apple M1/M2/M3/M4…" download the `aarch64` file; if it shows an Intel chip, download `x64`. Downloading the wrong one won't run.
 
@@ -239,8 +242,8 @@ Cutting a release is one command — CI builds everything. **Releases are cut fr
 
 ```bash
 git checkout prod && git pull
-git tag v0.6.0
-git push origin v0.6.0
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 GitHub Actions (`.github/workflows/release.yml`) builds installers for **Apple Silicon, Intel Macs, Windows, and Linux**, then opens a **draft release** on the [Releases](https://github.com/adrianbonpin/gridline/releases) page — review it and hit **Publish release**.
@@ -331,7 +334,7 @@ Highlights of what's next:
 - **Full Object Management** — CRUD on functions, triggers, sequences, enums, extensions, and views without the Query tab, plus schema CRUD, global object search, and copy-as-DDL
 - **Full Redis support** — key browser, type-aware value editors, TTL management
 - **More database types** — MariaDB, TimescaleDB, and friends
-- **Managed DB support** — PlanetScale, Turso (Supabase/Neon presets ship in v0.7.0)
+- **Managed DB support** — PlanetScale, Turso (Supabase/Neon presets shipped in v0.7.0)
 - **AI integration (BYOK)** — natural-language → SQL, chat, summaries, charts
 
 ✅ **[View the full roadmap →](./ROADMAP.md)**
