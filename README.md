@@ -204,6 +204,45 @@ Pre-built installers for macOS, Windows, and Linux are published on the [Release
 
 > ⚠️ Gridline is under active development. Expect rough edges and please [open issues](https://github.com/adrianbonpin/gridline/issues/new) when you hit them.
 
+#### Installers are unsigned (for now)
+
+Gridline is currently distributed **unsigned** — it doesn't pay for code-signing certificates yet. Your OS will warn you the first time you open it. This is expected — the app is safe, it just hasn't paid the signing fee:
+
+- **macOS:** right-click the app → **Open** → **Open** (or System Settings → Privacy & Security → **Open Anyway**). Do this once per version.
+- **Windows:** on the SmartScreen prompt, click **More info** → **Run anyway**.
+- **Linux:** no warning — install and run normally.
+
+Code signing **will be added in the future** (Apple Developer Program + a Windows signing cert, e.g. Azure Trusted Signing) — the CI workflow is already wired to pick up the signing secrets automatically the moment they exist, no workflow changes needed.
+
+#### Which file should I download?
+
+Each release contains **one file per platform** — you only need the one that matches your computer. (If a newer version is available, swap `0.6.0` for the version shown in the release title.)
+
+| Your system | Download this | Notes |
+| :--- | :--- | :--- |
+| macOS **Apple Silicon** (M1/M2/M3/M4…) | `Gridline_0.6.0_aarch64.dmg` | `aarch64` = Apple's own chip |
+| macOS **Intel** | `Gridline_0.6.0_x64.dmg` | `x64` = Intel/AMD |
+| **Windows** (most PCs) | `Gridline_0.6.0_x64-setup.exe` | The `.msi` is an alternate installer (for enterprises/IT admins) |
+| **Debian / Ubuntu** | `Gridline_0.6.0_amd64.deb` | Install: `sudo apt install ./Gridline_0.6.0_amd64.deb` |
+| **Fedora / RHEL / openSUSE** | `Gridline-0.6.0-1.x86_64.rpm` | Install: `sudo dnf install Gridline-0.6.0-1.x86_64.rpm` |
+| **Any other Linux** | `Gridline_0.6.0_amd64.AppImage` | Works on every distro: `chmod +x` the file, then double-click it |
+
+**Not sure if your Mac is Intel or Apple Silicon?** Click the **Apple menu** → **About This Mac**. If it shows "Apple M1/M2/M3/M4…" download the `aarch64` file; if it shows an Intel chip, download `x64`. Downloading the wrong one won't run.
+
+#### How releases are made
+
+Cutting a release is one command — CI builds everything. **Releases are cut from `main`, which is the production branch** — only push release tags from `main`, never from feature branches:
+
+```bash
+git checkout main && git pull
+git tag v0.6.0
+git push origin v0.6.0
+```
+
+GitHub Actions (`.github/workflows/release.yml`) builds installers for **Apple Silicon, Intel Macs, Windows, and Linux**, then opens a **draft release** on the [Releases](https://github.com/adrianbonpin/gridline/releases) page — review it and hit **Publish release**.
+
+Before tagging, make sure the version number is in sync across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
 ### Build from source
 
 ```bash

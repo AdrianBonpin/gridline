@@ -148,12 +148,12 @@ describe("DbViewerScreen", () => {
         const staged = useDbViewerStore.getState().changesQueue[0];
         expect(staged?.table).toBe("users");
         expect(staged?.schema).toBe("public");
-        // grid cell shows the optimistic value + the pending dot (2nd match is the queue panel diff)
+        // grid cell shows the optimistic value + the pending outline (2nd match is the queue panel diff)
         await waitFor(() => {
             expect(screen.getAllByText("Alicia").length).toBeGreaterThanOrEqual(2);
         });
-        expect(screen.getByTestId("pending-edit-dot")).toBeInTheDocument();
-        // committing the change clears the pending dot but keeps the value until refetch
+        expect(screen.getByTestId("pending-cell")).toBeInTheDocument();
+        // committing the change clears the pending outline but keeps the value until refetch
         act(() => {
             useDbViewerStore
                 .getState()
@@ -162,7 +162,7 @@ describe("DbViewerScreen", () => {
                 );
         });
         await waitFor(() => {
-            expect(screen.queryByTestId("pending-edit-dot")).toBeNull();
+            expect(screen.queryByTestId("pending-cell")).toBeNull();
         });
         expect(screen.getAllByText("Alicia").length).toBeGreaterThanOrEqual(2);
         // clearing the queue clears the optimistic display

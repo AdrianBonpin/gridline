@@ -23,7 +23,12 @@ interface CellEditorProps {
 }
 
 const inputClass =
-  "w-full px-1 py-0.5 text-xs bg-surface border border-border rounded font-mono";
+  "min-w-0 flex-1 bg-transparent px-3 font-heading text-xs text-text outline-none placeholder:text-text-muted";
+const controlClass =
+  "min-w-0 flex-1 rounded bg-surface px-2 py-1 font-heading text-xs text-text outline-none placeholder:text-text-muted";
+
+/** Types that tolerate an empty string when NOT NULL ('' is a valid value). */
+const TEXT_LIKE = ["char", "text", "uuid", "bit"];
 
 export function CellEditor({
   initialValue,
@@ -36,8 +41,9 @@ export function CellEditor({
   onCancel,
 }: CellEditorProps) {
   const [value, setValue] = useState(initialValue);
-  const [setNull, setSetNull] = useState(initialValue === "" && nullable);
   const [query, setQuery] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const ref = useRef<HTMLTextAreaElement | HTMLInputElement>(null);
   const enumRef = useRef<HTMLSelectElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -46,6 +52,8 @@ export function CellEditor({
     left: number;
     width: number;
   } | null>(null);
+
+  const textLike = TEXT_LIKE.some((t) => dataType.toLowerCase().includes(t));
 
   useLayoutEffect(() => {
     if (fkOptions && fkOptions.length > 0 && searchRef.current) {
@@ -80,22 +88,59 @@ export function CellEditor({
   );
   const Tag = large ? "textarea" : "input";
 
-  const commit = () => onCommit(setNull ? null : value);
-
-  const handleSetNull = (checked: boolean) => {
-    setSetNull(checked);
-    if (checked) onCommit(null);
+  /**
+   * Constraint-aware commit resolution:
+   * - Empty input on a nullable column → NULL (smart "clear = null").
+   * - Empty input on a NOT NULL column → only text-ish types may fall back to
+   *   an empty string; everything else is blocked with an error.
+   */
+  const resolveCommit = (
+    raw: string,
+  ): { value: string | null } | { error: string } => {
+    if (raw.trim() === "") {
+      if (nullable) return { value: null };
+      if (textLike) return { value: raw };
+      return { error: "This column cannot be NULL" };
+    }
+    return { value: raw };
   };
+
+  const commitRaw = (raw: string) => {
+    const r = resolveCommit(raw);
+    if ("error" in r) {
+      setError(r.error);
+      return;
+    }
+    setError(null);
+    onCommit(r.value);
+  };
+
+  const commit = () => commitRaw(value);
+
+  const errorRect = error ? rootRef.current?.getBoundingClientRect() : null;
+  const errorBubble =
+    error && errorRect
+      ? createPortal(
+          <div
+            data-testid="cell-editor-error"
+            className="fixed z-50 pointer-events-none rounded-md border border-red-500/50 bg-red-950/95 px-2 py-1 text-[10px] text-red-300 shadow-lg"
+            style={{ top: errorRect.bottom + 4, left: errorRect.left, maxWidth: 320 }}
+          >
+            {error}
+          </div>,
+          document.body,
+        )
+      : null;
 
   // Priority: enum > FK > default input/textarea
   if (enumValues && enumValues.length > 0) {
     return (
-      <div className="flex flex-col gap-1 p-1 bg-canvas border border-accent rounded">
+      <div ref={rootRef} className={`flex h-full w-full items-center gap-1.5 px-1.5 ${error ? "ring-1 ring-inset ring-red-500/60" : ""}`}>
         <select
           ref={enumRef}
-          className={inputClass}
+          className={controlClass}
           value={initialValue}
-          onChange={(e) => onCommit(setNull ? null : e.target.value)}
+          onChange={(e) => commitRaw(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               e.preventDefault();
@@ -110,16 +155,7 @@ export function CellEditor({
             </option>
           ))}
         </select>
-        {nullable && (
-          <label className="flex items-center gap-1 text-[10px] text-text-muted">
-            <input
-              type="checkbox"
-              checked={setNull}
-              onChange={(e) => handleSetNull(e.target.checked)}
-            />
-            Set NULL
-          </label>
-        )}
+        {errorBubble}
       </div>
     );
   }
@@ -139,19 +175,22 @@ export function CellEditor({
       ? fkOptions
       : fkOptions.filter((o) => fkSearchText(o).includes(q));
     return (
-      <div className="flex flex-col gap-1 p-1 bg-canvas border border-accent rounded">
+      <div ref={rootRef} className={`flex h-full w-full items-center gap-1.5 px-1.5 ${error ? "ring-1 ring-inset ring-red-500/60" : ""}`}>
         <input
           ref={searchRef}
           aria-label="Search foreign key options"
           placeholder={fkPlaceholder ?? "Search…"}
-          className={inputClass}
+          className={controlClass}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setError(null);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              if (filtered.length > 0) onCommit(filtered[0].value);
-              else onCommit(query);
+              if (filtered.length > 0) commitRaw(filtered[0].value);
+              else commitRaw(query);
             } else if (e.key === "Escape") {
               e.preventDefault();
               onCancel();
@@ -172,6 +211,15 @@ export function CellEditor({
             }}
             className="max-h-28 overflow-y-auto bg-surface border border-border rounded-lg shadow-xl"
           >
+          {nullable && (
+            <button
+              type="button"
+              className="block w-full px-3 py-1.5 hover:bg-surface-raised text-xs text-left italic text-text-muted"
+              onClick={() => commitRaw("")}
+            >
+              NULL
+            </button>
+          )}
           {filtered.length === 0 && (
             <div className="px-2 py-1 text-xs text-text-muted">No matches</div>
           )}
@@ -180,7 +228,7 @@ export function CellEditor({
               key={o.value}
               type="button"
               className="block w-full px-3 py-1.5 hover:bg-surface-raised text-xs text-left"
-              onClick={() => onCommit(o.value)}
+              onClick={() => commitRaw(o.value)}
             >
               {o.cells && o.cells.length > 0 ? (
                 <span className="flex items-center gap-0 min-w-0">
@@ -205,30 +253,28 @@ export function CellEditor({
             </div>,
             document.body,
           )}
-        {nullable && (
-          <label className="flex items-center gap-1 text-[10px] text-text-muted">
-            <input
-              type="checkbox"
-              checked={setNull}
-              onChange={(e) => handleSetNull(e.target.checked)}
-            />
-            Set NULL
-          </label>
-        )}
+        {errorBubble}
       </div>
     );
   }
 
-  const cls = large ? `${inputClass} h-6 resize-none overflow-y-auto leading-none` : inputClass;
+  const cls = large
+    ? `${inputClass} h-4 resize-none overflow-y-auto whitespace-pre leading-none py-0.5`
+    : inputClass;
   return (
-    <div className="flex flex-col gap-1 p-1 bg-canvas border border-accent rounded">
+    <div
+      ref={rootRef}
+      data-testid="cell-editor"
+      className={`flex h-full w-full items-center gap-2 ${error ? "ring-1 ring-inset ring-red-500/60" : ""}`}
+    >
       <Tag
         ref={ref as any}
         className={cls}
+        placeholder={nullable && value === "" ? "NULL" : undefined}
         value={value}
         onChange={(e) => {
           setValue(e.target.value);
-          setSetNull(false);
+          setError(null);
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
@@ -240,16 +286,7 @@ export function CellEditor({
           }
         }}
       />
-      {nullable && (
-        <label className="flex items-center gap-1 text-[10px] text-text-muted">
-          <input
-            type="checkbox"
-            checked={setNull}
-            onChange={(e) => handleSetNull(e.target.checked)}
-          />
-          Set NULL
-        </label>
-      )}
+      {errorBubble}
     </div>
   );
 }
