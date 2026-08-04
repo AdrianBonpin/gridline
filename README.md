@@ -29,6 +29,23 @@
 
 ---
 
+## Download
+
+Grab the installer for your OS from the latest release (v0.7.0):
+
+| OS | Download |
+| :--- | :--- |
+| **macOS** · Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.7.0_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_aarch64.dmg) |
+| **macOS** · Intel | [Gridline_0.7.0_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_x64.dmg) |
+| **Windows** | [Gridline_0.7.0_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_x64-setup.exe) |
+| **Debian / Ubuntu** | [Gridline_0.7.0_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_amd64.deb) |
+| **Fedora / RHEL / openSUSE** | [Gridline-0.7.0-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline-0.7.0-1.x86_64.rpm) |
+| **Other Linux** | [Gridline_0.7.0_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_amd64.AppImage) |
+
+> Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below. All installers are **unsigned** — see the [notes](#which-file-should-i-download) on first-launch warnings.
+
+---
+
 ## What is Gridline?
 
 Gridline is a modern, open-source database GUI client built with [Tauri 2.0](https://tauri.app), Rust, and React. It is lightweight by design (~40 MB baseline), powerful by default, and free from the paywalls that limit commercial alternatives.
@@ -343,6 +360,7 @@ Highlights of what's next:
 
 ## Table of Contents
 
+- [Download](#download)
 - [What is Gridline?](#what-is-gridline)
 - [Who is it for?](#who-is-it-for)
 - [Recent Changes](#recent-changes)
