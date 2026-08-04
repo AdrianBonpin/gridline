@@ -878,6 +878,117 @@ where
     Ok((client, handle))
 }
 
+/// Headless MySQL connect (no Tauri `State`). Opens an SSH tunnel when
+/// configured (binding 127.0.0.1 only), maps SSL modes, and registers a
+/// `DbHandle::MySql` pool. Errors are sanitized so no `mysql://user:pass@host`
+/// text leaks across the IPC boundary.
+pub(crate) async fn run_mysql_connect(
+    connection_id: &str,
+    config: &crate::db::pool::DbConfig,
+    ssh_manager: &std::sync::Mutex<crate::commands::ssh::SshTunnelManager>,
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+) -> Result<(), String> {
+    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
+    if config.host.trim().is_empty() {
+        return Err("host is required".to_string());
+    }
+
+    let target_host: String;
+    let target_port: u16;
+    let via_tunnel: bool;
+
+    if let Some(ssh_cfg) = config.ssh_config() {
+        let key = connection_id.to_string();
+        let remote_host = config.host.clone();
+        let remote_port = config.port.unwrap_or(3306) as u16;
+        let pw = config.ssh_password.clone();
+        let pp = config.ssh_passphrase.clone();
+        let backend = ssh_manager.lock().unwrap().backend_clone();
+        let tunnel = tokio::task::spawn_blocking(move || {
+            backend.open(
+                &key,
+                &ssh_cfg,
+                &remote_host,
+                remote_port,
+                pw.as_deref(),
+                pp.as_deref(),
+            )
+        })
+        .await
+        .map_err(|e| format!("Connection failed: {e}"))?
+        .map_err(|e| sanitize_error(&e))?;
+        let lp = tunnel.local_port;
+        ssh_manager
+            .lock()
+            .unwrap()
+            .insert_tunnel(connection_id.to_string(), tunnel);
+        target_host = "127.0.0.1".to_string();
+        target_port = lp;
+        via_tunnel = true;
+    } else {
+        target_host = config.host.clone();
+        target_port = config.port.unwrap_or(3306) as u16;
+        via_tunnel = false;
+    }
+
+    let mut opts = MySqlConnectOptions::new()
+        .host(&target_host)
+        .port(target_port)
+        .username(config.username.as_deref().unwrap_or("root"))
+        .password(config.password.as_deref().unwrap_or(""))
+        .database(config.database.as_deref().unwrap_or("mysql"));
+
+    // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
+    // degrade to encrypt-only `require`. Direct connections honor the mode.
+    let decision = crate::commands::ssh::effective_tls_decision(
+        crate::db::tls::tls_decision(config.ssl_mode.as_deref()),
+        via_tunnel,
+    );
+    match decision {
+        crate::db::tls::TlsDecision::Disable => {
+            opts = opts.ssl_mode(MySqlSslMode::Disabled);
+        }
+        crate::db::tls::TlsDecision::Require => {
+            opts = opts.ssl_mode(MySqlSslMode::Required);
+        }
+        crate::db::tls::TlsDecision::Verify => {
+            // sqlx 0.8 has no VerifyFull: verify-ca -> VerifyCa (chain only),
+            // verify-full -> VerifyIdentity (chain + hostname).
+            match config.ssl_mode.as_deref() {
+                Some("verify-ca") => opts = opts.ssl_mode(MySqlSslMode::VerifyCa),
+                _ => opts = opts.ssl_mode(MySqlSslMode::VerifyIdentity),
+            }
+            if let Some(ca) = config.ssl_ca_path.as_deref() {
+                opts = opts.ssl_ca(ca);
+            }
+        }
+    }
+
+    match MySqlPoolOptions::new()
+        .max_connections(5)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect_with(opts)
+        .await
+    {
+        Ok(pool) => {
+            pool_manager
+                .lock()
+                .await
+                .register(connection_id, crate::db::pool::DbHandle::MySql(pool));
+            Ok(())
+        }
+        Err(e) => {
+            if via_tunnel {
+                ssh_manager.lock().unwrap().close_tunnel(connection_id);
+            }
+            Err(format!(
+                "Connection failed: {}",
+                sanitize_error(&format!("{e}"))
+            ))
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn db_connect(
     connection_id: String,
@@ -992,6 +1103,14 @@ pub async fn db_connect(
             }
             Err(e) => Err(format!("Connection failed: {}", e)),
         }
+    } else if config.db_type == "mysql" {
+        run_mysql_connect(
+            &connection_id,
+            &config,
+            &state.ssh_manager,
+            &state.pool_manager,
+        )
+        .await
     } else {
         Err(format!(
             "Database type '{}' not yet supported for DB viewer",
@@ -1031,6 +1150,9 @@ pub async fn get_databases(
             // SQLite has a single database per file; expose the catalog name.
             Ok(vec!["main".to_string()])
         }
+        Some(crate::db::pool::DbHandle::MySql(_)) => {
+            Err("MySQL database browsing not yet supported".to_string())
+        }
         None => Err("Connection not found".to_string()),
     }
 }
@@ -1060,6 +1182,9 @@ pub async fn get_schemas(
                 .query_map([], |row| row.get::<_, String>(0))
                 .map_err(|e| e.to_string())?;
             Ok(rows.filter_map(|r| r.ok()).collect())
+        }
+        Some(crate::db::pool::DbHandle::MySql(_)) => {
+            Err("MySQL schema browsing not yet supported".to_string())
         }
         None => Err("Connection not found".to_string()),
     }
@@ -1108,6 +1233,9 @@ pub async fn get_tables(
                 .map_err(|e| e.to_string())?;
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())
+        }
+        Some(crate::db::pool::DbHandle::MySql(_)) => {
+            Err("MySQL table browsing not yet supported".to_string())
         }
         None => Err("Connection not found".to_string()),
     }
@@ -1499,6 +1627,9 @@ ORDER BY c.ordinal_position"#;
                 execution_time_ms: None,
             })
         }
+        Some(crate::db::pool::DbHandle::MySql(_)) => {
+            Err("MySQL data browsing not yet supported".to_string())
+        }
         None => Err("Connection not found".to_string()),
     }
 }
@@ -1697,6 +1828,9 @@ ORDER BY c.ordinal_position"#;
                 execution_time_ms: None,
             })
         }
+        Some(crate::db::pool::DbHandle::MySql(_)) => {
+            Err("MySQL FK preview not yet supported".to_string())
+        }
         None => Err("Connection not found".to_string()),
     }
 }
@@ -1880,6 +2014,9 @@ pub async fn execute_change(
             }
             Ok(())
         }
+        Some(crate::db::pool::DbHandle::MySql(_)) => {
+            Err("MySQL change execution not yet supported".to_string())
+        }
         None => Err("Connection not found".to_string()),
     }
 }
@@ -1905,6 +2042,9 @@ pub async fn refresh_connection(
             conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
                 .map_err(|e| e.to_string())?;
             Ok(())
+        }
+        Some(crate::db::pool::DbHandle::MySql(_)) => {
+            Err("MySQL refresh not yet supported".to_string())
         }
         None => Err("Connection not found".to_string()),
     }
@@ -1941,6 +2081,7 @@ pub async fn get_functions(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL functions not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -1976,6 +2117,7 @@ pub async fn get_indexes(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL indexes not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2023,6 +2165,7 @@ pub async fn get_constraints(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL constraints not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2058,6 +2201,7 @@ pub async fn get_triggers(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL triggers not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2095,6 +2239,7 @@ pub async fn get_sequences(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL sequences not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2124,6 +2269,7 @@ pub async fn get_enums(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL enums not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2149,6 +2295,7 @@ pub async fn get_extensions(
                 .collect())
         }
         Some(DbHandle::Sqlite(_)) => Ok(vec![]),
+        Some(DbHandle::MySql(_)) => Err("MySQL extensions not yet supported".to_string()),
         None => Err("Connection not found".into()),
     }
 }
@@ -2169,6 +2316,7 @@ pub async fn get_table_ddl(
     let mut pm = state.pool_manager.lock().await;
     match pm.get(&connection_id) {
         Some(DbHandle::Sqlite(conn)) => get_sqlite_ddl(conn, &table),
+        Some(DbHandle::MySql(_)) => Err("MySQL table DDL not yet supported".to_string()),
         Some(DbHandle::Postgresql(_client, _)) => {
             // Pull connection metadata so pg_dump reaches the same server the
             // pool is connected to (host/port/user/dbname + keychain password).
@@ -2223,7 +2371,10 @@ pub async fn get_table_ddl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::ssh::{Ssh2Backend, SshTunnelManager};
+    use crate::db::pool::{ConnectionPoolManager, DbConfig};
     use crate::models::db_viewer::Change;
+    use std::sync::{Arc, Mutex as StdMutex};
 
     #[test]
     fn split_columns_csv_handles_commas_and_trims() {
@@ -2635,5 +2786,73 @@ mod tests {
             affected_count_error(2u64),
             Some("ambiguous row match".to_string())
         );
+    }
+
+    async fn fresh_pool_manager() -> tokio::sync::Mutex<ConnectionPoolManager> {
+        tokio::sync::Mutex::new(ConnectionPoolManager::new())
+    }
+
+    #[tokio::test]
+    async fn run_mysql_connect_rejects_empty_host() {
+        let cfg = DbConfig {
+            db_type: "mysql".into(),
+            host: "".into(),
+            port: Some(3306),
+            username: Some("root".into()),
+            password: None,
+            database: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_password: None,
+            ssh_private_key_path: None,
+            ssh_passphrase: None,
+        };
+        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+        let pm = fresh_pool_manager().await;
+        let id = "mysql-empty-host";
+        let res = run_mysql_connect(id, &cfg, &ssh, &pm).await;
+        assert!(res.is_err(), "empty host must fail before any network call");
+        let mut pmg = pm.lock().await;
+        assert!(pmg.get(id).is_none(), "no handle registered on failure");
+    }
+
+    #[tokio::test]
+    async fn run_mysql_connect_registers_handle_when_lazy_url_parses() {
+        // No live connection: a deliberately unreachable host with a short timeout.
+        // We assert the function returns an Err (not a panic) and registers nothing.
+        let cfg = DbConfig {
+            db_type: "mysql".into(),
+            host: "127.0.0.1".into(),
+            port: Some(1),
+            username: Some("root".into()),
+            password: Some("x".into()),
+            database: Some("mysql".into()),
+            ssl_mode: Some("require".into()),
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_password: None,
+            ssh_private_key_path: None,
+            ssh_passphrase: None,
+        };
+        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+        let pm = fresh_pool_manager().await;
+        let id = "mysql-unreachable";
+        let res = run_mysql_connect(id, &cfg, &ssh, &pm).await;
+        assert!(
+            res.is_err(),
+            "port 1 should refuse; must be a clean Err, not panic"
+        );
+        assert!(pm.lock().await.get(id).is_none());
     }
 }

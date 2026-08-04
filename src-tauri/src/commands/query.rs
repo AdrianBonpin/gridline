@@ -100,6 +100,7 @@ pub(crate) async fn execute_query_inner(
             execute_pg_query(client, query, page, page_size).await
         }
         Some(DbHandle::Sqlite(conn)) => execute_sqlite_query(conn, query, page, page_size),
+        Some(DbHandle::MySql(_)) => Err("MySQL query execution not yet supported".to_string()),
         None => {
             let elapsed = start.elapsed().as_millis() as i64;
             let err = "Connection not found".to_string();
