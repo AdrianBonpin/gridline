@@ -596,6 +596,46 @@ describe("DbViewerScreen", () => {
         );
     });
 
+    it("shows the table toolbar while a table tab is still loading its first data", () => {
+        useDbViewerStore.setState({
+            tabs: [
+                {
+                    id: "tab-loading",
+                    schema: "public",
+                    table: "users",
+                    page: 1,
+                    pageSize: 50,
+                    loading: true,
+                    error: null,
+                    data: null, // first fetch still in flight
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: false,
+                    tabType: "table",
+                },
+            ],
+            activeTabId: "tab-loading",
+        });
+
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+
+        // Toolbar must be visible immediately while data is still loading,
+        // so the user sees the loading state instead of an empty pane.
+        expect(
+            screen.getByLabelText(/refresh table/i),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByLabelText(/column filters/i),
+        ).toBeInTheDocument();
+    });
+
     it("disables Insert Row for a materialized-view tab", async () => {
         useDbViewerStore.setState({
             tables: [

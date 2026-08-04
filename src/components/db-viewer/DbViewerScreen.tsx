@@ -1241,7 +1241,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 </span>
                                             </div>
                                         )}
-                                        {activeTab?.data && (
+                                        {activeTab && (
                                             <TableControls
                                                 connectionId={connectionId}
                                                 schema={activeSchema}
