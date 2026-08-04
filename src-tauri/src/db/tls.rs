@@ -113,14 +113,13 @@ fn load_client_identity(
         );
     }
     let cb = std::fs::read(cert_path).map_err(|e| format!("read cert: {e}"))?;
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut std::io::BufReader::new(
-        cb.as_slice(),
-    ))
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| format!("parse cert: {e}"))?
-    .into_iter()
-    .map(|c| c.into_owned())
-    .collect();
+    let certs: Vec<CertificateDer<'static>> =
+        rustls_pemfile::certs(&mut std::io::BufReader::new(cb.as_slice()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("parse cert: {e}"))?
+            .into_iter()
+            .map(|c| c.into_owned())
+            .collect();
     if certs.is_empty() {
         return Err("no client certificates parsed".into());
     }
@@ -179,29 +178,37 @@ mod tests {
     #[test]
     fn tls_decision_maps_modes() {
         assert!(matches!(tls_decision(None), TlsDecision::Disable));
-        assert!(matches!(tls_decision(Some("disable")), TlsDecision::Disable));
-        assert!(matches!(tls_decision(Some("require")), TlsDecision::Require));
-        assert!(matches!(tls_decision(Some("verify-ca")), TlsDecision::Verify));
-        assert!(matches!(tls_decision(Some("verify-full")), TlsDecision::Verify));
+        assert!(matches!(
+            tls_decision(Some("disable")),
+            TlsDecision::Disable
+        ));
+        assert!(matches!(
+            tls_decision(Some("require")),
+            TlsDecision::Require
+        ));
+        assert!(matches!(
+            tls_decision(Some("verify-ca")),
+            TlsDecision::Verify
+        ));
+        assert!(matches!(
+            tls_decision(Some("verify-full")),
+            TlsDecision::Verify
+        ));
         assert!(matches!(tls_decision(Some("bogus")), TlsDecision::Disable));
     }
 
     #[test]
     fn build_tls_disable_returns_none() {
-        assert!(
-            build_tls_config(TlsDecision::Disable, None, None, None)
-                .unwrap()
-                .is_none()
-        );
+        assert!(build_tls_config(TlsDecision::Disable, None, None, None)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn build_tls_require_returns_some_without_files() {
-        assert!(
-            build_tls_config(TlsDecision::Require, None, None, None)
-                .unwrap()
-                .is_some()
-        );
+        assert!(build_tls_config(TlsDecision::Require, None, None, None)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -214,8 +221,13 @@ mod tests {
     #[test]
     fn build_tls_client_cert_missing_key_errors() {
         // cert set without key
-        let err = build_tls_config(TlsDecision::Require, None, Some("/nonexistent/cert.pem"), None)
-            .unwrap_err();
+        let err = build_tls_config(
+            TlsDecision::Require,
+            None,
+            Some("/nonexistent/cert.pem"),
+            None,
+        )
+        .unwrap_err();
         assert!(err.to_lowercase().contains("cert") || err.to_lowercase().contains("key"));
     }
 

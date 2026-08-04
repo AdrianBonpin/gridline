@@ -2,16 +2,16 @@
 // of runtime usage, producing expected dead_code/unused warnings during development.
 #![allow(dead_code)]
 
+mod commands;
 mod db;
 mod models;
 mod store;
-mod commands;
 
-use std::sync::{Arc, Mutex as StdMutex};
-use tauri::Manager;
-use store::Store;
 use commands::ssh::{Ssh2Backend, SshTunnelManager};
 use db::pool::ConnectionPoolManager;
+use std::sync::{Arc, Mutex as StdMutex};
+use store::Store;
+use tauri::Manager;
 
 pub struct AppState {
     pub db_store: StdMutex<Store>,
@@ -19,7 +19,10 @@ pub struct AppState {
     pub ssh_manager: StdMutex<SshTunnelManager>,
 }
 
-use commands::{connections, db_viewer, folders, tags, settings, import_export, keychain, demo, backup, schema_graph, query};
+use commands::{
+    backup, connections, db_viewer, demo, folders, import_export, keychain, query, schema_graph,
+    settings, tags,
+};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]

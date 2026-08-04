@@ -83,6 +83,34 @@ describe("TabBar", () => {
     expect(screen.queryByTestId("tab-icon-table")).not.toBeInTheDocument();
   });
 
+  it("renders a view icon on view tabs", () => {
+    useDbViewerStore.getState().openTab("main", "order_summary");
+    useDbViewerStore.setState({
+      tables: [
+        { name: "order_summary", schema: "main", table_type: "VIEW" },
+      ],
+    });
+    render(<TabBar />);
+    expect(screen.getByTestId("tab-icon-view")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-icon-table")).not.toBeInTheDocument();
+  });
+
+  it("renders a layers icon on materialized view tabs", () => {
+    useDbViewerStore.getState().openTab("public", "mv_products");
+    useDbViewerStore.setState({
+      tables: [
+        {
+          name: "mv_products",
+          schema: "public",
+          table_type: "MATERIALIZED VIEW" as any,
+        },
+      ],
+    });
+    render(<TabBar />);
+    expect(screen.getByTestId("tab-icon-matview")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-icon-table")).not.toBeInTheDocument();
+  });
+
   it("shows the changes count as an icon with a badge", () => {
     useDbViewerStore.getState().addChange({
       type: "update",
@@ -175,4 +203,94 @@ describe("TabBar", () => {
     const button = screen.getByRole("button", { name: "Changes queue" });
     expect(button.className).toContain("border-amber-500");
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Drag & drop reorder — keep this test LAST in this file.
+  //
+  // The vitest config does not enable `globals: true`, so RTL's auto-cleanup
+  // never unmounts components between tests. A dnd-kit drag leaves its DndContext
+  // (and document-level listeners) mounted, which silently breaks userEvent/fireEvent
+  // clicks in any LATER test. The drag itself is fully verified here; placing it
+  // last isolates the pollution.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it("reorders tabs via drag and drop (horizontal axis only)", async () => {
+    const { act, fireEvent } = await import("@testing-library/react");
+    const store = useDbViewerStore.getState();
+    store.openTab("public", "users");
+    store.openTab("public", "posts", true);
+    store.openTab("public", "comments", true);
+
+    // jsdom reports zero-sized rects and non-primary pointers by default,
+    // which breaks dnd-kit collision detection + pointer activation.
+    const original = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function () {
+      const text = this.textContent ?? "";
+      const index = text.includes("posts")
+        ? 1
+        : text.includes("comments")
+          ? 2
+          : 0;
+      const x = index * 100;
+      return {
+        x,
+        y: 0,
+        width: 100,
+        height: 30,
+        left: x,
+        right: x + 100,
+        top: 0,
+        bottom: 30,
+        toJSON: () => ({}),
+      } as DOMRect;
+    };
+
+    try {
+      render(<TabBar />);
+      const usersTab = screen.getByRole("tab", { name: "users" });
+
+      // pointerDown lifts the tab (distance constraint >= 4px on move), then
+      // moves it over the last tab and drops.
+      await act(async () => {
+        fireEvent.pointerDown(usersTab, {
+          pointerId: 1,
+          clientX: 50,
+          clientY: 15,
+          button: 0,
+          isPrimary: true,
+        });
+      });
+      await act(async () => {
+        fireEvent.pointerMove(usersTab, {
+          pointerId: 1,
+          clientX: 160,
+          clientY: 15,
+        });
+      });
+      await act(async () => {
+        fireEvent.pointerMove(usersTab, {
+          pointerId: 1,
+          clientX: 260,
+          clientY: 15,
+        });
+      });
+      await act(async () => {
+        fireEvent.pointerUp(usersTab, {
+          pointerId: 1,
+          clientX: 260,
+          clientY: 15,
+        });
+      });
+      // Flush dnd-kit's post-drag rAF focus-restore so it cannot leak into
+      // later tests (userEvent clicks are order-sensitive in jsdom).
+      await act(async () => {});
+    } finally {
+      Element.prototype.getBoundingClientRect = original;
+    }
+
+    expect(
+      useDbViewerStore.getState().tabs.map((t) => t.table),
+    ).toEqual(["posts", "comments", "users"]);
+  });
+
 });

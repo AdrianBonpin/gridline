@@ -14,10 +14,7 @@ pub fn get_folders_inner(state: &Mutex<Store>) -> Result<Vec<Folder>, String> {
     store.get_folders()
 }
 
-pub fn create_folder_inner(
-    state: &Mutex<Store>,
-    input: FolderInput,
-) -> Result<Folder, String> {
+pub fn create_folder_inner(state: &Mutex<Store>, input: FolderInput) -> Result<Folder, String> {
     validate(&input)?;
     let store = state.lock().map_err(|e| e.to_string())?;
     store.create_folder(input)
@@ -98,12 +95,15 @@ mod tests {
     #[test]
     fn create_folder_command_works() {
         let st = state();
-        let folder =
-            create_folder_inner(&st, FolderInput { tag_ids: None,
+        let folder = create_folder_inner(
+            &st,
+            FolderInput {
+                tag_ids: None,
                 name: "Work".into(),
                 parent_id: None,
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
         assert_eq!(get_folders_inner(&st).unwrap().len(), 1);
         assert_eq!(folder.name, "Work");
     }
@@ -113,7 +113,8 @@ mod tests {
         let st = state();
         let result = create_folder_inner(
             &st,
-            FolderInput { tag_ids: None,
+            FolderInput {
+                tag_ids: None,
                 name: "".into(),
                 parent_id: None,
             },
@@ -124,12 +125,15 @@ mod tests {
     #[test]
     fn delete_folder_command_works() {
         let st = state();
-        let folder =
-            create_folder_inner(&st, FolderInput { tag_ids: None,
+        let folder = create_folder_inner(
+            &st,
+            FolderInput {
+                tag_ids: None,
                 name: "Work".into(),
                 parent_id: None,
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
         delete_folder_inner(&st, &folder.id).unwrap();
         assert_eq!(get_folders_inner(&st).unwrap().len(), 0);
     }

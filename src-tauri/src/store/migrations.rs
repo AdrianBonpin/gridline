@@ -15,14 +15,10 @@ const CONNECTION_COLUMNS_V2: &[(&str, &str)] = &[
 ];
 
 /// New columns added since version 2.
-const CONNECTION_COLUMNS_V3: &[(&str, &str)] = &[
-    ("environment", "TEXT"),
-];
+const CONNECTION_COLUMNS_V3: &[(&str, &str)] = &[("environment", "TEXT")];
 
 /// New columns added in version 7.
-const CONNECTION_COLUMNS_V7: &[(&str, &str)] = &[
-    ("favorite", "INTEGER NOT NULL DEFAULT 0"),
-];
+const CONNECTION_COLUMNS_V7: &[(&str, &str)] = &[("favorite", "INTEGER NOT NULL DEFAULT 0")];
 
 pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -113,11 +109,8 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         }
 
         // Record the migration.
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (2)",
-            [],
-        )
-        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_version (version) VALUES (2)", [])
+            .map_err(|e| e.to_string())?;
     }
 
     if current_ver < 3 {
@@ -141,11 +134,8 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
             }
         }
 
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (3)",
-            [],
-        )
-        .map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO schema_version (version) VALUES (3)", [])
+            .map_err(|e| e.to_string())?;
     }
 
     // v4: backup_history
@@ -164,14 +154,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
                 size_bytes INTEGER,
                 started_at TEXT NOT NULL,
                 completed_at TEXT
-            );"
-        ).map_err(|e| e.to_string())?;
-
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (4)",
-            [],
+            );",
         )
         .map_err(|e| e.to_string())?;
+
+        conn.execute("INSERT INTO schema_version (version) VALUES (4)", [])
+            .map_err(|e| e.to_string())?;
     }
 
     // v5: query_history
@@ -189,14 +177,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
                 FOREIGN KEY (connection_id) REFERENCES connections(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_query_history_connection
-                ON query_history(connection_id, executed_at DESC);"
-        ).map_err(|e| e.to_string())?;
-
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (5)",
-            [],
+                ON query_history(connection_id, executed_at DESC);",
         )
         .map_err(|e| e.to_string())?;
+
+        conn.execute("INSERT INTO schema_version (version) VALUES (5)", [])
+            .map_err(|e| e.to_string())?;
     }
 
     // v6: query history favorites + saved queries
@@ -214,14 +200,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
                 FOREIGN KEY (connection_id) REFERENCES connections(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_queries_connection ON queries(connection_id);
-            CREATE INDEX IF NOT EXISTS idx_queries_folder ON queries(folder);"
-        ).map_err(|e| e.to_string())?;
-
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (6)",
-            [],
+            CREATE INDEX IF NOT EXISTS idx_queries_folder ON queries(folder);",
         )
         .map_err(|e| e.to_string())?;
+
+        conn.execute("INSERT INTO schema_version (version) VALUES (6)", [])
+            .map_err(|e| e.to_string())?;
     }
 
     // v7: connection favorites + recent_connections
@@ -250,14 +234,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
             "CREATE TABLE IF NOT EXISTS recent_connections (
                 connection_id TEXT PRIMARY KEY REFERENCES connections(id) ON DELETE CASCADE,
                 opened_at TEXT NOT NULL
-            );"
-        ).map_err(|e| e.to_string())?;
-
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (7)",
-            [],
+            );",
         )
         .map_err(|e| e.to_string())?;
+
+        conn.execute("INSERT INTO schema_version (version) VALUES (7)", [])
+            .map_err(|e| e.to_string())?;
     }
 
     Ok(())
@@ -325,9 +307,7 @@ mod tests {
         // Verify columns via PRAGMA
         let columns: Vec<String> = {
             let mut stmt = conn.prepare("PRAGMA table_info(query_history)").unwrap();
-            let rows = stmt
-                .query_map([], |row| row.get::<_, String>(1))
-                .unwrap();
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1)).unwrap();
             rows.filter_map(|r| r.ok()).collect()
         };
         assert!(columns.contains(&"id".to_string()));
@@ -356,9 +336,17 @@ mod tests {
             rusqlite::params![conn_id],
         ).unwrap();
         // Delete connection — should cascade
-        conn.execute("DELETE FROM connections WHERE id = ?1", rusqlite::params![conn_id]).unwrap();
+        conn.execute(
+            "DELETE FROM connections WHERE id = ?1",
+            rusqlite::params![conn_id],
+        )
+        .unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM query_history WHERE connection_id = ?1", rusqlite::params![conn_id], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM query_history WHERE connection_id = ?1",
+                rusqlite::params![conn_id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0);
     }
@@ -370,9 +358,7 @@ mod tests {
         // Verify the favorite column exists via PRAGMA
         let columns: Vec<String> = {
             let mut stmt = conn.prepare("PRAGMA table_info(query_history)").unwrap();
-            let rows = stmt
-                .query_map([], |row| row.get::<_, String>(1))
-                .unwrap();
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1)).unwrap();
             rows.filter_map(|r| r.ok()).collect()
         };
         assert!(
@@ -402,13 +388,23 @@ mod tests {
         // Column check
         let columns: Vec<String> = {
             let mut stmt = conn.prepare("PRAGMA table_info(queries)").unwrap();
-            let rows = stmt
-                .query_map([], |row| row.get::<_, String>(1))
-                .unwrap();
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1)).unwrap();
             rows.filter_map(|r| r.ok()).collect()
         };
-        for c in &["id", "connection_id", "name", "query_text", "folder", "created_at", "updated_at"] {
-            assert!(columns.contains(&c.to_string()), "Expected queries table to have column: {}", c);
+        for c in &[
+            "id",
+            "connection_id",
+            "name",
+            "query_text",
+            "folder",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(
+                columns.contains(&c.to_string()),
+                "Expected queries table to have column: {}",
+                c
+            );
         }
     }
 
@@ -433,16 +429,32 @@ mod tests {
             [],
         ).unwrap();
         // Delete connection — should cascade the non-NULL row
-        conn.execute("DELETE FROM connections WHERE id = ?1", rusqlite::params![conn_id]).unwrap();
+        conn.execute(
+            "DELETE FROM connections WHERE id = ?1",
+            rusqlite::params![conn_id],
+        )
+        .unwrap();
         let count_scoped: i64 = conn
-            .query_row("SELECT COUNT(*) FROM queries WHERE connection_id = ?1", rusqlite::params![conn_id], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM queries WHERE connection_id = ?1",
+                rusqlite::params![conn_id],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(count_scoped, 0, "Scoped saved query should be cascade-deleted");
+        assert_eq!(
+            count_scoped, 0,
+            "Scoped saved query should be cascade-deleted"
+        );
         // NULL-saved query survives
         let count_global: i64 = conn
-            .query_row("SELECT COUNT(*) FROM queries WHERE id = 'q2'", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM queries WHERE id = 'q2'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(count_global, 1, "Global saved query (connection_id NULL) should survive");
+        assert_eq!(
+            count_global, 1,
+            "Global saved query (connection_id NULL) should survive"
+        );
     }
 
     #[test]
@@ -456,7 +468,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1, "Schema version 6 should be recorded after v6 migration");
+        assert_eq!(
+            count, 1,
+            "Schema version 6 should be recorded after v6 migration"
+        );
     }
 
     #[test]
@@ -477,9 +492,13 @@ mod tests {
             "INSERT INTO connections (id, name, db_type, host, port, created_at, updated_at) VALUES (?1, 't', 'postgresql', 'h', 5432, datetime('now'), datetime('now'))",
             rusqlite::params![conn_id],
         ).unwrap();
-        let fav: i64 = conn.query_row(
-            "SELECT favorite FROM connections WHERE id = ?1", rusqlite::params![conn_id], |r| r.get(0),
-        ).unwrap();
+        let fav: i64 = conn
+            .query_row(
+                "SELECT favorite FROM connections WHERE id = ?1",
+                rusqlite::params![conn_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(fav, 0, "favorite defaults to 0");
     }
 
@@ -506,9 +525,17 @@ mod tests {
             "INSERT INTO recent_connections (connection_id, opened_at) VALUES (?1, datetime('now'))",
             rusqlite::params![conn_id],
         ).unwrap();
-        conn.execute("DELETE FROM connections WHERE id = ?1", rusqlite::params![conn_id]).unwrap();
+        conn.execute(
+            "DELETE FROM connections WHERE id = ?1",
+            rusqlite::params![conn_id],
+        )
+        .unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM recent_connections WHERE connection_id = ?1", rusqlite::params![conn_id], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM recent_connections WHERE connection_id = ?1",
+                rusqlite::params![conn_id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0);
     }

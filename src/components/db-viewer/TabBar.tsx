@@ -1,14 +1,95 @@
-import { useEffect, useRef } from "react";
-import { ListChecks, Play, Table2, Terminal, X } from "lucide-react";
-import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useEffect, useRef, type ReactNode } from "react";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type Modifier,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  horizontalListSortingStrategy,
+  sortableKeyboardCoordinates,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { ListChecks, Play, Table2, Layers, Eye, Terminal, X } from "lucide-react";
+import { useDbViewerStore, type ViewerTab } from "../../stores/dbViewerStore";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
+
+function SortableTab({
+  tab,
+  isActive,
+  icon,
+  onSelect,
+  onClose,
+}: {
+  tab: ViewerTab;
+  isActive: boolean;
+  icon: ReactNode;
+  onSelect: () => void;
+  onClose: () => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform: rawTransform,
+    transition,
+    isDragging,
+  } = useSortable({ id: tab.id });
+
+  // dnd-kit scales the dragged item to the width of whichever tab it is
+  // hovering over (adjustScale). Tabs have different widths, which would warp
+  // the text — always render at scale 1 and let the horizontal strategy handle
+  // positioning.
+  const transform = rawTransform
+    ? { ...rawTransform, scaleX: 1, scaleY: 1 }
+    : null;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      {...attributes}
+      role="tab"
+      aria-selected={isActive}
+      aria-label={tab.table}
+      {...listeners}
+      onClick={onSelect}
+      className={[
+        "group flex shrink-0 items-center gap-2 border-r border-border px-3 text-sm transition-colors cursor-grab active:cursor-grabbing select-none",
+        isActive ? "bg-canvas text-text" : "text-text-muted hover:text-text",
+        isDragging ? "opacity-50 z-10 ring-1 ring-accent" : "",
+      ].join(" ")}
+    >
+      <span className="flex-1 text-left select-none">{icon}{tab.table}</span>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        aria-label={`Close ${tab.table}`}
+        className="rounded p-0.5 opacity-60 transition-opacity hover:bg-surface-raised hover:opacity-100 cursor-pointer"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
 
 export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
   const tabs = useDbViewerStore((state) => state.tabs);
+  const tables = useDbViewerStore((state) => state.tables);
   const activeTabId = useDbViewerStore((state) => state.activeTabId);
   const closeTab = useDbViewerStore((state) => state.closeTab);
   const setActiveTab = useDbViewerStore((state) => state.setActiveTab);
   const openQueryTab = useDbViewerStore((state) => state.openQueryTab);
+  const reorderTab = useDbViewerStore((state) => state.reorderTab);
   const changesQueue = useDbViewerStore((state) => state.changesQueue);
   const changesPanelExpanded = useDbViewerStore(
     (state) => state.changesPanelExpanded,
@@ -16,6 +97,30 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
   const toggleChangesPanel = useDbViewerStore(
     (state) => state.toggleChangesPanel,
   );
+
+  // Drag threshold so a click still selects the tab; a deliberate drag (>= 4px)
+  // starts a reorder. Keyboard sorting uses arrow keys, one axis only.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  // Keep the dragged tab on the tab strip: zero out any vertical movement so
+  // dragging is constrained to the horizontal axis only.
+  const restrictToHorizontalAxis: Modifier = ({ transform }) => ({
+    ...transform,
+    y: 0,
+  });
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const from = tabs.findIndex((t) => t.id === active.id);
+    const to = tabs.findIndex((t) => t.id === over.id);
+    if (from >= 0 && to >= 0) reorderTab(from, to);
+  };
 
   const pendingCount = changesQueue.filter(
     (c) => c.status === "pending",
@@ -50,49 +155,62 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
         className="flex flex-1 min-w-0 items-stretch overflow-x-auto"
         role="tablist"
       >
-        {tabs.map((tab) => {
-          const isActive = tab.id === activeTabId;
-          return (
-            <div
-              key={tab.id}
-              role="tab"
-              aria-selected={isActive}
-              onClick={() => setActiveTab(tab.id)}
-              className={[
-                "group flex shrink-0 items-center gap-2 border-r border-border px-3 text-sm transition-colors cursor-pointer",
-                isActive
-                  ? "bg-canvas text-text"
-                  : "text-text-muted hover:text-text",
-              ].join(" ")}
-            >
-              <span className="flex-1 text-left select-none">
-                {tab.tabType === "query" ? (
-                  <Terminal
-                    data-testid="tab-icon-query"
-                    className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          modifiers={[restrictToHorizontalAxis]}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={tabs.map((t) => t.id)}
+            strategy={horizontalListSortingStrategy}
+          >
+            <div className="flex items-stretch">
+              {tabs.map((tab) => {
+                const isActive = tab.id === activeTabId;
+                const objectType =
+                  tab.tabType === "table"
+                    ? tables.find(
+                          (t) =>
+                              t.schema === tab.schema && t.name === tab.table,
+                      )?.table_type
+                    : undefined;
+                const icon =
+                  tab.tabType === "query" ? (
+                    <Terminal
+                      data-testid="tab-icon-query"
+                      className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
+                    />
+                  ) : objectType === "VIEW" ? (
+                    <Eye
+                      data-testid="tab-icon-view"
+                      className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
+                    />
+                  ) : objectType === "MATERIALIZED VIEW" ? (
+                    <Layers
+                      data-testid="tab-icon-matview"
+                      className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
+                    />
+                  ) : (
+                    <Table2
+                      data-testid="tab-icon-table"
+                      className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
+                    />
+                  );
+                return (
+                  <SortableTab
+                    key={tab.id}
+                    tab={tab}
+                    isActive={isActive}
+                    icon={icon}
+                    onSelect={() => setActiveTab(tab.id)}
+                    onClose={() => closeTab(tab.id)}
                   />
-                ) : (
-                  <Table2
-                    data-testid="tab-icon-table"
-                    className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
-                  />
-                )}
-                {tab.table}
-              </span>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeTab(tab.id);
-                }}
-                aria-label={`Close ${tab.table}`}
-                className="rounded p-0.5 opacity-60 transition-opacity hover:bg-surface-raised hover:opacity-100 cursor-pointer"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
+                );
+              })}
             </div>
-          );
-        })}
+          </SortableContext>
+        </DndContext>
       </div>
 
       {/* Right: fixed actions */}

@@ -284,11 +284,11 @@ cargo test               # Rust tests
 ### Backup & Restore
 | Feature | Status | Details |
 | :--- | :---: | :--- |
-| pg_dump wrapper | ✅ | Rust command spawns pg_dump with real-time progress events (backup-progress) |
-| pg_restore wrapper | ✅ | Rust command spawns pg_restore with progress events |
+| pg_dump wrapper | ✅ | Rust command spawns pg_dump with real-time progress events (backup-progress). Core logic extracted into headless-testable `run_pg_dump` (takes `PgConnParams` + options directly); Tauri command is a thin wrapper (store lookup → keychain → run → emit). Live integration tests in `backup.test.rs` (`#[ignore]`d, driven by `GRIDLINE_TEST_SRC_*`/`GRIDLINE_TEST_TGT_*` env vars) |
+| pg_restore wrapper | ✅ | Rust command spawns pg_restore with progress events. **Plain-format dumps are executed via `psql -f`** (pg_restore can't read plain SQL text); custom/tar/directory use pg_restore. Core logic in headless-testable `run_pg_restore` |
 | Backup UI | ✅ | In-page view: format selector, file browse (Tauri dialog), schema dropdown, no-owner toggle, progress bar with event-driven status |
-| Restore UI | ✅ | In-page view: file browse, format, clean toggle, destructive confirmation checkbox, progress bar |
-| DB-to-DB sync | ✅ | In-page view: source/target connection pickers, schema dropdown, pipe-based pg_dump → pg_restore |
+| Restore UI | ✅ | In-page view: file browse, format, clean toggle, destructive confirmation checkbox, progress bar. **Clean toggle is disabled for plain format** (psql can't DROP-before-CREATE) with a hint to use Custom Archive |
+| DB-to-DB sync | ✅ | In-page view: source/target connection pickers, schema dropdown, pipe-based pg_dump → pg_restore. **pg_restore side passes `--clean --if-exists`**, so sync works into a non-empty target (UI already requires destructive-overwrite confirmation). Core logic in headless-testable `run_db_sync` |
 | Unified Tools view | ✅ | Backup / Restore / DB Sync merged into a single **Tools** nav item; operation-switcher dropdown in the view toolbar, existing forms rendered below |
 | SQLite .dump | ❌ | |
 | Table structure export (DDL) | ❌ | |

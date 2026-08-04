@@ -1,0 +1,74 @@
+name: Release
+
+# Builds Gridline installers for macOS (Apple Silicon + Intel), Windows, and
+# Linux, then uploads them to a draft GitHub Release.
+#
+# Trigger: push a version tag from the `main` branch (production), e.g.
+#   git checkout main && git pull
+#   git tag v0.5.0 && git push origin v0.5.0
+#
+# SIGNING STATUS: builds are UNSIGNED for now (no code-signing certs yet —
+# see README "Download a release"). tauri-action automatically signs +
+# notarizes when the signing secrets are present, so the moment we add
+# APPLE_CERTIFICATE / APPLE_API_KEY / WINDOWS_CERTIFICATE (or Azure Trusted
+# Signing) to repo secrets, future builds are signed — no changes to this
+# file required.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest      # Apple Silicon (M1/M2/M3+)
+            args: --target aarch64-apple-darwin
+          - platform: macos-15-intel    # Intel Macs (last Intel runner; retired ~Aug 2027)
+            args: --target x86_64-apple-darwin
+          - platform: ubuntu-22.04      # Linux x86_64 (.deb / .rpm / .AppImage)
+            args: ''
+          - platform: windows-latest    # Windows x86_64 (NSIS .exe + .msi)
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build and upload to GitHub Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Gridline ${{ github.ref_name }}'
+          releaseDraft: true
+          args: ${{ matrix.args }}

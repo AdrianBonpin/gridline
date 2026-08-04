@@ -1,6 +1,6 @@
 #[allow(unused_imports)]
 use crate::db::pool::DbHandle;
-use crate::models::db_viewer::{SchemaGraph, TableNode, GraphColumn, Relationship};
+use crate::models::db_viewer::{GraphColumn, Relationship, SchemaGraph, TableNode};
 use std::collections::HashMap;
 use tauri::State;
 
@@ -76,7 +76,8 @@ WHERE n.nspname = $1
     AND c.relkind IN ('r', 'v', 'p')
     AND a.attnum > 0
     AND NOT a.attisdropped
-ORDER BY c.relname, a.attnum"#.to_string()
+ORDER BY c.relname, a.attnum"#
+        .to_string()
 }
 
 /// Infer relationship cardinality from constraint metadata.
@@ -203,14 +204,19 @@ fn build_sqlite_schema_graph(
     schema: &str,
 ) -> Result<SchemaGraph, String> {
     if schema != "main" {
-        return Err(format!("SQLite only supports schema 'main', got: {}", schema));
+        return Err(format!(
+            "SQLite only supports schema 'main', got: {}",
+            schema
+        ));
     }
 
     let mut stmt = conn
         .prepare("SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .map_err(|e| e.to_string())?;
     let table_rows: Vec<(String, String)> = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -222,19 +228,27 @@ fn build_sqlite_schema_graph(
         let pragma_sql = format!("PRAGMA table_info('{}')", table_name);
         let mut ps = conn.prepare(&pragma_sql).map_err(|e| e.to_string())?;
         let col_meta: Vec<(String, String, bool, bool)> = ps
-            .query_map([], |row| Ok((
-                row.get::<_, String>(1)?, row.get::<_, String>(2)?,
-                row.get::<_, bool>(3)?, row.get::<_, bool>(5)?,
-            )))
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, bool>(5)?,
+                ))
+            })
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
 
         let fk_sql = format!("PRAGMA foreign_key_list('{}')", table_name);
         let fk_cols: HashMap<String, (String, String)> = if let Ok(mut fs) = conn.prepare(&fk_sql) {
-            fs.query_map([], |row| Ok((
-                row.get::<_, String>(3)?, row.get::<_, String>(2)?, row.get::<_, String>(4)?,
-            )))
+            fs.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .map(|(col, ref_t, ref_c)| (col, (ref_t, ref_c)))
@@ -243,35 +257,51 @@ fn build_sqlite_schema_graph(
             HashMap::new()
         };
 
-        let columns: Vec<GraphColumn> = col_meta.iter().map(|(name, dtype, _nn, is_pk)| {
-            let fk = fk_cols.get(name);
-            let is_fk = fk.is_some();
-            let fk_ref = fk.map(|(t, c)| ("main".into(), t.clone(), c.clone()));
-            if let Some((ref_t, ref_c)) = fk {
-                relationships.push(Relationship {
-                    source_schema: "main".into(), source_table: table_name.clone(),
-                    source_column: name.clone(),
-                    target_schema: "main".into(), target_table: ref_t.clone(),
-                    target_column: ref_c.clone(),
-                    cardinality: infer_cardinality(*is_pk, false, !_nn, false),
-                });
-            }
-            GraphColumn {
-                name: name.clone(),
-                data_type: if dtype.is_empty() { "TEXT".into() } else { dtype.clone() },
-                is_pk: *is_pk, is_fk, is_unique: *is_pk,
-                is_nullable: !_nn,
-                fk_ref: fk_ref.map(|(s, t, c)| (s, t, c)),
-            }
-        }).collect();
+        let columns: Vec<GraphColumn> = col_meta
+            .iter()
+            .map(|(name, dtype, _nn, is_pk)| {
+                let fk = fk_cols.get(name);
+                let is_fk = fk.is_some();
+                let fk_ref = fk.map(|(t, c)| ("main".into(), t.clone(), c.clone()));
+                if let Some((ref_t, ref_c)) = fk {
+                    relationships.push(Relationship {
+                        source_schema: "main".into(),
+                        source_table: table_name.clone(),
+                        source_column: name.clone(),
+                        target_schema: "main".into(),
+                        target_table: ref_t.clone(),
+                        target_column: ref_c.clone(),
+                        cardinality: infer_cardinality(*is_pk, false, !_nn, false),
+                    });
+                }
+                GraphColumn {
+                    name: name.clone(),
+                    data_type: if dtype.is_empty() {
+                        "TEXT".into()
+                    } else {
+                        dtype.clone()
+                    },
+                    is_pk: *is_pk,
+                    is_fk,
+                    is_unique: *is_pk,
+                    is_nullable: !_nn,
+                    fk_ref: fk_ref.map(|(s, t, c)| (s, t, c)),
+                }
+            })
+            .collect();
 
         tables.push(TableNode {
-            name: table_name.clone(), schema: "main".into(),
-            table_type: table_type.to_uppercase(), columns,
+            name: table_name.clone(),
+            schema: "main".into(),
+            table_type: table_type.to_uppercase(),
+            columns,
         });
     }
 
-    Ok(SchemaGraph { tables, relationships })
+    Ok(SchemaGraph {
+        tables,
+        relationships,
+    })
 }
 
 #[tauri::command]
@@ -302,7 +332,10 @@ pub async fn get_schema_graph(
                 .collect();
 
             let (tables, relationships) = parse_pg_schema_rows(&json_rows);
-            Ok(SchemaGraph { tables, relationships })
+            Ok(SchemaGraph {
+                tables,
+                relationships,
+            })
         }
         Some(DbHandle::Sqlite(conn)) => build_sqlite_schema_graph(conn, &schema),
         None => Err("Connection not found".into()),
@@ -352,17 +385,30 @@ mod tests {
     fn build_pg_schema_graph_query_is_parameterized() {
         let sql = build_pg_schema_graph_query("public");
         // Must use $1 for schema parameter (parameterized)
-        assert!(sql.contains("$1"), "query should use $1 placeholder; got: {}", sql);
+        assert!(
+            sql.contains("$1"),
+            "query should use $1 placeholder; got: {}",
+            sql
+        );
         // Must not interpolate schema name directly in a potentially unsafe way
-        assert!(!sql.contains("'public'"), "query should not use literal 'public'");
+        assert!(
+            !sql.contains("'public'"),
+            "query should not use literal 'public'"
+        );
     }
 
     #[test]
     fn build_pg_schema_graph_query_queries_columns() {
         let sql = build_pg_schema_graph_query("myschema");
         assert!(sql.contains("pg_catalog.pg_class"), "should query pg_class");
-        assert!(sql.contains("pg_catalog.pg_attribute"), "should query pg_attribute");
-        assert!(sql.contains("pg_catalog.pg_constraint"), "should include constraint info");
+        assert!(
+            sql.contains("pg_catalog.pg_attribute"),
+            "should query pg_attribute"
+        );
+        assert!(
+            sql.contains("pg_catalog.pg_constraint"),
+            "should include constraint info"
+        );
     }
 
     #[test]
@@ -397,34 +443,66 @@ mod tests {
         let rows: Vec<Vec<serde_json::Value>> = vec![
             // users.id (PK)
             vec![
-                serde_json::json!("users"), serde_json::json!("public"), serde_json::json!("BASE TABLE"),
-                serde_json::json!("id"), serde_json::json!("integer"), serde_json::json!("NO"),
-                serde_json::json!(1), serde_json::json!(true), serde_json::json!(false),
-                serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null,
+                serde_json::json!("users"),
+                serde_json::json!("public"),
+                serde_json::json!("BASE TABLE"),
+                serde_json::json!("id"),
+                serde_json::json!("integer"),
+                serde_json::json!("NO"),
+                serde_json::json!(1),
+                serde_json::json!(true),
+                serde_json::json!(false),
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
                 serde_json::json!(true),
             ],
             // users.email (non-key)
             vec![
-                serde_json::json!("users"), serde_json::json!("public"), serde_json::json!("BASE TABLE"),
-                serde_json::json!("email"), serde_json::json!("text"), serde_json::json!("NO"),
-                serde_json::json!(2), serde_json::json!(false), serde_json::json!(false),
-                serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null,
+                serde_json::json!("users"),
+                serde_json::json!("public"),
+                serde_json::json!("BASE TABLE"),
+                serde_json::json!("email"),
+                serde_json::json!("text"),
+                serde_json::json!("NO"),
+                serde_json::json!(2),
+                serde_json::json!(false),
+                serde_json::json!(false),
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
                 serde_json::json!(true),
             ],
             // orders.id (PK)
             vec![
-                serde_json::json!("orders"), serde_json::json!("public"), serde_json::json!("BASE TABLE"),
-                serde_json::json!("id"), serde_json::json!("integer"), serde_json::json!("NO"),
-                serde_json::json!(1), serde_json::json!(true), serde_json::json!(false),
-                serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null,
+                serde_json::json!("orders"),
+                serde_json::json!("public"),
+                serde_json::json!("BASE TABLE"),
+                serde_json::json!("id"),
+                serde_json::json!("integer"),
+                serde_json::json!("NO"),
+                serde_json::json!(1),
+                serde_json::json!(true),
+                serde_json::json!(false),
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
                 serde_json::json!(true),
             ],
             // orders.user_id (FK → users.id)
             vec![
-                serde_json::json!("orders"), serde_json::json!("public"), serde_json::json!("BASE TABLE"),
-                serde_json::json!("user_id"), serde_json::json!("integer"), serde_json::json!("NO"),
-                serde_json::json!(2), serde_json::json!(false), serde_json::json!(true),
-                serde_json::json!("public"), serde_json::json!("users"), serde_json::json!("id"),
+                serde_json::json!("orders"),
+                serde_json::json!("public"),
+                serde_json::json!("BASE TABLE"),
+                serde_json::json!("user_id"),
+                serde_json::json!("integer"),
+                serde_json::json!("NO"),
+                serde_json::json!(2),
+                serde_json::json!(false),
+                serde_json::json!(true),
+                serde_json::json!("public"),
+                serde_json::json!("users"),
+                serde_json::json!("id"),
                 serde_json::json!(false),
             ],
         ];

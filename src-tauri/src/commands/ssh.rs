@@ -165,13 +165,16 @@ impl TunnelBackend for Ssh2Backend {
             .map_err(|e| format!("connect ssh host: {e}"))?;
         let mut session = Session::new().map_err(|e| format!("ssh session: {e}"))?;
         session.set_tcp_stream(tcp);
-        session.handshake().map_err(|e| format!("ssh handshake: {e}"))?;
+        session
+            .handshake()
+            .map_err(|e| format!("ssh handshake: {e}"))?;
 
         match cfg.auth_method.as_str() {
             "key" => {
-                let path = cfg.private_key_path.as_deref().ok_or_else(|| {
-                    "private_key_path required for key auth".to_string()
-                })?;
+                let path = cfg
+                    .private_key_path
+                    .as_deref()
+                    .ok_or_else(|| "private_key_path required for key auth".to_string())?;
                 session
                     .userauth_pubkey_file(&cfg.user, None, std::path::Path::new(path), passphrase)
                     .map_err(|e| format!("ssh key auth: {e}"))?;

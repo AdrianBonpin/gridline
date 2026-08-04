@@ -25,11 +25,7 @@ pub fn delete_tag_inner(state: &Mutex<Store>, id: &str) -> Result<(), String> {
     store.delete_tag(id)
 }
 
-pub fn update_tag_inner(
-    state: &Mutex<Store>,
-    id: String,
-    input: TagInput,
-) -> Result<Tag, String> {
+pub fn update_tag_inner(state: &Mutex<Store>, id: String, input: TagInput) -> Result<Tag, String> {
     validate(&input)?;
     let store = state.lock().map_err(|e| e.to_string())?;
     store.update_tag(&id, input)
@@ -62,8 +58,8 @@ pub fn update_tag(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
     use crate::models::TagInput;
+    use crate::store::Store;
 
     fn state() -> std::sync::Mutex<Store> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -74,7 +70,14 @@ mod tests {
     #[test]
     fn create_tag_command_works() {
         let st = state();
-        let tag = create_tag_inner(&st, TagInput { name: "prod".into(), color: "#ef4444".into() }).unwrap();
+        let tag = create_tag_inner(
+            &st,
+            TagInput {
+                name: "prod".into(),
+                color: "#ef4444".into(),
+            },
+        )
+        .unwrap();
         assert_eq!(get_tags_inner(&st).unwrap().len(), 1);
         assert_eq!(tag.name, "prod");
     }
@@ -82,7 +85,13 @@ mod tests {
     #[test]
     fn create_tag_rejects_long_name() {
         let st = state();
-        let result = create_tag_inner(&st, TagInput { name: "x".repeat(51), color: "#fff".into() });
+        let result = create_tag_inner(
+            &st,
+            TagInput {
+                name: "x".repeat(51),
+                color: "#fff".into(),
+            },
+        );
         assert!(result.is_err());
     }
 }

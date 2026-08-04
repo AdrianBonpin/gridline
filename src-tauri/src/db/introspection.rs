@@ -430,20 +430,31 @@ mod tests {
     #[test]
     fn pg_indexes_query_is_parameterized_and_joins() {
         let sql = pg_indexes_query("public");
-        assert!(sql.contains("$1"), "schema must be parameterized; got: {}", sql);
+        assert!(
+            sql.contains("$1"),
+            "schema must be parameterized; got: {}",
+            sql
+        );
         assert!(
             sql.contains("pg_indexes") || sql.contains("pg_index"),
             "should query pg_index; got: {}",
             sql
         );
-        assert!(sql.contains("pg_get_indexdef"), "should include index definition");
+        assert!(
+            sql.contains("pg_get_indexdef"),
+            "should include index definition"
+        );
         assert!(sql.contains("indisunique"), "should include uniqueness");
     }
 
     #[test]
     fn pg_constraints_query_filters_check_unique_exclusion() {
         let sql = pg_constraints_query("public");
-        assert!(sql.contains("$1"), "schema must be parameterized; got: {}", sql);
+        assert!(
+            sql.contains("$1"),
+            "schema must be parameterized; got: {}",
+            sql
+        );
         assert!(
             sql.contains("pg_constraint"),
             "should query pg_constraint; got: {}",
@@ -453,7 +464,10 @@ mod tests {
         assert!(sql.contains("'c'"), "should filter CHECK ('c')");
         assert!(sql.contains("'u'"), "should filter UNIQUE ('u')");
         assert!(sql.contains("'x'"), "should filter EXCLUSION ('x')");
-        assert!(sql.contains("pg_get_constraintdef"), "should include definition");
+        assert!(
+            sql.contains("pg_get_constraintdef"),
+            "should include definition"
+        );
     }
 
     #[test]

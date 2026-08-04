@@ -250,22 +250,48 @@ mod tests {
 
     #[test]
     fn db_config_ssh_config_is_none_when_no_host() {
-        let cfg = DbConfig { db_type: "PostgreSQL".into(), host: "h".into(), port: Some(5432),
-            username: None, password: None, database: None, ssl_mode: None, ssl_ca_path: None,
-            ssl_cert_path: None, ssl_key_path: None, ssh_host: None, ssh_port: None, ssh_user: None,
-            ssh_auth_method: None, ssh_password: None, ssh_private_key_path: None, ssh_passphrase: None,
+        let cfg = DbConfig {
+            db_type: "PostgreSQL".into(),
+            host: "h".into(),
+            port: Some(5432),
+            username: None,
+            password: None,
+            database: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_password: None,
+            ssh_private_key_path: None,
+            ssh_passphrase: None,
         };
         assert!(cfg.ssh_config().is_none());
     }
 
     #[test]
     fn db_config_ssh_config_builds_from_flat_fields() {
-        let cfg = DbConfig { db_type: "PostgreSQL".into(), host: "db".into(), port: Some(5432),
-            username: None, password: None, database: None, ssl_mode: None, ssl_ca_path: None,
-            ssl_cert_path: None, ssl_key_path: None,
-            ssh_host: Some("jump".into()), ssh_port: Some(2222), ssh_user: Some("u".into()),
-            ssh_auth_method: Some("password".into()), ssh_password: Some("pw".into()),
-            ssh_private_key_path: None, ssh_passphrase: None,
+        let cfg = DbConfig {
+            db_type: "PostgreSQL".into(),
+            host: "db".into(),
+            port: Some(5432),
+            username: None,
+            password: None,
+            database: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            ssh_host: Some("jump".into()),
+            ssh_port: Some(2222),
+            ssh_user: Some("u".into()),
+            ssh_auth_method: Some("password".into()),
+            ssh_password: Some("pw".into()),
+            ssh_private_key_path: None,
+            ssh_passphrase: None,
         };
         let s = cfg.ssh_config().expect("ssh config present");
         assert_eq!(s.host, "jump");
@@ -339,7 +365,10 @@ mod tests {
         manager.register("d", DbHandle::Sqlite(conn_d));
 
         assert_eq!(manager.pools().len(), 3);
-        assert!(manager.contains("a"), "'a' was recently accessed, should survive");
+        assert!(
+            manager.contains("a"),
+            "'a' was recently accessed, should survive"
+        );
         assert!(!manager.contains("b"), "'b' is LRU and should be evicted");
         assert!(manager.contains("c"));
         assert!(manager.contains("d"));

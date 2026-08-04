@@ -33,7 +33,8 @@ pub struct ImportResult {
 
 #[allow(dead_code)]
 pub fn parse_import(json: &str) -> Result<Vec<ImportRecord>, String> {
-    let records: Vec<ImportRecord> = serde_json::from_str(json).map_err(|e| format!("invalid JSON: {}", e))?;
+    let records: Vec<ImportRecord> =
+        serde_json::from_str(json).map_err(|e| format!("invalid JSON: {}", e))?;
     for (i, rec) in records.iter().enumerate() {
         if rec.name.as_deref().unwrap_or("").is_empty() {
             return Err(format!("record {}: name is required", i));
@@ -45,8 +46,12 @@ pub fn parse_import(json: &str) -> Result<Vec<ImportRecord>, String> {
     Ok(records)
 }
 
-pub fn import_connections_inner(state: &Mutex<Store>, json: String) -> Result<ImportResult, String> {
-    let records: Vec<ImportRecord> = serde_json::from_str(&json).map_err(|e| format!("invalid JSON: {}", e))?;
+pub fn import_connections_inner(
+    state: &Mutex<Store>,
+    json: String,
+) -> Result<ImportResult, String> {
+    let records: Vec<ImportRecord> =
+        serde_json::from_str(&json).map_err(|e| format!("invalid JSON: {}", e))?;
     let store = state.lock().map_err(|e| e.to_string())?;
     let mut imported = 0usize;
     let mut skipped_records = Vec::new();
@@ -54,16 +59,25 @@ pub fn import_connections_inner(state: &Mutex<Store>, json: String) -> Result<Im
         let name = match &rec.name {
             Some(n) if !n.is_empty() => n.clone(),
             _ => {
-                skipped_records.push(SkippedRecord { index: i, reason: "missing or empty name".into() });
+                skipped_records.push(SkippedRecord {
+                    index: i,
+                    reason: "missing or empty name".into(),
+                });
                 continue;
             }
         };
         if !VALID_DB_TYPES.contains(&rec.db_type.as_str()) {
-            skipped_records.push(SkippedRecord { index: i, reason: format!("invalid db_type: {}", rec.db_type) });
+            skipped_records.push(SkippedRecord {
+                index: i,
+                reason: format!("invalid db_type: {}", rec.db_type),
+            });
             continue;
         }
         if rec.host.is_empty() {
-            skipped_records.push(SkippedRecord { index: i, reason: "missing or empty host".into() });
+            skipped_records.push(SkippedRecord {
+                index: i,
+                reason: "missing or empty host".into(),
+            });
             continue;
         }
         let input = ConnectionInput {
@@ -91,10 +105,17 @@ pub fn import_connections_inner(state: &Mutex<Store>, json: String) -> Result<Im
         };
         match store.create_connection(input) {
             Ok(_) => imported += 1,
-            Err(e) => skipped_records.push(SkippedRecord { index: i, reason: e }),
+            Err(e) => skipped_records.push(SkippedRecord {
+                index: i,
+                reason: e,
+            }),
         }
     }
-    Ok(ImportResult { imported, skipped: skipped_records.len(), skipped_records })
+    Ok(ImportResult {
+        imported,
+        skipped: skipped_records.len(),
+        skipped_records,
+    })
 }
 
 pub fn export_connections_inner(state: &Mutex<Store>) -> Result<String, String> {
@@ -105,7 +126,10 @@ pub fn export_connections_inner(state: &Mutex<Store>) -> Result<String, String> 
 }
 
 #[tauri::command]
-pub fn import_connections(state: tauri::State<crate::AppState>, json: String) -> Result<ImportResult, String> {
+pub fn import_connections(
+    state: tauri::State<crate::AppState>,
+    json: String,
+) -> Result<ImportResult, String> {
     import_connections_inner(&state.db_store, json)
 }
 
@@ -117,8 +141,8 @@ pub fn export_connections(state: tauri::State<crate::AppState>) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
     use crate::models::ConnectionInput;
+    use crate::store::Store;
 
     fn state() -> std::sync::Mutex<Store> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -169,12 +193,25 @@ mod tests {
     fn export_connections_returns_json() {
         let st = state();
         let _ = st.lock().unwrap().create_connection(ConnectionInput {
-            name: "A".into(), db_type: "postgresql".into(), host: "h".into(),
-            port: Some(5432), username: None, folder_id: None,
-            password: None, database: None,
-            ssh_host: None, ssh_port: None, ssh_user: None, ssh_auth_method: None,
-            ssh_private_key_path: None, ssh_password: None, ssh_passphrase: None,
-            ssl_mode: None, ssl_ca_path: None, ssl_cert_path: None, ssl_key_path: None,
+            name: "A".into(),
+            db_type: "postgresql".into(),
+            host: "h".into(),
+            port: Some(5432),
+            username: None,
+            folder_id: None,
+            password: None,
+            database: None,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: None,
+            ssh_auth_method: None,
+            ssh_private_key_path: None,
+            ssh_password: None,
+            ssh_passphrase: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
             environment: None,
             tag_ids: vec![],
         });

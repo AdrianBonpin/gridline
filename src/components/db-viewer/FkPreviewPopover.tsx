@@ -3,8 +3,8 @@ import { createPortal } from "react-dom";
 import { Key, X, ExternalLink, Loader2 } from "lucide-react";
 import * as cmd from "../../lib/commands";
 import type { QueryResult } from "../../lib/types";
-import { abbreviateType } from "../../lib/utils";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { DataTypeIcon } from "../ui/DataTypeIcon";
 
 interface FkPreviewPopoverProps {
   connectionId: string;
@@ -168,7 +168,7 @@ export function FkPreviewPopover({
           </div>
         )}
         {data && data.rows.length > 0 && (
-          <table className="w-full text-xs">
+          <table className="w-full text-xs" style={{ tableLayout: "fixed" }}>
             <tbody>
               {data.columns.map((col, ci) => {
                 const cell = data.rows[0][ci];
@@ -178,20 +178,22 @@ export function FkPreviewPopover({
                     key={col.name}
                     className="border-b border-border last:border-0 hover:bg-surface/30"
                   >
-                    <td className="px-3 py-1.5 text-text-muted font-heading whitespace-nowrap w-1/3">
-                      <div className="flex items-center gap-1">
+                    <td
+                      className="px-3 py-1.5 text-text-muted font-heading whitespace-nowrap overflow-hidden align-top"
+                      style={{ width: 100, maxWidth: 100 }}
+                    >
+                      <div className="flex items-center gap-1 min-w-0">
                         {col.is_pk && <Key size={9} className="text-accent shrink-0" />}
                         {col.is_fk && <Key size={9} className="text-amber-400 shrink-0" />}
                         <span className="truncate">{col.name}</span>
-                        <span
-                          className="text-[10px] text-text-muted/50 shrink-0"
-                          title={col.data_type}
-                        >
-                          {abbreviateType(col.data_type)}
-                        </span>
+                        <DataTypeIcon
+                          dataType={col.data_type}
+                          size={9}
+                          className="text-text-muted/60 shrink-0"
+                        />
                       </div>
                     </td>
-                    <td className="px-3 py-1.5 text-text">
+                    <td className="px-3 py-1.5 text-text align-top break-all">
                       {isNull ? (
                         <span className="italic text-text-muted">NULL</span>
                       ) : (

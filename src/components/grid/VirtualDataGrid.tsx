@@ -43,7 +43,7 @@ interface VirtualDataGridProps {
   fkPlaceholders?: Record<string, string>;
   /** Optimistic staged cell values keyed `${rowIndex}:${colName}` → value (null = NULL), from the changes queue. */
   stagedValues?: Record<string, string | null>;
-  /** Keys of cells with a PENDING (not yet committed) update → drives the amber dot. */
+  /** Keys of cells with a PENDING (not yet committed) update → drives the pulsing orange outline. */
   pendingKeys?: Record<string, boolean>;
 }
 
@@ -297,6 +297,12 @@ export function VirtualDataGrid({
       };
 
       const commitEdit = (committed: string | null) => {
+        // Constraint guard: never stage NULL on a NOT NULL column
+        // (the editor blocks this with UX; this is defense in depth)
+        if (committed === null && col.is_nullable === false) {
+          setEditingCell(null);
+          return;
+        }
         // oldData must be the DB value (the un-staged cell), so the queue's
         // revert/display stays correct even after repeated edits of the same cell.
         const dbValue = ci >= 0 ? row[ci] : undefined;
@@ -326,10 +332,13 @@ export function VirtualDataGrid({
       return (
         <div
           key={col.name}
+          data-testid={isPending ? "pending-cell" : undefined}
           className={`relative px-3 py-2 font-heading text-xs truncate select-text border-r border-border self-stretch ${
             isFk ? "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent" : ""
           } ${isJson ? "cursor-pointer text-accent/80 hover:text-accent" : ""} ${
-            isActive ? "bg-accent/10 ring-1 ring-inset ring-accent outline-none" : ""
+            isActive && !isEditing ? "bg-accent/10 ring-1 ring-inset ring-accent outline-none" : ""
+          } ${isEditing ? "outline outline-2 outline-amber-400 outline-offset-[-2px]" : ""} ${
+            isPending && !isEditing ? "animate-pending-ring" : ""
           }`}
           role={isJson ? "button" : undefined}
           tabIndex={isJson ? 0 : -1}
@@ -408,12 +417,6 @@ export function VirtualDataGrid({
           ) : (
             String(displayCell)
           )}
-          {isPending && (
-            <span
-              className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400"
-              data-testid="pending-edit-dot"
-            />
-          )}
         </div>
       );
     },
@@ -438,6 +441,8 @@ export function VirtualDataGrid({
     (row: number, col: number) => {
       const column = visibleColumns[col];
       if (!column || !isCellEditable(column, tabType, dbType, readOnly)) return;
+      // NOT NULL columns can't be nulled (matches the context-menu gating)
+      if (!column.is_nullable) return;
       const ci = columns.findIndex((c) => c.name === column.name);
       const value = rows[row]?.[ci];
       if (value === null || value === undefined) return;

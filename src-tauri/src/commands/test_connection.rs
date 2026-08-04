@@ -126,8 +126,7 @@ pub fn validate_test_input(config: &DbConfig) -> Option<String> {
             Some(p) if (1..=65535).contains(&p) => {}
             _ => {
                 return Some(
-                    "port must be an integer between 1 and 65535 for this db_type"
-                        .to_string(),
+                    "port must be an integer between 1 and 65535 for this db_type".to_string(),
                 );
             }
         }
@@ -207,10 +206,7 @@ fn close_probe_tunnel(ssh: &SshManager, key: Option<&str>) {
 /// Dispatches to the appropriate type-specific connection test based on
 /// `config.db_type`. Returns a `TestConnectionResult` indicating success
 /// or failure with a sanitized error message.
-pub async fn test_database_connection(
-    config: &DbConfig,
-    ssh: &SshManager,
-) -> TestConnectionResult {
+pub async fn test_database_connection(config: &DbConfig, ssh: &SshManager) -> TestConnectionResult {
     // Validate input first
     if let Some(err) = validate_test_input(config) {
         return TestConnectionResult {
@@ -304,8 +300,7 @@ async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnecti
     let result = match tls {
         None => crate::commands::db_viewer::connect_pg_with(&pgconfig, tokio_postgres::NoTls).await,
         Some(cc) => {
-            let connector =
-                tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
+            let connector = tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
             crate::commands::db_viewer::connect_pg_with(&pgconfig, connector).await
         }
     };
@@ -405,11 +400,10 @@ async fn test_mysql_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
         Ok(pool) => {
             close_probe_tunnel(ssh, target.tunnel_key.as_deref());
             // Best-effort server version; None if the query fails.
-            let server_version =
-                sqlx::query_scalar::<_, String>("SELECT VERSION()")
-                    .fetch_one(&pool)
-                    .await
-                    .ok();
+            let server_version = sqlx::query_scalar::<_, String>("SELECT VERSION()")
+                .fetch_one(&pool)
+                .await
+                .ok();
             let latency_ms = Some(start.elapsed().as_millis() as u64);
             pool.close().await;
             TestConnectionResult {
@@ -441,9 +435,7 @@ fn test_sqlite_connection(config: &DbConfig) -> TestConnectionResult {
         Ok(conn) => {
             // Best-effort server version; None if the query fails.
             let server_version = conn
-                .query_row("SELECT sqlite_version()", [], |r| {
-                    r.get::<_, String>(0)
-                })
+                .query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
                 .ok();
             TestConnectionResult {
                 ok: true,
@@ -611,9 +603,18 @@ mod tests {
     fn test_connection_sanitizes_error() {
         let msg = "connection failed: password=secret123 user=admin";
         let sanitized = sanitize_error(msg);
-        assert!(!sanitized.contains("secret123"), "should not leak password value");
-        assert!(!sanitized.contains("admin"), "should not leak username value");
-        assert!(!sanitized.contains("password="), "should remove password= pattern");
+        assert!(
+            !sanitized.contains("secret123"),
+            "should not leak password value"
+        );
+        assert!(
+            !sanitized.contains("admin"),
+            "should not leak username value"
+        );
+        assert!(
+            !sanitized.contains("password="),
+            "should remove password= pattern"
+        );
         assert!(!sanitized.contains("user="), "should remove user= pattern");
     }
 

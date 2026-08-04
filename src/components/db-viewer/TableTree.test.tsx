@@ -40,6 +40,23 @@ describe("TableTree", () => {
     expect(screen.getByText("Materialized View")).toBeInTheDocument();
   });
 
+  it("shows a distinct icon and label for views", () => {
+    useDbViewerStore.setState({
+      schemas: ["public"],
+      currentSchema: "public",
+      tables: [
+        {
+          name: "order_summary",
+          schema: "public",
+          table_type: "VIEW",
+        },
+      ],
+    });
+    render(<TableTree />);
+    expect(screen.getByText("order_summary")).toBeInTheDocument();
+    expect(screen.getByText("View")).toBeInTheDocument();
+  });
+
   it("opens a tab when table is clicked", async () => {
     const user = userEvent.setup();
     useDbViewerStore.setState({

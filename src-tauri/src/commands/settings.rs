@@ -18,7 +18,11 @@ pub fn get_settings(state: tauri::State<crate::AppState>) -> Result<Settings, St
 }
 
 #[tauri::command]
-pub fn update_setting(state: tauri::State<crate::AppState>, key: String, value: String) -> Result<(), String> {
+pub fn update_setting(
+    state: tauri::State<crate::AppState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
     update_setting_inner(&state.db_store, &key, &value)
 }
 

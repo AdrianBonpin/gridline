@@ -13,11 +13,17 @@ describe("CellEditor", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onCommit).toHaveBeenCalledWith("Alicia");
   });
-  it("commits null when the setNull flag is toggled", () => {
+  it("commits null when a nullable cell is emptied", () => {
     const onCommit = vi.fn();
     render(<CellEditor initialValue="Alice" dataType="text" onCommit={onCommit} onCancel={vi.fn()} nullable />);
-    const nullCheckbox = screen.getByLabelText(/set null/i);
-    fireEvent.click(nullCheckbox);
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onCommit).toHaveBeenCalledWith(null);
+  });
+  it("leaves an empty nullable cell alone when it was already empty (NULL stays NULL)", () => {
+    const onCommit = vi.fn();
+    render(<CellEditor initialValue="" dataType="text" onCommit={onCommit} onCancel={vi.fn()} nullable />);
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
     expect(onCommit).toHaveBeenCalledWith(null);
   });
@@ -30,6 +36,79 @@ describe("CellEditor", () => {
   it("uses textarea for large/JSON columns", () => {
     render(<CellEditor initialValue="{}" dataType="jsonb" onCommit={vi.fn()} onCancel={vi.fn()} />);
     expect(screen.getByRole("textbox").tagName).toBe("TEXTAREA");
+  });
+  it("blocks empty commits on non-nullable non-text columns and shows an error", () => {
+    const onCommit = vi.fn();
+    render(<CellEditor initialValue="42" dataType="integer" onCommit={onCommit} onCancel={vi.fn()} />);
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(screen.getByTestId("cell-editor-error")).toBeInTheDocument();
+  });
+  it("commits an empty string on non-nullable text columns", () => {
+    const onCommit = vi.fn();
+    render(<CellEditor initialValue="Alice" dataType="text" onCommit={onCommit} onCancel={vi.fn()} />);
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onCommit).toHaveBeenCalledWith("");
+  });
+  it("clears the validation error as soon as the user types again", () => {
+    const onCommit = vi.fn();
+    render(<CellEditor initialValue="42" dataType="integer" onCommit={onCommit} onCancel={vi.fn()} />);
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByTestId("cell-editor-error")).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "5" } });
+    expect(screen.queryByTestId("cell-editor-error")).toBeNull();
+  });
+  it("does not offer a NULL row in the FK dropdown for non-nullable FK columns", () => {
+    const onCommit = vi.fn();
+    render(
+      <CellEditor
+        initialValue="1"
+        dataType="integer"
+        fkOptions={[{ value: "1", label: "1 — Alice" }]}
+        onCommit={onCommit}
+        onCancel={vi.fn()}
+      />
+    );
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.some((b) => b.textContent === "NULL")).toBe(false);
+  });
+  it("offers a NULL row in the FK dropdown for nullable FK columns", () => {
+    const onCommit = vi.fn();
+    render(
+      <CellEditor
+        initialValue="1"
+        dataType="integer"
+        fkOptions={[{ value: "1", label: "1 — Alice" }]}
+        onCommit={onCommit}
+        onCancel={vi.fn()}
+        nullable
+      />
+    );
+    const nullRow = screen.getAllByRole("button").find((b) => b.textContent === "NULL");
+    expect(nullRow).toBeDefined();
+    fireEvent.click(nullRow!);
+    expect(onCommit).toHaveBeenCalledWith(null);
+  });
+  it("commits null when the NULL option is selected in enum mode", () => {
+    const onCommit = vi.fn();
+    render(
+      <CellEditor
+        initialValue="active"
+        dataType="text"
+        enumValues={["active", "inactive", "pending"]}
+        onCommit={onCommit}
+        onCancel={vi.fn()}
+        nullable
+      />
+    );
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "" } });
+    expect(onCommit).toHaveBeenCalledWith(null);
   });
   it("renders a combobox with enum values and commits on change", () => {
     const onCommit = vi.fn();
@@ -48,21 +127,6 @@ describe("CellEditor", () => {
     expect(labels).toEqual(expect.arrayContaining(["active", "inactive", "pending"]));
     fireEvent.change(select, { target: { value: "pending" } });
     expect(onCommit).toHaveBeenCalledWith("pending");
-  });
-  it("commits null via Set NULL in enum mode", () => {
-    const onCommit = vi.fn();
-    render(
-      <CellEditor
-        initialValue="active"
-        dataType="text"
-        enumValues={["active", "inactive", "pending"]}
-        onCommit={onCommit}
-        onCancel={vi.fn()}
-        nullable
-      />
-    );
-    fireEvent.click(screen.getByLabelText(/set null/i));
-    expect(onCommit).toHaveBeenCalledWith(null);
   });
   it("filters FK options by query and commits the clicked value", () => {
     const onCommit = vi.fn();
@@ -105,7 +169,7 @@ describe("CellEditor", () => {
     render(<CellEditor initialValue="long text" dataType="text" onCommit={vi.fn()} onCancel={vi.fn()} />);
     const input = screen.getByRole("textbox");
     expect(input.tagName).toBe("TEXTAREA");
-    expect(input.className).toContain("h-6");
+    expect(input.className).toContain("overflow-y-auto");
   });
 
   it("renders the FK placeholder and a No matches empty state", () => {

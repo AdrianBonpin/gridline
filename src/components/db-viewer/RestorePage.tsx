@@ -239,14 +239,21 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                 </div>
 
                                 {/* Clean toggle */}
-                                <label className="flex items-center gap-2.5 cursor-pointer group">
+                                <label
+                                    className={`flex items-center gap-2.5 cursor-pointer group ${
+                                        format === "plain"
+                                            ? "opacity-40 pointer-events-none"
+                                            : ""
+                                    }`}
+                                >
                                     <input
                                         type="checkbox"
                                         checked={clean}
                                         onChange={(e) =>
                                             setClean(e.target.checked)
                                         }
-                                        className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                        disabled={format === "plain"}
+                                        className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer disabled:cursor-not-allowed"
                                     />
                                     <span className="text-sm text-text-muted group-hover:text-text transition-colors">
                                         Clean{" "}
@@ -255,6 +262,13 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                         </code>
                                     </span>
                                 </label>
+                                {format === "plain" && (
+                                    <p className="text-[11px] text-text-muted/70 -mt-3">
+                                        Plain SQL restores run via psql and don't
+                                        support DROP-before-CREATE. Use Custom
+                                        Archive for clean restores.
+                                    </p>
+                                )}
                             </div>
 
                             {/* Destructive confirmation */}

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, ChevronDown, Table2, Layers, Key, Type } from "lucide-react";
+import { ChevronRight, ChevronDown, Table2, Layers, Eye, Key, Type } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { TableOverflowMenu } from "./TableOverflowMenu";
@@ -71,8 +71,13 @@ export function TableTree({ searchQuery }: { searchQuery?: string }) {
                 const isExpanded = expanded.has(key);
                 const cols = columnCache[key] ?? table.columns ?? [];
                 const isMatView = table.table_type === "MATERIALIZED VIEW";
-                const TypeIcon = isMatView ? Layers : Table2;
-                const typeLabel = isMatView ? "Materialized View" : null;
+                const isView = table.table_type === "VIEW";
+                const TypeIcon = isMatView ? Layers : isView ? Eye : Table2;
+                const typeLabel = isMatView
+                    ? "Materialized View"
+                    : isView
+                      ? "View"
+                      : null;
                 return (
                     <div key={key}>
                         <div

@@ -90,6 +90,39 @@ describe("dbViewerStore", () => {
     expect(st.activeTabId).toBe(st.tabs[0].id);
   });
 
+  it("reorderTab moves a tab and keeps the active tab by id", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openTab("public", "posts", true);
+    useDbViewerStore.getState().openTab("public", "comments", true);
+    const before = useDbViewerStore.getState().tabs;
+    const activeId = useDbViewerStore.getState().activeTabId;
+    const activeTable = before.find((t) => t.id === activeId)!.table;
+
+    useDbViewerStore.getState().reorderTab(0, 2);
+    const after = useDbViewerStore.getState().tabs;
+    expect(after.map((t) => t.table)).toEqual(["posts", "comments", "users"]);
+    // Active tab must follow the moved item (tracked by id, not index).
+    expect(useDbViewerStore.getState().activeTabId).toBe(activeId);
+    expect(after.find((t) => t.id === activeId)!.table).toBe(activeTable);
+  });
+
+  it("reorderTab ignores out-of-range and no-op moves", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openTab("public", "posts", true);
+    const reorderTab = useDbViewerStore.getState().reorderTab;
+    reorderTab(0, 0);
+    expect(useDbViewerStore.getState().tabs.map((t) => t.table)).toEqual([
+      "users",
+      "posts",
+    ]);
+    reorderTab(-1, 1);
+    reorderTab(0, 5);
+    expect(useDbViewerStore.getState().tabs.map((t) => t.table)).toEqual([
+      "users",
+      "posts",
+    ]);
+  });
+
   it("setPage updates pagination", () => {
     const store = useDbViewerStore.getState();
     store.openTab("public", "users");

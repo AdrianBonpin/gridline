@@ -15,12 +15,7 @@ pub struct SshConfig {
 
 impl SshConfig {
     /// Create a new `SshConfig` with the required fields.
-    pub fn new(
-        host: String,
-        port: u16,
-        user: String,
-        auth_method: String,
-    ) -> Self {
+    pub fn new(host: String, port: u16, user: String, auth_method: String) -> Self {
         SshConfig {
             host,
             port,

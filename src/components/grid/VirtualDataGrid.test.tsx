@@ -48,24 +48,24 @@ describe("VirtualDataGrid", () => {
     expect(screen.getByRole("textbox")).toBeInTheDocument();
   });
 
-  it("shows staged values passed from the parent + a pending dot", () => {
+  it("shows staged values passed from the parent + a pending outline", () => {
     mockGetTotalSize.mockReturnValue(mockRows.length * 36);
     mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
     render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
       hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
       dbType="postgresql" tabType="table" stagedValues={{ "0:name": "Alicia" }} pendingKeys={{ "0:name": true }} />);
     expect(screen.getByText("Alicia")).toBeInTheDocument();
-    expect(screen.getByTestId("pending-edit-dot")).toBeInTheDocument();
+    expect(screen.getByTestId("pending-cell")).toBeInTheDocument();
   });
 
-  it("pending dot requires pendingKeys even when a staged value exists (committed → no dot)", () => {
+  it("pending outline requires pendingKeys even when a staged value exists (committed → no outline)", () => {
     mockGetTotalSize.mockReturnValue(mockRows.length * 36);
     mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
     render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={mockRows} columns={mockColumns}
       hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
       dbType="postgresql" tabType="table" stagedValues={{ "0:name": "Alicia" }} pendingKeys={{}} />);
     expect(screen.getByText("Alicia")).toBeInTheDocument();
-    expect(screen.queryByTestId("pending-edit-dot")).toBeNull();
+    expect(screen.queryByTestId("pending-cell")).toBeNull();
   });
 
   it("clears staged values when the stagedValues prop empties (Clear All)", () => {
@@ -393,7 +393,7 @@ describe("VirtualDataGrid", () => {
     expect(screen.getByText("id")).toBeInTheDocument();
   });
 
-  it("renders a pending-edit dot on the pending cell", () => {
+  it("renders a pending outline on the pending cell", () => {
     mockGetTotalSize.mockReturnValue(mockRows.length * 36);
     mockGetVirtualItems.mockReturnValue(
       mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })),
@@ -416,10 +416,10 @@ describe("VirtualDataGrid", () => {
       />,
     );
 
-    expect(screen.getByTestId("pending-edit-dot")).toBeInTheDocument();
+    expect(screen.getByTestId("pending-cell")).toBeInTheDocument();
   });
 
-  it("does not render a pending-edit dot without pendingCell", () => {
+  it("does not render a pending outline without pendingCell", () => {
     mockGetTotalSize.mockReturnValue(mockRows.length * 36);
     mockGetVirtualItems.mockReturnValue(
       mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })),
@@ -441,7 +441,7 @@ describe("VirtualDataGrid", () => {
       />,
     );
 
-    expect(screen.queryByTestId("pending-edit-dot")).toBeNull();
+    expect(screen.queryByTestId("pending-cell")).toBeNull();
   });
 
   // ── GRID-A: context menu + editing behavior ─────────────────────────
