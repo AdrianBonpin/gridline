@@ -4,6 +4,15 @@
 //! MySQL quoting and `LIMIT 1` on single-row UPDATE/DELETE.
 use crate::models::db_viewer::{FilterRule, SortRule};
 
+/// `SHOW DATABASES` — the browsing branches filter system DBs client-side
+/// (see [`MYSQL_SYSTEM_DBS`]).
+pub fn mysql_databases_query() -> String {
+    "SHOW DATABASES".to_string()
+}
+
+/// System databases hidden from the DB viewer's database/schema selector.
+pub const MYSQL_SYSTEM_DBS: [&str; 4] = ["information_schema", "mysql", "performance_schema", "sys"];
+
 /// Quote a MySQL identifier with backticks, doubling any embedded backticks.
 pub fn mysql_quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
