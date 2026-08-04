@@ -30,8 +30,9 @@ describe("v0.6.0 docs coverage", () => {
   it("README marks inline editing complete (not Upcoming)", () => {
     // Key Features lists inline editing as a shipped feature
     expect(readme).toMatch(/- \*\*Inline cell editing\*\* —/);
-    // comparison-table row for the stage→commit queue carries the ✅ marker
-    expect(readme).toMatch(/Changes queue \(stage → commit\)\s*\|[^|]*❌[^|]*\|[^|]*❌[^|]*\|\s*\*\*✅ Queue → Commit All\*\*/);
+    // comparison-table row for the stage→commit queue carries the Gridline ✅ marker
+    // (5-column table: Feature | DB Pro | Beekeeper | TablePlus | Gridline)
+    expect(readme).toMatch(/Changes queue \(stage → commit\)\s*\|[^|]*❌[^|]*\|[^|]*\|[^|]*\|\s*\*\*✅ Queue → Commit All\*\*/);
     expect(readme).not.toMatch(/Inline cell editing.*Upcoming/);
   });
 });
