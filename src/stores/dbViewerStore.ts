@@ -89,6 +89,7 @@ interface DbViewerState {
   databases: string[];
   schemas: string[];
   tables: TableInfo[];
+  schemaTreeLoading: boolean;
   currentDatabase: string | null;
   currentSchema: string | null;
   functions: FunctionInfo[] | null;
@@ -97,6 +98,7 @@ interface DbViewerState {
   enums: EnumInfo[] | null;
   extensions: ExtensionInfo[] | null;
   indexes: IndexInfo[] | null;
+  setSchemaTreeLoading: (loading: boolean) => void;
   constraints: ConstraintInfo[] | null;
 
   // Actions
@@ -184,6 +186,7 @@ const initialState = {
   extensions: null as ExtensionInfo[] | null,
   indexes: null as IndexInfo[] | null,
   constraints: null as ConstraintInfo[] | null,
+  schemaTreeLoading: false,
 };
 
 // ─── Store ──────────────────────────────────────────────────────
@@ -437,6 +440,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setExtensions: (extensions) => set({ extensions }),
   setIndexes: (indexes) => set({ indexes }),
   setConstraints: (constraints) => set({ constraints }),
+  setSchemaTreeLoading: (loading) => set({ schemaTreeLoading: loading }),
 
   stageCellEdit: (input) => {
     // Re-staging the same cell replaces the existing pending entry (keeps the

@@ -30,4 +30,29 @@ describe("SelectDropdown", () => {
     await user.click(screen.getByRole("button", { name: /Development/i }));
     expect(onChange).toHaveBeenCalledWith("development");
   });
+
+  it("does not open the menu when disabled", async () => {
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <SelectDropdown
+        value="staging"
+        onChange={onChange}
+        options={[
+          { value: "production", label: "Production" },
+          { value: "staging", label: "Staging" },
+        ]}
+        placeholder="None"
+        disabled
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: /Staging/i });
+    expect(trigger).toBeDisabled();
+    await user.click(trigger);
+    expect(
+      screen.queryByRole("button", { name: /Production/i }),
+    ).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

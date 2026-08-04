@@ -24,6 +24,7 @@ describe("dbViewerStore", () => {
     expect(state.tables).toEqual([]);
     expect(state.currentDatabase).toBeNull();
     expect(state.currentSchema).toBeNull();
+    expect(state.schemaTreeLoading).toBe(false);
   });
 
   it("openTab adds a new tab", () => {
@@ -232,6 +233,15 @@ describe("dbViewerStore", () => {
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
   });
 
+  it("setSchemaTreeLoading toggles the loading flag", () => {
+    const store = useDbViewerStore.getState();
+    expect(useDbViewerStore.getState().schemaTreeLoading).toBe(false);
+    store.setSchemaTreeLoading(true);
+    expect(useDbViewerStore.getState().schemaTreeLoading).toBe(true);
+    store.setSchemaTreeLoading(false);
+    expect(useDbViewerStore.getState().schemaTreeLoading).toBe(false);
+  });
+
   it("reset clears all state", () => {
     const store = useDbViewerStore.getState();
     store.openTab("public", "users");
@@ -249,6 +259,7 @@ describe("dbViewerStore", () => {
     expect(state.tables).toEqual([]);
     expect(state.currentDatabase).toBeNull();
     expect(state.currentSchema).toBeNull();
+    expect(state.schemaTreeLoading).toBe(false);
   });
 
   it("populate sets databases, schemas, tables", () => {

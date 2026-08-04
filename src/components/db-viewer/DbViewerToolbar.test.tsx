@@ -83,4 +83,29 @@ describe("DbViewerToolbar", () => {
     expect(screen.getByLabelText(/refresh/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/create table/i)).toBeInTheDocument();
   });
+
+  it("shows a disabled schema loading indicator while schema tree is loading", () => {
+    useDbViewerStore.setState({ schemaTreeLoading: true });
+    render(
+      <TooltipProvider>
+        <DbViewerToolbar {...defaultProps} />
+      </TooltipProvider>,
+    );
+    expect(screen.getByLabelText(/select schema/i)).toBeDisabled();
+    expect(screen.getByText(/Loading/i)).toBeInTheDocument();
+  });
+
+  it("renders schema options when not loading and multiple schemas exist", () => {
+    useDbViewerStore.setState({ schemaTreeLoading: false });
+    render(
+      <TooltipProvider>
+        <DbViewerToolbar
+          {...defaultProps}
+          schemas={["public", "app"]}
+          currentSchema="public"
+        />
+      </TooltipProvider>,
+    );
+    expect(screen.getByText("public")).toBeInTheDocument();
+  });
 });

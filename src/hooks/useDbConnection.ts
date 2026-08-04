@@ -9,6 +9,7 @@ import type { ConnectionInput, TableInfo } from "../lib/types";
 export function useDbConnection(connectionId: string) {
   const reset = useDbViewerStore((s) => s.reset);
   const populate = useDbViewerStore((s) => s.populate);
+  const setSchemaTreeLoading = useDbViewerStore((s) => s.setSchemaTreeLoading);
   const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
   const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
   const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
@@ -74,34 +75,39 @@ export function useDbConnection(connectionId: string) {
           : (input.database ?? "postgres");
 
       // Load initial data, smart-selecting the default schema (e.g. `public`)
-      const databases = await cmd
-        .getDatabases(connectionId)
-        .catch(() => [] as string[]);
-      const schemas = await cmd
-        .getSchemas(connectionId)
-        .catch(() => [] as string[]);
-      const defaultSchema = pickDefaultSchema(schemas);
-      const tables = await cmd.getTables(
-        connectionId,
-        defaultSchema ?? undefined,
-      );
-      populate(databases, schemas, tables);
-      if (databases.length > 0) {
-        // Prefer the connection's configured database, fall back to the first
-        // available one so the dropdown matches what the pool is connected to.
-        const preferred =
-          input.database && databases.includes(input.database)
-            ? input.database
-            : databases[0];
-        setCurrentDatabase(preferred);
+      setSchemaTreeLoading(true);
+      try {
+        const databases = await cmd
+          .getDatabases(connectionId)
+          .catch(() => [] as string[]);
+        const schemas = await cmd
+          .getSchemas(connectionId)
+          .catch(() => [] as string[]);
+        const defaultSchema = pickDefaultSchema(schemas);
+        const tables = await cmd.getTables(
+          connectionId,
+          defaultSchema ?? undefined,
+        );
+        populate(databases, schemas, tables);
+        if (databases.length > 0) {
+          // Prefer the connection's configured database, fall back to the first
+          // available one so the dropdown matches what the pool is connected to.
+          const preferred =
+            input.database && databases.includes(input.database)
+              ? input.database
+              : databases[0];
+          setCurrentDatabase(preferred);
+        }
+        setCurrentSchema(defaultSchema);
+      } finally {
+        setSchemaTreeLoading(false);
       }
-      setCurrentSchema(defaultSchema);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setConnectionError(msg);
       notify(`Failed to connect: ${msg}`, "error");
     }
-  }, [connectionId, populate, setCurrentDatabase, setCurrentSchema, notify]);
+  }, [connectionId, populate, setCurrentDatabase, setCurrentSchema, setSchemaTreeLoading, notify]);
 
   useEffect(() => {
     connect();
@@ -124,6 +130,7 @@ export function useDbConnection(connectionId: string) {
     const reconnect = async () => {
       const input = { ...inputRef.current!, database: currentDatabase };
       try {
+        setSchemaTreeLoading(true);
         await cmd.dbConnect(connectionId, input);
         if (cancelled) return;
         connectedDbRef.current = currentDatabase;
@@ -143,13 +150,15 @@ export function useDbConnection(connectionId: string) {
         // Revert the selection so the dropdown matches the live connection
         setCurrentDatabase(connectedDbRef.current);
         notify(`Failed to switch database: ${msg}`, "error");
+      } finally {
+        if (!cancelled) setSchemaTreeLoading(false);
       }
     };
     reconnect();
     return () => {
       cancelled = true;
     };
-  }, [currentDatabase, connectionId, populate, setCurrentSchema, notify]);
+  }, [currentDatabase, connectionId, populate, setCurrentSchema, setSchemaTreeLoading, notify]);
 
   return { connectionError, connect };
 }
