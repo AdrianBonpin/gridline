@@ -4,13 +4,9 @@ Status legend: ✅ Shipped · 🏗️ In development · 🎯 Next up · 📋 In 
 
 This file is the **source of truth** for what Gridline is building. [AGENTS.md](./AGENTS.md) and [README.md](./README.md) link here — keep this current as priorities shift.
 
-**Current in-flight work:** v0.7.0 on `feat/connection-screen-revamp` — see [docs/superpowers/specs/2026-08-04-architectural-spec.md](./docs/superpowers/specs/2026-08-04-architectural-spec.md) for the full architectural spec.
-
 ---
 
-## 🏗️ In development (v0.7.0)
-
-Everything in the connection-screen-revamp spec:
+## 🏗️ In development (0.7.0)
 
 - **New Connection screen revamp** — a single progressive flow: connection-string input + 2-column provider tab grid → expands into the full configuration form (label, tags/env/folder, General + SSH·SSL tabs). Removes the simple/detailed toggle.
 - **Full MySQL DB viewer support** — connect (incl. SSL + SSH), browse databases/tables/columns/FKs, run queries, paginate, inline cell editing + changes queue (insert/update/delete/bulk/empty/drop), DDL copy (`SHOW CREATE TABLE`), CSV/JSON import.
