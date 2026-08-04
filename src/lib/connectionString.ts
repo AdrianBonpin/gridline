@@ -40,14 +40,24 @@ export function parseConnectionString(input: string): ParsedConnectionString | n
   const db_type = DB_PROTOCOLS[url.protocol];
   if (!db_type) return null;
 
-  const host = url.hostname || "localhost";
   const port = url.port ? Number(url.port) : (DEFAULT_PORTS[db_type] ?? null);
   const username = url.username || null;
   const password = url.password || null;
   const pathname = url.pathname;
-  const database = db_type === "sqlite"
-    ? (pathname || null)
-    : (pathname.replace(/^\//, "") || null);
+
+  let host: string;
+  let database: string | null;
+  if (db_type === "sqlite") {
+    // SQLite: the file path lives in the URL pathname. Map it to `host`
+    // (the field the backend opens) and leave `database` null. `url.pathname`
+    // always starts with "/"; the fallback covers `sqlite://path` (no
+    // pathname) where the URL's hostname holds the relative path.
+    host = pathname || url.hostname || "";
+    database = null;
+  } else {
+    host = url.hostname || "localhost";
+    database = pathname.replace(/^\//, "") || null;
+  }
 
   return {
     db_type,
@@ -68,4 +78,14 @@ export function looksLikeConnectionString(input: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Detect a managed-PostgreSQL provider from a connection host, purely for
+ *  UI highlighting. Returns `"supabase"` / `"neon"` / `null`. db_type is
+ *  unaffected (both presets persist as `postgresql`). */
+export function detectProviderFromHost(host: string): "supabase" | "neon" | null {
+  const h = host.toLowerCase();
+  if (h.endsWith(".supabase.co")) return "supabase";
+  if (h.endsWith(".neon.tech")) return "neon";
+  return null;
 }
