@@ -106,4 +106,28 @@ describe("ConnectionCard", () => {
     expect(screen.getByText("prod.example.com:5432")).toBeInTheDocument();
     expect(screen.getByText("production")).toBeInTheDocument();
   });
+
+  const manyTags: Tag[] = Array.from({ length: 4 }, (_, i) => ({
+    id: `t${i + 1}`, name: `tag${i + 1}`, color: "#3b82f6", created_at: "",
+  }));
+  const connWith4Tags = { ...conn, tag_ids: manyTags.map((t) => t.id) };
+
+  it("renders a scrollable tag row when there are 4+ tags", () => {
+    const { container } = render(
+      <ConnectionCard connection={connWith4Tags} tags={manyTags} />,
+      { wrapper: Wrapper },
+    );
+    const row = container.querySelector('[data-testid="tag-row"]');
+    expect(row).not.toBeNull();
+    expect(row?.className).toContain("overflow-x-auto");
+  });
+
+  it("does not scroll the tag row when there are 3 or fewer tags", () => {
+    const { container } = render(
+      <ConnectionCard connection={conn} tags={tags} />,
+      { wrapper: Wrapper },
+    );
+    const row = container.querySelector('[data-testid="tag-row"]');
+    expect(row?.className).not.toContain("overflow-x-auto");
+  });
 });

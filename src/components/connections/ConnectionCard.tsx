@@ -134,9 +134,14 @@ function ConnectionCardBase({
                 <div className="text-xs text-text-muted mb-2 font-mono truncate">
                     {hostLabel}
                 </div>
-                <div className="flex gap-1 flex-wrap">
+                <div
+                    data-testid="tag-row"
+                    className={`flex gap-1 ${cardTags.length > 3 ? "overflow-x-auto" : "flex-wrap"} max-h-[28px] whitespace-nowrap`}
+                >
                     {cardTags.map((t) => (
-                        <TagBadge key={t.id} tag={t} onToggle={onTagToggle} />
+                        <span key={t.id} className="shrink-0 whitespace-nowrap">
+                            <TagBadge tag={t} onToggle={onTagToggle} />
+                        </span>
                     ))}
                 </div>
             </div>
