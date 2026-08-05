@@ -124,14 +124,22 @@ jobs:
               ;;
           esac
           (cd "$OUT" && sha256sum * | tee checksums.txt)
+          # Resolve the per-platform binary suffix WITHOUT a command
+          # substitution: `$( [ ... ] && echo .exe )` returns exit 1 when the
+          # test is false, and under `set -e` that aborts the whole step.
+          if [ "${{ matrix.platform }}" = windows-latest ]; then
+            BIN_EXT=".exe"
+          else
+            BIN_EXT=""
+          fi
           for b in pg_dump pg_restore psql; do
-            f="$OUT/${b}$( [ "${{ matrix.platform }}" = windows-latest ] && echo .exe )"
+            f="$OUT/${b}${BIN_EXT}"
             test -f "$f" || { echo "missing $f"; exit 1; }
           done
           # Sanity: every tool must run (loader path is correct) — this catches
           # a wrong @loader_path / rpath before we ship a broken bundle.
           for b in pg_dump pg_restore psql; do
-            "$OUT/${b}$( [ "${{ matrix.platform }}" = windows-latest ] && echo .exe )" --version >/dev/null 2>&1 || { echo "$b failed to run from resource dir"; exit 1; }
+            "$OUT/${b}${BIN_EXT}" --version >/dev/null 2>&1 || { echo "$b failed to run from resource dir"; exit 1; }
           done
 
       - name: Build and upload to GitHub Release
