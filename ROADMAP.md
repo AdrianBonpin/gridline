@@ -54,6 +54,14 @@ Gridline can already **browse** every PostgreSQL object type (functions, trigger
 
 - **Wire up the "Enable Keychain" toggle** — currently a form-only placeholder: the flag is submitted and stored with the connection record, but the Rust backend never reads it and the frontend store unconditionally calls `saveConnectionPassword`. Decide the intended behavior (e.g. off = store the password with the connection record / don't persist at all, on = OS keychain as today) and implement the conditional path + migration for existing records.
 
+### DB viewer: ⌘K object search (0.7.6)
+
+- **Fix: clicking a search result does nothing** — reported from 0.7.5 testing. `ObjectSearchPalette.handleSelect` sets store state but the UI doesn't react:
+  - *Non-table results* (function/enum/sequence/…) set `selectedObjectType` but **never switch the view to the Objects page** — the palette needs to also call the view switch (e.g. `setCurrentView("objects")` or the DbViewerScreen equivalent) so `ObjectExplorerPage` mounts and consumes `selectedObjectType`.
+  - *Table/view results* call `openTab(schema, name)` but nothing visibly happens from the Explorer — verify `openTab` reaches the tab system from the palette's context (tab store + active-view wiring) and opens the tab.
+  - Add component tests that render the palette inside DbViewerScreen (or a harness) and assert the view/tab actually changes on click.
+- **Add arrow-key navigation + Enter to pick** — currently mouse-click only. Move the highlighted row with ↑/↓ (wrapping), Enter selects the highlighted hit (same `handleSelect` path), Esc still closes. Optional: home/end + typeahead on the result list.
+
 ## 📋 In the queue
 
 ### Full Redis Support
