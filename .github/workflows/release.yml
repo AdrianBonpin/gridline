@@ -119,3 +119,9 @@ jobs:
           releaseName: 'Gridline ${{ github.ref_name }}'
           releaseDraft: true
           args: ${{ matrix.args }}
+          # Version-free asset names (see README Download section): the README
+          # links via GitHub's releases/latest/download/<file> redirect, which
+          # only works if filenames are identical across releases. Omitting
+          # [version] gives stable names: Gridline_darwin_aarch64.dmg,
+          # Gridline_windows_x64-setup.exe, Gridline_linux_amd64.deb, etc.
+          releaseAssetNamePattern: '[name]_[platform]_[arch][setup][ext]'
