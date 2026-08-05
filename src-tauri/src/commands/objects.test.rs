@@ -56,3 +56,15 @@ async fn object_ddl_for_sequence_enum_function() {
     assert!(f.is_ok());
     assert!(f.clone().unwrap().contains("CREATE FUNCTION") || f.unwrap().contains("CREATE OR REPLACE FUNCTION"));
 }
+
+#[tokio::test]
+#[ignore]
+async fn object_dependencies_for_table_includes_view() {
+    let (pm, id) = pool().await;
+    // demo has order_summary VIEW depending on orders — drop would break it
+    let deps = get_object_dependencies_inner(&pm, &id, "public", "table", "orders").await.unwrap();
+    assert!(deps.iter().any(|d| d.class.contains("pg_class") && d.name.contains("order_summary")), "view depending on orders should surface: {deps:?}");
+    // schema contents path
+    let contents = get_object_dependencies_inner(&pm, &id, "public", "schema", "public").await.unwrap();
+    assert!(!contents.is_empty(), "public schema should list contents");
+}

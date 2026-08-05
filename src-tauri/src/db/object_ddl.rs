@@ -94,6 +94,11 @@ pub fn pg_depend_query() -> String {
     ORDER BY d.deptype, name".to_string()
 }
 
+/// Objects contained in a schema (for the schema-drop dependency warning). $1=schema.
+pub fn pg_schema_contents_query() -> String {
+    "SELECT c.relname, c.relkind::text FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname=$1 AND c.relkind IN ('r','v','m','S','i','c') ORDER BY c.relkind, c.relname".to_string()
+}
+
 // --- Synthesized DDL ---
 pub fn sequence_ddl(s: &SequenceInfo) -> String {
     format!("CREATE SEQUENCE {}.{}\n  INCREMENT BY {}\n  MINVALUE {}\n  MAXVALUE {}\n  START WITH {}\n  {}",

@@ -1,7 +1,6 @@
 use tauri::State;
 use crate::db::pool::{ConnectionPoolManager, DbHandle};
 use crate::db::object_ddl::*;
-#[allow(unused_imports)] // DependencyInfo consumed by Task 2.5 (object dependencies)
 use crate::models::db_viewer::{ObjectSearchHit, DependencyInfo};
 
 fn sanitize(e: &str) -> String { crate::commands::db_viewer::sanitize_error(e) }
@@ -118,6 +117,33 @@ pub async fn get_object_ddl(connection_id: String, schema: String, object_type: 
         return crate::commands::db_viewer::get_table_ddl(connection_id, schema, name, state, app).await;
     }
     get_object_ddl_inner(&state.pool_manager, &connection_id, &schema, &object_type.to_lowercase(), &name).await
+}
+
+pub(crate) async fn get_object_dependencies_inner(pm: &tokio::sync::Mutex<ConnectionPoolManager>, connection_id: &str, schema: &str, object_type: &str, name: &str) -> Result<Vec<DependencyInfo>, String> {
+    let mut pm = pm.lock().await;
+    let client = match pm.get(connection_id) {
+        Some(DbHandle::Postgresql(c, _)) => c,
+        Some(_) => return Err("Dependencies are PostgreSQL-only".into()),
+        None => return Err("Connection not found".into()),
+    };
+    if object_type.eq_ignore_ascii_case("schema") {
+        let rows = client.query(&pg_schema_contents_query(), &[&name]).await.map_err(|e| sanitize(&e.to_string()))?;
+        return Ok(rows.iter().map(|r| DependencyInfo {
+            deptype: "n".into(), class: format!("pg_class: {}", r.get::<_, String>(1)), name: r.get(0),
+        }).collect());
+    }
+    let oid_sql = pg_object_oid_query(&object_type.to_lowercase());
+    if oid_sql.is_empty() { return Err(format!("Unsupported object type: {object_type}")); }
+    let oid: tokio_postgres::types::Oid = client.query_one(&oid_sql, &[&name, &schema]).await.map_err(|e| sanitize(&e.to_string()))?.get(0);
+    let rows = client.query(&pg_depend_query(), &[&oid]).await.map_err(|e| sanitize(&e.to_string()))?;
+    Ok(rows.iter().map(|r| DependencyInfo {
+        deptype: r.get(0), class: r.get(1), name: r.get::<_, String>(2),
+    }).collect())
+}
+
+#[tauri::command]
+pub async fn get_object_dependencies(connection_id: String, schema: String, object_type: String, name: String, state: State<'_, crate::AppState>) -> Result<Vec<DependencyInfo>, String> {
+    get_object_dependencies_inner(&state.pool_manager, &connection_id, &schema, &object_type, &name).await
 }
 
 #[cfg(test)]
