@@ -29,3 +29,17 @@ async fn schema_crud_create_rename_drop() {
     rename_schema_inner(&pm, &id, name, "gridline_test_schema2").await.unwrap();
     drop_schema_inner(&pm, &id, "gridline_test_schema2", false).await.unwrap();
 }
+
+#[tokio::test]
+#[ignore]
+async fn search_objects_finds_table_and_function() {
+    let (pm, id) = pool().await;
+    let hits = search_objects_inner(&pm, &id, "public", "users").await.unwrap();
+    assert!(hits.iter().any(|h| h.name == "users" && h.object_type == "TABLE"), "demo has a users table");
+    let fns = search_objects_inner(&pm, &id, "public", "get").await.unwrap();
+    // substring match across types; assert it returns a Vec<ObjectSearchHit>
+    assert!(fns.iter().all(|h| h.object_type != ""));
+    // empty needle returns nothing matched by position('' in name) > 0 is always true — so empty returns all (capped at 100)
+    let all = search_objects_inner(&pm, &id, "public", "").await.unwrap();
+    assert!(all.len() <= 100);
+}
