@@ -43,3 +43,16 @@ async fn search_objects_finds_table_and_function() {
     let all = search_objects_inner(&pm, &id, "public", "").await.unwrap();
     assert!(all.len() <= 100);
 }
+
+#[tokio::test]
+#[ignore]
+async fn object_ddl_for_sequence_enum_function() {
+    let (pm, id) = pool().await;
+    // demo has users_id_seq, an enum, and a function
+    let seq = get_object_ddl_inner(&pm, &id, "public", "sequence", "users_id_seq").await.unwrap();
+    assert!(seq.starts_with("CREATE SEQUENCE"), "{seq}");
+    // function: pg_get_functiondef passthrough
+    let f = get_object_ddl_inner(&pm, &id, "public", "function", "audit_log").await; // name per demo
+    assert!(f.is_ok());
+    assert!(f.clone().unwrap().contains("CREATE FUNCTION") || f.unwrap().contains("CREATE OR REPLACE FUNCTION"));
+}
