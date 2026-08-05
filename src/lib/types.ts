@@ -305,6 +305,24 @@ export interface PgToolStatus {
   pg_restore_found: boolean;
   pg_dump_version: string | null;
   pg_restore_version: string | null;
+  pg_dump_source: string | null;
+  pg_restore_source: string | null;
+}
+
+export type PgObjectType =
+  | "table" | "view" | "materialized view" | "function" | "procedure"
+  | "trigger" | "sequence" | "enum" | "extension" | "index" | "constraint";
+
+export interface ObjectSearchHit {
+  name: string;
+  schema: string;
+  object_type: string; // TABLE | VIEW | MATERIALIZED VIEW | FUNCTION | PROCEDURE | TRIGGER | SEQUENCE | ENUM | EXTENSION | INDEX | CONSTRAINT
+}
+
+export interface DependencyInfo {
+  deptype: string;
+  class: string;
+  name: string;
 }
 
 export interface BackupJob {

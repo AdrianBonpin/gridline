@@ -36,7 +36,7 @@ export function SyncDialog({ open, onClose }: SyncDialogProps) {
     setConfirmed(false);
     detectPgTools()
       .then((status) => setToolStatus(status))
-      .catch(() => setToolStatus({ pg_dump_found: false, pg_restore_found: false, pg_dump_version: null, pg_restore_version: null }))
+      .catch(() => setToolStatus({ pg_dump_found: false, pg_restore_found: false, pg_dump_version: null, pg_restore_version: null, pg_dump_source: null, pg_restore_source: null }))
       .finally(() => setCheckingTools(false));
   }, [open]);
 

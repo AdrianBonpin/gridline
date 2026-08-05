@@ -76,6 +76,8 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                     pg_restore_found: false,
                     pg_dump_version: null,
                     pg_restore_version: null,
+                    pg_dump_source: null,
+                    pg_restore_source: null,
                 }),
             )
             .finally(() => setCheckingTools(false));
