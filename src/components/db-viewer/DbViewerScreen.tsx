@@ -188,6 +188,16 @@ export function DbViewerScreen({
     const setSmartSortApplied = useDbViewerStore((s) => s.setSmartSortApplied);
 
     const setObjectSearchOpen = useDbViewerStore((s) => s.setObjectSearchOpen);
+    const requestedView = useDbViewerStore((s) => s.requestedView);
+
+    // Consume the search palette's navigation request: switch the local
+    // currentView state to the requested view, then clear it so a second
+    // request for the same view still fires.
+    useEffect(() => {
+        if (!requestedView) return;
+        setCurrentView(requestedView);
+        useDbViewerStore.getState().setRequestedView(null);
+    }, [requestedView]);
 
     // Sync settings defaults to store
     useEffect(() => {

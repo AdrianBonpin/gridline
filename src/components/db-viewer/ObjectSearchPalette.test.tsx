@@ -9,6 +9,7 @@ vi.mock("../../lib/commands");
 const mockSetObjectSearchOpen = vi.fn();
 const mockSetCurrentSchema = vi.fn();
 const mockSetSelectedObjectType = vi.fn();
+const mockSetRequestedView = vi.fn();
 const mockOpenTab = vi.fn();
 
 const baseMockState = {
@@ -17,6 +18,7 @@ const baseMockState = {
   currentSchema: "public" as string | null,
   setCurrentSchema: mockSetCurrentSchema,
   setSelectedObjectType: mockSetSelectedObjectType,
+  setRequestedView: mockSetRequestedView,
   openTab: mockOpenTab,
 };
 
@@ -106,6 +108,7 @@ describe("ObjectSearchPalette", () => {
 
     expect(mockOpenTab).toHaveBeenCalledWith("public", "users");
     expect(mockSetObjectSearchOpen).toHaveBeenCalledWith(false);
+    expect(mockSetRequestedView).toHaveBeenCalledWith("db-viewer");
     expect(mockSetCurrentSchema).not.toHaveBeenCalled();
     expect(mockSetSelectedObjectType).not.toHaveBeenCalled();
   });
@@ -124,6 +127,7 @@ describe("ObjectSearchPalette", () => {
 
     expect(mockOpenTab).toHaveBeenCalledWith("public", "active_users");
     expect(mockSetObjectSearchOpen).toHaveBeenCalledWith(false);
+    expect(mockSetRequestedView).toHaveBeenCalledWith("db-viewer");
   });
 
   it("selecting a matview opens a tab and closes", async () => {
@@ -167,6 +171,7 @@ describe("ObjectSearchPalette", () => {
 
       expect(mockSetCurrentSchema).toHaveBeenCalledWith("app");
       expect(mockSetSelectedObjectType).toHaveBeenCalledWith(mappedType);
+      expect(mockSetRequestedView).toHaveBeenCalledWith("objects");
       expect(mockSetObjectSearchOpen).toHaveBeenCalledWith(false);
       expect(mockOpenTab).not.toHaveBeenCalled();
     },
@@ -202,5 +207,58 @@ describe("ObjectSearchPalette", () => {
 
     expect(screen.queryByText("users")).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText(/search objects/i)).toHaveValue("");
+  });
+
+  it("ArrowDown then Enter selects the second hit", async () => {
+    vi.mocked(cmd.searchObjects).mockResolvedValue([
+      { name: "first", schema: "public", object_type: "FUNCTION" },
+      { name: "second", schema: "public", object_type: "ENUM" },
+    ]);
+    render(<ObjectSearchPalette connectionId="c1" />);
+    fireEvent.change(screen.getByPlaceholderText(/search objects/i), {
+      target: { value: "s" },
+    });
+    await waitFor(() => screen.getByText("second"));
+
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    fireEvent.keyDown(window, { key: "Enter" });
+
+    // highlight started on the first hit; one ArrowDown moved to the second
+    expect(mockSetSelectedObjectType).toHaveBeenCalledWith("enums");
+    expect(mockSetCurrentSchema).toHaveBeenCalledWith("public");
+    expect(mockSetObjectSearchOpen).toHaveBeenCalledWith(false);
+  });
+
+  it("ArrowUp wraps from the first hit to the last", async () => {
+    vi.mocked(cmd.searchObjects).mockResolvedValue([
+      { name: "first", schema: "public", object_type: "FUNCTION" },
+      { name: "last", schema: "public", object_type: "SEQUENCE" },
+    ]);
+    render(<ObjectSearchPalette connectionId="c1" />);
+    fireEvent.change(screen.getByPlaceholderText(/search objects/i), {
+      target: { value: "s" },
+    });
+    await waitFor(() => screen.getByText("last"));
+
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    fireEvent.keyDown(window, { key: "Enter" });
+
+    expect(mockSetSelectedObjectType).toHaveBeenCalledWith("sequences");
+    expect(mockSetObjectSearchOpen).toHaveBeenCalledWith(false);
+  });
+
+  it("Enter with no results does nothing", async () => {
+    vi.mocked(cmd.searchObjects).mockResolvedValue([]);
+    render(<ObjectSearchPalette connectionId="c1" />);
+    fireEvent.change(screen.getByPlaceholderText(/search objects/i), {
+      target: { value: "nope" },
+    });
+    await waitFor(() => screen.getByText(/no matches/i));
+
+    fireEvent.keyDown(window, { key: "Enter" });
+
+    expect(mockOpenTab).not.toHaveBeenCalled();
+    expect(mockSetSelectedObjectType).not.toHaveBeenCalled();
+    expect(mockSetObjectSearchOpen).not.toHaveBeenCalled();
   });
 });

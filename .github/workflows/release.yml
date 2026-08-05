@@ -73,25 +73,44 @@ jobs:
           case "${{ matrix.platform }}" in
             ubuntu-22.04)
               sudo apt-get update -y
-              sudo apt-get install -y build-essential libreadline-dev zlib1g-dev flex bison
+              sudo apt-get install -y build-essential libreadline-dev zlib1g-dev flex bison patchelf
               curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2" -o /tmp/pg.tar.bz2
               tar -xf /tmp/pg.tar.bz2 -C /tmp
               cd /tmp/postgresql-${PG_VER}
-              ./configure --prefix=/tmp/pgbuild --without-readline --without-icu --disable-shared CFLAGS="-O2"
+              ./configure --prefix=/tmp/pgbuild --without-readline --without-icu CFLAGS="-O2"
+              # Generate the catalog headers (pg_class_d.h etc.) serially FIRST:
+              # building src/bin/pg_dump directly races its generated-headers
+              # prerequisite under -j and fails with 'catalog/pg_*_d.h not found'.
+              make -C src/backend generated-headers
               make -j"$(nproc)" -C src/bin/pg_dump all
               make -j"$(nproc)" -C src/bin/psql all
               cp src/bin/pg_dump/pg_dump src/bin/pg_dump/pg_restore "$OUT"/
               cp src/bin/psql/psql "$OUT"/
+              # pg_dump links shared libpq (PG16 has no --disable-shared for the
+              # client tools); bundle libpq.so alongside and point the loader at
+              # the app's resource dir via $ORIGIN rpath.
+              cp src/interfaces/libpq/libpq.so.5 "$OUT"/libpq.so.5
+              for b in pg_dump pg_restore psql; do
+                patchelf --set-rpath '\$ORIGIN' "$OUT/$b"
+              done
               ;;
             macos-latest|macos-15-intel)
               curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2" -o /tmp/pg.tar.bz2
               tar -xf /tmp/pg.tar.bz2 -C /tmp
               cd /tmp/postgresql-${PG_VER}
-              ./configure --prefix=/tmp/pgbuild --without-readline --without-icu --disable-shared CFLAGS="-O2"
+              ./configure --prefix=/tmp/pgbuild --without-readline --without-icu CFLAGS="-O2"
+              make -C src/backend generated-headers
               make -j"$(sysctl -n hw.ncpu)" -C src/bin/pg_dump all
               make -j"$(sysctl -n hw.ncpu)" -C src/bin/psql all
               cp src/bin/pg_dump/pg_dump src/bin/pg_dump/pg_restore "$OUT"/
               cp src/bin/psql/psql "$OUT"/
+              cp src/interfaces/libpq/libpq.5.dylib "$OUT"/libpq.5.dylib
+              # Rewrite the absolute /tmp/pgbuild libpq install_name to a
+              # relative @loader_path so the tools find libpq next to themselves.
+              for b in pg_dump pg_restore psql; do
+                libpq=$(otool -L "$OUT/$b" | awk '/libpq/ {print \$1; exit}')
+                install_name_tool -change "$libpq" "@loader_path/libpq.5.dylib" "$OUT/$b"
+              done
               ;;
             windows-latest)
               URL="https://get.enterprisedb.com/postgresql/postgresql-${PG_VER}-1-windows-x64-binaries.zip"
@@ -108,6 +127,11 @@ jobs:
           for b in pg_dump pg_restore psql; do
             f="$OUT/${b}$( [ "${{ matrix.platform }}" = windows-latest ] && echo .exe )"
             test -f "$f" || { echo "missing $f"; exit 1; }
+          done
+          # Sanity: every tool must run (loader path is correct) — this catches
+          # a wrong @loader_path / rpath before we ship a broken bundle.
+          for b in pg_dump pg_restore psql; do
+            "$OUT/${b}$( [ "${{ matrix.platform }}" = windows-latest ] && echo .exe )" --version >/dev/null 2>&1 || { echo "$b failed to run from resource dir"; exit 1; }
           done
 
       - name: Build and upload to GitHub Release

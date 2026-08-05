@@ -94,6 +94,10 @@ interface DbViewerState {
   currentSchema: string | null;
   objectSearchOpen: boolean;
   selectedObjectType: ObjectType | null;
+  /** View the DB viewer should switch to ("db-viewer" | "objects" | ...).
+   * Set by the search palette before closing; consumed (and cleared) by
+   * DbViewerScreen's navigation effect. */
+  requestedView: string | null;
   functions: FunctionInfo[] | null;
   triggers: TriggerInfo[] | null;
   sequences: SequenceInfo[] | null;
@@ -145,6 +149,7 @@ interface DbViewerState {
   setCurrentSchema: (schema: string | null) => void;
   setObjectSearchOpen: (open: boolean) => void;
   setSelectedObjectType: (t: ObjectType | null) => void;
+  setRequestedView: (view: string | null) => void;
   setFunctions: (functions: FunctionInfo[]) => void;
   setTriggers: (triggers: TriggerInfo[]) => void;
   setSequences: (sequences: SequenceInfo[]) => void;
@@ -185,6 +190,7 @@ const initialState = {
   currentSchema: null as string | null,
   objectSearchOpen: false,
   selectedObjectType: null as ObjectType | null,
+  requestedView: null as string | null,
   functions: null as FunctionInfo[] | null,
   triggers: null as TriggerInfo[] | null,
   sequences: null as SequenceInfo[] | null,
@@ -441,6 +447,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setCurrentSchema: (schema) => set({ currentSchema: schema }),
   setObjectSearchOpen: (open) => set({ objectSearchOpen: open }),
   setSelectedObjectType: (t) => set({ selectedObjectType: t }),
+  setRequestedView: (view) => set({ requestedView: view }),
   setFunctions: (functions) => set({ functions }),
   setTriggers: (triggers) => set({ triggers }),
   setSequences: (sequences) => set({ sequences }),

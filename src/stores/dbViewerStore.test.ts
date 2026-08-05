@@ -40,6 +40,14 @@ describe("dbViewerStore", () => {
     expect(useDbViewerStore.getState().selectedObjectType).toBeNull();
   });
 
+  it("requestedView setter stores then clears", () => {
+    const { setRequestedView } = useDbViewerStore.getState();
+    setRequestedView("objects");
+    expect(useDbViewerStore.getState().requestedView).toBe("objects");
+    setRequestedView(null);
+    expect(useDbViewerStore.getState().requestedView).toBeNull();
+  });
+
   it("openTab adds a new tab", () => {
     const store = useDbViewerStore.getState();
     store.openTab("public", "users");

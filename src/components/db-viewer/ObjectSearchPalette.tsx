@@ -27,18 +27,22 @@ export function ObjectSearchPalette({ connectionId }: ObjectSearchPaletteProps) 
   const openTab = useDbViewerStore((s) => s.openTab);
   const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
   const setSelectedObjectType = useDbViewerStore((s) => s.setSelectedObjectType);
+  const setRequestedView = useDbViewerStore((s) => s.setRequestedView);
 
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<ObjectSearchHit[]>([]);
   const [loading, setLoading] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   // Clear the transient state whenever the palette is closed so it reopens
-  // with an empty search and no stale results.
+  // with an empty search, no stale results, and the highlight reset.
   useEffect(() => {
     if (!open) {
       setQuery("");
       setHits([]);
+      setHighlightedIndex(0);
     }
   }, [open]);
 
@@ -64,6 +68,7 @@ export function ObjectSearchPalette({ connectionId }: ObjectSearchPaletteProps) 
           query,
         );
         setHits(results);
+        setHighlightedIndex(0);
       } catch {
         setHits([]);
       } finally {
@@ -79,16 +84,60 @@ export function ObjectSearchPalette({ connectionId }: ObjectSearchPaletteProps) 
     };
   }, [query, connectionId, currentSchema]);
 
-  // Esc closes the palette.
+  // Select: open a table/view tab (switching to the DB viewer view so the
+  // tab is actually visible), or jump to the Objects view with the type
+  // preselected. The view switch goes through the store's requestedView
+  // mechanism — currentView is local state in DbViewerScreen, which watches
+  // requestedView and clears it after navigating.
+  const handleSelect = (hit: ObjectSearchHit) => {
+    if (
+      hit.object_type === "TABLE" ||
+      hit.object_type === "VIEW" ||
+      hit.object_type === "MATERIALIZED VIEW"
+    ) {
+      setRequestedView("db-viewer");
+      openTab(hit.schema, hit.name);
+    } else {
+      setCurrentSchema(hit.schema);
+      setSelectedObjectType(TYPE_TO_OBJECTS[hit.object_type] ?? "functions");
+      setRequestedView("objects");
+    }
+    setOpen(false);
+  };
+
+  // Keyboard navigation: ↓/↑ move the highlight (wrapping), Enter picks,
+  // Esc closes. Registered on window so it works even after the input blurs.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (!open) return;
       if (e.key === "Escape") {
+        e.preventDefault();
         setOpen(false);
+        return;
+      }
+      if (hits.length === 0) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setHighlightedIndex((i) => (i + 1) % hits.length);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setHighlightedIndex((i) => (i - 1 + hits.length) % hits.length);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const hit = hits[highlightedIndex];
+        if (hit) handleSelect(hit);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [setOpen]);
+  }, [open, hits, highlightedIndex]);
+
+  // Scroll the highlighted row into view inside the results list.
+  // `?.()` guards environments without scrollIntoView (jsdom) so the ref
+  // callback never throws during commit.
+  const onHighlightedRef = (el: HTMLButtonElement | null) => {
+    el?.scrollIntoView?.({ block: "nearest" });
+  };
 
   if (!open) return null;
 
@@ -99,21 +148,10 @@ export function ObjectSearchPalette({ connectionId }: ObjectSearchPaletteProps) 
     return acc;
   }, {});
 
-  const handleSelect = (hit: ObjectSearchHit) => {
-    if (
-      hit.object_type === "TABLE" ||
-      hit.object_type === "VIEW" ||
-      hit.object_type === "MATERIALIZED VIEW"
-    ) {
-      openTab(hit.schema, hit.name);
-    } else {
-      setCurrentSchema(hit.schema);
-      setSelectedObjectType(
-        TYPE_TO_OBJECTS[hit.object_type] ?? "functions",
-      );
-    }
-    setOpen(false);
-  };
+  // Flattened index → hit, so keyboard navigation matches the visible order.
+  // (Highlight index is tracked against the flat result list; grouped output
+  // below increments it in render order.)
+  let flatIndex = -1;
 
   return (
     <div
@@ -129,6 +167,7 @@ export function ObjectSearchPalette({ connectionId }: ObjectSearchPaletteProps) 
         <div className="flex items-center gap-2 border-b border-border px-3 py-2">
           <Search size={14} className="text-text-muted" />
           <input
+            ref={inputRef}
             autoFocus
             type="text"
             value={query}
@@ -146,19 +185,30 @@ export function ObjectSearchPalette({ connectionId }: ObjectSearchPaletteProps) 
             <div className="px-3 py-1 text-[10px] uppercase text-text-subtle">
               {type}
             </div>
-            {list.map((hit) => (
-              <button
-                key={`${hit.object_type}:${hit.schema}:${hit.name}`}
-                type="button"
-                onClick={() => handleSelect(hit)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-text hover:bg-surface-raised"
-              >
-                <span className="truncate">{hit.name}</span>
-                <span className="text-[10px] text-text-subtle">
-                  {hit.schema}
-                </span>
-              </button>
-            ))}
+            {list.map((hit) => {
+              flatIndex += 1;
+              const index = flatIndex;
+              const highlighted = index === highlightedIndex;
+              return (
+                <button
+                  key={`${hit.object_type}:${hit.schema}:${hit.name}`}
+                  type="button"
+                  ref={highlighted ? onHighlightedRef : undefined}
+                  onClick={() => handleSelect(hit)}
+                  onMouseEnter={() => setHighlightedIndex(index)}
+                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${
+                    highlighted
+                      ? "bg-surface-raised text-text"
+                      : "text-text-muted hover:text-text"
+                  }`}
+                >
+                  <span className="truncate">{hit.name}</span>
+                  <span className="text-[10px] text-text-subtle">
+                    {hit.schema}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         ))}
 
