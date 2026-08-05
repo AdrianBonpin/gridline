@@ -133,6 +133,20 @@ pub struct ExtensionInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObjectSearchHit {
+    pub name: String,
+    pub schema: String,
+    pub object_type: String, // TABLE | VIEW | MATERIALIZED VIEW | FUNCTION | PROCEDURE | TRIGGER | SEQUENCE | ENUM | EXTENSION | INDEX | CONSTRAINT
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DependencyInfo {
+    pub deptype: String, // "n" (normal) | "a" (auto)
+    pub class: String,   // pg_class | pg_proc | pg_trigger | pg_type | pg_constraint | pg_rewrite
+    pub name: String,    // resolved dependent object name
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
     Update {
@@ -582,5 +596,22 @@ mod tests {
         assert!(json.contains("public"), "should contain referenced schema");
         assert!(json.contains("users"), "should contain referenced table");
         assert!(json.contains("id"), "should contain referenced column");
+    }
+
+    #[test]
+    fn object_search_hit_tagged_roundtrip() {
+        let hit = ObjectSearchHit { name: "users".into(), schema: "public".into(), object_type: "TABLE".into() };
+        let json = serde_json::to_string(&hit).unwrap();
+        assert!(json.contains("\"object_type\":\"TABLE\""));
+        let back: ObjectSearchHit = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "users");
+    }
+
+    #[test]
+    fn dependency_info_roundtrip() {
+        let d = DependencyInfo { deptype: "n".into(), class: "pg_class".into(), name: "v_users".into() };
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(json.contains("\"deptype\":\"n\""));
+        assert!(json.contains("v_users"));
     }
 }

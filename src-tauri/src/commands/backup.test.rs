@@ -148,6 +148,8 @@ fn pg_tool_status_serialization() {
         pg_restore_found: false,
         pg_dump_version: Some("pg_dump (PostgreSQL) 16.0".into()),
         pg_restore_version: None,
+        pg_dump_source: None,
+        pg_restore_source: None,
     };
     let json = serde_json::to_string(&status).unwrap();
     assert!(json.contains("pg_dump_found"));

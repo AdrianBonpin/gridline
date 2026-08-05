@@ -62,6 +62,8 @@ pub fn detect_pg_tools() -> PgToolStatus {
         pg_restore_found: Command::new("pg_restore").arg("--version").output().is_ok(),
         pg_dump_version: get_version("pg_dump"),
         pg_restore_version: get_version("pg_restore"),
+        pg_dump_source: None,
+        pg_restore_source: None,
     }
 }
 
