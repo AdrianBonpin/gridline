@@ -78,10 +78,14 @@ jobs:
               tar -xf /tmp/pg.tar.bz2 -C /tmp
               cd /tmp/postgresql-${PG_VER}
               ./configure --prefix=/tmp/pgbuild --without-readline --without-icu CFLAGS="-O2"
-              # Generate the catalog headers (pg_class_d.h etc.) serially FIRST:
-              # building src/bin/pg_dump directly races its generated-headers
-              # prerequisite under -j and fails with 'catalog/pg_*_d.h not found'.
+              # Build the shared prerequisites (catalog headers + libpq/common/
+              # port archives) SERIALLY FIRST. Parallel `make -C` runs recurse
+              # into src/common concurrently and race `rm -f` / `ar crs` on the
+              # same .a — intermittently failing with 'ar: libpgcommon_srv.a:
+              # file format not recognized'. Once the archives exist, the tools'
+              # -j builds find them up to date and those recursions are no-ops.
               make -C src/backend generated-headers
+              make -C src/interfaces/libpq all
               make -j"$(nproc)" -C src/bin/pg_dump all
               make -j"$(nproc)" -C src/bin/psql all
               cp src/bin/pg_dump/pg_dump src/bin/pg_dump/pg_restore "$OUT"/
@@ -98,8 +102,25 @@ jobs:
               curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2" -o /tmp/pg.tar.bz2
               tar -xf /tmp/pg.tar.bz2 -C /tmp
               cd /tmp/postgresql-${PG_VER}
-              ./configure --prefix=/tmp/pgbuild --without-readline --without-icu CFLAGS="-O2"
+              # ac_cv_func_strchrnul=no: Xcode 16.4's SDK marks strchrnul as
+              # introduced in macOS 15.4, so configure detects it and PG's
+              # snprintf.c calls the system symbol — which fails to compile
+              # (-Werror=unguarded-availability-new) and would crash at runtime
+              # on macOS < 15.4. Forcing the check off makes PG use its own
+              # inline fallback instead.
+              ac_cv_func_strchrnul=no ./configure --prefix=/tmp/pgbuild --without-readline --without-icu CFLAGS="-O2"
+              # macOS SDKs always declare strchrnul in <string.h> (Xcode 16.4
+              # marks it 'introduced in macOS 15.4'), so even with HAVE_STRCHRNUL
+              # disabled PG16's static-inline fallback would collide with the
+              # header declaration on newer SDKs. Rename PG's fallback so the
+              # tools compile on any SDK and never touch the (15.4+ only)
+              # system symbol.
+              sed -i '' 's/strchrnul/pg_strchrnul/g' src/port/snprintf.c
+              # Serial shared-prerequisite build first (see the Linux block: the
+              # archives must exist before the -j tool builds recurse into
+              # src/common).
               make -C src/backend generated-headers
+              make -C src/interfaces/libpq all
               make -j"$(sysctl -n hw.ncpu)" -C src/bin/pg_dump all
               make -j"$(sysctl -n hw.ncpu)" -C src/bin/psql all
               cp src/bin/pg_dump/pg_dump src/bin/pg_dump/pg_restore "$OUT"/
@@ -120,7 +141,11 @@ jobs:
               sha256sum /tmp/pg.zip
               unzip -o /tmp/pg.zip -d /tmp/pg
               cp /tmp/pg/pgsql/bin/pg_dump.exe /tmp/pg/pgsql/bin/pg_restore.exe /tmp/pg/pgsql/bin/psql.exe "$OUT"/
-              cp /tmp/pg/pgsql/bin/libpq.dll "$OUT"/
+              # pg_dump.exe needs far more than libpq.dll (libcrypto-3-x64.dll,
+              # libssl-3-x64.dll, libiconv-2.dll, libintl-9.dll,
+              # libwinpthread-1.dll, liblz4.dll, libzstd.dll, ICU DLLs, ...);
+              # copy every DLL next to the tools.
+              cp /tmp/pg/pgsql/bin/*.dll "$OUT"/
               ;;
           esac
           (cd "$OUT" && sha256sum * | tee checksums.txt)
