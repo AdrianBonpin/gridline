@@ -79,7 +79,9 @@ pub fn pg_object_oid_query(object_type: &str) -> String {
 
 /// Objects that depend on `$1` (the target oid). Excludes internal/pinned deps; resolves readable name per classid.
 pub fn pg_depend_query() -> String {
-    "SELECT d.deptype::text AS deptype, d.classid::regclass::text AS class,
+    "SELECT d.deptype::text AS deptype,
+      CASE WHEN d.classid = 'pg_rewrite'::regclass THEN 'pg_class'
+           ELSE d.classid::regclass::text END AS class,
       CASE
         WHEN d.classid='pg_class'::regclass THEN (SELECT relname FROM pg_class WHERE oid=d.objid)
         WHEN d.classid='pg_proc'::regclass THEN (SELECT proname FROM pg_proc WHERE oid=d.objid)
@@ -195,6 +197,23 @@ mod tests {
         assert!(sql.contains("pg_proc'::regclass"));
         assert!(sql.contains("pg_trigger'::regclass"));
         assert!(sql.contains("pg_constraint'::regclass"));
+    }
+
+    #[test]
+    fn depend_query_maps_rewrite_rules_to_the_view_class() {
+        // View dependencies surface in pg_depend as rewrite-rule rows
+        // (classid = pg_rewrite). The dependent object a user cares about is
+        // the VIEW itself, so the class must be reported as pg_class and the
+        // name resolved through ev_class (the view's relation).
+        let sql = pg_depend_query();
+        assert!(
+            sql.contains("WHEN d.classid = 'pg_rewrite'::regclass THEN 'pg_class'"),
+            "pg_rewrite rows must be reported as pg_class: {sql}"
+        );
+        assert!(
+            sql.contains("pg_rewrite'::regclass THEN (SELECT ev_class::regclass::text FROM pg_rewrite WHERE oid=d.objid)"),
+            "pg_rewrite name resolves through ev_class: {sql}"
+        );
     }
 
     #[test]
