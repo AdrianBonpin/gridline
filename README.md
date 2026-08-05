@@ -31,23 +31,23 @@
 
 ## Download
 
-Grab the installer for your OS from the latest release (v0.7.0):
+Grab the installer for your OS from the latest release (v0.7.5):
 
 | OS | Download |
 | :--- | :--- |
-| **macOS** · Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.7.0_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_aarch64.dmg) |
-| **macOS** · Intel | [Gridline_0.7.0_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_x64.dmg) |
-| **Windows** | [Gridline_0.7.0_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_x64-setup.exe) |
-| **Debian / Ubuntu** | [Gridline_0.7.0_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_amd64.deb) |
-| **Fedora / RHEL / openSUSE** | [Gridline-0.7.0-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline-0.7.0-1.x86_64.rpm) |
-| **Other Linux** | [Gridline_0.7.0_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_amd64.AppImage) |
+| **macOS** · Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.7.5_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.5/Gridline_0.7.5_aarch64.dmg) |
+| **macOS** · Intel | [Gridline_0.7.5_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.5/Gridline_0.7.5_x64.dmg) |
+| **Windows** | [Gridline_0.7.5_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.5/Gridline_0.7.5_x64-setup.exe) |
+| **Debian / Ubuntu** | [Gridline_0.7.5_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.5/Gridline_0.7.5_amd64.deb) |
+| **Fedora / RHEL / openSUSE** | [Gridline-0.7.5-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.5/Gridline-0.7.5-1.x86_64.rpm) |
+| **Other Linux** | [Gridline_0.7.5_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.5/Gridline_0.7.5_amd64.AppImage) |
 
 > Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below. All installers are **unsigned** — see the [notes](#which-file-should-i-download) on first-launch warnings.
 
 <!--
   MAINTENANCE: The two download tables — the top "Download" section and the
   "Which file should I download?" section in Getting Started — HARDCODE the
-  current version (v0.7.0) in the asset filenames and direct download links.
+  current version (v0.7.5) in the asset filenames and direct download links.
   When cutting a new release, update BOTH tables to the new version BEFORE
   tagging. See AGENTS.md → Development Workflow → Releases.
 -->
@@ -81,7 +81,7 @@ Gridline is built for developers and small teams who manage multiple database en
 
 ## Recent Changes
 
-- **2026-08-04:** v0.7.0 — revamped the New Connection screen into a two-stage flow with a 6-provider grid (PostgreSQL, MySQL, SQLite, Redis, Supabase, NeonDB; managed presets ship with setup guides + SSL hints) and added full MySQL DB viewer support (connect, browse, query, inline cell editing + changes queue, DDL copy).
+- **2026-08-04:** v0.7.5 — revamped the New Connection screen into a two-stage flow with a 6-provider grid (PostgreSQL, MySQL, SQLite, Redis, Supabase, NeonDB; managed presets ship with setup guides + SSL hints) and added full MySQL DB viewer support (connect, browse, query, inline cell editing + changes queue, DDL copy).
 - **2026-08-04:** Revamped the built-in SQLite demo database with realistic e-commerce data (20 users, 24 products, 50 orders, 100 page views, 500 audit rows) and renamed it to **Gridline Demo (SQLite)**.
 - **2026-07-XX:** Added inline cell editing with a stage-first changes queue, row-detail drawer, keyboard navigation, and cell-level copy.
 - **2026-07-XX:** Added visual filter builder with drag-and-drop column palette and type-aware operators.
@@ -248,16 +248,16 @@ Code signing **will be added in the future** (Apple Developer Program + a Window
 
 #### Which file should I download?
 
-Each release contains **one file per platform** — you only need the one that matches your computer. (If a newer version is available, swap `0.7.0` for the version shown in the release title.)
+Each release contains **one file per platform** — you only need the one that matches your computer. (If a newer version is available, swap `0.7.5` for the version shown in the release title.)
 
 | Your system | Download this | Notes |
 | :--- | :--- | :--- |
-| macOS **Apple Silicon** (M1/M2/M3/M4…) | `Gridline_0.7.0_aarch64.dmg` | `aarch64` = Apple's own chip |
-| macOS **Intel** | `Gridline_0.7.0_x64.dmg` | `x64` = Intel/AMD |
-| **Windows** (most PCs) | `Gridline_0.7.0_x64-setup.exe` | The `.msi` is an alternate installer (for enterprises/IT admins) |
-| **Debian / Ubuntu** | `Gridline_0.7.0_amd64.deb` | Install: `sudo apt install ./Gridline_0.7.0_amd64.deb` |
-| **Fedora / RHEL / openSUSE** | `Gridline-0.7.0-1.x86_64.rpm` | Install: `sudo dnf install Gridline-0.7.0-1.x86_64.rpm` |
-| **Any other Linux** | `Gridline_0.7.0_amd64.AppImage` | Works on every distro: `chmod +x` the file, then double-click it |
+| macOS **Apple Silicon** (M1/M2/M3/M4…) | `Gridline_0.7.5_aarch64.dmg` | `aarch64` = Apple's own chip |
+| macOS **Intel** | `Gridline_0.7.5_x64.dmg` | `x64` = Intel/AMD |
+| **Windows** (most PCs) | `Gridline_0.7.5_x64-setup.exe` | The `.msi` is an alternate installer (for enterprises/IT admins) |
+| **Debian / Ubuntu** | `Gridline_0.7.5_amd64.deb` | Install: `sudo apt install ./Gridline_0.7.5_amd64.deb` |
+| **Fedora / RHEL / openSUSE** | `Gridline-0.7.5-1.x86_64.rpm` | Install: `sudo dnf install Gridline-0.7.5-1.x86_64.rpm` |
+| **Any other Linux** | `Gridline_0.7.5_amd64.AppImage` | Works on every distro: `chmod +x` the file, then double-click it |
 
 **Not sure if your Mac is Intel or Apple Silicon?** Click the **Apple menu** → **About This Mac**. If it shows "Apple M1/M2/M3/M4…" download the `aarch64` file; if it shows an Intel chip, download `x64`. Downloading the wrong one won't run.
 
@@ -267,8 +267,8 @@ Cutting a release is one command — CI builds everything. **Releases are cut fr
 
 ```bash
 git checkout prod && git pull
-git tag v0.7.0
-git push origin v0.7.0
+git tag v0.7.5
+git push origin v0.7.5
 ```
 
 GitHub Actions (`.github/workflows/release.yml`) builds installers for **Apple Silicon, Intel Macs, Windows, and Linux**, then opens a **draft release** on the [Releases](https://github.com/adrianbonpin/gridline/releases) page — review it and hit **Publish release**.
@@ -352,14 +352,14 @@ gridline/
 
 ## Roadmap
 
-The full plan — in-development (v0.7.0), next-up, queue, and shipped history — lives in **[ROADMAP.md](./ROADMAP.md)**.
+The full plan — in-development (v0.7.5), next-up, queue, and shipped history — lives in **[ROADMAP.md](./ROADMAP.md)**.
 
 Highlights of what's next:
 
 - **Full Object Management** — CRUD on functions, triggers, sequences, enums, extensions, and views without the Query tab, plus schema CRUD, global object search, and copy-as-DDL
 - **Full Redis support** — key browser, type-aware value editors, TTL management
 - **More database types** — MariaDB, TimescaleDB, and friends
-- **Managed DB support** — PlanetScale, Turso (Supabase/Neon presets shipped in v0.7.0)
+- **Managed DB support** — PlanetScale, Turso (Supabase/Neon presets shipped in v0.7.5)
 - **AI integration (BYOK)** — natural-language → SQL, chat, summaries, charts
 
 ✅ **[View the full roadmap →](./ROADMAP.md)**
