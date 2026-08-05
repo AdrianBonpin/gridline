@@ -6,7 +6,8 @@ import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { exportData } from "../../lib/exportData";
 import * as cmd from "../../lib/commands";
-import type { ColumnInfo } from "../../lib/types";
+import { DependencyDialog } from "./DependencyDialog";
+import type { ColumnInfo, DependencyInfo } from "../../lib/types";
 
 interface TableOverflowMenuProps {
   schema: string;
@@ -37,6 +38,7 @@ export function TableOverflowMenu({
 
   const [open, setOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"empty" | "delete" | null>(null);
+  const [dropDeps, setDropDeps] = useState<DependencyInfo[]>([]);
   const [importOpen, setImportOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -98,10 +100,18 @@ export function TableOverflowMenu({
         setConfirmAction("empty");
         setOpen(false);
         break;
-      case "delete":
+      case "delete": {
+        if (!connectionId) break;
+        try {
+          const deps = await cmd.getObjectDependencies(connectionId, schema, "table", table);
+          setDropDeps(deps);
+        } catch {
+          setDropDeps([]);
+        }
         setConfirmAction("delete");
         setOpen(false);
         break;
+      }
       default:
         break;
     }
@@ -144,6 +154,15 @@ export function TableOverflowMenu({
             </button>
           ))}
         </div>
+      )}
+
+      {confirmAction === "delete" && dropDeps.length > 0 && (
+        <DependencyDialog
+          open
+          deps={dropDeps}
+          onProceed={() => setConfirmAction(null)}
+          onCancel={() => setConfirmAction(null)}
+        />
       )}
 
       {confirmAction === "empty" && (

@@ -138,6 +138,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
     }, [filePath, format, schema, noOwner, connectionId, startJob, notify]);
 
     const toolsMissing = toolStatus && !toolStatus.pg_dump_found;
+    const toolsBundled = toolStatus?.pg_dump_source === "bundled";
 
     return (
         <div className="flex flex-col h-full">
@@ -162,7 +163,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                         </div>
                     )}
 
-                    {toolsMissing && (
+                    {toolsMissing && !toolsBundled && (
                         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-4 space-y-2">
                             <p className="text-amber-300 text-sm font-semibold">
                                 pg_dump not found
