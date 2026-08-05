@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           PG_VER="16.4"
-          OUT="src-tauri/resources/pg_tools"
+          OUT="${GITHUB_WORKSPACE}/src-tauri/resources/pg_tools"
           mkdir -p "$OUT"
           case "${{ matrix.platform }}" in
             ubuntu-22.04)
