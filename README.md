@@ -31,25 +31,26 @@
 
 ## Download
 
-Grab the installer for your OS from the latest release (v0.7.0):
+Grab the installer for your OS from the [latest release](https://github.com/AdrianBonpin/gridline/releases/latest) — links always point to the newest build:
 
-| OS | Download |
-| :--- | :--- |
-| **macOS** · Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.7.0_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_aarch64.dmg) |
-| **macOS** · Intel | [Gridline_0.7.0_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_x64.dmg) |
-| **Windows** | [Gridline_0.7.0_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_x64-setup.exe) |
-| **Debian / Ubuntu** | [Gridline_0.7.0_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_amd64.deb) |
-| **Fedora / RHEL / openSUSE** | [Gridline-0.7.0-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline-0.7.0-1.x86_64.rpm) |
-| **Other Linux** | [Gridline_0.7.0_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.0/Gridline_0.7.0_amd64.AppImage) |
+| OS | Architecture | Download |
+| :--- | :--- | :--- |
+| **macOS** | Apple Silicon (M1/M2/M3/M4…) | [Gridline_darwin_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_darwin_aarch64.dmg) |
+| **macOS** | Intel | [Gridline_darwin_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_darwin_x64.dmg) |
+| **Windows** | x64 | [Gridline_windows_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_windows_x64-setup.exe) |
+| **Debian / Ubuntu** | amd64 | [Gridline_linux_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_amd64.deb) |
+| **Fedora / RHEL / openSUSE** | x86_64 | [Gridline_linux_x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_x86_64.rpm) |
+| **Other Linux** | amd64 | [Gridline_linux_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_amd64.AppImage) |
 
 > Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below. All installers are **unsigned** — see the [notes](#which-file-should-i-download) on first-launch warnings.
 
 <!--
-  MAINTENANCE: The two download tables — the top "Download" section and the
-  "Which file should I download?" section in Getting Started — HARDCODE the
-  current version (v0.7.0) in the asset filenames and direct download links.
-  When cutting a new release, update BOTH tables to the new version BEFORE
-  tagging. See AGENTS.md → Development Workflow → Releases.
+  MAINTENANCE: The download links use GitHub's releases/latest/download/<file>
+  redirect, so they always point at the newest published release. This only
+  works because release.yml sets releaseAssetNamePattern to a version-free
+  pattern ([name]_[platform]_[arch][setup][ext]). If the asset naming ever
+  changes, update BOTH tables here to match the new filenames. No version
+  bump is needed on release — do NOT re-add the version to these filenames.
 -->
 
 ---
@@ -81,7 +82,8 @@ Gridline is built for developers and small teams who manage multiple database en
 
 ## Recent Changes
 
-- **2026-08-04:** v0.7.0 — revamped the New Connection screen into a two-stage flow with a 6-provider grid (PostgreSQL, MySQL, SQLite, Redis, Supabase, NeonDB; managed presets ship with setup guides + SSL hints) and added full MySQL DB viewer support (connect, browse, query, inline cell editing + changes queue, DDL copy).
+- **2026-08-05:** v0.7.5 — bundled `pg_dump`/`pg_restore`/`psql` (system-first, bundled fallback) so admin features work with no separate install; schema CRUD (create/rename/drop with CASCADE + dependency warning); Cmd+K object search (current schema, all object types); copy-as-DDL for every browsable object type; `pg_depend` object-dependency view shown before destructive drops.
+- **2026-08-04:** v0.7.5 — revamped the New Connection screen into a two-stage flow with a 6-provider grid (PostgreSQL, MySQL, SQLite, Redis, Supabase, NeonDB; managed presets ship with setup guides + SSL hints) and added full MySQL DB viewer support (connect, browse, query, inline cell editing + changes queue, DDL copy).
 - **2026-08-04:** Revamped the built-in SQLite demo database with realistic e-commerce data (20 users, 24 products, 50 orders, 100 page views, 500 audit rows) and renamed it to **Gridline Demo (SQLite)**.
 - **2026-07-XX:** Added inline cell editing with a stage-first changes queue, row-detail drawer, keyboard navigation, and cell-level copy.
 - **2026-07-XX:** Added visual filter builder with drag-and-drop column palette and type-aware operators.
@@ -112,6 +114,10 @@ Gridline is built for developers and small teams who manage multiple database en
 - **Functions & procedures** — syntax-highlighted source, argument signatures, overload disambiguation.
 - **Triggers, sequences, enums, extensions** — unified **Objects** view with type switcher.
 - **Indexes & constraints** — per-table index details plus CHECK/UNIQUE constraints beyond PK/FK.
+- **Schema CRUD** — create/rename/drop schemas from the object tree, with typed-name + dependency warning on CASCADE drops.
+- **Global object search** — ⌘K, current schema, all object types; results open a table tab or jump to the Objects view.
+- **Copy as DDL** — `CREATE` DDL for every browsable object type.
+- **Object dependencies** — `pg_depend` "what depends on this?" view before destructive drops.
 - **Schema visualizer** — interactive ER diagram with auto-layout, cardinality legend, and collapsible columns.
 
 ### Data Grid
@@ -140,6 +146,7 @@ Gridline is built for developers and small teams who manage multiple database en
 - **Visual Backup** — `pg_dump` wrapper with format selector, schema filter, no-owner toggle, real-time progress.
 - **Visual Restore** — `pg_restore` wrapper with clean toggle and destructive confirmation.
 - **DB-to-DB Sync** — pipe `pg_dump` → `pg_restore` between two connections.
+- **Bundled client tools** — `pg_dump`/`pg_restore`/`psql` ship with the app; system tools are preferred when present, bundled tools are the fallback.
 
 ---
 
@@ -218,7 +225,7 @@ Capabilities below are fact-checked against each vendor's official docs and pric
 | **Desktop shell**   | [Tauri 2.0](https://tauri.app)                                                                            | Native webview container (~40 MB baseline)       |
 | **Backend**         | Rust + [tokio](https://tokio.rs)                                                                          | Async runtime, connection pooling, CLI execution |
 | **DB drivers**      | [sqlx](https://github.com/launchbadge/sqlx) / [tokio-postgres](https://github.com/sfackler/rust-postgres) | PostgreSQL via tokio-postgres; MySQL via sqlx; SQLite via rusqlite |
-| **CLI integration** | `std::process::Command`                                                                                   | Wraps system `pg_dump` / `pg_restore`            |
+| **CLI integration** | `std::process::Command`                                                                                   | Wraps bundled or system `pg_dump` / `pg_restore` |
 | **Frontend**        | [React 19](https://react.dev) + [TypeScript](https://www.typescriptlang.org)                              | Component-based UI                               |
 | **Styling**         | [Tailwind CSS](https://tailwindcss.com)                                                                   | Utility-first, dark mode, glassmorphic design    |
 | **State**           | [Zustand](https://zustand.docs.pmnd.rs) / Jotai                                                           | Domain stores                                    |
@@ -248,16 +255,16 @@ Code signing **will be added in the future** (Apple Developer Program + a Window
 
 #### Which file should I download?
 
-Each release contains **one file per platform** — you only need the one that matches your computer. (If a newer version is available, swap `0.7.0` for the version shown in the release title.)
+Each release contains **one file per platform** — you only need the one that matches your computer. The links below always point at the newest build (the asset names are version-free, so they never go stale):
 
 | Your system | Download this | Notes |
 | :--- | :--- | :--- |
-| macOS **Apple Silicon** (M1/M2/M3/M4…) | `Gridline_0.7.0_aarch64.dmg` | `aarch64` = Apple's own chip |
-| macOS **Intel** | `Gridline_0.7.0_x64.dmg` | `x64` = Intel/AMD |
-| **Windows** (most PCs) | `Gridline_0.7.0_x64-setup.exe` | The `.msi` is an alternate installer (for enterprises/IT admins) |
-| **Debian / Ubuntu** | `Gridline_0.7.0_amd64.deb` | Install: `sudo apt install ./Gridline_0.7.0_amd64.deb` |
-| **Fedora / RHEL / openSUSE** | `Gridline-0.7.0-1.x86_64.rpm` | Install: `sudo dnf install Gridline-0.7.0-1.x86_64.rpm` |
-| **Any other Linux** | `Gridline_0.7.0_amd64.AppImage` | Works on every distro: `chmod +x` the file, then double-click it |
+| macOS **Apple Silicon** (M1/M2/M3/M4…) | [Gridline_darwin_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_darwin_aarch64.dmg) | `aarch64` = Apple's own chip |
+| macOS **Intel** | [Gridline_darwin_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_darwin_x64.dmg) | `x64` = Intel/AMD |
+| **Windows** (most PCs) | [Gridline_windows_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_windows_x64-setup.exe) | The `.msi` is an alternate installer (for enterprises/IT admins) |
+| **Debian / Ubuntu** | [Gridline_linux_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_amd64.deb) | Install: `sudo apt install ./Gridline_linux_amd64.deb` |
+| **Fedora / RHEL / openSUSE** | [Gridline_linux_x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_x86_64.rpm) | Install: `sudo dnf install Gridline_linux_x86_64.rpm` |
+| **Any other Linux** | [Gridline_linux_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_amd64.AppImage) | Works on every distro: `chmod +x` the file, then double-click it |
 
 **Not sure if your Mac is Intel or Apple Silicon?** Click the **Apple menu** → **About This Mac**. If it shows "Apple M1/M2/M3/M4…" download the `aarch64` file; if it shows an Intel chip, download `x64`. Downloading the wrong one won't run.
 
@@ -267,8 +274,8 @@ Cutting a release is one command — CI builds everything. **Releases are cut fr
 
 ```bash
 git checkout prod && git pull
-git tag v0.7.0
-git push origin v0.7.0
+git tag v0.7.5
+git push origin v0.7.5
 ```
 
 GitHub Actions (`.github/workflows/release.yml`) builds installers for **Apple Silicon, Intel Macs, Windows, and Linux**, then opens a **draft release** on the [Releases](https://github.com/adrianbonpin/gridline/releases) page — review it and hit **Publish release**.
@@ -298,7 +305,7 @@ bun run tauri build
 - **Windows:** 10 or newer
 - **Linux:** Ubuntu 22.04+ or equivalent modern distribution
 - **RAM:** 8 GB recommended
-- **PostgreSQL client tools:** `pg_dump` and `pg_restore` are required for admin features
+- **PostgreSQL client tools:** `pg_dump`/`pg_restore`/`psql` are **bundled** with Gridline — no separate install required for backup/restore/sync. (System tools, if installed, are preferred.)
 
 ---
 
@@ -352,14 +359,14 @@ gridline/
 
 ## Roadmap
 
-The full plan — in-development (v0.7.0), next-up, queue, and shipped history — lives in **[ROADMAP.md](./ROADMAP.md)**.
+The full plan — in-development (v0.7.5), next-up, queue, and shipped history — lives in **[ROADMAP.md](./ROADMAP.md)**.
 
 Highlights of what's next:
 
-- **Full Object Management** — CRUD on functions, triggers, sequences, enums, extensions, and views without the Query tab, plus schema CRUD, global object search, and copy-as-DDL
+- **Full Object Management** — CRUD on functions, triggers, sequences, enums, extensions, and views without the Query tab (schema CRUD, global object search, copy-as-DDL, and object dependencies shipped in v0.7.5)
 - **Full Redis support** — key browser, type-aware value editors, TTL management
 - **More database types** — MariaDB, TimescaleDB, and friends
-- **Managed DB support** — PlanetScale, Turso (Supabase/Neon presets shipped in v0.7.0)
+- **Managed DB support** — PlanetScale, Turso (Supabase/Neon presets shipped in v0.7.5)
 - **AI integration (BYOK)** — natural-language → SQL, chat, summaries, charts
 
 ✅ **[View the full roadmap →](./ROADMAP.md)**

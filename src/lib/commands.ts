@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo } from "./types";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 import type { ChangePayload } from "./changePayload";
 
@@ -298,4 +298,25 @@ export async function getIndexes(connectionId: string, schema?: string): Promise
 
 export async function getConstraints(connectionId: string, schema?: string): Promise<ConstraintInfo[]> {
   return invoke<ConstraintInfo[]>("get_constraints", { connectionId, schema });
+}
+
+// ─── v0.7.5: Object management (schemas, search, DDL, dependencies) ──
+
+export async function createSchema(connectionId: string, name: string): Promise<void> {
+  return invoke<void>("create_schema", { connectionId, name });
+}
+export async function renameSchema(connectionId: string, oldName: string, newName: string): Promise<void> {
+  return invoke<void>("rename_schema", { connectionId, oldName, newName });
+}
+export async function dropSchema(connectionId: string, name: string, cascade: boolean): Promise<void> {
+  return invoke<void>("drop_schema", { connectionId, name, cascade });
+}
+export async function searchObjects(connectionId: string, schema: string, query: string): Promise<ObjectSearchHit[]> {
+  return invoke<ObjectSearchHit[]>("search_objects", { connectionId, schema, query });
+}
+export async function getObjectDdl(connectionId: string, schema: string, objectType: string, name: string): Promise<string> {
+  return invoke<string>("get_object_ddl", { connectionId, schema, objectType, name });
+}
+export async function getObjectDependencies(connectionId: string, schema: string, objectType: string, name: string): Promise<DependencyInfo[]> {
+  return invoke<DependencyInfo[]>("get_object_dependencies", { connectionId, schema, objectType, name });
 }

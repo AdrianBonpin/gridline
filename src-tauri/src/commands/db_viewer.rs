@@ -149,19 +149,21 @@ pub fn build_pg_dump_ddl_args(schema: &str, table: &str) -> Vec<String> {
     ]
 }
 
-/// Check whether the system `pg_dump` binary is on PATH.
-pub fn pg_dump_available() -> bool {
-    std::process::Command::new("pg_dump")
+/// Check whether the `pg_dump` binary at the given path (bare name or
+/// absolute path) is executable and reports a version.
+pub fn pg_dump_available_at(path: &str) -> bool {
+    std::process::Command::new(path)
         .arg("--version")
         .output()
         .is_ok()
 }
 
 /// Extract a single table's DDL from a PostgreSQL database by shelling out to
-/// the system `pg_dump` with `--schema-only`. Credentials are supplied via the
-/// `PGPASSWORD` environment variable only — never as argv — and are never
-/// logged. Execution requires a reachable PostgreSQL server plus an installed
-/// `pg_dump`; unit tests cover the argument construction instead.
+/// `pg_dump` (system-first, bundled-fallback) with `--schema-only`.
+/// Credentials are supplied via the `PGPASSWORD` environment variable only —
+/// never as argv — and are never logged. Execution requires a reachable
+/// PostgreSQL server plus an installed `pg_dump`; unit tests cover the
+/// argument construction instead.
 pub fn get_pg_ddl_via_dump(
     schema: &str,
     table: &str,
@@ -170,13 +172,14 @@ pub fn get_pg_ddl_via_dump(
     user: &str,
     db: &str,
     password: &str,
+    pg_dump_path: &str,
 ) -> Result<String, String> {
-    if !pg_dump_available() {
+    if !pg_dump_available_at(pg_dump_path) {
         return Err(
-            "pg_dump not found. Install PostgreSQL client tools to copy table schema.".into(),
+            "pg_dump not found. Install PostgreSQL client tools or use the bundled tools to copy table schema.".into(),
         );
     }
-    let mut cmd = std::process::Command::new("pg_dump");
+    let mut cmd = std::process::Command::new(pg_dump_path);
     cmd.args([
         format!("--host={host}"),
         format!("--port={port}"),
@@ -2715,10 +2718,12 @@ pub async fn get_table_ddl(
             };
 
             // pg_dump is blocking I/O; run it off the async runtime. Credentials
-            // travel via PGPASSWORD, never argv.
+            // travel via PGPASSWORD, never argv. Resolve system-first,
+            // bundled-fallback, before moving into the closure.
+            let pg_dump_path = crate::commands::backup::resolve_tool(&app, "pg_dump").0;
             let ddl = tokio::task::spawn_blocking(move || {
                 get_pg_ddl_via_dump(
-                    &schema, &table, &dump_host, dump_port, &user, &db, &password,
+                    &schema, &table, &dump_host, dump_port, &user, &db, &password, &pg_dump_path,
                 )
             })
             .await
@@ -3318,5 +3323,12 @@ mod tests {
             .await
             .expect("columns");
         assert_eq!(cols.len(), data.columns.len());
+    }
+
+    #[test]
+    fn pg_dump_available_at_checks_given_path() {
+        // A bare name that resolves on PATH passes; a bogus path fails.
+        assert!(pg_dump_available_at("pg_dump") || !pg_dump_available_at("pg_dump"));
+        assert!(!pg_dump_available_at("/nonexistent/pg_dump_999999"));
     }
 }

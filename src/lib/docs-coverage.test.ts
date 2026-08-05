@@ -4,7 +4,7 @@ import { describe, it, expect } from "vitest";
 import agents from "../../AGENTS.md?raw";
 import readme from "../../README.md?raw";
 
-describe("v0.7.0 docs coverage", () => {
+describe("v0.7.5 docs coverage", () => {
   it("AGENTS.md marks inline cell editing complete", () => {
     expect(agents).toContain("Inline cell editing");
     expect(agents).toMatch(/Inline cell editing \| ✅/);
@@ -24,8 +24,23 @@ describe("v0.7.0 docs coverage", () => {
     expect(agents).toMatch(/Connection status indicator on cards \| ✅/);
     expect(agents).toMatch(/Move-to-folder bulk action \| ✅/);
   });
-  it("README declares v0.7.0", () => {
-    expect(readme).toContain("0.7.0");
+  it("README declares v0.7.5", () => {
+    expect(readme).toContain("0.7.5");
+  });
+  it("AGENTS.md marks schema CRUD complete", () => {
+    expect(agents).toMatch(/Schema CRUD \| ✅/);
+  });
+  it("AGENTS.md marks global object search complete", () => {
+    expect(agents).toMatch(/Global object search \| ✅/);
+  });
+  it("AGENTS.md marks copy-as-DDL complete", () => {
+    expect(agents).toMatch(/Copy as DDL for any object \| ✅/);
+  });
+  it("AGENTS.md marks object dependencies complete", () => {
+    expect(agents).toMatch(/Object dependencies \| ✅/);
+  });
+  it("README notes bundled PostgreSQL tools", () => {
+    expect(readme.toLowerCase()).toContain("bundled");
   });
   it("README marks inline editing complete (not Upcoming)", () => {
     // Key Features lists inline editing as a shipped feature

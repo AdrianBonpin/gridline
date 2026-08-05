@@ -79,6 +79,8 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                     pg_restore_found: false,
                     pg_dump_version: null,
                     pg_restore_version: null,
+                    pg_dump_source: null,
+                    pg_restore_source: null,
                 }),
             )
             .finally(() => setCheckingTools(false));
@@ -136,6 +138,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
     }, [filePath, format, schema, noOwner, connectionId, startJob, notify]);
 
     const toolsMissing = toolStatus && !toolStatus.pg_dump_found;
+    const toolsBundled = toolStatus?.pg_dump_source === "bundled";
 
     return (
         <div className="flex flex-col h-full">
@@ -160,7 +163,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                         </div>
                     )}
 
-                    {toolsMissing && (
+                    {toolsMissing && !toolsBundled && (
                         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-4 space-y-2">
                             <p className="text-amber-300 text-sm font-semibold">
                                 pg_dump not found

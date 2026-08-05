@@ -20,8 +20,8 @@ pub struct AppState {
 }
 
 use commands::{
-    backup, connections, db_viewer, demo, folders, import_export, keychain, query, schema_graph,
-    settings, tags,
+    backup, connections, db_viewer, demo, folders, import_export, keychain, objects, query,
+    schema_graph, settings, tags,
 };
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -116,6 +116,12 @@ pub fn run() {
             db_viewer::get_extensions,
             db_viewer::get_indexes,
             db_viewer::get_constraints,
+            objects::create_schema,
+            objects::rename_schema,
+            objects::drop_schema,
+            objects::search_objects,
+            objects::get_object_ddl,
+            objects::get_object_dependencies,
             keychain::save_connection_password,
             keychain::get_connection_password,
             keychain::delete_connection_password,

@@ -1,5 +1,5 @@
 use std::process::{Command, Stdio};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::models::backup::*;
 
@@ -51,18 +51,61 @@ fn sanitize_error(s: &str) -> String {
     crate::commands::test_connection::sanitize_error(s)
 }
 
+fn bundled_bin_name(tool: &str) -> String {
+    if cfg!(windows) { format!("{tool}.exe") } else { tool.to_string() }
+}
+
+/// Pure resolution decision (unit-testable): system > bundled > bare name.
+fn pick_tool(system_ok: bool, bundled: Option<&str>, tool: &str) -> (String, Option<String>) {
+    if system_ok { return (tool.to_string(), Some("system".to_string())); }
+    if let Some(b) = bundled { return (b.to_string(), Some("bundled".to_string())); }
+    (tool.to_string(), None)
+}
+
+/// System-first, bundled-fallback resolver. Returns (command_to_invoke, source).
+pub fn resolve_tool(app: &AppHandle, tool: &str) -> (String, Option<String>) {
+    let system_ok = Command::new(tool).arg("--version").output().is_ok();
+    let bundled = app.path().resource_dir().ok()
+        .map(|rd| rd.join("pg_tools").join(bundled_bin_name(tool)))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().to_string());
+    pick_tool(system_ok, bundled.as_deref(), tool)
+}
+
+pub fn resolve_tool_paths(app: &AppHandle) -> PgToolPaths {
+    let (d, _) = resolve_tool(app, "pg_dump");
+    let (r, _) = resolve_tool(app, "pg_restore");
+    let (p, _) = resolve_tool(app, "psql");
+    PgToolPaths { pg_dump: d, pg_restore: r, psql: p }
+}
+
 // ---------------------------------------------------------------------------
 // detect_pg_tools
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
-pub fn detect_pg_tools() -> PgToolStatus {
+/// Shapes the tool status from resolved tool paths + sources. Headless so the
+/// Tauri command stays thin and the status logic stays unit-testable.
+fn build_pg_tool_status(
+    dump: &str,
+    restore: &str,
+    dump_src: Option<String>,
+    restore_src: Option<String>,
+) -> PgToolStatus {
     PgToolStatus {
-        pg_dump_found: Command::new("pg_dump").arg("--version").output().is_ok(),
-        pg_restore_found: Command::new("pg_restore").arg("--version").output().is_ok(),
-        pg_dump_version: get_version("pg_dump"),
-        pg_restore_version: get_version("pg_restore"),
+        pg_dump_found: Command::new(dump).arg("--version").output().is_ok(),
+        pg_restore_found: Command::new(restore).arg("--version").output().is_ok(),
+        pg_dump_version: get_version(dump),
+        pg_restore_version: get_version(restore),
+        pg_dump_source: dump_src,
+        pg_restore_source: restore_src,
     }
+}
+
+#[tauri::command]
+pub fn detect_pg_tools(app_handle: AppHandle) -> PgToolStatus {
+    let (dump, dump_src) = resolve_tool(&app_handle, "pg_dump");
+    let (restore, restore_src) = resolve_tool(&app_handle, "pg_restore");
+    build_pg_tool_status(&dump, &restore, dump_src, restore_src)
 }
 
 // ---------------------------------------------------------------------------
@@ -132,11 +175,11 @@ fn build_restore_args(conn: &PgConnParams, options: &RestoreOptions) -> Vec<Stri
 
 /// Runs `pg_dump` against `conn`, writing to `options.file_path`.
 /// Returns `Ok(())` on success or a sanitized error message.
-pub fn run_pg_dump(conn: &PgConnParams, options: &BackupOptions) -> Result<(), String> {
+pub fn run_pg_dump(conn: &PgConnParams, options: &BackupOptions, tools: &PgToolPaths) -> Result<(), String> {
     let mut args = build_dump_args(conn, options);
     args.push(format!("--file={}", options.file_path));
 
-    let result = Command::new("pg_dump")
+    let result = Command::new(&tools.pg_dump)
         .env("PGPASSWORD", &conn.password)
         .args(&args)
         .output();
@@ -154,9 +197,9 @@ pub fn run_pg_dump(conn: &PgConnParams, options: &BackupOptions) -> Result<(), S
 /// Plain-format dumps are SQL text and cannot be read by `pg_restore` — they
 /// are executed with `psql` instead. The `clean` option is only honored for
 /// archive formats (custom/tar/directory); the UI disables it for plain.
-pub fn run_pg_restore(conn: &PgConnParams, options: &RestoreOptions) -> Result<(), String> {
+pub fn run_pg_restore(conn: &PgConnParams, options: &RestoreOptions, tools: &PgToolPaths) -> Result<(), String> {
     if options.format == "plain" {
-        let result = Command::new("psql")
+        let result = Command::new(&tools.psql)
             .env("PGPASSWORD", &conn.password)
             .args([
                 format!("--host={}", conn.host),
@@ -177,7 +220,7 @@ pub fn run_pg_restore(conn: &PgConnParams, options: &RestoreOptions) -> Result<(
     let mut args = build_restore_args(conn, options);
     args.push(options.file_path.clone());
 
-    let result = Command::new("pg_restore")
+    let result = Command::new(&tools.pg_restore)
         .env("PGPASSWORD", &conn.password)
         .args(&args)
         .output();
@@ -196,6 +239,7 @@ pub fn run_db_sync(
     target: &PgConnParams,
     schema: Option<&str>,
     tables: Option<&[String]>,
+    tools: &PgToolPaths,
 ) -> Result<(), String> {
     // --- Build pg_dump args ---
     let mut dump_args = base_conn_args(source);
@@ -221,7 +265,7 @@ pub fn run_db_sync(
     restore_args.push("--if-exists".into());
 
     // --- Spawn pg_dump with piped stdout ---
-    let mut dump_child = Command::new("pg_dump")
+    let mut dump_child = Command::new(&tools.pg_dump)
         .env("PGPASSWORD", &source.password)
         .args(&dump_args)
         .stdout(Stdio::piped())
@@ -243,7 +287,7 @@ pub fn run_db_sync(
     });
 
     // --- Run pg_restore with pg_dump stdout as stdin ---
-    let restore_result = Command::new("pg_restore")
+    let restore_result = Command::new(&tools.pg_restore)
         .env("PGPASSWORD", &target.password)
         .args(&restore_args)
         .stdin(dump_stdout)
@@ -332,9 +376,10 @@ pub async fn pg_dump(
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
+    let tools = resolve_tool_paths(&app_handle);
 
     tokio::task::spawn_blocking(move || {
-        let result = run_pg_dump(&params, &options);
+        let result = run_pg_dump(&params, &options, &tools);
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 
@@ -374,9 +419,10 @@ pub async fn pg_restore(
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
+    let tools = resolve_tool_paths(&app_handle);
 
     tokio::task::spawn_blocking(move || {
-        let result = run_pg_restore(&params, &options);
+        let result = run_pg_restore(&params, &options, &tools);
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 
@@ -464,9 +510,10 @@ pub async fn db_sync(
     let tables = options.tables.clone();
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
+    let tools = resolve_tool_paths(&app_handle);
 
     tokio::task::spawn_blocking(move || {
-        let result = run_db_sync(&source, &target, schema.as_deref(), tables.as_deref());
+        let result = run_db_sync(&source, &target, schema.as_deref(), tables.as_deref(), &tools);
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 

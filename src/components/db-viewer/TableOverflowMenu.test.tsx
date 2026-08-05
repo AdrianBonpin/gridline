@@ -63,14 +63,25 @@ describe("TableOverflowMenu", () => {
   });
 
   it("Delete Table opens confirm then stages a drop_table change", async () => {
+    vi.spyOn(commands, "getObjectDependencies").mockResolvedValue([]);
     render(<TableOverflowMenu schema="public" table="t" onOpenTab={() => "tab-1"} />);
     fireEvent.click(screen.getByLabelText(/table options/i));
     fireEvent.click(screen.getByText(/delete table/i));
+    await waitFor(() => expect(screen.queryByText(/open in new tab/i)).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /delete table/i }));
     await waitFor(() => {
       const q = useDbViewerStore.getState().changesQueue;
       expect(q[q.length - 1]).toEqual(expect.objectContaining({ type: "drop_table", schema: "public", table: "t" }));
     });
+  });
+
+  it("Delete Table fetches dependencies and shows DependencyDialog before confirming", async () => {
+    vi.spyOn(commands, "getObjectDependencies").mockResolvedValue([{ deptype: "n", class: "pg_class", name: "v_orders" }]);
+    render(<TableOverflowMenu schema="public" table="orders" connectionId="c1" onOpenTab={() => "tab-1"} />);
+    fireEvent.click(screen.getByLabelText(/table options/i));
+    fireEvent.click(screen.getByText(/delete table/i));
+    await waitFor(() => expect(commands.getObjectDependencies).toHaveBeenCalledWith("c1", "public", "table", "orders"));
+    await waitFor(() => expect(screen.getByText("v_orders")).toBeInTheDocument());
   });
 
   it("Export data calls exportData when rows and columns are provided", async () => {

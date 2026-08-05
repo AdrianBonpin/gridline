@@ -6,6 +6,7 @@ import {
     GitBranch,
     ListChecks,
     ListOrdered,
+    MoreVertical,
     SquareFunction,
     Tag,
     Puzzle,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { SelectDropdown } from "../ui/SelectDropdown";
+import { DependencyDialog } from "./DependencyDialog";
 import * as cmd from "../../lib/commands";
 import type {
     FunctionInfo,
@@ -24,17 +26,11 @@ import type {
     ExtensionInfo,
     IndexInfo,
     ConstraintInfo,
+    ObjectType,
+    DependencyInfo,
 } from "../../lib/types";
 
-export type ObjectType =
-    | "functions"
-    | "triggers"
-    | "sequences"
-    | "enums"
-    | "extensions"
-    | "indexes"
-    | "constraints"
-    | "procedures";
+
 
 interface ObjectExplorerPageProps {
     connectionId: string;
@@ -118,6 +114,28 @@ function itemLabel(item: AnyObject): string {
         return `${name}(${item.argument_types.join(", ")})`;
     }
     return name;
+}
+
+function schemaOf(item: AnyObject): string {
+    return item.schema;
+}
+
+function objectName(item: AnyObject): string {
+    return item.name;
+}
+
+function typeToDdlType(type: ObjectType): string {
+    const map: Record<ObjectType, string> = {
+        functions: "function",
+        procedures: "procedure",
+        triggers: "trigger",
+        sequences: "sequence",
+        enums: "enum",
+        extensions: "extension",
+        indexes: "index",
+        constraints: "constraint",
+    };
+    return map[type];
 }
 
 // ─── syntax highlighting for PL/pgSQL / SQL ──────────────
@@ -1020,7 +1038,8 @@ function renderDetail(type: ObjectType, item: AnyObject) {
 }
 
 export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
-    const [type, setType] = useState<ObjectType>("functions");
+    const selectedObjectType = useDbViewerStore((s) => s.selectedObjectType);
+    const [type, setType] = useState<ObjectType>(selectedObjectType ?? "functions");
     const [panelWidth, setPanelWidth] = useState(280);
     const panelResizeRef = useRef<{ startX: number; startW: number } | null>(
         null,
@@ -1061,6 +1080,9 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [selectedItem, setSelectedItem] = useState<AnyObject | null>(null);
+    const [openKey, setOpenKey] = useState<string | null>(null);
+    const [depOpen, setDepOpen] = useState(false);
+    const [depDeps, setDepDeps] = useState<DependencyInfo[]>([]);
     const [searchOpen, setSearchOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
     const searchInputRef = useRef<HTMLInputElement>(null);
@@ -1173,14 +1195,25 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
     // Switching object type: reset selection/search, clear the stale list so
     // the loading state renders (no flash of the previous type's objects), and
     // reset the last-fetched-schema marker so the fetch effect re-runs.
-    const handleTypeChange = (next: ObjectType) => {
+    const handleTypeChange = useCallback((next: ObjectType) => {
         setType(next);
         setSearchQuery("");
         setSelectedItem(null);
+        setOpenKey(null);
         setItems(null);
         setLoading(true);
         lastSchemaRef.current = undefined;
-    };
+    }, []);
+
+    // Consume any object-type preselection from the Cmd+K palette.
+    useEffect(() => {
+        if (selectedObjectType && selectedObjectType !== type) {
+            handleTypeChange(selectedObjectType);
+        }
+        if (selectedObjectType) {
+            useDbViewerStore.getState().setSelectedObjectType(null);
+        }
+    }, [selectedObjectType, type, handleTypeChange]);
 
     return (
         <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -1326,6 +1359,34 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                             const isSelected =
                                 selectedItem !== null &&
                                 itemKey(selectedItem) === itemKey(item);
+                            const menuOpen = openKey === key;
+
+                            const handleCopyDdl = async () => {
+                                setOpenKey(null);
+                                const ddl = await cmd.getObjectDdl(
+                                    connectionId,
+                                    schemaOf(item),
+                                    typeToDdlType(type),
+                                    objectName(item),
+                                );
+                                try {
+                                    await navigator.clipboard?.writeText(ddl);
+                                } catch {
+                                    // Ignore clipboard errors.
+                                }
+                            };
+
+                            const handleViewDependencies = async () => {
+                                setOpenKey(null);
+                                const deps = await cmd.getObjectDependencies(
+                                    connectionId,
+                                    schemaOf(item),
+                                    typeToDdlType(type),
+                                    objectName(item),
+                                );
+                                setDepDeps(deps);
+                                setDepOpen(true);
+                            };
 
                             return (
                                 <div
@@ -1341,6 +1402,44 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                                     <span className="flex-1 text-sm truncate">
                                         {name}
                                     </span>
+                                    <div
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="relative"
+                                    >
+                                        <button
+                                            aria-label="options"
+                                            onClick={() =>
+                                                setOpenKey((k) =>
+                                                    k === key ? null : key,
+                                                )
+                                            }
+                                            className={`w-6 h-6 rounded flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised cursor-pointer transition-opacity ${
+                                                menuOpen
+                                                    ? "opacity-100"
+                                                    : "opacity-0 group-hover:opacity-100"
+                                            }`}
+                                        >
+                                            <MoreVertical size={14} />
+                                        </button>
+                                        {menuOpen && (
+                                            <div className="absolute right-0 mt-1 z-20 min-w-[140px] rounded-md bg-surface border border-border shadow-lg py-1">
+                                                <button
+                                                    type="button"
+                                                    onClick={handleCopyDdl}
+                                                    className="w-full text-left px-3 py-1.5 text-xs text-text hover:bg-surface-raised cursor-pointer"
+                                                >
+                                                    Copy DDL
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleViewDependencies}
+                                                    className="w-full text-left px-3 py-1.5 text-xs text-text hover:bg-surface-raised cursor-pointer"
+                                                >
+                                                    Dependencies
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
                                     <ChevronRight
                                         size={14}
                                         className={`text-text-muted shrink-0 transition-transform ${
@@ -1399,6 +1498,13 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                     </div>
                 )}
             </div>
+
+            <DependencyDialog
+                open={depOpen}
+                deps={depDeps}
+                onProceed={() => setDepOpen(false)}
+                onCancel={() => setDepOpen(false)}
+            />
         </div>
     );
 }

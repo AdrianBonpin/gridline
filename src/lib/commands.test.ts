@@ -30,6 +30,12 @@ import {
   clearRecentConnections,
   getIndexes,
   getConstraints,
+  createSchema,
+  renameSchema,
+  dropSchema,
+  searchObjects,
+  getObjectDdl,
+  getObjectDependencies,
 } from "./commands";
 import type { SchemaGraph } from "./types";
 import type { QueryHistoryEntry } from "./commands";
@@ -290,5 +296,40 @@ describe("v0.5.0 command wrappers", () => {
 
     await getConstraints("c1", "public");
     expect(mockInvoke).toHaveBeenCalledWith("get_constraints", { connectionId: "c1", schema: "public" });
+  });
+});
+
+describe("object management commands (v0.7.5)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("createSchema calls invoke with name", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    await createSchema("c1", "my_schema");
+    expect(invoke).toHaveBeenCalledWith("create_schema", { connectionId: "c1", name: "my_schema" });
+  });
+  it("renameSchema maps old/new names", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    await renameSchema("c1", "old", "new");
+    expect(invoke).toHaveBeenCalledWith("rename_schema", { connectionId: "c1", oldName: "old", newName: "new" });
+  });
+  it("dropSchema passes cascade", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    await dropSchema("c1", "s", true);
+    expect(invoke).toHaveBeenCalledWith("drop_schema", { connectionId: "c1", name: "s", cascade: true });
+  });
+  it("searchObjects maps query+schema", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([]);
+    await searchObjects("c1", "public", "user");
+    expect(invoke).toHaveBeenCalledWith("search_objects", { connectionId: "c1", schema: "public", query: "user" });
+  });
+  it("getObjectDdl maps objectType+name", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce("CREATE SEQUENCE ...");
+    await getObjectDdl("c1", "public", "sequence", "users_id_seq");
+    expect(invoke).toHaveBeenCalledWith("get_object_ddl", { connectionId: "c1", schema: "public", objectType: "sequence", name: "users_id_seq" });
+  });
+  it("getObjectDependencies maps objectType+name", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([]);
+    await getObjectDependencies("c1", "public", "table", "orders");
+    expect(invoke).toHaveBeenCalledWith("get_object_dependencies", { connectionId: "c1", schema: "public", objectType: "table", name: "orders" });
   });
 });

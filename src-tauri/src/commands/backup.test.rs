@@ -133,7 +133,9 @@ fn build_pg_restore_args_with_schema() {
 
 #[test]
 fn detect_pg_tools_does_not_panic() {
-    let status = detect_pg_tools();
+    // detect_pg_tools needs a Tauri AppHandle; the headless core keeps the
+    // status-shaping logic testable without one.
+    let status = build_pg_tool_status("pg_dump", "pg_restore", None, None);
     // May or may not find tools, but the call itself must not panic
     let _ = status.pg_dump_found;
     let _ = status.pg_restore_found;
@@ -148,6 +150,8 @@ fn pg_tool_status_serialization() {
         pg_restore_found: false,
         pg_dump_version: Some("pg_dump (PostgreSQL) 16.0".into()),
         pg_restore_version: None,
+        pg_dump_source: None,
+        pg_restore_source: None,
     };
     let json = serde_json::to_string(&status).unwrap();
     assert!(json.contains("pg_dump_found"));
@@ -294,7 +298,8 @@ fn integration_dump_restore_sync() {
         tables: None,
         no_owner: true,
     };
-    run_pg_dump(&src, &dump_opts).expect("pg_dump should succeed");
+    run_pg_dump(&src, &dump_opts, &PgToolPaths { pg_dump: "pg_dump".into(), pg_restore: "pg_restore".into(), psql: "psql".into() })
+        .expect("pg_dump should succeed");
 
     // --- 2. Restore into target ---
     let restore_opts = RestoreOptions {
@@ -303,7 +308,8 @@ fn integration_dump_restore_sync() {
         clean: true,
         schema: None,
     };
-    run_pg_restore(&tgt, &restore_opts).expect("pg_restore should succeed");
+    run_pg_restore(&tgt, &restore_opts, &PgToolPaths { pg_dump: "pg_dump".into(), pg_restore: "pg_restore".into(), psql: "psql".into() })
+        .expect("pg_restore should succeed");
 
     // --- 3. Verify data landed in target ---
     assert_eq!(
@@ -320,7 +326,8 @@ fn integration_dump_restore_sync() {
     // --- 4. Sync source -> target (target already has tables from the restore
     // above — db_sync now passes --clean --if-exists, so it must succeed into a
     // non-empty target). ---
-    run_db_sync(&src, &tgt, None, None).expect("db_sync should succeed");
+    run_db_sync(&src, &tgt, None, None, &PgToolPaths { pg_dump: "pg_dump".into(), pg_restore: "pg_restore".into(), psql: "psql".into() })
+        .expect("db_sync should succeed");
     assert_eq!(
         psql_count(&tgt, "SELECT count(*) FROM public.products;"),
         3,
@@ -367,7 +374,8 @@ fn integration_plain_dump_restore() {
         tables: None,
         no_owner: true,
     };
-    run_pg_dump(&src, &dump_opts).expect("pg_dump (plain) should succeed");
+    run_pg_dump(&src, &dump_opts, &PgToolPaths { pg_dump: "pg_dump".into(), pg_restore: "pg_restore".into(), psql: "psql".into() })
+        .expect("pg_dump (plain) should succeed");
 
     // --- 2. Restore into target (plain -> psql path) ---
     let restore_opts = RestoreOptions {
@@ -376,7 +384,8 @@ fn integration_plain_dump_restore() {
         clean: false,
         schema: None,
     };
-    run_pg_restore(&tgt, &restore_opts).expect("pg_restore (plain/psql) should succeed");
+    run_pg_restore(&tgt, &restore_opts, &PgToolPaths { pg_dump: "pg_dump".into(), pg_restore: "pg_restore".into(), psql: "psql".into() })
+        .expect("pg_restore (plain/psql) should succeed");
 
     // --- 3. Verify data landed in target ---
     assert_eq!(
@@ -391,4 +400,21 @@ fn integration_plain_dump_restore() {
     );
 
     let _ = std::fs::remove_file(&dump_path);
+}
+
+// ------------------------------------------------------------------
+// Tool resolution (Task 2.1: system-first, bundled-fallback)
+// ------------------------------------------------------------------
+
+#[test]
+fn pick_tool_prefers_system_then_bundled_then_bare() {
+    assert_eq!(pick_tool(true, None, "pg_dump"), ("pg_dump".to_string(), Some("system".into())));
+    assert_eq!(pick_tool(false, Some("/r/pg_dump"), "pg_dump"), ("/r/pg_dump".to_string(), Some("bundled".into())));
+    assert_eq!(pick_tool(false, None, "pg_dump"), ("pg_dump".to_string(), None));
+}
+
+#[test]
+fn bundled_bin_name_appends_exe_on_windows() {
+    let name = bundled_bin_name("pg_dump");
+    if cfg!(windows) { assert_eq!(name, "pg_dump.exe"); } else { assert_eq!(name, "pg_dump"); }
 }

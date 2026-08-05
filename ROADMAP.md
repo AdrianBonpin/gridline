@@ -6,6 +6,15 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ---
 
+## ✅ Shipped (0.7.5)
+
+- **Bundled PG client tools** — static `pg_dump`/`pg_restore`/`psql` ship with the app (system-first, bundled fallback) so backup/restore/sync work with no separate install.
+- **Schema CRUD** — create/rename/drop schemas from the object tree; CASCADE drop with typed-name confirm + dependency warning.
+- **Global object search** — Cmd+K palette in the DB viewer, current-schema scope, all object types; results open a table tab or jump to the Objects view.
+- **Copy as DDL for any object** — `CREATE` DDL for every browsable type (tables via pg_dump; pg_get_*def passthrough; sequences/enums/extensions/views synthesized).
+- **Object dependencies** — `pg_depend` "what depends on this?" view, shown before destructive drops (table drop, schema drop).
+- **Version bump** 0.7.0 → **0.7.5**.
+
 ## ✅ Shipped (0.7.0)
 
 - **New Connection screen revamp** — a single progressive flow: connection-string input + 2-column provider tab grid → expands into the full configuration form (label, tags/env/folder, General + SSH·SSL tabs). Removes the simple/detailed toggle.
@@ -36,17 +45,14 @@ Gridline can already **browse** every PostgreSQL object type (functions, trigger
 - Staged through the changes queue (with confirmation) — never a surprise DDL
 - **Out of scope this release:** the MySQL "Objects" view stays deferred (see In the queue) — this iteration is PostgreSQL-only
 
-### Shipping alongside (companions)
-
-- **Schema CRUD** — create/rename/drop schemas from the object tree
-- **Global object search** — Cmd+K-style search across tables, functions, triggers, sequences, and extensions by name
-- **Copy as DDL for any object** — `CREATE FUNCTION` / `CREATE TRIGGER` / … via the same DDL-generation used for edit/drop previews (also covers the "Table structure export" queue item)
-- **Object dependencies** — `pg_depend`-based "what depends on this object?" view, shown before drops so nothing breaks silently
-
 ### Admin follow-up (after object management)
 
 - **PostgreSQL users/roles + grants management** — create roles and set privileges from a UI (DB Pro has this at 0% on their roadmap — a differentiator to hold)
 - **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
+
+### Connection & credentials
+
+- **Wire up the "Enable Keychain" toggle** — currently a form-only placeholder: the flag is submitted and stored with the connection record, but the Rust backend never reads it and the frontend store unconditionally calls `saveConnectionPassword`. Decide the intended behavior (e.g. off = store the password with the connection record / don't persist at all, on = OS keychain as today) and implement the conditional path + migration for existing records.
 
 ## 📋 In the queue
 
@@ -128,6 +134,11 @@ Deferred from 0.7.0, slated for this bucket:
 
 ## ✅ Shipped
 
+- Bundled PG client tools — `pg_dump`/`pg_restore`/`psql` shipped with the app, system-first with bundled fallback (v0.7.5)
+- Schema CRUD — create/rename/drop schemas with CASCADE + dependency warning (v0.7.5)
+- Global object search — Cmd+K across all object types in the current schema (v0.7.5)
+- Copy as DDL for any object (v0.7.5)
+- Object dependencies — `pg_depend` view before destructive drops (v0.7.5)
 - Tauri 2.0 + React 19 + TypeScript 5.8 project shell
 - PostgreSQL and SQLite browse/query support
 - Full MySQL DB viewer — connect, browse, query, edit + changes queue (v0.7.0)

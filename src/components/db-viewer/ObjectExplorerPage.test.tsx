@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ObjectExplorerPage } from "./ObjectExplorerPage";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
@@ -188,5 +188,58 @@ describe("ObjectExplorerPage", () => {
       expect(screen.getByText("do_thing")).toBeInTheDocument(),
     );
     expect(screen.queryByText("calc")).not.toBeInTheDocument();
+  });
+
+  it("Copy DDL calls getObjectDdl and writes to clipboard", async () => {
+    vi.spyOn(commands, "getEnums").mockResolvedValue([
+      { name: "role", schema: "public", labels: ["a"] },
+    ]);
+    vi.spyOn(commands, "getObjectDdl").mockResolvedValue("CREATE TYPE ...");
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    render(<ObjectExplorerPage connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText("Object type"));
+    fireEvent.click(screen.getByText("Enums"));
+    await waitFor(() => screen.getByText("role"));
+    fireEvent.click(screen.getAllByLabelText(/options/i)[0]);
+    fireEvent.click(screen.getByText(/copy ddl/i));
+    await waitFor(() =>
+      expect(commands.getObjectDdl).toHaveBeenCalledWith("c1", "public", "enum", "role"),
+    );
+    expect(writeText).toHaveBeenCalledWith("CREATE TYPE ...");
+  });
+
+  it("View dependencies opens DependencyDialog", async () => {
+    vi.spyOn(commands, "getFunctions").mockResolvedValue([
+      {
+        name: "add_one",
+        schema: "public",
+        return_type: "int",
+        argument_types: ["int"],
+        argument_names: ["x"],
+        argument_modes: ["IN"],
+        language: "sql",
+        source: "SELECT $1 + 1",
+        kind: "f",
+      },
+    ]);
+    vi.spyOn(commands, "getObjectDependencies").mockResolvedValue([
+      { deptype: "n", class: "pg_class", name: "v" },
+    ]);
+    render(<ObjectExplorerPage connectionId="c1" />);
+    await waitFor(() => screen.getByText("add_one(int)"));
+    fireEvent.click(screen.getAllByLabelText(/options/i)[0]);
+    fireEvent.click(screen.getByText(/dependencies/i));
+    await waitFor(() => expect(commands.getObjectDependencies).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText("v")).toBeTruthy());
+  });
+
+  it("preselects type from store on mount", () => {
+    useDbViewerStore.setState({ selectedObjectType: "sequences" });
+    render(<ObjectExplorerPage connectionId="c1" />);
+    expect(screen.getByText("Sequences")).toBeTruthy();
   });
 });

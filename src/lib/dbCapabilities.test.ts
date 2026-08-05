@@ -50,4 +50,11 @@ describe("dbCapabilities", () => {
     expect(getCapabilities("postgresql")).toBe(DB_CAPABILITIES.postgresql);
     expect(getCapabilities("redis")).toBe(DB_CAPABILITIES.redis);
   });
+
+  it("objects capability (search/ddl/dependencies) is PG-only", () => {
+    expect(getCapabilities("postgresql").objects).toBe(true);
+    expect(getCapabilities("mysql").objects).toBe(false);
+    expect(getCapabilities("sqlite").objects).toBe(false);
+    expect(getCapabilities("redis").objects).toBe(false);
+  });
 });

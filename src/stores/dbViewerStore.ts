@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, IndexInfo, ConstraintInfo } from "../lib/types";
+import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, IndexInfo, ConstraintInfo, ObjectType } from "../lib/types";
 import { getDatabases, getSchemas, getTables } from "../lib/commands";
 
 // ─── Local types ────────────────────────────────────────────────
@@ -92,6 +92,8 @@ interface DbViewerState {
   schemaTreeLoading: boolean;
   currentDatabase: string | null;
   currentSchema: string | null;
+  objectSearchOpen: boolean;
+  selectedObjectType: ObjectType | null;
   functions: FunctionInfo[] | null;
   triggers: TriggerInfo[] | null;
   sequences: SequenceInfo[] | null;
@@ -141,6 +143,8 @@ interface DbViewerState {
   toggleChangesPanel: () => void;
   setCurrentDatabase: (db: string | null) => void;
   setCurrentSchema: (schema: string | null) => void;
+  setObjectSearchOpen: (open: boolean) => void;
+  setSelectedObjectType: (t: ObjectType | null) => void;
   setFunctions: (functions: FunctionInfo[]) => void;
   setTriggers: (triggers: TriggerInfo[]) => void;
   setSequences: (sequences: SequenceInfo[]) => void;
@@ -179,6 +183,8 @@ const initialState = {
   tables: [] as TableInfo[],
   currentDatabase: null as string | null,
   currentSchema: null as string | null,
+  objectSearchOpen: false,
+  selectedObjectType: null as ObjectType | null,
   functions: null as FunctionInfo[] | null,
   triggers: null as TriggerInfo[] | null,
   sequences: null as SequenceInfo[] | null,
@@ -433,6 +439,8 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
 
   setCurrentDatabase: (db) => set({ currentDatabase: db }),
   setCurrentSchema: (schema) => set({ currentSchema: schema }),
+  setObjectSearchOpen: (open) => set({ objectSearchOpen: open }),
+  setSelectedObjectType: (t) => set({ selectedObjectType: t }),
   setFunctions: (functions) => set({ functions }),
   setTriggers: (triggers) => set({ triggers }),
   setSequences: (sequences) => set({ sequences }),
