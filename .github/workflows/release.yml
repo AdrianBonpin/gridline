@@ -176,9 +176,7 @@ jobs:
           releaseName: 'Gridline ${{ github.ref_name }}'
           releaseDraft: true
           args: ${{ matrix.args }}
-          # Version-free asset names (see README Download section): the README
-          # links via GitHub's releases/latest/download/<file> redirect, which
-          # only works if filenames are identical across releases. Omitting
-          # [version] gives stable names: Gridline_darwin_aarch64.dmg,
-          # Gridline_windows_x64-setup.exe, Gridline_linux_amd64.deb, etc.
-          releaseAssetNamePattern: '[name]_[platform]_[arch][setup][ext]'
+          # Assets use tauri-action's default versioned naming (e.g.
+          # Gridline_0.7.5_aarch64.dmg, Gridline-0.7.5-1.x86_64.rpm) and the
+          # README download tables link to them statically per release —
+          # remember to update both README tables when cutting a new version.
