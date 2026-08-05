@@ -91,7 +91,7 @@ jobs:
               # the app's resource dir via $ORIGIN rpath.
               cp src/interfaces/libpq/libpq.so.5 "$OUT"/libpq.so.5
               for b in pg_dump pg_restore psql; do
-                patchelf --set-rpath '\$ORIGIN' "$OUT/$b"
+                patchelf --set-rpath '$ORIGIN' "$OUT/$b"
               done
               ;;
             macos-latest|macos-15-intel)
@@ -108,7 +108,7 @@ jobs:
               # Rewrite the absolute /tmp/pgbuild libpq install_name to a
               # relative @loader_path so the tools find libpq next to themselves.
               for b in pg_dump pg_restore psql; do
-                libpq=$(otool -L "$OUT/$b" | awk '/libpq/ {print \$1; exit}')
+                libpq=$(otool -L "$OUT/$b" | awk '/libpq/ {print $1; exit}')
                 install_name_tool -change "$libpq" "@loader_path/libpq.5.dylib" "$OUT/$b"
               done
               ;;
