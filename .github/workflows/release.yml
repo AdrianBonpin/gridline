@@ -63,6 +63,53 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      - name: Build PostgreSQL client tools (bundled)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PG_VER="16.4"
+          OUT="src-tauri/resources/pg_tools"
+          mkdir -p "$OUT"
+          case "${{ matrix.platform }}" in
+            ubuntu-22.04)
+              sudo apt-get update -y
+              sudo apt-get install -y build-essential libreadline-dev zlib1g-dev flex bison
+              curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2" -o /tmp/pg.tar.bz2
+              tar -xf /tmp/pg.tar.bz2 -C /tmp
+              cd /tmp/postgresql-${PG_VER}
+              ./configure --prefix=/tmp/pgbuild --without-readline --without-icu --disable-shared CFLAGS="-O2"
+              make -j"$(nproc)" -C src/bin/pg_dump all
+              make -j"$(nproc)" -C src/bin/psql all
+              cp src/bin/pg_dump/pg_dump src/bin/pg_dump/pg_restore "$OUT"/
+              cp src/bin/psql/psql "$OUT"/
+              ;;
+            macos-latest|macos-15-intel)
+              curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2" -o /tmp/pg.tar.bz2
+              tar -xf /tmp/pg.tar.bz2 -C /tmp
+              cd /tmp/postgresql-${PG_VER}
+              ./configure --prefix=/tmp/pgbuild --without-readline --without-icu --disable-shared CFLAGS="-O2"
+              make -j"$(sysctl -n hw.ncpu)" -C src/bin/pg_dump all
+              make -j"$(sysctl -n hw.ncpu)" -C src/bin/psql all
+              cp src/bin/pg_dump/pg_dump src/bin/pg_dump/pg_restore "$OUT"/
+              cp src/bin/psql/psql "$OUT"/
+              ;;
+            windows-latest)
+              URL="https://get.enterprisedb.com/postgresql/postgresql-${PG_VER}-1-windows-x64-binaries.zip"
+              curl -fsSL "$URL" -o /tmp/pg.zip
+              EXPECTED="3508d8f085bc3980f38211a82e3f31e5fcae9952105d3dc2f8be67b64a822baa"
+              echo "$EXPECTED  /tmp/pg.zip" | sha256sum -c -
+              sha256sum /tmp/pg.zip
+              unzip -o /tmp/pg.zip -d /tmp/pg
+              cp /tmp/pg/pgsql/bin/pg_dump.exe /tmp/pg/pgsql/bin/pg_restore.exe /tmp/pg/pgsql/bin/psql.exe "$OUT"/
+              cp /tmp/pg/pgsql/bin/libpq.dll "$OUT"/
+              ;;
+          esac
+          (cd "$OUT" && sha256sum * | tee checksums.txt)
+          for b in pg_dump pg_restore psql; do
+            f="$OUT/${b}$( [ "${{ matrix.platform }}" = windows-latest ] && echo .exe )"
+            test -f "$f" || { echo "missing $f"; exit 1; }
+          done
+
       - name: Build and upload to GitHub Release
         uses: tauri-apps/tauri-action@v0
         env:
