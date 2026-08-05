@@ -81,6 +81,7 @@ Gridline is built for developers and small teams who manage multiple database en
 
 ## Recent Changes
 
+- **2026-08-05:** v0.7.5 — bundled `pg_dump`/`pg_restore`/`psql` (system-first, bundled fallback) so admin features work with no separate install; schema CRUD (create/rename/drop with CASCADE + dependency warning); Cmd+K object search (current schema, all object types); copy-as-DDL for every browsable object type; `pg_depend` object-dependency view shown before destructive drops.
 - **2026-08-04:** v0.7.5 — revamped the New Connection screen into a two-stage flow with a 6-provider grid (PostgreSQL, MySQL, SQLite, Redis, Supabase, NeonDB; managed presets ship with setup guides + SSL hints) and added full MySQL DB viewer support (connect, browse, query, inline cell editing + changes queue, DDL copy).
 - **2026-08-04:** Revamped the built-in SQLite demo database with realistic e-commerce data (20 users, 24 products, 50 orders, 100 page views, 500 audit rows) and renamed it to **Gridline Demo (SQLite)**.
 - **2026-07-XX:** Added inline cell editing with a stage-first changes queue, row-detail drawer, keyboard navigation, and cell-level copy.
@@ -112,6 +113,10 @@ Gridline is built for developers and small teams who manage multiple database en
 - **Functions & procedures** — syntax-highlighted source, argument signatures, overload disambiguation.
 - **Triggers, sequences, enums, extensions** — unified **Objects** view with type switcher.
 - **Indexes & constraints** — per-table index details plus CHECK/UNIQUE constraints beyond PK/FK.
+- **Schema CRUD** — create/rename/drop schemas from the object tree, with typed-name + dependency warning on CASCADE drops.
+- **Global object search** — ⌘K, current schema, all object types; results open a table tab or jump to the Objects view.
+- **Copy as DDL** — `CREATE` DDL for every browsable object type.
+- **Object dependencies** — `pg_depend` "what depends on this?" view before destructive drops.
 - **Schema visualizer** — interactive ER diagram with auto-layout, cardinality legend, and collapsible columns.
 
 ### Data Grid
@@ -140,6 +145,7 @@ Gridline is built for developers and small teams who manage multiple database en
 - **Visual Backup** — `pg_dump` wrapper with format selector, schema filter, no-owner toggle, real-time progress.
 - **Visual Restore** — `pg_restore` wrapper with clean toggle and destructive confirmation.
 - **DB-to-DB Sync** — pipe `pg_dump` → `pg_restore` between two connections.
+- **Bundled client tools** — `pg_dump`/`pg_restore`/`psql` ship with the app; system tools are preferred when present, bundled tools are the fallback.
 
 ---
 
@@ -218,7 +224,7 @@ Capabilities below are fact-checked against each vendor's official docs and pric
 | **Desktop shell**   | [Tauri 2.0](https://tauri.app)                                                                            | Native webview container (~40 MB baseline)       |
 | **Backend**         | Rust + [tokio](https://tokio.rs)                                                                          | Async runtime, connection pooling, CLI execution |
 | **DB drivers**      | [sqlx](https://github.com/launchbadge/sqlx) / [tokio-postgres](https://github.com/sfackler/rust-postgres) | PostgreSQL via tokio-postgres; MySQL via sqlx; SQLite via rusqlite |
-| **CLI integration** | `std::process::Command`                                                                                   | Wraps system `pg_dump` / `pg_restore`            |
+| **CLI integration** | `std::process::Command`                                                                                   | Wraps bundled or system `pg_dump` / `pg_restore` |
 | **Frontend**        | [React 19](https://react.dev) + [TypeScript](https://www.typescriptlang.org)                              | Component-based UI                               |
 | **Styling**         | [Tailwind CSS](https://tailwindcss.com)                                                                   | Utility-first, dark mode, glassmorphic design    |
 | **State**           | [Zustand](https://zustand.docs.pmnd.rs) / Jotai                                                           | Domain stores                                    |
@@ -298,7 +304,7 @@ bun run tauri build
 - **Windows:** 10 or newer
 - **Linux:** Ubuntu 22.04+ or equivalent modern distribution
 - **RAM:** 8 GB recommended
-- **PostgreSQL client tools:** `pg_dump` and `pg_restore` are required for admin features
+- **PostgreSQL client tools:** `pg_dump`/`pg_restore`/`psql` are **bundled** with Gridline — no separate install required for backup/restore/sync. (System tools, if installed, are preferred.)
 
 ---
 
@@ -356,7 +362,7 @@ The full plan — in-development (v0.7.5), next-up, queue, and shipped history �
 
 Highlights of what's next:
 
-- **Full Object Management** — CRUD on functions, triggers, sequences, enums, extensions, and views without the Query tab, plus schema CRUD, global object search, and copy-as-DDL
+- **Full Object Management** — CRUD on functions, triggers, sequences, enums, extensions, and views without the Query tab (schema CRUD, global object search, copy-as-DDL, and object dependencies shipped in v0.7.5)
 - **Full Redis support** — key browser, type-aware value editors, TTL management
 - **More database types** — MariaDB, TimescaleDB, and friends
 - **Managed DB support** — PlanetScale, Turso (Supabase/Neon presets shipped in v0.7.5)

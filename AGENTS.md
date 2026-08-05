@@ -157,6 +157,7 @@ Cut a release from the **`prod`** branch (never feature branches) by tagging it 
 - Version number across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`
 - `src/lib/version.test.ts` and `src/lib/docs-coverage.test.ts` if they assert the version
 - **Both README download tables** — the top **Download** section and the **Which file should I download?** section in Getting Started — they **hardcode** the current version in the asset filenames + direct `releases/download/...` links and must be bumped to the new version
+- **Bundled pg tools:** `tauri.conf.json` `bundle.resources` lists `resources/pg_tools/*`; the `release.yml` matrix builds/downloads + checksum-verifies the static binaries before the Tauri build step.
 
 ### Adding a Tauri Command
 
@@ -180,7 +181,7 @@ Cut a release from the **`prod`** branch (never feature branches) by tagging it 
 
 ## Constraints & Guardrails
 
-- **Do NOT** implement `pg_dump` file format parsing — always shell out to system binaries
+- **Do NOT** implement `pg_dump` file format parsing — always shell out to (bundled or system) binaries
 - **Do NOT** store passwords in SQLite or local files — use OS keychain APIs exclusively
 - **Do NOT** render large query results in raw DOM — always use the virtualized grid component
 - **Do NOT** log credentials, connection strings, or query data
@@ -285,6 +286,10 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Constraints (CHECK, UNIQUE beyond PK/FK) | ✅ | CHECK/UNIQUE constraints beyond PK/FK, introspected via information_schema |
 | Materialized views | ✅ | Distinct icon in table tree, browsable, read-only (via pg_matviews) |
 | Stored procedures | ✅ | Procedures object type filters prokind='p'; Functions now filters kind='f' |
+| Schema CRUD | ✅ | Create / rename / drop schemas from the object tree; CASCADE drop with typed-name confirm + dependency warning (v0.7.5) |
+| Global object search | ✅ | Cmd+K palette in the DB viewer, current-schema scope, all object types; results open a table tab or jump to the Objects view (v0.7.5) |
+| Copy as DDL for any object | ✅ | `CREATE` DDL for every browsable type (tables via pg_dump; pg_get_*def passthrough; sequences/enums/extensions/views synthesized) (v0.7.5) |
+| Object dependencies | ✅ | `pg_depend` "what depends on this?" view, shown before destructive drops (table drop, schema drop) (v0.7.5) |
 | Schema visualizer (ER diagram) | ✅ | Full React Flow ER diagram with dagre auto-layout, crow's foot notation, schema selector, legend with cardinality colors, collapsible columns (PK/FK/unique-only), cross-schema FK support. PostgreSQL (single round-trip LATERAL query) + SQLite (PRAGMA). Uses @xyflow/react + dagre. |
 
 ### Query Editor
@@ -310,6 +315,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Restore UI | ✅ | In-page view: file browse, format, clean toggle, destructive confirmation checkbox, progress bar. **Clean toggle is disabled for plain format** (psql can't DROP-before-CREATE) with a hint to use Custom Archive |
 | DB-to-DB sync | ✅ | In-page view: source/target connection pickers, schema dropdown, pipe-based pg_dump → pg_restore. **pg_restore side passes `--clean --if-exists`**, so sync works into a non-empty target (UI already requires destructive-overwrite confirmation). Core logic in headless-testable `run_db_sync` |
 | Unified Tools view | ✅ | Backup / Restore / DB Sync merged into a single **Tools** nav item; operation-switcher dropdown in the view toolbar, existing forms rendered below |
+| Bundled PostgreSQL client tools | ✅ | Static pg_dump/pg_restore/psql shipped as Tauri resources; system-first, bundled-fallback resolution via resource_dir (v0.7.5) |
 | SQLite .dump | ❌ | |
 | Table structure export (DDL) | ❌ | |
 

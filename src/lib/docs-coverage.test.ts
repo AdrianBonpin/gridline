@@ -27,6 +27,21 @@ describe("v0.7.5 docs coverage", () => {
   it("README declares v0.7.5", () => {
     expect(readme).toContain("0.7.5");
   });
+  it("AGENTS.md marks schema CRUD complete", () => {
+    expect(agents).toMatch(/Schema CRUD \| ✅/);
+  });
+  it("AGENTS.md marks global object search complete", () => {
+    expect(agents).toMatch(/Global object search \| ✅/);
+  });
+  it("AGENTS.md marks copy-as-DDL complete", () => {
+    expect(agents).toMatch(/Copy as DDL for any object \| ✅/);
+  });
+  it("AGENTS.md marks object dependencies complete", () => {
+    expect(agents).toMatch(/Object dependencies \| ✅/);
+  });
+  it("README notes bundled PostgreSQL tools", () => {
+    expect(readme.toLowerCase()).toContain("bundled");
+  });
   it("README marks inline editing complete (not Upcoming)", () => {
     // Key Features lists inline editing as a shipped feature
     expect(readme).toMatch(/- \*\*Inline cell editing\*\* —/);
