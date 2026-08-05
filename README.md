@@ -31,16 +31,12 @@
 
 ## Download
 
-Grab the installer for your OS from the [latest release](https://github.com/AdrianBonpin/gridline/releases/latest) — links below always point to the newest build:
+Grab the installer for your OS from the [latest release](https://github.com/AdrianBonpin/gridline/releases/latest) — links always point to the newest build:
 
-| OS | Architecture | Download |
-| :--- | :--- | :--- |
-| **macOS** | Apple Silicon (M1/M2/M3/M4…) | [Gridline_darwin_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_darwin_aarch64.dmg) |
-| **macOS** | Intel | [Gridline_darwin_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_darwin_x64.dmg) |
-| **Windows** | x64 | [Gridline_windows_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_windows_x64-setup.exe) |
-| **Debian / Ubuntu** | amd64 | [Gridline_linux_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_amd64.deb) |
-| **Fedora / RHEL / openSUSE** | x86_64 | [Gridline_linux_x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_x86_64.rpm) |
-| **Other Linux** | amd64 | [Gridline_linux_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_amd64.AppImage) |
+| **macOS** | **Windows** | **Linux** |
+| :---: | :---: | :---: |
+| <img src="https://cdn.simpleicons.org/apple/ffffff/000000" alt="macOS" width="44" /> | <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/windows8/windows8-original.svg" alt="Windows" width="44" /> | <img src="https://cdn.simpleicons.org/linux/ffffff/333333" alt="Linux" width="44" /> |
+| [Apple Silicon (M1/M2/M3/M4…)](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_darwin_aarch64.dmg)<br/>[Intel](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_darwin_x64.dmg) | [x64 installer](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_windows_x64-setup.exe) | [Debian / Ubuntu](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_amd64.deb)<br/>[Fedora / RHEL / openSUSE](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_x86_64.rpm)<br/>[Other Linux (AppImage)](https://github.com/AdrianBonpin/gridline/releases/latest/download/Gridline_linux_amd64.AppImage) |
 
 > Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below. All installers are **unsigned** — see the [notes](#which-file-should-i-download) on first-launch warnings.
 
