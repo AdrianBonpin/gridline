@@ -313,6 +313,16 @@ export type PgObjectType =
   | "table" | "view" | "materialized view" | "function" | "procedure"
   | "trigger" | "sequence" | "enum" | "extension" | "index" | "constraint";
 
+export type ObjectType =
+  | "functions"
+  | "triggers"
+  | "sequences"
+  | "enums"
+  | "extensions"
+  | "indexes"
+  | "constraints"
+  | "procedures";
+
 export interface ObjectSearchHit {
   name: string;
   schema: string;

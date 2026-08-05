@@ -24,7 +24,20 @@ describe("dbViewerStore", () => {
     expect(state.tables).toEqual([]);
     expect(state.currentDatabase).toBeNull();
     expect(state.currentSchema).toBeNull();
+    expect(state.objectSearchOpen).toBe(false);
+    expect(state.selectedObjectType).toBeNull();
     expect(state.schemaTreeLoading).toBe(false);
+  });
+
+  it("object search open + selected object type setters", () => {
+    const { setObjectSearchOpen, setSelectedObjectType } =
+      useDbViewerStore.getState();
+    setObjectSearchOpen(true);
+    expect(useDbViewerStore.getState().objectSearchOpen).toBe(true);
+    setSelectedObjectType("functions");
+    expect(useDbViewerStore.getState().selectedObjectType).toBe("functions");
+    setSelectedObjectType(null);
+    expect(useDbViewerStore.getState().selectedObjectType).toBeNull();
   });
 
   it("openTab adds a new tab", () => {

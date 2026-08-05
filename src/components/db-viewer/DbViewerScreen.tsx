@@ -30,6 +30,7 @@ import { ToolsPage } from "./ToolsPage";
 import { SchemaVisualizerPage } from "./SchemaVisualizerPage";
 import { QueriesPanel } from "../queries/QueriesPanel";
 import { useQueryStore } from "../../stores/queryStore";
+import { ObjectSearchPalette } from "./ObjectSearchPalette";
 import * as cmd from "../../lib/commands";
 import type { EnumInfo } from "../../lib/types";
 import type { FkOption } from "../grid/CellEditor";
@@ -185,6 +186,8 @@ export function DbViewerScreen({
     const setSortRules = useDbViewerStore((s) => s.setSortRules);
     const toggleHiddenColumn = useDbViewerStore((s) => s.toggleHiddenColumn);
     const setSmartSortApplied = useDbViewerStore((s) => s.setSmartSortApplied);
+
+    const setObjectSearchOpen = useDbViewerStore((s) => s.setObjectSearchOpen);
 
     // Sync settings defaults to store
     useEffect(() => {
@@ -421,6 +424,11 @@ export function DbViewerScreen({
             state.closeTab(state.activeTabId);
         } else {
             onHome();
+        }
+    });
+    useShortcut("command_palette", () => {
+        if (capabilities.objects) {
+            setObjectSearchOpen(true);
         }
     });
     useEffect(() => {
@@ -1454,6 +1462,9 @@ const onQueriesPanelResizeStart = useCallback(
                         onClose={() => setEditModalOpen(false)}
                         onSaved={() => {}}
                     />
+                )}
+                {capabilities.objects && (
+                    <ObjectSearchPalette connectionId={connectionId} />
                 )}
             </div>
         </TooltipProvider>

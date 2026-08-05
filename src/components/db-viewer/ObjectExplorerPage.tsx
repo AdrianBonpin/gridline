@@ -24,17 +24,10 @@ import type {
     ExtensionInfo,
     IndexInfo,
     ConstraintInfo,
+    ObjectType,
 } from "../../lib/types";
 
-export type ObjectType =
-    | "functions"
-    | "triggers"
-    | "sequences"
-    | "enums"
-    | "extensions"
-    | "indexes"
-    | "constraints"
-    | "procedures";
+
 
 interface ObjectExplorerPageProps {
     connectionId: string;
