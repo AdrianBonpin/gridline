@@ -50,6 +50,10 @@ Gridline can already **browse** every PostgreSQL object type (functions, trigger
 - **PostgreSQL users/roles + grants management** — create roles and set privileges from a UI (DB Pro has this at 0% on their roadmap — a differentiator to hold)
 - **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
 
+### Connection & credentials
+
+- **Wire up the "Enable Keychain" toggle** — currently a form-only placeholder: the flag is submitted and stored with the connection record, but the Rust backend never reads it and the frontend store unconditionally calls `saveConnectionPassword`. Decide the intended behavior (e.g. off = store the password with the connection record / don't persist at all, on = OS keychain as today) and implement the conditional path + migration for existing records.
+
 ## 📋 In the queue
 
 ### Full Redis Support
