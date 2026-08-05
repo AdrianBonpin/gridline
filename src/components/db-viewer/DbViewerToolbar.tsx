@@ -12,6 +12,7 @@ import { SelectDropdown } from "../ui/SelectDropdown";
 import { Tooltip } from "../ui/Tooltip";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import * as cmd from "../../lib/commands";
+import { SchemaMenu } from "./SchemaMenu";
 
 export function DbViewerToolbar({
     databases,
@@ -227,6 +228,11 @@ export function DbViewerToolbar({
                             disabled={schemaTreeLoading}
                         />
                     )}
+                    <SchemaMenu
+                        connectionId={connectionId ?? ""}
+                        schema={currentSchema ?? undefined}
+                        onRefresh={handleRefresh}
+                    />
                 </div>
             )}
         </div>
