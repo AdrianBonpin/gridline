@@ -6,6 +6,20 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ---
 
+## ✅ Shipped (0.7.7)
+
+### Admin follow-up
+
+- **PostgreSQL users/roles + grants management** — create roles and set privileges from a UI (DB Pro has this at 0% on their roadmap — a differentiator to hold)
+- **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
+
+### Table & relationship management
+
+- **Create table** — a "Create Table…" tab in the workspace using the same Visual ⇄ SQL flow as object create/edit: a columns grid (name / type / nullable / default / PK per row, add/remove rows) with a live SQL preview
+- **Edit table (robust column diff)** — open an existing table's columns in the same grid; on Stage, diff old vs new columns and emit the right statements, one per queue item: `ADD COLUMN`, `DROP COLUMN`, `RENAME COLUMN`, `ALTER COLUMN … TYPE`, `ALTER COLUMN … SET|DROP DEFAULT`, `SET|DROP NOT NULL`
+- **Relationships between tables & schemas** — FK create/edit/drop from a table editor (including cross-schema FKs) and schema-level relationship maintenance
+- **Related niceties** — column reordering (PG requires a table rebuild — decide semantics), table options (tablespace, row-level security), multi-column PRIMARY KEY on create
+
 ## ✅ Shipped (0.7.6)
 
 - **Full Object Management (PostgreSQL)** — create/edit/drop for every PostgreSQL object type (enums, functions, procedures, triggers, sequences, extensions, views, materialized views, indexes, constraints), staged through the changes queue with generated-SQL previews.
@@ -35,20 +49,6 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 - **Version bump** 0.6.0 → **0.7.0**.
 
 **Not in 0.7.0** (deferred, tracked below): Redis key browsing, MySQL Objects/ERD views, backup/restore/sync for MySQL + SQLite, multiple result sets, SSH key-file management, settings import/export, onboarding tour.
-
-## 🎯 Next up
-
-### Admin follow-up (0.7.7)
-
-- **PostgreSQL users/roles + grants management** — create roles and set privileges from a UI (DB Pro has this at 0% on their roadmap — a differentiator to hold)
-- **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
-
-### Table & relationship management (next)
-
-- **Create table** — a "Create Table…" tab in the workspace using the same Visual ⇄ SQL flow as object create/edit: a columns grid (name / type / nullable / default / PK per row, add/remove rows) with a live SQL preview
-- **Edit table (robust column diff)** — open an existing table's columns in the same grid; on Stage, diff old vs new columns and emit the right statements, one per queue item: `ADD COLUMN`, `DROP COLUMN`, `RENAME COLUMN`, `ALTER COLUMN … TYPE`, `ALTER COLUMN … SET|DROP DEFAULT`, `SET|DROP NOT NULL`
-- **Relationships between tables & schemas** — FK create/edit/drop from a table editor (including cross-schema FKs) and schema-level relationship maintenance
-- **Related niceties** — column reordering (PG requires a table rebuild — decide semantics), table options (tablespace, row-level security), multi-column PRIMARY KEY on create
 
 ## 📋 In the queue
 
