@@ -86,7 +86,12 @@ describe("TabBar", () => {
   it("renders the per-type icon on an object tab", () => {
     useDbViewerStore.getState().openObjectTab("functions", "public", "add", { name: "add", schema: "public" });
     render(<TabBar />);
-    expect(screen.getByLabelText(/object icon: functions/i)).toBeInTheDocument();
+    const icon = screen.getByLabelText(/object icon: functions/i);
+    expect(icon).toBeInTheDocument();
+    // Regression: the icon must stay inline with the tab name. Tailwind preflight
+    // ships svg{display:block}, so the wrapper needs an explicit inline-level
+    // container (inline-flex) or the icon stacks above the name.
+    expect(icon.className).toContain("inline-flex");
     expect(screen.getByText("add")).toBeInTheDocument();
   });
 

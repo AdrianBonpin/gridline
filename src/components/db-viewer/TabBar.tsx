@@ -183,7 +183,10 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
                       className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
                     />
                   ) : tab.tabType === "object" ? (
-                    <span aria-label={`object icon: ${tab.objectType}`} className="shrink-0">
+                    <span
+                        aria-label={`object icon: ${tab.objectType}`}
+                        className="mr-1.5 inline-flex shrink-0 items-center"
+                    >
                       {OBJECT_ICONS[tab.objectType!]}
                     </span>
                   ) : objectType === "VIEW" ? (
