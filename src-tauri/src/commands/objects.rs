@@ -1,6 +1,6 @@
 use tauri::State;
 use crate::db::pool::{ConnectionPoolManager, DbHandle};
-use crate::db::object_crud::build_ddl;
+use crate::db::object_crud::{build_ddl, rebuild_script, RebuildConstraint, RebuildFk, RebuildFkIn, RebuildGrant, RebuildIndex, RebuildInput, RebuildOwnedSequence, TableColumn};
 use crate::db::object_ddl::*;
 use crate::models::db_viewer::{ObjectSearchHit, DependencyInfo, ExtensionInfo};
 
@@ -186,6 +186,152 @@ pub(crate) async fn get_available_extensions_inner(pm: &tokio::sync::Mutex<Conne
 #[tauri::command]
 pub async fn get_available_extensions(connection_id: String, state: State<'_, crate::AppState>) -> Result<Vec<ExtensionInfo>, String> {
     get_available_extensions_inner(&state.pool_manager, &connection_id).await
+}
+
+/// Build a reorder-only table rebuild script (executed transactionally via
+/// `execute_change`'s `RebuildTable` arm). Headless inner: locks the pool once,
+/// validates the new column list against the live snapshot (names + types must
+/// be preserved), assembles a `RebuildInput` from live introspection, and
+/// delegates to `rebuild_script`.
+pub(crate) async fn build_rebuild_script_inner(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    connection_id: &str,
+    schema: &str,
+    table: &str,
+    new_columns: serde_json::Value,
+) -> Result<String, String> {
+    let mut pm = pm.lock().await;
+    let client = match pm.get(connection_id) {
+        Some(DbHandle::Postgresql(c, _)) => c,
+        Some(_) => return Err("Rebuild is PostgreSQL-only".into()),
+        None => return Err("Connection not found".into()),
+    };
+    let new_cols: Vec<TableColumn> = serde_json::from_value(new_columns).map_err(|e| e.to_string())?;
+
+    // 1. live columns — validate reorder-only: the (name,type) multiset must be
+    //    unchanged (attribute edits belong in the diff path, not the rebuild).
+    let live = client
+        .query(&crate::db::introspection::pg_columns_query(schema, table), &[])
+        .await
+        .map_err(|e| sanitize(&e.to_string()))?;
+    let mut live_pairs: Vec<(String, String)> = live
+        .iter()
+        .map(|r| (r.get::<_, String>(0), r.get::<_, String>(1).trim().to_string()))
+        .collect();
+    let mut new_pairs: Vec<(String, String)> = new_cols
+        .iter()
+        .map(|c| (c.name.clone(), c.type_.trim().to_string()))
+        .collect();
+    live_pairs.sort();
+    new_pairs.sort();
+    if live_pairs != new_pairs {
+        return Err(
+            "Reorder must preserve column names and types; undo attribute changes or stage a diff"
+                .into(),
+        );
+    }
+
+    // 2. assemble RebuildInput from live introspection (one client, all sub-queries).
+    let fk_out_rows = client
+        .query(&crate::db::introspection::pg_table_fk_out_query(), &[&schema, &table])
+        .await
+        .map_err(|e| sanitize(&e.to_string()))?;
+    let fk_in_rows = client
+        .query(&crate::db::introspection::pg_table_fk_in_query(), &[&schema, &table])
+        .await
+        .map_err(|e| sanitize(&e.to_string()))?;
+    let grant_rows = client
+        .query(&crate::db::introspection::pg_table_grants_query(), &[&schema, &table])
+        .await
+        .map_err(|e| sanitize(&e.to_string()))?;
+    let seq_rows = client
+        .query(&crate::db::introspection::pg_table_owned_sequences_query(), &[&schema, &table])
+        .await
+        .map_err(|e| sanitize(&e.to_string()))?;
+    let index_rows = client
+        .query(&crate::db::introspection::pg_indexes_query(schema), &[&schema])
+        .await
+        .map_err(|e| sanitize(&e.to_string()))?;
+    // PK/UNIQUE/CHECK (contype p/u/c) scoped to this table; FKs are carried
+    // separately as fks_out/fks_in so they are not double-applied.
+    let constraint_rows = client
+        .query(
+            "SELECT c.conname AS name, ns.nspname AS schema, cl.relname AS table_name, \
+             c.contype::text, pg_get_constraintdef(c.oid) AS definition \
+             FROM pg_constraint c \
+             JOIN pg_class cl ON c.conrelid = cl.oid \
+             JOIN pg_namespace ns ON cl.relnamespace = ns.oid \
+             WHERE ns.nspname = $1 AND cl.relname = $2 AND c.contype IN ('p','u','c') \
+             ORDER BY c.conname",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(|e| sanitize(&e.to_string()))?;
+
+    let input = RebuildInput {
+        schema: schema.to_string(),
+        name: table.to_string(),
+        constraints: constraint_rows
+            .iter()
+            .map(|r| RebuildConstraint {
+                name: r.get(0),
+                definition: r.get(4),
+            })
+            .collect(),
+        indexes: index_rows
+            .iter()
+            .filter(|r| r.get::<_, String>(2) == table)
+            .map(|r| RebuildIndex {
+                name: r.get(0),
+                definition: r.get(3),
+            })
+            .collect(),
+        fks_out: fk_out_rows
+            .iter()
+            .map(|r| RebuildFk {
+                name: r.get(0),
+                definition: r.get(1),
+            })
+            .collect(),
+        fks_in: fk_in_rows
+            .iter()
+            .map(|r| RebuildFkIn {
+                name: r.get(0),
+                own_schema: r.get(1),
+                own_table: r.get(2),
+                definition: r.get(3),
+            })
+            .collect(),
+        grants: grant_rows
+            .iter()
+            .map(|r| RebuildGrant {
+                grantee: r.get(0),
+                privileges: r.get(1),
+                grantable: r.get(2),
+            })
+            .collect(),
+        owned_sequences: seq_rows
+            .iter()
+            .map(|r| RebuildOwnedSequence {
+                seq_schema: r.get(0),
+                seq_name: r.get(1),
+                column: r.get(2),
+            })
+            .collect(),
+    };
+    rebuild_script(&input, &new_cols)
+}
+
+#[tauri::command]
+pub async fn build_rebuild_script(
+    connection_id: String,
+    schema: String,
+    table: String,
+    new_columns: serde_json::Value,
+    state: State<'_, crate::AppState>,
+) -> Result<String, String> {
+    build_rebuild_script_inner(&state.pool_manager, &connection_id, &schema, &table, new_columns)
+        .await
 }
 
 #[cfg(test)]

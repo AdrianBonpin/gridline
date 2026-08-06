@@ -115,3 +115,33 @@ async fn object_dependencies_for_table_includes_view() {
     let contents = get_object_dependencies_inner(&pm, &id, "public", "schema", "public").await.unwrap();
     assert!(!contents.is_empty(), "public schema should list contents");
 }
+
+#[tokio::test]
+#[ignore]
+async fn rebuild_table_rolls_back_on_failure() {
+    let (pm, id) = pool().await;
+    // setup: a table with a PK + one row
+    {
+        let mut g = pm.lock().await;
+        if let crate::db::pool::DbHandle::Postgresql(c, _) = g.get(&id).unwrap() {
+            c.batch_execute("DROP TABLE IF EXISTS rebuild_t; CREATE TABLE rebuild_t (id int PRIMARY KEY, v text); INSERT INTO rebuild_t VALUES (1,'a');").await.unwrap();
+        }
+    }
+    // build a rebuild script whose final statement intentionally fails (syntax error)
+    // so the whole transaction rolls back and rebuild_t keeps its row.
+    let bad_script = "CREATE TABLE _gridline_rb_rebuild_t (id int PRIMARY KEY, v text); \
+        INSERT INTO _gridline_rb_rebuild_t (id, v) SELECT id, v FROM rebuild_t; \
+        DROP TABLE rebuild_t; \
+        ALTER TABLE _gridline_rb_rebuild_t RENAME TO rebuild_t; \
+        THIS IS NOT SQL;";
+    let change = crate::models::db_viewer::Change::RebuildTable { id: "rb".into(), sql: bad_script.to_string() };
+    let res = crate::commands::db_viewer::execute_change_inner(&pm, &id, change).await;
+    assert!(res.is_err(), "expected rollback (transaction should fail on bad SQL)");
+    // table still intact
+    let mut g = pm.lock().await;
+    if let crate::db::pool::DbHandle::Postgresql(c, _) = g.get(&id).unwrap() {
+        let row = c.query_one("SELECT count(*) FROM rebuild_t", &[]).await.unwrap();
+        assert_eq!(row.get::<_, i64>(0), 1, "rollback must preserve the original table");
+        c.batch_execute("DROP TABLE rebuild_t").await.unwrap();
+    }
+}
