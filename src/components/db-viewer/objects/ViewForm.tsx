@@ -1,4 +1,9 @@
+import { lazy, Suspense } from "react";
 import type { DdlParams } from "../../../lib/objectCrud";
+
+const SqlEditorField = lazy(() =>
+  import("../../editor/SqlEditorField").then((m) => ({ default: m.SqlEditorField })),
+);
 
 interface Props {
   params: DdlParams;
@@ -73,13 +78,24 @@ export function ViewForm({ params, schemas, onChange }: Props) {
           Materialized views cannot be CREATE OR REPLACE — this will drop and recreate.
         </p>
       )}
-      <textarea
-        placeholder="Definition"
-        value={(action.definition as string) ?? ""}
-        onChange={(e) => onChange(patchAction(params, { definition: e.target.value }))}
-        rows={6}
-        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text"
-      />
+      <Suspense
+        fallback={
+          <textarea
+            rows={6}
+            value={(action.definition as string) ?? ""}
+            onChange={(e) => onChange(patchAction(params, { definition: e.target.value }))}
+            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text"
+          />
+        }
+      >
+        <div className="rounded-lg border border-border bg-surface px-3 py-2 font-mono">
+          <SqlEditorField
+            value={(action.definition as string) ?? ""}
+            onChange={(v) => onChange(patchAction(params, { definition: v }))}
+            height={140}
+          />
+        </div>
+      </Suspense>
     </div>
   );
 }

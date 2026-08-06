@@ -3,8 +3,14 @@ import { describe, it, expect, vi } from "vitest";
 import { FunctionForm } from "./FunctionForm";
 import type { DdlParams } from "../../../lib/objectCrud";
 
+vi.mock("../../editor/SqlEditorField", () => ({
+  SqlEditorField: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
+    <textarea data-testid="sql-editor" value={value} onChange={(e) => onChange(e.target.value)} />
+  ),
+}));
+
 describe("FunctionForm", () => {
-  it("function: renders args grid + return type; emits body", () => {
+  it("function: renders args grid + return type; emits body", async () => {
     const onChange = vi.fn();
     const params: DdlParams = {
       schema: "public",
@@ -21,7 +27,7 @@ describe("FunctionForm", () => {
       },
     };
     render(<FunctionForm kind="function" params={params} onChange={onChange} />);
-    fireEvent.change(screen.getByPlaceholderText("Body"), {
+    fireEvent.change(await screen.findByTestId("sql-editor"), {
       target: { value: "BEGIN RETURN a; END" },
     });
     expect(onChange).toHaveBeenLastCalledWith(

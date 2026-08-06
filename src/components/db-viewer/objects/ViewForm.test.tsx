@@ -2,8 +2,14 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { ViewForm } from "./ViewForm";
 
+vi.mock("../../editor/SqlEditorField", () => ({
+  SqlEditorField: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
+    <textarea data-testid="sql-editor" value={value} onChange={(e) => onChange(e.target.value)} />
+  ),
+}));
+
 describe("ViewForm", () => {
-  it("create: emits the definition", () => {
+  it("create: emits the definition", async () => {
     const onChange = vi.fn();
     render(
       <ViewForm
@@ -11,7 +17,7 @@ describe("ViewForm", () => {
         onChange={onChange}
       />,
     );
-    fireEvent.change(screen.getByPlaceholderText("Definition"), { target: { value: "SELECT 2" } });
+    fireEvent.change(await screen.findByTestId("sql-editor"), { target: { value: "SELECT 2" } });
     expect(onChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ action: expect.objectContaining({ definition: "SELECT 2" }) }),
     );

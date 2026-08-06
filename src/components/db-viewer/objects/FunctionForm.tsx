@@ -1,4 +1,9 @@
+import { lazy, Suspense } from "react";
 import type { DdlParams } from "../../../lib/objectCrud";
+
+const SqlEditorField = lazy(() =>
+  import("../../editor/SqlEditorField").then((m) => ({ default: m.SqlEditorField })),
+);
 
 interface Props {
   kind: "function" | "procedure";
@@ -198,13 +203,24 @@ export function FunctionForm({ kind, params, schemas, onChange }: Props) {
             />
             STRICT (RETURNS NULL ON NULL INPUT)
           </label>
-          <textarea
-            placeholder="Body"
-            value={(action.body as string) ?? ""}
-            onChange={(e) => setAction({ body: e.target.value })}
-            rows={6}
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text"
-          />
+          <Suspense
+            fallback={
+              <textarea
+                rows={6}
+                value={(action.body as string) ?? ""}
+                onChange={(e) => setAction({ body: e.target.value })}
+                className="rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text"
+              />
+            }
+          >
+            <div className="rounded-lg border border-border bg-surface px-3 py-2 font-mono">
+              <SqlEditorField
+                value={(action.body as string) ?? ""}
+                onChange={(v) => setAction({ body: v })}
+                height={140}
+              />
+            </div>
+          </Suspense>
         </>
       )}
 
