@@ -6,7 +6,7 @@ import * as cmd from "../../../lib/commands";
 import type { ColumnInfo, ConstraintInfo, TablespaceInfo } from "../../../lib/types";
 import { getCapabilities } from "../../../lib/dbCapabilities";
 import { FkPanel } from "./FkPanel";
-import { FormRow, FormSectionHeader, inputClass, monoInputClass, controlClass } from "./formRow";
+import { FormRow, FormSectionHeader, inputClass, controlClass } from "./formRow";
 import { DataTypeIcon } from "../../ui/DataTypeIcon";
 
 const PG_TYPES = [
@@ -115,6 +115,13 @@ function sameColumnNames(a: TableFormColumn[], b: TableFormColumn[]): boolean {
 function emptyColumn(): TableFormColumn {
   return { name: "", type: "text", nullable: true, default: null, is_pk: false, params: "", auto_increment: false, unique: false };
 }
+
+// Cell-local input styles for the columns grid — no horizontal padding so the
+// cell's px-3 supplies it (matches the data-grid cell look).
+const cellInput =
+  "min-w-0 flex-1 bg-transparent font-heading text-xs text-text outline-none placeholder:text-text-muted";
+const cellMono =
+  "min-w-0 flex-1 bg-transparent font-mono text-xs text-text outline-none placeholder:text-text-muted";
 
 function buildTablePayload(params: TableFormParams, op: "create" | "edit" | "rebuild"): Record<string, unknown> {
   const action = params.action;
@@ -351,41 +358,45 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
         {view === "visual" ? (
           <>
             <FormSectionHeader label="Columns" count={cols.length} />
-            <div className="border-b border-border px-4 py-1.5 flex items-center gap-2">
-              <span className="w-6 text-[11px] font-semibold text-text-muted uppercase tracking-wider">#</span>
-              <span className="min-w-0 flex-1 text-[11px] font-semibold text-text-muted uppercase tracking-wider">Name</span>
-              <span className="min-w-0 flex-1 text-[11px] font-semibold text-text-muted uppercase tracking-wider">Type</span>
-              <span className="w-24 text-[11px] font-semibold text-text-muted uppercase tracking-wider">Parameters</span>
-              <span className="min-w-0 flex-1 text-[11px] font-semibold text-text-muted uppercase tracking-wider">Default Value</span>
-              <span className="min-w-0 flex-[1.5] text-[11px] font-semibold text-text-muted uppercase tracking-wider">Constraints</span>
-              <span className="w-16" />
+            <div className="border-b border-border flex items-stretch">
+              <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">#</div>
+              <div className="min-w-0 flex-1 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Name</div>
+              <div className="min-w-0 flex-1 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Type</div>
+              <div className="w-24 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Parameters</div>
+              <div className="min-w-0 flex-1 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Default Value</div>
+              <div className="min-w-0 flex-[1.5] border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Constraints</div>
+              <div className="w-24 shrink-0 px-3 py-1.5" />
             </div>
             {cols.map((c, i) => (
-              <div key={i} className="border-b border-border px-4 py-2 flex items-center gap-2">
-                <span className="w-6 text-xs font-mono text-text-muted">{i + 1}</span>
-                <input
-                  className={inputClass}
-                  placeholder="name"
-                  value={c.name}
-                  onChange={(e) => setCell(i, "name", e.target.value)}
-                />
-                <div className="min-w-0 flex-1 flex items-center gap-1">
+              <div key={i} className="border-b border-border flex items-stretch">
+                <div className="w-8 shrink-0 border-r border-border px-3 py-2 flex items-center text-xs font-mono text-text-muted">{i + 1}</div>
+                <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center">
+                  <input
+                    className={cellInput}
+                    placeholder="name"
+                    value={c.name}
+                    onChange={(e) => setCell(i, "name", e.target.value)}
+                  />
+                </div>
+                <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center gap-1.5">
                   <DataTypeIcon dataType={c.type} size={12} />
                   <input
-                    className={monoInputClass}
+                    className={cellMono}
                     list="pg-types"
                     placeholder="type"
                     value={c.type}
                     onChange={(e) => setCell(i, "type", e.target.value)}
                   />
                 </div>
-                <input
-                  className={[monoInputClass, "w-24"].join(" ")}
-                  placeholder="length"
-                  value={c.params ?? ""}
-                  onChange={(e) => setCell(i, "params", e.target.value)}
-                />
-                <div className="min-w-0 flex-1 flex items-center gap-2">
+                <div className="w-24 shrink-0 border-r border-border px-3 py-2 flex items-center">
+                  <input
+                    className={cellMono}
+                    placeholder="length"
+                    value={c.params ?? ""}
+                    onChange={(e) => setCell(i, "params", e.target.value)}
+                  />
+                </div>
+                <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center gap-2">
                   <input
                     type="checkbox"
                     aria-label="Has default"
@@ -394,14 +405,14 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                     className="rounded border-border bg-surface text-accent focus:ring-accent"
                   />
                   <input
-                    className={monoInputClass}
+                    className={cellMono}
                     placeholder="default"
                     disabled={c.default === null}
                     value={c.default ?? ""}
                     onChange={(e) => setCell(i, "default", e.target.value)}
                   />
                 </div>
-                <div className="min-w-0 flex-[1.5] flex items-center gap-3">
+                <div className="min-w-0 flex-[1.5] border-r border-border px-3 py-2 flex items-center gap-3 flex-wrap">
                   {mode === "create" && (
                     <>
                       <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
@@ -444,7 +455,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                     Nullable
                   </label>
                 </div>
-                <div className="w-16 flex items-center justify-end gap-1">
+                <div className="w-24 shrink-0 px-3 py-2 flex items-center justify-end gap-1">
                   <button
                     type="button"
                     aria-label="Set foreign key"
