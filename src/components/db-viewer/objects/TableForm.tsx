@@ -6,7 +6,7 @@ import * as cmd from "../../../lib/commands";
 import type { ColumnInfo, ConstraintInfo, TablespaceInfo } from "../../../lib/types";
 import { getCapabilities } from "../../../lib/dbCapabilities";
 import { ConstraintForm } from "./ConstraintForm";
-import { FormRow, inputClass, monoInputClass, controlClass } from "./formRow";
+import { FormRow, FormSectionHeader, inputClass, monoInputClass, controlClass } from "./formRow";
 
 const PG_TYPES = [
   "integer",
@@ -300,18 +300,20 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-4 space-y-3">
+      <div className="flex-1 overflow-auto">
         {refusal && (
-          <p className="text-xs text-amber-400">
-            Cannot reorder: {refusal}. Use the Query tab with pg_dump for these tables.
-          </p>
+          <div className="border-b border-border px-4 py-2">
+            <p className="text-xs text-amber-400">
+              Cannot reorder: {refusal}. Use the Query tab with pg_dump for these tables.
+            </p>
+          </div>
         )}
 
         {view === "visual" ? (
           <>
-            <div className="space-y-1">
-              {cols.map((c, i) => (
-                <div key={i} className="flex items-center gap-2 border-b border-border pb-1">
+            <FormSectionHeader label="Columns" count={cols.length} />
+            {cols.map((c, i) => (
+                <div key={i} className="border-b border-border px-4 py-2 flex items-center gap-2">
                   <button
                     type="button"
                     aria-label="Move up"
@@ -380,15 +382,16 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                   </button>
                 </div>
               ))}
-              <button
-                type="button"
-                aria-label="Add column"
-                onClick={addColumn}
-                className="text-xs text-accent hover:text-accent-hover"
-              >
-                <Plus size={12} className="inline" /> Add column
-              </button>
-            </div>
+              <div className="border-b border-border px-4 py-2">
+                <button
+                  type="button"
+                  aria-label="Add column"
+                  onClick={addColumn}
+                  className="text-xs text-accent hover:text-accent-hover"
+                >
+                  <Plus size={12} className="inline" /> Add column
+                </button>
+              </div>
 
             {mode === "create" && (
               <FormRow label="Schema">
@@ -432,13 +435,19 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
             )}
           </>
         ) : (
-          <pre className="text-xs leading-6 font-mono whitespace-pre-wrap text-text">
-            {preview}
-          </pre>
+          <div className="px-4 py-3">
+            <pre className="text-xs leading-6 font-mono whitespace-pre-wrap text-text">
+              {preview}
+            </pre>
+          </div>
         )}
-
-        {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
+
+      {error && (
+        <div className="border-t border-border px-4 py-2">
+          <p className="text-xs text-red-400">{error}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -554,8 +563,8 @@ function RelationshipsSection({ connectionId, schema, table }: RelationshipsSect
   );
 
   return (
-    <div className="border-t border-border pt-2">
-      <div className="flex items-center justify-between px-1 py-1">
+    <div>
+      <div className="border-b border-border px-4 py-2 flex items-center justify-between">
         <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
           Foreign keys
         </span>
@@ -569,32 +578,32 @@ function RelationshipsSection({ connectionId, schema, table }: RelationshipsSect
       </div>
 
       {adding && (
-        <div className="border border-border rounded p-2 mt-1">
-          <ConstraintForm
-            connectionId={connectionId}
-            params={{
-              schema,
-              table,
-              name: "",
-              action: {
-                op: "foreign_key",
-                columns: [],
-                ref_schema: "",
-                ref_table: "",
-                ref_columns: [],
-                on_delete: "NO ACTION",
-                on_update: "NO ACTION",
-                deferrable: false,
-                initially_deferred: false,
-              },
-            }}
-            onChange={() => {}}
-          />
-        </div>
+        <ConstraintForm
+          connectionId={connectionId}
+          params={{
+            schema,
+            table,
+            name: "",
+            action: {
+              op: "foreign_key",
+              columns: [],
+              ref_schema: "",
+              ref_table: "",
+              ref_columns: [],
+              on_delete: "NO ACTION",
+              on_update: "NO ACTION",
+              deferrable: false,
+              initially_deferred: false,
+            },
+          }}
+          onChange={() => {}}
+        />
       )}
 
       {fks.length === 0 && !adding && (
-        <p className="text-xs text-text-muted px-1">No foreign keys listed.</p>
+        <div className="border-b border-border px-4 py-2">
+          <p className="text-xs text-text-muted">No foreign keys listed.</p>
+        </div>
       )}
     </div>
   );
