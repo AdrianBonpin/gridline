@@ -916,6 +916,19 @@ describe("DbViewerScreen", () => {
         ).toBeInTheDocument();
     });
 
+    it("objects view renders ObjectDetail for an open object tab", () => {
+        useDbViewerStore.getState().openObjectTab("enums", "public", "role", { name: "role", schema: "public", labels: ["admin"] });
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /objects/i }));
+        expect(screen.getByText("admin")).toBeInTheDocument();
+    });
+
     it("guards the Objects view for MySQL (capability false)", () => {
         useConnectionStore.setState({
             connections: [

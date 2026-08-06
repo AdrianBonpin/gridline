@@ -83,6 +83,13 @@ describe("TabBar", () => {
     expect(screen.queryByTestId("tab-icon-table")).not.toBeInTheDocument();
   });
 
+  it("renders the per-type icon on an object tab", () => {
+    useDbViewerStore.getState().openObjectTab("functions", "public", "add", { name: "add", schema: "public" });
+    render(<TabBar />);
+    expect(screen.getByLabelText(/object icon: functions/i)).toBeInTheDocument();
+    expect(screen.getByText("add")).toBeInTheDocument();
+  });
+
   it("renders a view icon on view tabs", () => {
     useDbViewerStore.getState().openTab("main", "order_summary");
     useDbViewerStore.setState({

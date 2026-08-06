@@ -19,6 +19,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { ListChecks, Play, Table2, Layers, Eye, Terminal, X } from "lucide-react";
 import { useDbViewerStore, type ViewerTab } from "../../stores/dbViewerStore";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
+import { OBJECT_ICONS } from "./objects/ObjectDetail";
 
 function SortableTab({
   tab,
@@ -181,6 +182,10 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
                       data-testid="tab-icon-query"
                       className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
                     />
+                  ) : tab.tabType === "object" ? (
+                    <span aria-label={`object icon: ${tab.objectType}`} className="shrink-0">
+                      {OBJECT_ICONS[tab.objectType!]}
+                    </span>
                   ) : objectType === "VIEW" ? (
                     <Eye
                       data-testid="tab-icon-view"
