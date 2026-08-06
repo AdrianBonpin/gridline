@@ -1118,10 +1118,10 @@ function RelationshipsSection({
         <div key={row.key} className="border-b border-border px-4 py-2">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-                Foreign key relation to
-              </p>
-              <div className="flex items-center gap-1.5 mt-0.5">
+              <div className="flex items-center gap-1.5">
+                <p className="text-[11px] font-semibold text-text-muted uppercase tracking-wider shrink-0">
+                  Foreign key relation to
+                </p>
                 <Table2 size={12} className="text-text-muted shrink-0" />
                 <span className="font-mono text-xs text-text truncate">
                   {row.refSchema}.{row.refTable}
