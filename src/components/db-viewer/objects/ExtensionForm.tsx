@@ -4,6 +4,7 @@ import {
   getAvailableExtensions,
   type AvailableExtension,
 } from "../../../lib/objectCrud";
+import { FormRow, inputClass, controlClass } from "./formRow";
 
 interface Props {
   connectionId: string;
@@ -45,36 +46,37 @@ export function ExtensionForm({ connectionId, params, schemas, onChange }: Props
   };
 
   return (
-    <div className="flex flex-col gap-2">
-      {schemas && schemas.length > 0 ? (
-        <select
-          value={(p.schema as string) ?? ""}
-          onChange={(e) => onChange({ ...p, schema: e.target.value })}
-          aria-label="Schema"
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-        >
-          <option value="" disabled>Schema</option>
-          {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-      ) : (
-        <input
-          type="text"
-          placeholder="Schema"
-          value={(p.schema as string) ?? ""}
-          onChange={(e) => onChange({ ...p, schema: e.target.value })}
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-        />
-      )}
+    <div>
+      <FormRow label="Schema">
+        {schemas && schemas.length > 0 ? (
+          <select
+            value={(p.schema as string) ?? ""}
+            onChange={(e) => onChange({ ...p, schema: e.target.value })}
+            aria-label="Schema"
+            className={controlClass}
+          >
+            <option value="" disabled>Schema</option>
+            {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        ) : (
+          <input
+            type="text"
+            placeholder="Schema"
+            value={(p.schema as string) ?? ""}
+            onChange={(e) => onChange({ ...p, schema: e.target.value })}
+            className={inputClass}
+          />
+        )}
+      </FormRow>
 
-      <label className="flex flex-col gap-1">
-        <span className="text-xs text-text-muted">Operation</span>
+      <FormRow label="Operation">
         <select
           aria-label="Operation"
           value={op}
           onChange={(e) =>
             onChange({ ...p, action: { op: e.target.value as ExtensionOp } })
           }
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+          className={controlClass}
         >
           {(Object.keys(OP_LABELS) as ExtensionOp[]).map((key) => (
             <option key={key} value={key}>
@@ -82,51 +84,62 @@ export function ExtensionForm({ connectionId, params, schemas, onChange }: Props
             </option>
           ))}
         </select>
-      </label>
+      </FormRow>
 
       {op === "create" && (
-        <div className="flex flex-col gap-1">
-          <input
-            type="text"
-            placeholder="Extension name"
-            value={(p.name as string) ?? ""}
-            onChange={(e) => onChange({ ...p, name: e.target.value })}
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          />
+        <>
+          <FormRow label="Extension">
+            <input
+              type="text"
+              placeholder="Extension name"
+              value={(p.name as string) ?? ""}
+              onChange={(e) => onChange({ ...p, name: e.target.value })}
+              className={inputClass}
+            />
+          </FormRow>
 
-          <span className="text-xs text-text-muted">Available:</span>
-          {available.map((ext) => (
-            <button
-              key={ext.name}
-              type="button"
-              onClick={() => pickExtension(ext)}
-              className="text-left text-sm font-medium text-accent hover:text-accent-hover hover:underline"
-            >
-              <span>{ext.name}</span>
-              {ext.version ? (
-                <span className="text-text-muted"> ({ext.version})</span>
-              ) : null}
-            </button>
-          ))}
+          {available.length > 0 && (
+            <FormRow label="Available" className="items-stretch">
+              <div className="min-w-0 flex-1 flex flex-col gap-0.5 px-4 py-2">
+                {available.map((ext) => (
+                  <button
+                    key={ext.name}
+                    type="button"
+                    onClick={() => pickExtension(ext)}
+                    className="text-left text-xs font-medium text-accent hover:text-accent-hover hover:underline"
+                  >
+                    <span>{ext.name}</span>
+                    {ext.version ? (
+                      <span className="text-text-muted"> ({ext.version})</span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </FormRow>
+          )}
 
-          <input
-            type="text"
-            placeholder="Version (optional)"
-            value={(action.version as string) ?? ""}
-            onChange={(e) => setAction({ version: e.target.value || null })}
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          />
-        </div>
+          <FormRow label="Version">
+            <input
+              type="text"
+              placeholder="Version (optional)"
+              value={(action.version as string) ?? ""}
+              onChange={(e) => setAction({ version: e.target.value || null })}
+              className={inputClass}
+            />
+          </FormRow>
+        </>
       )}
 
       {op === "set_schema" && (
-        <input
-          type="text"
-          placeholder="New schema"
-          value={(action.new_schema as string) ?? ""}
-          onChange={(e) => setAction({ new_schema: e.target.value })}
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-        />
+        <FormRow label="New schema">
+          <input
+            type="text"
+            placeholder="New schema"
+            value={(action.new_schema as string) ?? ""}
+            onChange={(e) => setAction({ new_schema: e.target.value })}
+            className={inputClass}
+          />
+        </FormRow>
       )}
     </div>
   );

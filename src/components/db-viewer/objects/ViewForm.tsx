@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
 import type { DdlParams } from "../../../lib/objectCrud";
+import { FormRow, inputClass, controlClass } from "./formRow";
 
 const SqlEditorField = lazy(() =>
   import("../../editor/SqlEditorField").then((m) => ({ default: m.SqlEditorField })),
@@ -34,68 +35,77 @@ export function ViewForm({ params, schemas, onChange }: Props) {
   const action = (params.action ?? {}) as Record<string, unknown>;
 
   return (
-    <div className="flex flex-col gap-2">
-      {schemas && schemas.length > 0 ? (
-        <select
-          value={(params.schema as string) ?? ""}
-          onChange={(e) => onChange({ ...params, schema: e.target.value })}
-          aria-label="Schema"
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-        >
-          <option value="" disabled>Schema</option>
-          {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-      ) : (
+    <div>
+      <FormRow label="Schema">
+        {schemas && schemas.length > 0 ? (
+          <select
+            value={(params.schema as string) ?? ""}
+            onChange={(e) => onChange({ ...params, schema: e.target.value })}
+            aria-label="Schema"
+            className={controlClass}
+          >
+            <option value="" disabled>Schema</option>
+            {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        ) : (
+          <input
+            type="text"
+            placeholder="Schema"
+            value={(params.schema as string) ?? ""}
+            onChange={(e) => onChange({ ...params, schema: e.target.value })}
+            className={inputClass}
+          />
+        )}
+      </FormRow>
+      <FormRow label="Name">
         <input
           type="text"
-          placeholder="Schema"
-          value={(params.schema as string) ?? ""}
-          onChange={(e) => onChange({ ...params, schema: e.target.value })}
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+          placeholder={isMat ? "Materialized view name" : "View name"}
+          value={(params.name as string) ?? ""}
+          onChange={(e) => onChange({ ...params, name: e.target.value })}
+          className={inputClass}
         />
-      )}
-      <input
-        type="text"
-        placeholder={isMat ? "Materialized view name" : "View name"}
-        value={(params.name as string) ?? ""}
-        onChange={(e) => onChange({ ...params, name: e.target.value })}
-        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-      />
-      <label className="flex flex-col gap-1">
-        <span className="text-xs text-text-muted">Operation</span>
+      </FormRow>
+      <FormRow label="Operation">
         <select
           aria-label="Operation"
           value={op}
           onChange={(e) => onChange(patchAction(params, { op: e.target.value }))}
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+          className={controlClass}
         >
           <option value="create">{isMat ? "Create" : "Create or replace"}</option>
           {isMat && <option value="replace">Replace (drop + create)</option>}
         </select>
-      </label>
+      </FormRow>
       {isMat && op === "replace" && (
-        <p className="text-xs text-text-muted">
-          Materialized views cannot be CREATE OR REPLACE — this will drop and recreate.
-        </p>
-      )}
-      <Suspense
-        fallback={
-          <textarea
-            rows={6}
-            value={(action.definition as string) ?? ""}
-            onChange={(e) => onChange(patchAction(params, { definition: e.target.value }))}
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text"
-          />
-        }
-      >
-        <div className="rounded-lg border border-border bg-surface px-3 py-2 font-mono">
-          <SqlEditorField
-            value={(action.definition as string) ?? ""}
-            onChange={(v) => onChange(patchAction(params, { definition: v }))}
-            height={140}
-          />
+        <div className="border-b border-border px-4 py-2">
+          <p className="text-xs text-text-muted">
+            Materialized views cannot be CREATE OR REPLACE — this will drop and recreate.
+          </p>
         </div>
-      </Suspense>
+      )}
+      <FormRow label={isMat ? "Definition" : "Body"} className="items-stretch">
+        <div className="min-w-0 flex-1 py-2" style={{ minHeight: 140 }}>
+          <Suspense
+            fallback={
+              <textarea
+                rows={6}
+                value={(action.definition as string) ?? ""}
+                onChange={(e) => onChange(patchAction(params, { definition: e.target.value }))}
+                className="w-full h-full bg-transparent px-3 font-mono text-xs text-text outline-none resize-none"
+              />
+            }
+          >
+            <div className="h-full w-full font-mono">
+              <SqlEditorField
+                value={(action.definition as string) ?? ""}
+                onChange={(v) => onChange(patchAction(params, { definition: v }))}
+                height={140}
+              />
+            </div>
+          </Suspense>
+        </div>
+      </FormRow>
     </div>
   );
 }

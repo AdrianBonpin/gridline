@@ -3,6 +3,7 @@ import type { DdlParams } from "../../../lib/objectCrud";
 import * as cmd from "../../../lib/commands";
 import type { SchemaGraph } from "../../../lib/types";
 import { ColumnPicker } from "./ColumnPicker";
+import { FormRow, inputClass, controlClass, monoInputClass } from "./formRow";
 
 interface Props {
   connectionId: string;
@@ -55,97 +56,121 @@ export function ConstraintForm({ connectionId, params, schemas, onChange }: Prop
     list.includes(c) ? list.filter((x) => x !== c) : [...list, c];
 
   return (
-    <div className="flex flex-col gap-2">
-      {schemas && schemas.length > 0 ? (
-        <select
-          value={(p.schema as string) ?? ""}
-          onChange={(e) => onChange({ ...p, schema: e.target.value })}
-          aria-label="Schema"
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-        >
-          <option value="" disabled>Schema</option>
-          {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-      ) : (
+    <div>
+      <FormRow label="Schema">
+        {schemas && schemas.length > 0 ? (
+          <select
+            value={(p.schema as string) ?? ""}
+            onChange={(e) => onChange({ ...p, schema: e.target.value })}
+            aria-label="Schema"
+            className={controlClass}
+          >
+            <option value="" disabled>Schema</option>
+            {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        ) : (
+          <input
+            type="text"
+            placeholder="Schema"
+            value={(p.schema as string) ?? ""}
+            onChange={(e) => onChange({ ...p, schema: e.target.value })}
+            className={inputClass}
+          />
+        )}
+      </FormRow>
+      <FormRow label="Table">
         <input
           type="text"
-          placeholder="Schema"
-          value={(p.schema as string) ?? ""}
-          onChange={(e) => onChange({ ...p, schema: e.target.value })}
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+          placeholder="Table"
+          value={(p.table as string) ?? ""}
+          onChange={(e) => onChange({ ...p, table: e.target.value })}
+          className={inputClass}
         />
-      )}
-      <input
-        type="text"
-        placeholder="Table"
-        value={(p.table as string) ?? ""}
-        onChange={(e) => onChange({ ...p, table: e.target.value })}
-        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-      />
-      <input
-        type="text"
-        placeholder="Constraint name"
-        value={(p.name as string) ?? ""}
-        onChange={(e) => onChange({ ...p, name: e.target.value })}
-        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-      />
-      <select
-        aria-label="Kind"
-        value={kind}
-        onChange={(e) => onChange({ ...p, action: { op: e.target.value } })}
-        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-      >
-        {KINDS.map((k) => (
-          <option key={k} value={k}>
-            {k.replace(/_/g, " ")}
-          </option>
-        ))}
-      </select>
+      </FormRow>
+      <FormRow label="Name">
+        <input
+          type="text"
+          placeholder="Constraint name"
+          value={(p.name as string) ?? ""}
+          onChange={(e) => onChange({ ...p, name: e.target.value })}
+          className={inputClass}
+        />
+      </FormRow>
+      <FormRow label="Kind">
+        <select
+          aria-label="Kind"
+          value={kind}
+          onChange={(e) => onChange({ ...p, action: { op: e.target.value } })}
+          className={controlClass}
+        >
+          {KINDS.map((k) => (
+            <option key={k} value={k}>
+              {k.replace(/_/g, " ")}
+            </option>
+          ))}
+        </select>
+      </FormRow>
 
       {(kind === "unique" || kind === "primary_key") && (
-        <ColumnPicker
-          cols={tableCols}
-          selected={selected}
-          onToggle={(c) => setAction({ columns: pick(selected, c) })}
-        />
+        <FormRow label="Columns" className="items-stretch">
+          <div className="min-w-0 flex-1 flex flex-col gap-1 px-4 py-2">
+            <ColumnPicker
+              cols={tableCols}
+              selected={selected}
+              onToggle={(c) => setAction({ columns: pick(selected, c) })}
+            />
+          </div>
+        </FormRow>
       )}
 
       {kind === "check" && (
-        <input
-          type="text"
-          placeholder="CHECK expression"
-          value={(action.expression as string) ?? ""}
-          onChange={(e) => setAction({ expression: e.target.value })}
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text"
-        />
+        <FormRow label="Expression">
+          <input
+            type="text"
+            placeholder="CHECK expression"
+            value={(action.expression as string) ?? ""}
+            onChange={(e) => setAction({ expression: e.target.value })}
+            className={monoInputClass}
+          />
+        </FormRow>
       )}
 
       {kind === "foreign_key" && (
         <>
-          <ColumnPicker
-            cols={tableCols}
-            selected={selected}
-            onToggle={(c) => setAction({ columns: pick(selected, c) })}
-          />
-          <input
-            type="text"
-            placeholder="Referenced table"
-            value={(action.ref_table as string) ?? ""}
-            onChange={(e) => {
-              const t = graph.tables.find((t) => t.name === e.target.value);
-              setAction({
-                ref_table: e.target.value,
-                ref_schema: t?.schema ?? "",
-                ref_columns: [],
-              });
-            }}
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          />
-          <ColumnPicker
-            cols={refCols}
-            selected={refSelected}
-            onToggle={(c) => setAction({ ref_columns: pick(refSelected, c) })}
-          />
+          <FormRow label="Columns" className="items-stretch">
+            <div className="min-w-0 flex-1 flex flex-col gap-1 px-4 py-2">
+              <ColumnPicker
+                cols={tableCols}
+                selected={selected}
+                onToggle={(c) => setAction({ columns: pick(selected, c) })}
+              />
+            </div>
+          </FormRow>
+          <FormRow label="Referenced table">
+            <input
+              type="text"
+              placeholder="Referenced table"
+              value={(action.ref_table as string) ?? ""}
+              onChange={(e) => {
+                const t = graph.tables.find((t) => t.name === e.target.value);
+                setAction({
+                  ref_table: e.target.value,
+                  ref_schema: t?.schema ?? "",
+                  ref_columns: [],
+                });
+              }}
+              className={inputClass}
+            />
+          </FormRow>
+          <FormRow label="Referenced columns" className="items-stretch">
+            <div className="min-w-0 flex-1 flex flex-col gap-1 px-4 py-2">
+              <ColumnPicker
+                cols={refCols}
+                selected={refSelected}
+                onToggle={(c) => setAction({ ref_columns: pick(refSelected, c) })}
+              />
+            </div>
+          </FormRow>
         </>
       )}
     </div>

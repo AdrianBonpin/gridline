@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
 import type { DdlParams } from "../../../lib/objectCrud";
+import { FormRow, FormSectionHeader, inputClass, controlClass, monoInputClass } from "./formRow";
 
 const SqlEditorField = lazy(() =>
   import("../../editor/SqlEditorField").then((m) => ({ default: m.SqlEditorField })),
@@ -65,59 +66,68 @@ export function FunctionForm({ kind, params, schemas, onChange }: Props) {
   const placeholder = kind === "procedure" ? "Procedure name" : "Function name";
 
   return (
-    <div className="flex flex-col gap-2">
-      {schemas && schemas.length > 0 ? (
-        <select
-          value={(params.schema as string) ?? ""}
-          onChange={(e) =>
-            onChange(patchTopLevel(params, kind, { schema: e.target.value }))
-          }
-          aria-label="Schema"
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-        >
-          <option value="" disabled>Schema</option>
-          {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-      ) : (
+    <div>
+      <FormRow label="Schema">
+        {schemas && schemas.length > 0 ? (
+          <select
+            value={(params.schema as string) ?? ""}
+            onChange={(e) =>
+              onChange(patchTopLevel(params, kind, { schema: e.target.value }))
+            }
+            aria-label="Schema"
+            className={controlClass}
+          >
+            <option value="" disabled>Schema</option>
+            {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        ) : (
+          <input
+            type="text"
+            placeholder="Schema"
+            value={(params.schema as string) ?? ""}
+            onChange={(e) =>
+              onChange(patchTopLevel(params, kind, { schema: e.target.value }))
+            }
+            className={inputClass}
+          />
+        )}
+      </FormRow>
+      <FormRow label="Name">
         <input
           type="text"
-          placeholder="Schema"
-          value={(params.schema as string) ?? ""}
+          placeholder={placeholder}
+          value={(params.name as string) ?? ""}
           onChange={(e) =>
-            onChange(patchTopLevel(params, kind, { schema: e.target.value }))
+            onChange(patchTopLevel(params, kind, { name: e.target.value }))
           }
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+          className={inputClass}
         />
-      )}
-      <input
-        type="text"
-        placeholder={placeholder}
-        value={(params.name as string) ?? ""}
-        onChange={(e) =>
-          onChange(patchTopLevel(params, kind, { name: e.target.value }))
-        }
-        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-      />
-      <select
-        value={op}
-        onChange={(e) =>
-          onChange({ ...params, action: { op: e.target.value } })
-        }
-        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-      >
-        <option value="create_or_replace">Create / replace</option>
-        <option value="drop">Drop by signature</option>
-      </select>
+      </FormRow>
+      <FormRow label="Operation">
+        <select
+          aria-label="Operation"
+          value={op}
+          onChange={(e) => onChange({ ...params, action: { op: e.target.value } })}
+          className={controlClass}
+        >
+          <option value="create_or_replace">Create / replace</option>
+          <option value="drop">Drop by signature</option>
+        </select>
+      </FormRow>
 
       {op === "create_or_replace" && (
         <>
-          <div className="text-xs text-text-muted">Arguments</div>
+          <FormSectionHeader label="Arguments" count={args.length} />
           {args.map((a, i) => (
-            <div key={i} className="flex gap-1">
+            <div
+              key={i}
+              className="border-b border-border px-4 py-2 flex items-center gap-2"
+            >
               <select
                 value={a.mode}
                 onChange={(e) => setArg(i, { mode: e.target.value })}
-                className="rounded-lg border border-border bg-surface px-2 py-2 text-sm text-text"
+                aria-label={`Argument ${i + 1} mode`}
+                className="w-24 shrink-0 rounded bg-surface px-2 py-1 font-heading text-xs text-text outline-none"
               >
                 {MODES.map((m) => (
                   <option key={m} value={m}>
@@ -125,120 +135,140 @@ export function FunctionForm({ kind, params, schemas, onChange }: Props) {
                   </option>
                 ))}
               </select>
+              <span className="text-xs text-text-muted w-8 shrink-0 font-mono">
+                #{i + 1}
+              </span>
               <input
                 type="text"
                 placeholder="name"
                 value={a.name}
                 onChange={(e) => setArg(i, { name: e.target.value })}
-                className="flex-1 rounded-lg border border-border bg-surface px-2 py-2 text-sm text-text"
+                className={`${monoInputClass} flex-1`}
               />
+              <span className="text-border">:</span>
               <input
                 type="text"
                 placeholder="type"
                 value={a.type}
                 onChange={(e) => setArg(i, { type: e.target.value })}
-                className="flex-1 rounded-lg border border-border bg-surface px-2 py-2 text-sm text-text"
+                className={`${monoInputClass} flex-1`}
               />
               <button
                 type="button"
-                onClick={() =>
-                  setAction({ args: args.filter((_, j) => j !== i) })
-                }
+                onClick={() => setAction({ args: args.filter((_, j) => j !== i) })}
                 className="text-text-muted px-2"
               >
                 ×
               </button>
             </div>
           ))}
-          <button
-            type="button"
-            onClick={() =>
-              setAction({
-                args: [...args, { mode: "in", name: "", type: "" }],
-              })
-            }
-            className="self-start text-xs text-accent hover:text-accent-hover"
-          >
-            + Add argument
-          </button>
+          <div className="border-b border-border px-4 py-2">
+            <button
+              type="button"
+              onClick={() =>
+                setAction({
+                  args: [...args, { mode: "in", name: "", type: "" }],
+                })
+              }
+              className="text-xs text-accent hover:text-accent-hover"
+            >
+              + Add argument
+            </button>
+          </div>
+
           {kind === "function" && (
-            <input
-              type="text"
-              placeholder="Return type"
-              value={(action.return_type as string | null) ?? ""}
-              onChange={(e) => setAction({ return_type: e.target.value })}
-              className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-            />
+            <FormRow label="Return type">
+              <input
+                type="text"
+                placeholder="Return type"
+                value={(action.return_type as string | null) ?? ""}
+                onChange={(e) => setAction({ return_type: e.target.value })}
+                className={monoInputClass}
+              />
+            </FormRow>
           )}
-          <select
-            value={(action.language as string) ?? "plpgsql"}
-            onChange={(e) => setAction({ language: e.target.value })}
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          >
-            {LANGS.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
-          <select
-            value={(action.volatility as string) ?? ""}
-            onChange={(e) =>
-              setAction({ volatility: e.target.value || null })
-            }
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          >
-            {VOL.map((v) => (
-              <option key={v} value={v}>
-                {v || "(default VOLATILE)"}
-              </option>
-            ))}
-          </select>
-          <label className="flex items-center gap-2 text-sm text-text">
-            <input
-              type="checkbox"
-              checked={!!action.strict}
-              onChange={(e) => setAction({ strict: e.target.checked })}
-              className="rounded border-border bg-surface text-accent focus:ring-accent"
-            />
-            STRICT (RETURNS NULL ON NULL INPUT)
-          </label>
-          <Suspense
-            fallback={
-              <textarea
-                rows={6}
-                value={(action.body as string) ?? ""}
-                onChange={(e) => setAction({ body: e.target.value })}
-                className="rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text"
+          <FormRow label="Language">
+            <select
+              aria-label="Language"
+              value={(action.language as string) ?? "plpgsql"}
+              onChange={(e) => setAction({ language: e.target.value })}
+              className={controlClass}
+            >
+              {LANGS.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </FormRow>
+          <FormRow label="Volatility">
+            <select
+              aria-label="Volatility"
+              value={(action.volatility as string) ?? ""}
+              onChange={(e) => setAction({ volatility: e.target.value || null })}
+              className={controlClass}
+            >
+              {VOL.map((v) => (
+                <option key={v} value={v}>
+                  {v || "(default VOLATILE)"}
+                </option>
+              ))}
+            </select>
+          </FormRow>
+          <FormRow label="Strict">
+            <label className="min-w-0 flex-1 flex items-center gap-2 px-3 font-heading text-xs text-text cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!action.strict}
+                onChange={(e) => setAction({ strict: e.target.checked })}
+                aria-label="STRICT"
+                className="rounded border-border bg-surface text-accent focus:ring-accent"
               />
-            }
-          >
-            <div className="rounded-lg border border-border bg-surface px-3 py-2 font-mono">
-              <SqlEditorField
-                value={(action.body as string) ?? ""}
-                onChange={(v) => setAction({ body: v })}
-                height={140}
-              />
+              <span>STRICT (RETURNS NULL ON NULL INPUT)</span>
+            </label>
+          </FormRow>
+          <FormRow label="Body" className="items-stretch">
+            <div className="min-w-0 flex-1 py-2" style={{ minHeight: 140 }}>
+              <Suspense
+                fallback={
+                  <textarea
+                    rows={6}
+                    value={(action.body as string) ?? ""}
+                    onChange={(e) => setAction({ body: e.target.value })}
+                    className="w-full h-full bg-transparent px-3 font-mono text-xs text-text outline-none resize-none"
+                  />
+                }
+              >
+                <div className="h-full w-full font-mono">
+                  <SqlEditorField
+                    value={(action.body as string) ?? ""}
+                    onChange={(v) => setAction({ body: v })}
+                    height={140}
+                  />
+                </div>
+              </Suspense>
             </div>
-          </Suspense>
+          </FormRow>
         </>
       )}
 
       {op === "drop" && (
-        <input
-          type="text"
-          placeholder="Arg types (comma-separated)"
-          value={(action.arg_types as string[] | undefined)?.join(", ") ?? ""}
-          onChange={(e) =>
-            setAction({
-              arg_types: e.target.value
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean),
-            })
-          }
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-        />
+        <FormRow label="Arg types">
+          <input
+            type="text"
+            placeholder="Arg types (comma-separated)"
+            value={(action.arg_types as string[] | undefined)?.join(", ") ?? ""}
+            onChange={(e) =>
+              setAction({
+                arg_types: e.target.value
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              })
+            }
+            className={monoInputClass}
+          />
+        </FormRow>
       )}
     </div>
   );

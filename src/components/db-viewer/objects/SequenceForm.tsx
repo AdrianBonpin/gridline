@@ -1,4 +1,5 @@
 import type { DdlParams } from "../../../lib/objectCrud";
+import { FormRow, inputClass, controlClass } from "./formRow";
 
 interface Props {
   params: DdlParams;
@@ -34,42 +35,45 @@ export function SequenceForm({ params, schemas, onChange }: Props) {
   const action = (params.action ?? {}) as Record<string, unknown>;
 
   return (
-    <div className="flex flex-col gap-2">
-      {schemas && schemas.length > 0 ? (
-        <select
-          value={(params.schema as string) ?? ""}
-          onChange={(e) => onChange({ ...params, schema: e.target.value })}
-          aria-label="Schema"
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-        >
-          <option value="" disabled>Schema</option>
-          {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-      ) : (
+    <div>
+      <FormRow label="Schema">
+        {schemas && schemas.length > 0 ? (
+          <select
+            value={(params.schema as string) ?? ""}
+            onChange={(e) => onChange({ ...params, schema: e.target.value })}
+            aria-label="Schema"
+            className={controlClass}
+          >
+            <option value="" disabled>Schema</option>
+            {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        ) : (
+          <input
+            type="text"
+            placeholder="Schema"
+            value={(params.schema as string) ?? ""}
+            onChange={(e) => onChange({ ...params, schema: e.target.value })}
+            className={inputClass}
+          />
+        )}
+      </FormRow>
+      <FormRow label="Name">
         <input
           type="text"
-          placeholder="Schema"
-          value={(params.schema as string) ?? ""}
-          onChange={(e) => onChange({ ...params, schema: e.target.value })}
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+          placeholder="Sequence name"
+          value={(params.name as string) ?? ""}
+          onChange={(e) => onChange({ ...params, name: e.target.value })}
+          className={inputClass}
         />
-      )}
-      <input
-        type="text"
-        placeholder="Sequence name"
-        value={(params.name as string) ?? ""}
-        onChange={(e) => onChange({ ...params, name: e.target.value })}
-        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-      />
-      <label className="flex flex-col gap-1">
-        <span className="text-xs text-text-muted">Operation</span>
+      </FormRow>
+      <FormRow label="Operation">
         <select
           aria-label="Operation"
           value={op}
           onChange={(e) =>
             onChange(patchAction(params, { op: e.target.value }))
           }
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+          className={controlClass}
         >
           {(Object.keys(OP_LABELS) as SequenceOp[]).map((key) => (
             <option key={key} value={key}>
@@ -77,72 +81,85 @@ export function SequenceForm({ params, schemas, onChange }: Props) {
             </option>
           ))}
         </select>
-      </label>
+      </FormRow>
 
       {(op === "create" || op === "alter") && (
         <>
-          <input
-            type="text"
-            placeholder="Increment"
-            value={(action.increment as string) ?? ""}
-            onChange={(e) =>
-              onChange(patchAction(params, { increment: e.target.value }))
-            }
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          />
-          <input
-            type="text"
-            placeholder="Min value"
-            value={(action.min_value as string) ?? ""}
-            onChange={(e) =>
-              onChange(patchAction(params, { min_value: e.target.value }))
-            }
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          />
-          <input
-            type="text"
-            placeholder="Max value"
-            value={(action.max_value as string) ?? ""}
-            onChange={(e) =>
-              onChange(patchAction(params, { max_value: e.target.value }))
-            }
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          />
-          {op === "create" && (
+          <FormRow label="Increment">
             <input
               type="text"
-              placeholder="Start"
-              value={(action.start as string) ?? ""}
+              placeholder="Increment"
+              value={(action.increment as string) ?? ""}
               onChange={(e) =>
-                onChange(patchAction(params, { start: e.target.value }))
+                onChange(patchAction(params, { increment: e.target.value }))
               }
-              className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+              className={inputClass}
             />
-          )}
-          <label className="flex items-center gap-2 text-sm text-text">
+          </FormRow>
+          <FormRow label="Min value">
             <input
-              type="checkbox"
-              checked={!!action.cycle}
+              type="text"
+              placeholder="Min value"
+              value={(action.min_value as string) ?? ""}
               onChange={(e) =>
-                onChange(patchAction(params, { cycle: e.target.checked }))
+                onChange(patchAction(params, { min_value: e.target.value }))
               }
-              className="rounded border-border bg-surface text-accent focus:ring-accent"
+              className={inputClass}
             />
-            CYCLE
-          </label>
+          </FormRow>
+          <FormRow label="Max value">
+            <input
+              type="text"
+              placeholder="Max value"
+              value={(action.max_value as string) ?? ""}
+              onChange={(e) =>
+                onChange(patchAction(params, { max_value: e.target.value }))
+              }
+              className={inputClass}
+            />
+          </FormRow>
+          {op === "create" && (
+            <FormRow label="Start">
+              <input
+                type="text"
+                placeholder="Start"
+                value={(action.start as string) ?? ""}
+                onChange={(e) =>
+                  onChange(patchAction(params, { start: e.target.value }))
+                }
+                className={inputClass}
+              />
+            </FormRow>
+          )}
+          <FormRow label="Cycle">
+            <label className="min-w-0 flex-1 flex items-center gap-2 px-3 font-heading text-xs text-text cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!action.cycle}
+                onChange={(e) =>
+                  onChange(patchAction(params, { cycle: e.target.checked }))
+                }
+                aria-label="CYCLE"
+                className="rounded border-border bg-surface text-accent focus:ring-accent"
+              />
+              <span>CYCLE</span>
+            </label>
+          </FormRow>
         </>
       )}
 
       {op === "restart" && (
-        <input
-          type="text"
-          placeholder="Restart with"
-          value={(action.with as string) ?? ""}
-          onChange={(e) =>
-            onChange(patchAction(params, { with: e.target.value }))
-          }
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-        />
+        <FormRow label="Restart with">
+          <input
+            type="text"
+            placeholder="Restart with"
+            value={(action.with as string) ?? ""}
+            onChange={(e) =>
+              onChange(patchAction(params, { with: e.target.value }))
+            }
+            className={inputClass}
+          />
+        </FormRow>
       )}
     </div>
   );

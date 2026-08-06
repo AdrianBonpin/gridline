@@ -66,9 +66,9 @@ export function ObjectFormTab({ connectionId, tab }: Props) {
 
   return (
     <div className="flex h-full flex-col bg-transparent">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+      <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+          <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
             {mode} {kind}
           </span>
           <h2 className="text-sm font-medium text-text">{title}</h2>
@@ -115,7 +115,7 @@ export function ObjectFormTab({ connectionId, tab }: Props) {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-4">
+      <div className="flex-1 overflow-auto">
         {view === "visual" ? (
           <KindForm
             connectionId={connectionId}
@@ -125,9 +125,11 @@ export function ObjectFormTab({ connectionId, tab }: Props) {
             onChange={handleChange}
           />
         ) : (
-          <pre className="text-xs text-text whitespace-pre-wrap rounded-md bg-canvas px-3 py-2 font-mono border border-border">
-            {preview}
-          </pre>
+          <div className="px-4 py-3">
+            <pre className="text-xs leading-6 font-mono whitespace-pre-wrap text-text">
+              {preview}
+            </pre>
+          </div>
         )}
       </div>
 

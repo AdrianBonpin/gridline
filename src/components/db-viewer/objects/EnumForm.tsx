@@ -1,4 +1,5 @@
 import type { DdlParams } from "../../../lib/objectCrud";
+import { FormRow, inputClass, controlClass, monoInputClass } from "./formRow";
 
 interface Props {
   params: DdlParams;
@@ -47,40 +48,43 @@ export function EnumForm({ params, schemas, onChange }: Props) {
   const labels = (action.labels as string[]) ?? [];
 
   return (
-    <div className="flex flex-col gap-2">
-      {schemas && schemas.length > 0 ? (
-        <select
-          value={(params.schema as string) ?? ""}
-          onChange={(e) => onChange({ ...params, schema: e.target.value })}
-          aria-label="Schema"
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-        >
-          <option value="" disabled>Schema</option>
-          {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-      ) : (
+    <div>
+      <FormRow label="Schema">
+        {schemas && schemas.length > 0 ? (
+          <select
+            value={(params.schema as string) ?? ""}
+            onChange={(e) => onChange({ ...params, schema: e.target.value })}
+            aria-label="Schema"
+            className={controlClass}
+          >
+            <option value="" disabled>Schema</option>
+            {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        ) : (
+          <input
+            type="text"
+            placeholder="Schema"
+            value={(params.schema as string) ?? ""}
+            onChange={(e) => onChange({ ...params, schema: e.target.value })}
+            className={inputClass}
+          />
+        )}
+      </FormRow>
+      <FormRow label="Name">
         <input
           type="text"
-          placeholder="Schema"
-          value={(params.schema as string) ?? ""}
-          onChange={(e) => onChange({ ...params, schema: e.target.value })}
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+          placeholder="Enum name"
+          value={(params.name as string) ?? ""}
+          onChange={(e) => onChange({ ...params, name: e.target.value })}
+          className={inputClass}
         />
-      )}
-      <input
-        type="text"
-        placeholder="Enum name"
-        value={(params.name as string) ?? ""}
-        onChange={(e) => onChange({ ...params, name: e.target.value })}
-        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-      />
-      <label className="flex flex-col gap-1">
-        <span className="text-xs text-text-muted">Operation</span>
+      </FormRow>
+      <FormRow label="Operation">
         <select
           aria-label="Operation"
           value={op}
           onChange={(e) => onChange(patchActionResetOp(params, e.target.value as EnumOp))}
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+          className={controlClass}
         >
           {(Object.keys(OP_LABELS) as EnumOp[]).map((key) => (
             <option key={key} value={key}>
@@ -88,115 +92,134 @@ export function EnumForm({ params, schemas, onChange }: Props) {
             </option>
           ))}
         </select>
-      </label>
+      </FormRow>
 
       {op === "create" && (
-        <div className="flex flex-col gap-1">
-          {labels.map((l, i) => (
-            <div key={i} className="flex gap-1">
-              <input
-                type="text"
-                placeholder={`Value ${i + 1}`}
-                value={l}
-                onChange={(e) =>
-                  onChange(
-                    patchAction(params, {
-                      labels: labels.map((x, j) => (j === i ? e.target.value : x)),
-                    }),
-                  )
-                }
-                className="flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-              />
-              <button
-                type="button"
-                onClick={() =>
-                  onChange(patchAction(params, { labels: labels.filter((_, j) => j !== i) }))
-                }
-                className="text-text-muted hover:text-red-400 px-2"
-                aria-label={`Remove value ${i + 1}`}
-              >
-                ×
-              </button>
-            </div>
-          ))}
-          <button
-            type="button"
-            onClick={() => onChange(patchAction(params, { labels: [...labels, ""] }))}
-            className="self-start text-xs text-accent hover:text-accent/80"
-          >
-            + Add value
-          </button>
-          <NoRemovalNote />
-        </div>
+        <FormRow label="Values" className="items-stretch">
+          <div className="min-w-0 flex-1 flex flex-col gap-1 px-4 py-2">
+            {labels.map((l, i) => (
+              <div key={i} className="flex gap-1 items-center">
+                <input
+                  type="text"
+                  placeholder={`Value ${i + 1}`}
+                  value={l}
+                  onChange={(e) =>
+                    onChange(
+                      patchAction(params, {
+                        labels: labels.map((x, j) => (j === i ? e.target.value : x)),
+                      }),
+                    )
+                  }
+                  className={monoInputClass}
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChange(patchAction(params, { labels: labels.filter((_, j) => j !== i) }))
+                  }
+                  className="text-text-muted hover:text-red-400 px-2"
+                  aria-label={`Remove value ${i + 1}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => onChange(patchAction(params, { labels: [...labels, ""] }))}
+              className="self-start text-xs text-accent hover:text-accent/80"
+            >
+              + Add value
+            </button>
+            <NoRemovalNote />
+          </div>
+        </FormRow>
       )}
 
       {op === "rename_type" && (
-        <input
-          type="text"
-          placeholder="New name"
-          value={(action.new_name as string) ?? ""}
-          onChange={(e) => onChange(patchAction(params, { new_name: e.target.value }))}
-          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-        />
+        <FormRow label="New name">
+          <input
+            type="text"
+            placeholder="New name"
+            value={(action.new_name as string) ?? ""}
+            onChange={(e) => onChange(patchAction(params, { new_name: e.target.value }))}
+            className={inputClass}
+          />
+        </FormRow>
       )}
 
       {op === "add_value" && (
-        <div className="flex flex-col gap-1">
-          <input
-            type="text"
-            placeholder="New value"
-            value={(action.value as string) ?? ""}
-            onChange={(e) => onChange(patchAction(params, { value: e.target.value }))}
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          />
-          <label className="flex items-center gap-2 text-sm text-text">
+        <>
+          <FormRow label="New value">
             <input
-              type="checkbox"
-              checked={!!action.if_not_exists}
-              onChange={(e) => onChange(patchAction(params, { if_not_exists: e.target.checked }))}
-              className="rounded border-border bg-surface text-accent focus:ring-accent"
+              type="text"
+              placeholder="New value"
+              value={(action.value as string) ?? ""}
+              onChange={(e) => onChange(patchAction(params, { value: e.target.value }))}
+              className={monoInputClass}
             />
-            IF NOT EXISTS
-          </label>
-          <input
-            type="text"
-            placeholder="BEFORE (optional)"
-            value={(action.before as string) ?? ""}
-            onChange={(e) =>
-              onChange(patchAction(params, { before: e.target.value || null, after: null }))
-            }
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          />
-          <input
-            type="text"
-            placeholder="AFTER (optional)"
-            value={(action.after as string) ?? ""}
-            onChange={(e) =>
-              onChange(patchAction(params, { after: e.target.value || null, before: null }))
-            }
-            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          />
-          <NoRemovalNote />
-        </div>
+          </FormRow>
+          <FormRow label="If not exists">
+            <label className="min-w-0 flex-1 flex items-center gap-2 px-3 font-heading text-xs text-text cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!action.if_not_exists}
+                onChange={(e) => onChange(patchAction(params, { if_not_exists: e.target.checked }))}
+                aria-label="IF NOT EXISTS"
+                className="rounded border-border bg-surface text-accent focus:ring-accent"
+              />
+              <span>IF NOT EXISTS</span>
+            </label>
+          </FormRow>
+          <FormRow label="Before">
+            <input
+              type="text"
+              placeholder="BEFORE (optional)"
+              value={(action.before as string) ?? ""}
+              onChange={(e) =>
+                onChange(patchAction(params, { before: e.target.value || null, after: null }))
+              }
+              className={monoInputClass}
+            />
+          </FormRow>
+          <FormRow label="After">
+            <input
+              type="text"
+              placeholder="AFTER (optional)"
+              value={(action.after as string) ?? ""}
+              onChange={(e) =>
+                onChange(patchAction(params, { after: e.target.value || null, before: null }))
+              }
+              className={monoInputClass}
+            />
+          </FormRow>
+          <div className="border-b border-border px-4 py-2">
+            <NoRemovalNote />
+          </div>
+        </>
       )}
 
       {op === "rename_value" && (
-        <div className="flex gap-1">
-          <input
-            type="text"
-            placeholder="From"
-            value={(action.from as string) ?? ""}
-            onChange={(e) => onChange(patchAction(params, { from: e.target.value }))}
-            className="flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          />
-          <input
-            type="text"
-            placeholder="To"
-            value={(action.to as string) ?? ""}
-            onChange={(e) => onChange(patchAction(params, { to: e.target.value }))}
-            className="flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-          />
-        </div>
+        <>
+          <FormRow label="From">
+            <input
+              type="text"
+              placeholder="From"
+              value={(action.from as string) ?? ""}
+              onChange={(e) => onChange(patchAction(params, { from: e.target.value }))}
+              className={monoInputClass}
+            />
+          </FormRow>
+          <FormRow label="To">
+            <input
+              type="text"
+              placeholder="To"
+              value={(action.to as string) ?? ""}
+              onChange={(e) => onChange(patchAction(params, { to: e.target.value }))}
+              className={monoInputClass}
+            />
+          </FormRow>
+        </>
       )}
     </div>
   );

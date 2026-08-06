@@ -12,10 +12,10 @@ export function ColumnPicker({ cols, selected, onToggle }: Props) {
           key={c}
           type="button"
           onClick={() => onToggle(c)}
-          className={`text-xs px-2 py-1 rounded-lg border ${
+          className={`text-xs px-2 py-1 rounded border transition-colors ${
             selected.includes(c)
               ? "bg-accent text-white border-accent"
-              : "border-border text-text"
+              : "border-border text-text hover:border-text-muted"
           }`}
         >
           {c}
