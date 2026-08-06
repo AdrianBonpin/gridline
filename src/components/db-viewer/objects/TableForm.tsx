@@ -404,7 +404,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto overscroll-y-none">
+      <div className="flex-1 overflow-y-auto" style={{ overscrollBehavior: "none" }}>
         {refusal && (
           <div className="border-b border-border px-4 py-2">
             <p className="text-xs text-amber-400">
@@ -437,7 +437,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
             )}
 
             <FormSectionHeader label="Columns" count={cols.length} />
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto" style={{ overscrollBehavior: "none" }}>
               <div className="border-b border-border flex items-stretch w-max">
                 <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center justify-center" />
                 <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">#</div>
@@ -471,7 +471,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                   ))}
                 </SortableContext>
               </DndContext>
-              <div className="border-b border-border px-4 h-max">
+              <div className="border-b border-border px-4 h-max py-2">
                 <button
                   type="button"
                   aria-label="Add column"
