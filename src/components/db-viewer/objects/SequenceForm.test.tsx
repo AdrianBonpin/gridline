@@ -60,6 +60,31 @@ describe("SequenceForm", () => {
     );
   });
 
+  it("the editing outline wraps only the value area, not the label cell", () => {
+    const onChange = vi.fn();
+    render(
+      <SequenceForm
+        params={{ schema: "public", name: "s", action: { op: "create" } }}
+        onChange={onChange}
+      />,
+    );
+
+    // The children wrapper (direct parent of the input) carries the amber
+    // focus-within editing outline, exactly like a grid editing cell.
+    const input = screen.getByPlaceholderText("Sequence name");
+    const valueArea = input.parentElement;
+    expect(valueArea).not.toBeNull();
+    expect(valueArea!.className).toContain("focus-within:outline");
+    expect(valueArea!.className).toContain("focus-within:outline-amber-400");
+    expect(valueArea!.className).toContain("focus-within:outline-offset-[-2px]");
+
+    // The label cell must stay clean: no ancestor of the label may carry
+    // the editing outline (regression: the old row-level outline lit up the
+    // whole row, label cell included).
+    const label = screen.getByText("Name");
+    expect(label.closest('[class*="focus-within:outline"]')).toBeNull();
+  });
+
   it("switching to restart shows only the with-field", () => {
     render(
       <StatefulSequenceForm

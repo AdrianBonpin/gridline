@@ -17,7 +17,7 @@ export function FormRow({ label, children, className }: FormRowProps) {
   return (
     <div
       className={[
-        "border-b border-border flex flex-row items-center",
+        "border-b border-border flex flex-row items-stretch",
         className ?? "",
       ].join(" ")}
     >
@@ -26,7 +26,9 @@ export function FormRow({ label, children, className }: FormRowProps) {
           {label}
         </span>
       </div>
-      {children}
+      <div className="flex-1 min-w-0 flex flex-row items-center focus-within:outline focus-within:outline-2 focus-within:outline-amber-400 focus-within:outline-offset-[-2px]">
+        {children}
+      </div>
     </div>
   );
 }
