@@ -153,3 +153,17 @@ async fn rebuild_table_rolls_back_on_failure() {
         c.batch_execute("DROP TABLE rebuild_t").await.unwrap();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires live PG"]
+async fn get_role_privileges_returns_grants_across_object_classes() {
+    let (pm, id) = pool().await;
+    let out = crate::commands::objects::get_role_privileges_inner(&pm, &id, "read_only").await
+        .unwrap_or_else(|e| panic!("privileges command failed: {e}"));
+    let classes: std::collections::HashSet<String> =
+        out.iter().map(|p| p.object_class.clone()).collect();
+    assert!(classes.contains("table"), "expected a table grant: {out:?}");
+    assert!(classes.contains("routine"), "expected a routine grant: {out:?}");
+    assert!(classes.contains("schema"), "expected a schema grant: {out:?}");
+    assert!(classes.contains("database"), "expected a database grant: {out:?}");
+}

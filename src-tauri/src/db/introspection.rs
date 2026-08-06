@@ -379,7 +379,7 @@ pub fn pg_role_memberships_query() -> String {
 pub fn pg_table_privileges_query(role: &str) -> String {
     format!(
         "SELECT table_schema AS schema, table_name AS name, \
-         array_agg(privilege_type) AS privileges, \
+         array_agg(privilege_type::text) AS privileges, \
          bool_or(is_grantable = 'YES') AS grantable \
          FROM information_schema.table_privileges \
          WHERE grantee = '{}' AND table_schema NOT IN ('pg_catalog','information_schema') \
@@ -390,15 +390,18 @@ pub fn pg_table_privileges_query(role: &str) -> String {
 }
 
 /// Sequence privileges for a grantee, grouped one row per sequence.
+/// aclexplode-based (role_sequence_grants was removed in PG 15).
 pub fn pg_sequence_privileges_query(role: &str) -> String {
     format!(
-        "SELECT object_schema AS schema, object_name AS name, \
-         array_agg(privilege_type) AS privileges, \
-         bool_or(is_grantable = 'YES') AS grantable \
-         FROM information_schema.role_sequence_grants \
-         WHERE grantee = '{}' AND object_type = 'SEQUENCE' \
-         GROUP BY object_schema, object_name \
-         ORDER BY object_schema, object_name",
+        "SELECT n.nspname AS schema, c.relname AS name, \
+         array_agg(p.privilege_type::text) AS privileges, \
+         bool_or(p.is_grantable) AS grantable \
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace, \
+         LATERAL aclexplode(c.relacl) p \
+         WHERE c.relkind = 'S' AND n.nspname NOT IN ('pg_catalog','information_schema') \
+         AND p.grantee = (SELECT oid FROM pg_roles WHERE rolname = '{}') \
+         GROUP BY n.nspname, c.relname \
+         ORDER BY n.nspname, c.relname",
         role
     )
 }
@@ -407,7 +410,7 @@ pub fn pg_sequence_privileges_query(role: &str) -> String {
 pub fn pg_routine_privileges_query(role: &str) -> String {
     format!(
         "SELECT routine_schema AS schema, routine_name AS name, \
-         array_agg(privilege_type) AS privileges, \
+         array_agg(privilege_type::text) AS privileges, \
          bool_or(is_grantable = 'YES') AS grantable \
          FROM information_schema.routine_privileges \
          WHERE grantee = '{}' \
@@ -417,16 +420,17 @@ pub fn pg_routine_privileges_query(role: &str) -> String {
     )
 }
 
-/// Schema privileges for a grantee.
+/// Schema privileges for a grantee (USAGE/CREATE). aclexplode-based —
+/// information_schema has no schema_privileges view.
 pub fn pg_schema_privileges_query(role: &str) -> String {
     format!(
-        "SELECT schema_name AS name, \
-         array_agg(privilege_type) AS privileges, \
-         bool_or(is_grantable = 'YES') AS grantable \
-         FROM information_schema.schema_privileges \
-         WHERE grantee = '{}' AND schema_name NOT IN ('pg_catalog','information_schema') \
-         GROUP BY schema_name \
-         ORDER BY schema_name",
+        "SELECT n.nspname AS name, \
+         array_agg(p.privilege_type::text) AS privileges, \
+         bool_or(p.is_grantable) AS grantable \
+         FROM pg_namespace n, LATERAL aclexplode(n.nspacl) p \
+         WHERE n.nspname NOT IN ('pg_catalog','information_schema') \
+         AND p.grantee = (SELECT oid FROM pg_roles WHERE rolname = '{}') \
+         GROUP BY n.nspname ORDER BY n.nspname",
         role
     )
 }
@@ -492,7 +496,7 @@ pub fn pg_table_fk_in_query() -> String {
 
 /// Grants on this table (all grantees), grouped. Parameterized $1 schema, $2 table.
 pub fn pg_table_grants_query() -> String {
-    "SELECT grantee, array_agg(privilege_type) AS privileges, \
+    "SELECT grantee, array_agg(privilege_type::text) AS privileges, \
      bool_or(is_grantable = 'YES') AS grantable \
      FROM information_schema.table_privileges \
      WHERE table_schema = $1 AND table_name = $2 AND grantee <> 'PUBLIC' \
