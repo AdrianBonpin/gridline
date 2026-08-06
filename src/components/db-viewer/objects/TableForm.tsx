@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { GripVertical, Link, Plus, Settings2, X } from "lucide-react";
 import { AnimatePresence } from "motion/react";
@@ -28,6 +28,10 @@ import { getCapabilities } from "../../../lib/dbCapabilities";
 import { FkPanel, type FkDefinition } from "./FkPanel";
 import { FormRow, FormSectionHeader, inputClass, controlClass } from "./formRow";
 import { DataTypeIcon } from "../../ui/DataTypeIcon";
+
+const SqlEditorField = lazy(() =>
+  import("../../editor/SqlEditorField").then((m) => ({ default: m.SqlEditorField })),
+);
 
 const PG_TYPES = [
   "int",
@@ -601,9 +605,15 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
           </>
         ) : (
           <div className="px-4 py-3">
-            <pre className="text-xs leading-6 font-mono whitespace-pre-wrap text-text">
-              {preview}
-            </pre>
+            <Suspense
+              fallback={
+                <pre className="text-xs leading-6 font-mono whitespace-pre-wrap text-text">
+                  {preview}
+                </pre>
+              }
+            >
+              <SqlEditorField value={preview} onChange={() => {}} readOnly height={420} />
+            </Suspense>
           </div>
         )}
       </div>
