@@ -226,6 +226,11 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
       </div>
 
       <div className="flex-1 overflow-auto" style={{ overscrollBehavior: "none" }}>
+        {table.trim() === "" && (
+          <p className="border-b border-border px-4 py-2 text-xs text-amber-400">
+            Enter a table name in the form first — a foreign key needs a named table.
+          </p>
+        )}
         {loading && (
           <p className="border-b border-border px-4 py-2 text-xs text-text-muted">Loading schema graph…</p>
         )}
@@ -384,7 +389,7 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
         <button
           type="button"
           onClick={addFk}
-          disabled={staging || pairs.length === 0 || pairs.some((p) => p.localCol === "" || p.refCol === "")}
+          disabled={staging || table.trim() === "" || pairs.length === 0 || pairs.some((p) => p.localCol === "" || p.refCol === "")}
           className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
         >
           Add FK

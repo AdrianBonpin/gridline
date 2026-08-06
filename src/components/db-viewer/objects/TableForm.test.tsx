@@ -435,6 +435,33 @@ describe("TableForm", () => {
     });
   });
 
+  it("shows staged FK changes in the Foreign keys section", async () => {
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "public",
+          name: "products",
+          action: { op: "create", columns: [] },
+        },
+        title: "Create Table",
+        description: "Create Table",
+        mode: "create",
+      },
+      title: "Create Table",
+    } as any;
+    seedFormTab(tab);
+    useDbViewerStore.getState().addChange({
+      type: "ddl",
+      sql: 'ALTER TABLE "public"."products" ADD FOREIGN KEY ("category_id") REFERENCES "public"."categories" ("id")',
+      description: "Add FK category_id → public.categories",
+    });
+    render(<TableForm connectionId="c1" tab={tab} />);
+    expect(await screen.findByText(/Add FK category_id/)).toBeInTheDocument();
+    expect(screen.getByText(/ADD FOREIGN KEY/)).toBeInTheDocument();
+  });
+
   it("opens the FK panel with the column preselected", async () => {
     (cmd.getSchemaGraph as any).mockResolvedValue({
       tables: [

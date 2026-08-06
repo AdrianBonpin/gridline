@@ -882,6 +882,7 @@ interface RelationshipsSectionProps {
 
 function RelationshipsSection({ connectionId, schema, table, onAddFk }: RelationshipsSectionProps) {
   const [constraints, setConstraints] = useState<ConstraintInfo[]>([]);
+  const queued = useDbViewerStore((s) => s.changesQueue);
 
   useEffect(() => {
     let active = true;
@@ -903,6 +904,20 @@ function RelationshipsSection({ connectionId, schema, table, onAddFk }: Relation
     [constraints],
   );
 
+  // FKs staged in this session live in the changes queue (create mode has no DB row yet).
+  const queuedFks = useMemo(
+    () =>
+      queued.filter(
+        (q) =>
+          q.type === "ddl" &&
+          q.sql.toUpperCase().includes("FOREIGN KEY") &&
+          q.sql.includes(`"${schema}"."${table}"`),
+      ),
+    [queued, schema, table],
+  );
+
+  const allFks = [...queuedFks, ...fks];
+
   return (
     <div>
       <div className="border-b border-border px-4 py-2 flex items-center justify-between">
@@ -919,11 +934,27 @@ function RelationshipsSection({ connectionId, schema, table, onAddFk }: Relation
         </button>
       </div>
 
-      {fks.length === 0 && (
+      {allFks.length === 0 && (
         <div className="border-b border-border px-4 py-2">
           <p className="text-xs text-text-muted">No foreign keys listed.</p>
         </div>
       )}
+
+      {allFks.map((fk, i) => (
+        <div key={i} className="border-b border-border px-4 py-2">
+          {"sql" in fk ? (
+            <>
+              <p className="text-xs text-text">{fk.description}</p>
+              <p className="font-mono text-[11px] text-text-muted break-all mt-0.5">{fk.sql}</p>
+            </>
+          ) : (
+            <p className="text-xs text-text">
+              <span className="font-mono">{fk.name}</span>{" "}
+              <span className="text-text-muted">{fk.definition}</span>
+            </p>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
