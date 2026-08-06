@@ -6,7 +6,7 @@ describe("dbCapabilities", () => {
     const c = DB_CAPABILITIES.postgresql;
     expect(c).toEqual<DbCapabilities>({
       explorer: true, queries: true, objects: true, visualizer: true,
-      tools: true, editing: true, import: true, ddl: true,
+      tools: true, editing: true, import: true, ddl: true, objectCrud: true,
     });
   });
 
@@ -37,7 +37,7 @@ describe("dbCapabilities", () => {
   it("gives Redis nothing (connection+test only)", () => {
     expect(DB_CAPABILITIES.redis).toEqual<DbCapabilities>({
       explorer: false, queries: false, objects: false, visualizer: false,
-      tools: false, editing: false, import: false, ddl: false,
+      tools: false, editing: false, import: false, ddl: false, objectCrud: false,
     });
   });
 
@@ -56,5 +56,17 @@ describe("dbCapabilities", () => {
     expect(getCapabilities("mysql").objects).toBe(false);
     expect(getCapabilities("sqlite").objects).toBe(false);
     expect(getCapabilities("redis").objects).toBe(false);
+  });
+});
+
+describe("objectCrud capability", () => {
+  it("is true only for postgresql", () => {
+    expect(DB_CAPABILITIES.postgresql.objectCrud).toBe(true);
+    expect(DB_CAPABILITIES.mysql.objectCrud).toBe(false);
+    expect(DB_CAPABILITIES.sqlite.objectCrud).toBe(false);
+    expect(DB_CAPABILITIES.redis.objectCrud).toBe(false);
+  });
+  it("unknown types get objectCrud false", () => {
+    expect(getCapabilities("oracle").objectCrud).toBe(false);
   });
 });

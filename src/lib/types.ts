@@ -199,7 +199,8 @@ export type ChangeItemType =
   | "create_index"
   | "drop_index"
   | "bulk_insert"
-  | "empty_table";
+  | "empty_table"
+  | "ddl";
 
 export interface ChangeItem {
   type: ChangeItemType;

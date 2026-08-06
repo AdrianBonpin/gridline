@@ -62,3 +62,19 @@ describe("buildChangeSql", () => {
     expect(buildChangeSql({ id: "1", type: "drop_table", schema: "public", table: "t" } as any)).toBe('DROP TABLE "public"."t"');
   });
 });
+
+const ddlItem: QueueItem = {
+  id: "ch-1", type: "ddl",
+  sql: "CREATE TYPE public.role AS ENUM ('admin')",
+  status: "pending", createdAt: 0,
+};
+describe("ddl change", () => {
+  it("builds a ddl payload with id + type + sql", () => {
+    expect(buildChangePayload(ddlItem)).toEqual({
+      id: "ch-1", type: "ddl", sql: "CREATE TYPE public.role AS ENUM ('admin')",
+    });
+  });
+  it("preview SQL is the raw sql", () => {
+    expect(buildChangeSql(ddlItem)).toBe("CREATE TYPE public.role AS ENUM ('admin')");
+  });
+});
