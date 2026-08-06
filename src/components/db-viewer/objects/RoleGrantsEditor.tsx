@@ -38,7 +38,6 @@ export function RoleGrantsEditor({ connectionId, role }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [showAll, setShowAll] = useState<Record<string, boolean>>({});
   const PREVIEW_COUNT = 5;
 
   useEffect(() => {
@@ -118,10 +117,9 @@ export function RoleGrantsEditor({ connectionId, role }: Props) {
         <p className="px-4 py-2 text-xs text-text-muted">No privileges found for this role.</p>
       )}
       {Array.from(grouped.entries()).map(([cls, list]) => {
-        const isOpen = !!expanded[cls];
+        const isExpanded = !!expanded[cls];
         const hasMore = list.length > PREVIEW_COUNT;
-        const showTruncated = hasMore && !showAll[cls];
-        const visible = showTruncated ? list.slice(0, PREVIEW_COUNT) : list;
+        const visible = !isExpanded && hasMore ? list.slice(0, PREVIEW_COUNT) : list;
         return (
           <div key={cls} className="border-b border-border">
             <button
@@ -139,42 +137,38 @@ export function RoleGrantsEditor({ connectionId, role }: Props) {
                 </span>
                 <ChevronDown
                   className={`h-3.5 w-3.5 text-text-muted transition-transform duration-150 ${
-                    isOpen ? "" : "-rotate-90"
+                    isExpanded ? "-rotate-180" : ""
                   }`}
                 />
               </span>
             </button>
-            {isOpen && (
-              <>
-                <div className="relative overflow-hidden">
-                  {visible.map((entry) => (
-                    <div
-                      key={`${entry.object_class}:${entry.schema ?? ""}:${entry.name}`}
-                      className="px-4 py-1.5 flex items-center gap-2 text-xs text-text"
-                    >
-                      <span className="font-mono text-accent">
-                        {entry.schema ? `${entry.schema}.` : ""}
-                        {entry.name}
-                      </span>
-                      <span className="text-text-muted">
-                        {entry.privileges.join(", ")}
-                      </span>
-                    </div>
-                  ))}
-                  {showTruncated && (
-                    <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-canvas to-transparent" />
-                  )}
+            <div className="relative overflow-hidden">
+              {visible.map((entry) => (
+                <div
+                  key={`${entry.object_class}:${entry.schema ?? ""}:${entry.name}`}
+                  className="px-4 py-1.5 flex items-center gap-2 text-xs text-text"
+                >
+                  <span className="font-mono text-accent">
+                    {entry.schema ? `${entry.schema}.` : ""}
+                    {entry.name}
+                  </span>
+                  <span className="text-text-muted">
+                    {entry.privileges.join(", ")}
+                  </span>
                 </div>
-                {showTruncated && (
-                  <button
-                    type="button"
-                    onClick={() => setShowAll((s) => ({ ...s, [cls]: true }))}
-                    className="px-4 pb-2 text-[11px] text-accent hover:text-accent-hover cursor-pointer"
-                  >
-                    Show {list.length - PREVIEW_COUNT} more
-                  </button>
-                )}
-              </>
+              ))}
+              {!isExpanded && hasMore && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-canvas to-transparent" />
+              )}
+            </div>
+            {!isExpanded && hasMore && (
+              <button
+                type="button"
+                onClick={() => setExpanded((e) => ({ ...e, [cls]: true }))}
+                className="px-4 pb-2 text-[11px] text-accent hover:text-accent-hover cursor-pointer"
+              >
+                Show {list.length - PREVIEW_COUNT} more
+              </button>
             )}
           </div>
         );

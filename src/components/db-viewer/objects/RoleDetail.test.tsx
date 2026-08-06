@@ -31,9 +31,6 @@ describe("RoleDetail", () => {
     render(<RoleDetail connectionId="c1" item={baseRole} />);
     expect(screen.getByText("app")).toBeInTheDocument();
     expect(screen.getByText("Can login")).toBeInTheDocument();
-    fireEvent.click(
-      await screen.findByRole("button", { name: /toggle table privileges/i }),
-    );
     expect(await screen.findByText("public.users")).toBeInTheDocument();
   });
 

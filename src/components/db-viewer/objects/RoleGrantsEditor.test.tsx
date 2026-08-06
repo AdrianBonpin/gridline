@@ -28,16 +28,12 @@ describe("RoleGrantsEditor", () => {
     });
   });
 
-  it("renders current privileges grouped by object class (collapsed by default, expands on click)", async () => {
+  it("shows first 5 privileges while collapsed, expands to show all", async () => {
     vi.spyOn(cmd, "getRolePrivileges").mockResolvedValue([
       { object_class: "table", schema: "public", name: "users", privileges: ["SELECT"], grantable: false },
     ]);
     render(<RoleGrantsEditor connectionId="c1" role="app" />);
-    // Collapsed by default — entry not visible until the section is expanded.
-    expect(screen.queryByText("public.users")).not.toBeInTheDocument();
-    fireEvent.click(
-      await screen.findByRole("button", { name: /toggle table privileges/i }),
-    );
+    // Fewer than 5 entries — visible immediately without expanding.
     expect(await screen.findByText("public.users")).toBeInTheDocument();
     expect((await screen.findAllByText("SELECT")).length).toBeGreaterThanOrEqual(1);
   });
@@ -52,14 +48,15 @@ describe("RoleGrantsEditor", () => {
     }));
     vi.spyOn(cmd, "getRolePrivileges").mockResolvedValue(entries);
     render(<RoleGrantsEditor connectionId="c1" role="app" />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: /toggle table privileges/i }),
-    );
+    // Collapsed by default: first 5 visible, rest hidden.
     expect(await screen.findByText("public.t1")).toBeInTheDocument();
     expect(screen.getByText("public.t5")).toBeInTheDocument();
     expect(screen.queryByText("public.t6")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /show 2 more/i }));
     expect(await screen.findByText("public.t6")).toBeInTheDocument();
     expect(screen.getByText("public.t7")).toBeInTheDocument();
+    // Header chevron can collapse it back.
+    fireEvent.click(screen.getByRole("button", { name: /toggle table privileges/i }));
+    expect(screen.queryByText("public.t6")).not.toBeInTheDocument();
   });
 });
