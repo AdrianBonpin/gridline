@@ -50,4 +50,18 @@ describe("v0.7.6 docs coverage", () => {
     expect(readme).toMatch(/Changes queue \(stage → commit\)\s*\|[^|]*❌[^|]*\|[^|]*\|[^|]*\|\s*\*\*✅ Queue → Commit All\*\*/);
     expect(readme).not.toMatch(/Inline cell editing.*Upcoming/);
   });
+  it("AGENTS.md marks object management CRUD complete", () => {
+    expect(agents).toMatch(/Object management CRUD \| ✅/);
+  });
+  it("AGENTS.md marks the keychain toggle complete", () => {
+    expect(agents).toMatch(/Enable keychain toggle \| ✅/);
+  });
+  it("AGENTS.md marks the Objects view tabbed workspace complete", () => {
+    expect(agents).toMatch(/Objects view tabbed workspace \| ✅/);
+  });
+  it("README links to v0.7.6 assets in both download tables", () => {
+    expect(readme).toContain("releases/download/v0.7.6/");
+    expect(readme).toContain("Gridline_0.7.6_aarch64.dmg");
+    expect(readme).toContain("Gridline-0.7.6-1.x86_64.rpm");
+  });
 });
