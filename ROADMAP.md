@@ -43,6 +43,13 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 - **PostgreSQL users/roles + grants management** — create roles and set privileges from a UI (DB Pro has this at 0% on their roadmap — a differentiator to hold)
 - **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
 
+### Table & relationship management (next)
+
+- **Create table** — a "Create Table…" tab in the workspace using the same Visual ⇄ SQL flow as object create/edit: a columns grid (name / type / nullable / default / PK per row, add/remove rows) with a live SQL preview
+- **Edit table (robust column diff)** — open an existing table's columns in the same grid; on Stage, diff old vs new columns and emit the right statements, one per queue item: `ADD COLUMN`, `DROP COLUMN`, `RENAME COLUMN`, `ALTER COLUMN … TYPE`, `ALTER COLUMN … SET|DROP DEFAULT`, `SET|DROP NOT NULL`
+- **Relationships between tables & schemas** — FK create/edit/drop from a table editor (including cross-schema FKs) and schema-level relationship maintenance
+- **Related niceties** — column reordering (PG requires a table rebuild — decide semantics), table options (tablespace, row-level security), multi-column PRIMARY KEY on create
+
 ## 📋 In the queue
 
 ### Full Redis Support
