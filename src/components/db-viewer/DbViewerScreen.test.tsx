@@ -16,6 +16,9 @@ vi.mock("../../hooks/useDbConnection", () => ({
     useDbConnection: (_connectionId: string) => ({
         connectionError: null,
         connect: vi.fn(),
+        passwordPromptOpen: false,
+        submitPassword: vi.fn(),
+        cancelPassword: vi.fn(),
     }),
 }));
 

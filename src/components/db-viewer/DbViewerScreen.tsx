@@ -20,6 +20,7 @@ import { VirtualDataGrid } from "../grid/VirtualDataGrid";
 import { RowDetailDrawer } from "../grid/RowDetailDrawer";
 import { TableControls } from "./TableControls";
 import { EditConnectionModal } from "./EditConnectionModal";
+import { PasswordPromptDialog } from "./PasswordPromptDialog";
 import { useDbConnection } from "../../hooks/useDbConnection";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useConnectionStore } from "../../stores/connectionStore";
@@ -162,7 +163,8 @@ export function DbViewerScreen({
     onHome,
     onSettings,
 }: DbViewerScreenProps) {
-    const { connectionError, connect } = useDbConnection(connectionId);
+    const { connectionError, connect, passwordPromptOpen, submitPassword, cancelPassword } =
+        useDbConnection(connectionId);
     const [dismissedError, setDismissedError] = useState<string | null>(null);
     const [currentView, setCurrentView] = useState<string>("db-viewer");
     const [tablePanelWidth, setTablePanelWidth] = useState(280);
@@ -1473,6 +1475,12 @@ const onQueriesPanelResizeStart = useCallback(
                         onSaved={() => {}}
                     />
                 )}
+                <PasswordPromptDialog
+                    open={passwordPromptOpen}
+                    connectionName={currentConnection?.name ?? ""}
+                    onConnect={submitPassword}
+                    onCancel={cancelPassword}
+                />
                 {capabilities.objects && (
                     <ObjectSearchPalette connectionId={connectionId} />
                 )}

@@ -38,15 +38,37 @@ const mockConnection = {
   ssl_ca_path: null,
   ssl_cert_path: null,
   ssl_key_path: null,
+  use_keychain: undefined as boolean | undefined,
   created_at: "2026-07-26T00:00:00Z",
   updated_at: "2026-07-26T00:00:00Z",
 };
+
+// Mutable stand-in for the connection store's session-password behavior: a
+// fallback password (default "pw", like a keychain hit) plus a per-connection
+// session map written by setSessionPassword (like the real store).
+const mockStoreState = vi.hoisted(() => {
+  const sessionPasswords = new Map<string, string>();
+  let fallbackPassword: string | null = "pw";
+  return {
+    sessionPasswords,
+    setFallbackPassword: (p: string | null) => {
+      fallbackPassword = p;
+    },
+    getConnectionPassword: vi.fn(
+      async (id: string) => sessionPasswords.get(id) ?? fallbackPassword,
+    ),
+    setSessionPassword: vi.fn((id: string, pw: string) => {
+      sessionPasswords.set(id, pw);
+    }),
+  };
+});
 
 vi.mock("../stores/connectionStore", () => ({
   useConnectionStore: {
     getState: () => ({
       connections: [mockConnection],
-      getConnectionPassword: async () => "pw",
+      getConnectionPassword: mockStoreState.getConnectionPassword,
+      setSessionPassword: mockStoreState.setSessionPassword,
     }),
   },
 }));
@@ -60,9 +82,18 @@ function Harness() {
   );
 }
 
+function PromptHarness() {
+  const { passwordPromptOpen } = useDbConnection("c1");
+  return <div data-testid="prompt">{passwordPromptOpen ? "open" : "closed"}</div>;
+}
+
 describe("useDbConnection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset the mutable store stand-in + connection for isolation.
+    mockStoreState.sessionPasswords.clear();
+    mockStoreState.setFallbackPassword("pw");
+    (mockConnection as any).use_keychain = undefined;
     useDbViewerStore.getState().reset();
     mockCommands.getDatabases.mockResolvedValue(["mydb", "otherdb"]);
     mockCommands.getSchemas.mockResolvedValue(["app", "public"]);
@@ -180,6 +211,52 @@ describe("useDbConnection", () => {
       "reporting",
     ]);
     expect(useDbViewerStore.getState().currentSchema).toBe("public");
+  });
+
+  it("opens the password prompt when use_keychain=false and no session password", async () => {
+    mockConnection.use_keychain = false;
+    mockStoreState.setFallbackPassword(null);
+    render(<PromptHarness />);
+    await waitFor(() =>
+      expect(screen.getByTestId("prompt")).toHaveTextContent("open"),
+    );
+    // Early return: no Tauri call fires before the user submits a password.
+    expect(mockCommands.dbConnect).not.toHaveBeenCalled();
+  });
+
+  it("does not prompt when keychain is enabled (even without a stored password)", async () => {
+    mockConnection.use_keychain = true;
+    mockStoreState.setFallbackPassword(null);
+    render(<PromptHarness />);
+    await waitFor(() =>
+      expect(mockCommands.dbConnect).toHaveBeenCalled(),
+    );
+    expect(screen.getByTestId("prompt")).toHaveTextContent("closed");
+  });
+
+  it("submitPassword stores the session password and reconnects", async () => {
+    mockConnection.use_keychain = false;
+    mockStoreState.setFallbackPassword(null);
+    let submit: ((pw: string) => void) | null = null;
+    function SubmitHarness() {
+      const { passwordPromptOpen, submitPassword } = useDbConnection("c1");
+      submit = submitPassword;
+      return (
+        <div data-testid="prompt">
+          {passwordPromptOpen ? "open" : "closed"}
+        </div>
+      );
+    }
+    render(<SubmitHarness />);
+    await waitFor(() =>
+      expect(screen.getByTestId("prompt")).toHaveTextContent("open"),
+    );
+    act(() => submit!("secret"));
+    expect(mockStoreState.setSessionPassword).toHaveBeenCalledWith("c1", "secret");
+    await waitFor(() =>
+      expect(screen.getByTestId("prompt")).toHaveTextContent("closed"),
+    );
+    await waitFor(() => expect(mockCommands.dbConnect).toHaveBeenCalled());
   });
 
   it("fetches ssh secrets from keychain before connecting when ssh_host is set", async () => {
