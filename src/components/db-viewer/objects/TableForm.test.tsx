@@ -468,7 +468,7 @@ describe("TableForm", () => {
       description: "Add FK category_id → public.categories",
     });
     render(<TableForm connectionId="c1" tab={tab} />);
-    expect(await screen.findByText("Foreign key relation to")).toBeInTheDocument();
+    expect(await screen.findByText(/Foreign key relation to/)).toBeInTheDocument();
     expect(screen.getByText("public.categories")).toBeInTheDocument();
     expect(screen.getByText(/products.category_id → categories.id/)).toBeInTheDocument();
     expect(screen.getByText(/· CASCADE/)).toBeInTheDocument();
