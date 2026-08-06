@@ -6,7 +6,10 @@ import { useDbViewerStore } from "../../../stores/dbViewerStore";
 import * as cmd from "../../../lib/commands";
 import { buildObjectDdl } from "../../../lib/objectCrud";
 import type { SchemaGraph } from "../../../lib/types";
-import { controlClass } from "./formRow";
+
+// Panel selects: transparent, fill the available width (no surface bg like the grid).
+const panelSelect =
+  "w-full bg-transparent rounded px-2 py-1 font-heading text-xs text-text outline-none placeholder:text-text-muted cursor-pointer";
 
 export interface FkColumn {
   name: string;
@@ -39,11 +42,11 @@ const FK_ACTIONS = ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT
 
 function Section({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="border-b border-border px-4 py-2">
-      <div className="text-[11px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">
+    <div className="border-b border-border">
+      <div className="border-b border-border px-4 py-1.5 text-[11px] font-semibold text-text-muted uppercase tracking-wider">
         {label}
       </div>
-      {children}
+      <div className="px-4 py-2">{children}</div>
     </div>
   );
 }
@@ -247,7 +250,7 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
                 aria-label="Schema"
                 value={refSchema}
                 onChange={(e) => setRefSchema(e.target.value)}
-                className={controlClass}
+                className={panelSelect}
               >
                 {schemas.map((s) => (
                   <option key={s} value={s}>
@@ -262,7 +265,7 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
                 aria-label="Table"
                 value={refTable}
                 onChange={(e) => setRefTable(e.target.value)}
-                className={controlClass}
+                className={panelSelect}
               >
                 {tablesInSchema.map((t) => (
                   <option key={t.name} value={t.name}>
@@ -275,17 +278,17 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
             {refSchema && refTable && (
               <>
             <Section label={`Select columns from ${schema}.${tableLabel} to reference to`}>
-              <p className="text-xs text-text-muted mb-2">
-                {schema}.{tableLabel}{" "}
-                <span className="text-border">|</span> {refSchema}.{refTable || "—"}
-              </p>
+              <div className="grid grid-cols-2 gap-3 mb-2 text-xs text-text-muted">
+                <span>{schema}.{tableLabel}</span>
+                <span>{refSchema}.{refTable || "—"}</span>
+              </div>
               {pairs.map((pair, i) => (
-                <div key={i} className="flex items-center gap-2 mb-2">
+                <div key={i} className="grid grid-cols-2 gap-3 mb-2 items-center">
                   <select
                     aria-label={`Local column ${i + 1}`}
                     value={pair.localCol}
                     onChange={(e) => setPair(i, "localCol", e.target.value)}
-                    className={controlClass}
+                    className={panelSelect}
                   >
                     {localColumns.map((c) => (
                       <option key={c.name} value={c.name}>
@@ -293,29 +296,31 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
                       </option>
                     ))}
                   </select>
-                  <select
-                    aria-label={`Referenced column ${i + 1}`}
-                    value={pair.refCol}
-                    onChange={(e) => setPair(i, "refCol", e.target.value)}
-                    className={controlClass}
-                  >
-                    {refColumns.map((c) => (
-                      <option key={c.name} value={c.name}>
-                        {c.name} ({c.data_type})
-                        {c.is_pk ? " (PK)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                  {pairs.length > 1 && (
-                    <button
-                      type="button"
-                      aria-label={`Remove pair ${i + 1}`}
-                      onClick={() => removePair(i)}
-                      className="shrink-0 text-text-muted hover:text-red-400"
+                  <div className="flex items-center gap-1">
+                    <select
+                      aria-label={`Referenced column ${i + 1}`}
+                      value={pair.refCol}
+                      onChange={(e) => setPair(i, "refCol", e.target.value)}
+                      className={panelSelect}
                     >
-                      <X size={12} />
-                    </button>
-                  )}
+                      {refColumns.map((c) => (
+                        <option key={c.name} value={c.name}>
+                          {c.name} ({c.data_type})
+                          {c.is_pk ? " (PK)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    {pairs.length > 1 && (
+                      <button
+                        type="button"
+                        aria-label={`Remove pair ${i + 1}`}
+                        onClick={() => removePair(i)}
+                        className="shrink-0 text-text-muted hover:text-red-400"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
               <button
@@ -346,7 +351,7 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
                 aria-label="On update"
                 value={onUpdate}
                 onChange={(e) => setOnUpdate(e.target.value)}
-                className={controlClass}
+                className={panelSelect}
               >
                 {FK_ACTIONS.map((a) => (
                   <option key={a} value={a}>
@@ -361,7 +366,7 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
                 aria-label="On delete"
                 value={onDelete}
                 onChange={(e) => setOnDelete(e.target.value)}
-                className={controlClass}
+                className={panelSelect}
               >
                 {FK_ACTIONS.map((a) => (
                   <option key={a} value={a}>
