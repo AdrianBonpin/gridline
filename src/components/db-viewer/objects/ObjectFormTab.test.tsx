@@ -11,6 +11,12 @@ vi.mock("../../../lib/objectCrud", () => ({
   buildObjectDdl: vi.fn(),
 }));
 
+vi.mock("../../editor/SqlEditorField", () => ({
+  SqlEditorField: ({ value, readOnly }: { value: string; readOnly?: boolean }) => (
+    <textarea data-testid="sql-editor" readOnly={readOnly} value={value} onChange={() => {}} />
+  ),
+}));
+
 describe("ObjectFormTab", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -58,11 +64,9 @@ describe("ObjectFormTab", () => {
     render(<ObjectFormTab connectionId={connectionId} tab={baseTab} />);
 
     fireEvent.click(screen.getByRole("button", { name: "SQL" }));
-    await waitFor(() =>
-      expect(
-        screen.getByText(/CREATE SEQUENCE "public"."my_seq"/),
-      ).toBeInTheDocument(),
-    );
+    const ed = await screen.findByTestId("sql-editor");
+    expect(ed).toHaveValue('CREATE SEQUENCE "public"."my_seq" START WITH 1;');
+    expect(ed).toHaveProperty("readOnly", true);
 
     fireEvent.click(screen.getByRole("button", { name: "Visual" }));
     expect(screen.getByPlaceholderText("Sequence name")).toBeInTheDocument();

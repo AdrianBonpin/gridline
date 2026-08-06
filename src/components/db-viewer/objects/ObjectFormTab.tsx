@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { KindForm } from "./KindForm";
 import {
   buildObjectDdl,
   type DdlParams,
 } from "../../../lib/objectCrud";
 import { useDbViewerStore, type ViewerTab } from "../../../stores/dbViewerStore";
+
+const SqlEditorField = lazy(() =>
+  import("../../editor/SqlEditorField").then((m) => ({ default: m.SqlEditorField })),
+);
 
 interface Props {
   connectionId: string;
@@ -123,9 +127,20 @@ export function ObjectFormTab({ connectionId, tab }: Props) {
           />
         ) : (
           <div className="px-4 py-3">
-            <pre className="text-xs leading-6 font-mono whitespace-pre-wrap text-text">
-              {preview}
-            </pre>
+            <Suspense
+              fallback={
+                <pre className="text-xs leading-6 font-mono whitespace-pre-wrap text-text">
+                  {preview}
+                </pre>
+              }
+            >
+              <SqlEditorField
+                value={preview}
+                onChange={() => {}}
+                readOnly
+                height={420}
+              />
+            </Suspense>
           </div>
         )}
       </div>
