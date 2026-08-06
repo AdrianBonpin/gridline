@@ -362,7 +362,7 @@ pub fn pg_constraints_query(_schema: &str) -> String {
 /// List non-system roles with all attributes used by the role form.
 pub fn pg_roles_query() -> String {
     "SELECT rolname, rolsuper, rolinherit, rolcreatedb, rolcreaterole, rolcanlogin, \
-     rolreplication, rolbypassrls, rolconnlimit, COALESCE(rolvaliduntil::text, '') AS rolvaliduntil \
+     rolreplication, rolbypassrls, rolconnlimit::int8, COALESCE(rolvaliduntil::text, '') AS rolvaliduntil \
      FROM pg_roles WHERE rolname !~ '^pg_' ORDER BY rolname"
         .to_string()
 }
@@ -807,7 +807,7 @@ mod tests {
         assert!(sql.contains("pg_roles"));
         assert!(sql.contains("rolname !~ '^pg_'"));
         assert!(sql.contains("rolcanlogin"));
-        assert!(sql.contains("rolconnlimit"));
+        assert!(sql.contains("rolconnlimit::int8"));
     }
 
     #[test]
