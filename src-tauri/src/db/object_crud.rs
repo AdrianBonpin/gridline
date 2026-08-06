@@ -503,10 +503,110 @@ fn table_diff(q: &str, old: &[TableColumn], new: &[TableColumn]) -> Result<Vec<S
     Ok(out)
 }
 
+#[derive(Deserialize)]
+pub struct RoleParams {
+    pub schema: String,
+    pub name: String,
+    pub action: RoleAction,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum RoleAction {
+    Create { login: bool, superuser: bool, createdb: bool, createrole: bool, inherit: bool,
+             replication: bool, bypassrls: bool, connection_limit: i64, valid_until: String,
+             password: String, members: Vec<String> },
+    Edit { login: bool, superuser: bool, createdb: bool, createrole: bool, inherit: bool,
+           replication: bool, bypassrls: bool, connection_limit: i64, valid_until: String,
+           password: String, members: Vec<String> },
+    Drop,
+    Grant { object_class: String, object_schema: Option<String>, object_name: String,
+            privileges: Vec<String>, grantee: String, grant_option: bool },
+    Revoke { object_class: String, object_schema: Option<String>, object_name: String,
+             privileges: Vec<String>, grantee: String, grant_option: bool },
+}
+
+/// Compose the option-clause portion of CREATE/ALTER ROLE.
+fn role_options(a: &RoleAction) -> String {
+    let (login, superuser, createdb, createrole, inherit, replication, bypassrls, conn, until, pw) = match a {
+        RoleAction::Create { login, superuser, createdb, createrole, inherit, replication, bypassrls, connection_limit, valid_until, password, .. }
+        | RoleAction::Edit { login, superuser, createdb, createrole, inherit, replication, bypassrls, connection_limit, valid_until, password, .. } =>
+            (*login, *superuser, *createdb, *createrole, *inherit, *replication, *bypassrls, *connection_limit, valid_until.clone(), password.clone()),
+        _ => return String::new(),
+    };
+    let mut o: Vec<String> = Vec::new();
+    if login { o.push("LOGIN".into()); }
+    if superuser { o.push("SUPERUSER".into()); }
+    if createdb { o.push("CREATEDB".into()); }
+    if createrole { o.push("CREATEROLE".into()); }
+    o.push(if inherit { "INHERIT".into() } else { "NOINHERIT".into() });
+    if replication { o.push("REPLICATION".into()); }
+    if bypassrls { o.push("BYPASSRLS".into()); }
+    o.push(format!("CONNECTION LIMIT {}", conn));
+    if !pw.is_empty() { o.push(format!("PASSWORD '{}'", pw.replace('\'', "''"))); }
+    if !until.is_empty() { o.push(format!("VALID UNTIL '{}'", until.replace('\'', "''"))); }
+    o.join(" ")
+}
+
+/// Qualified object reference for GRANT/REVOKE. Schemaless classes (schema, database)
+/// quote the bare name; everything else is emitted as schema.name.
+fn grant_object_ref(class: &str, schema: Option<&str>, name: &str) -> Result<String, String> {
+    validate_object_name(name)?;
+    match class {
+        "schema" | "database" => Ok(quote_ident(name)),
+        _ => {
+            let s = match schema {
+                Some(s) => { validate_object_name(s)?; quote_ident(s) }
+                None => String::new(),
+            };
+            Ok(format!("{}.{}", s, quote_ident(name)))
+        }
+    }
+}
+
+pub fn role_ddl(p: &RoleParams) -> Result<Vec<String>, String> {
+    if !p.name.is_empty() { validate_object_name(&p.name)?; }
+    let name = quote_ident(&p.name);
+    Ok(match &p.action {
+        RoleAction::Create { members, .. } => {
+            let mut out = vec![format!("CREATE ROLE {} {}", name, role_options(&p.action))];
+            for m in members {
+                validate_object_name(m)?;
+                out.push(format!("GRANT {} TO {}", quote_ident(m), name));
+            }
+            out
+        }
+        RoleAction::Edit { members, .. } => {
+            // membership edits are advisory in v1 (no diff); skip
+            let _ = members;
+            vec![format!("ALTER ROLE {} {}", name, role_options(&p.action))]
+        }
+        RoleAction::Drop => vec![format!("DROP ROLE {}", name)],
+        RoleAction::Grant { object_class, object_schema, object_name, privileges, grantee, grant_option } => {
+            validate_object_name(grantee)?;
+            let obj = grant_object_ref(object_class, object_schema.as_deref(), object_name)?;
+            let privs = privileges.join(", ");
+            let opt = if *grant_option { " WITH GRANT OPTION" } else { "" };
+            vec![format!("GRANT {} ON {} TO {}{}", privs, obj, quote_ident(grantee), opt)]
+        }
+        RoleAction::Revoke { object_class, object_schema, object_name, privileges, grantee, grant_option } => {
+            validate_object_name(grantee)?;
+            let obj = grant_object_ref(object_class, object_schema.as_deref(), object_name)?;
+            let privs = privileges.join(", ");
+            let opt = if *grant_option { " GRANT OPTION FOR" } else { "" };
+            vec![format!("REVOKE{} {} ON {} FROM {}", opt, privs, obj, quote_ident(grantee))]
+        }
+    })
+}
+
 /// Dispatch a DDL build by kind. `params` is the JSON payload from the frontend.
 /// Returns one or more single SQL statements.
 pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, String> {
     match kind {
+        "role" => {
+            let p: RoleParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            role_ddl(&p)
+        }
         "sequence" => {
             let p: SequenceParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
             sequence_ddl(&p)
@@ -958,5 +1058,65 @@ mod tests {
     fn table_drop() {
         let p = serde_json::json!({ "schema": "public", "name": "t", "action": { "op": "drop" } });
         assert_eq!(build_ddl("table", p).unwrap(), vec!["DROP TABLE \"public\".\"t\""]);
+    }
+
+    #[test]
+    fn role_create_with_options_and_membership() {
+        let p = serde_json::json!({
+            "schema": "", "name": "app",
+            "action": { "op": "create", "login": true, "superuser": false, "createdb": true,
+                "createrole": false, "inherit": true, "replication": false, "bypassrls": false,
+                "connection_limit": 10, "valid_until": "", "password": "s3cr3t", "members": ["reader"] }
+        });
+        let sql = build_ddl("role", p).unwrap();
+        assert_eq!(sql[0], "CREATE ROLE \"app\" LOGIN CREATEDB INHERIT CONNECTION LIMIT 10 PASSWORD 's3cr3t'");
+        assert!(sql.iter().any(|s| s == "GRANT \"reader\" TO \"app\""));
+    }
+
+    #[test]
+    fn role_create_escapes_password_literal() {
+        let p = serde_json::json!({ "schema": "", "name": "r", "action": { "op": "create",
+            "login": false, "superuser": false, "createdb": false, "createrole": false, "inherit": true,
+            "replication": false, "bypassrls": false, "connection_limit": -1, "valid_until": "", "password": "a'b", "members": [] } });
+        let sql = build_ddl("role", p).unwrap();
+        assert!(sql[0].contains("PASSWORD 'a''b'"));
+    }
+
+    #[test]
+    fn role_edit_blank_password_omits_password_clause() {
+        let p = serde_json::json!({ "schema": "", "name": "app",
+            "action": { "op": "edit", "login": true, "superuser": false, "createdb": false,
+                "createrole": false, "inherit": true, "replication": false, "bypassrls": false,
+                "connection_limit": -1, "valid_until": "2027-01-01", "password": "", "members": [] } });
+        let sql = build_ddl("role", p).unwrap();
+        assert!(sql[0].contains("ALTER ROLE \"app\""));
+        assert!(!sql[0].contains("PASSWORD")); // blank = keep
+        assert!(sql[0].contains("VALID UNTIL '2027-01-01'"));
+    }
+
+    #[test]
+    fn role_drop() {
+        let p = serde_json::json!({ "schema": "", "name": "app", "action": { "op": "drop" } });
+        assert_eq!(build_ddl("role", p).unwrap(), vec!["DROP ROLE \"app\""]);
+    }
+
+    #[test]
+    fn role_grant_and_revoke() {
+        let g = serde_json::json!({ "schema": "", "name": "",
+            "action": { "op": "grant", "object_class": "table", "object_schema": "public", "object_name": "users",
+                "privileges": ["SELECT", "INSERT"], "grantee": "app", "grant_option": false } });
+        assert_eq!(build_ddl("role", g).unwrap(), vec!["GRANT SELECT, INSERT ON \"public\".\"users\" TO \"app\""]);
+        let r = serde_json::json!({ "schema": "", "name": "",
+            "action": { "op": "revoke", "object_class": "table", "object_schema": "public", "object_name": "users",
+                "privileges": ["SELECT"], "grantee": "app", "grant_option": false } });
+        assert_eq!(build_ddl("role", r).unwrap(), vec!["REVOKE SELECT ON \"public\".\"users\" FROM \"app\""]);
+    }
+
+    #[test]
+    fn role_grant_rejects_bad_identifier() {
+        let p = serde_json::json!({ "schema": "", "name": "",
+            "action": { "op": "grant", "object_class": "table", "object_schema": "public", "object_name": "a; DROP",
+                "privileges": ["SELECT"], "grantee": "app", "grant_option": false } });
+        assert!(build_ddl("role", p).is_err());
     }
 }
