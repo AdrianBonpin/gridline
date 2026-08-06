@@ -58,6 +58,53 @@ async fn object_ddl_for_sequence_enum_function() {
 }
 
 #[tokio::test]
+async fn build_object_ddl_inner_guards_postgresql_only() {
+    let pm = tokio::sync::Mutex::new(ConnectionPoolManager::new());
+    // Missing connection -> Connection not found
+    let err = build_object_ddl_inner(&pm, "missing", "sequence", serde_json::json!({
+        "schema": "public", "name": "s", "action": { "op": "drop" }
+    })).await.unwrap_err();
+    assert!(err.contains("Connection not found"), "{err}");
+    // Non-PostgreSQL handle -> PostgreSQL-only error
+    pm.lock().await.register("sqlite", DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()));
+    let err = build_object_ddl_inner(&pm, "sqlite", "sequence", serde_json::json!({
+        "schema": "public", "name": "s", "action": { "op": "drop" }
+    })).await.unwrap_err();
+    assert!(err.contains("PostgreSQL-only"), "{err}");
+}
+
+#[tokio::test]
+#[ignore]
+async fn build_object_ddl_inner_on_postgresql_pool() {
+    let (pm, id) = pool().await;
+    let sql = build_object_ddl_inner(&pm, &id, "sequence", serde_json::json!({
+        "schema": "public", "name": "s", "action": { "op": "drop" }
+    })).await.unwrap();
+    assert_eq!(sql, vec!["DROP SEQUENCE \"public\".\"s\""]);
+}
+
+#[tokio::test]
+async fn get_available_extensions_inner_guards_postgresql_only() {
+    let pm = tokio::sync::Mutex::new(ConnectionPoolManager::new());
+    // Missing connection -> Connection not found
+    let err = get_available_extensions_inner(&pm, "missing").await.unwrap_err();
+    assert!(err.contains("Connection not found"), "{err}");
+    // Non-PostgreSQL handle -> PostgreSQL-only error
+    pm.lock().await.register("sqlite", DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()));
+    let err = get_available_extensions_inner(&pm, "sqlite").await.unwrap_err();
+    assert!(err.contains("PostgreSQL-only"), "{err}");
+}
+
+#[tokio::test]
+#[ignore]
+async fn get_available_extensions_on_postgresql_pool() {
+    let (pm, id) = pool().await;
+    let exts = get_available_extensions_inner(&pm, &id).await.unwrap();
+    assert!(!exts.is_empty(), "pg_available_extensions should list built-ins");
+    assert!(exts.iter().all(|e| !e.name.is_empty() && !e.version.is_empty()), "every extension needs name + default version: {exts:?}");
+}
+
+#[tokio::test]
 #[ignore]
 async fn object_dependencies_for_table_includes_view() {
     let (pm, id) = pool().await;

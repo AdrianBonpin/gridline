@@ -292,6 +292,14 @@ pub fn pg_extensions_query() -> String {
         .to_string()
 }
 
+/// Query available (installable) extensions with default version + comment.
+/// Schema-wide: `pg_available_extensions` is not schema-scoped.
+pub fn pg_available_extensions_query() -> String {
+    "SELECT name, default_version::text AS version, comment \
+     FROM pg_available_extensions ORDER BY name"
+        .to_string()
+}
+
 /// Query indexes in a schema.
 ///
 /// Returns index name, schema, table, definition (`pg_get_indexdef`),
@@ -623,5 +631,14 @@ mod tests {
     fn pg_extensions_query_selects_from_pg_extension() {
         let sql = pg_extensions_query();
         assert!(sql.contains("pg_extension"));
+    }
+
+    #[test]
+    fn pg_available_extensions_query_has_name_default_version_comment() {
+        let sql = pg_available_extensions_query();
+        assert!(sql.contains("pg_available_extensions"));
+        assert!(sql.contains("default_version"), "should select default version; got: {sql}");
+        assert!(sql.contains("comment"), "should select comment; got: {sql}");
+        assert!(sql.contains("ORDER BY name"), "should order by name; got: {sql}");
     }
 }
