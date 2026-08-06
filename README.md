@@ -107,10 +107,10 @@ Gridline is built for developers and small teams who manage multiple database en
 
 ## Key Features
 
-<details>
-<summary>View the full feature list</summary>
-
 ### Connections & Workspace
+
+<details>
+<summary>Show features</summary>
 
 - **URI auto-fill** — paste `postgres://`, `mysql://`, `sqlite://`, or `redis://` strings and have all fields populate automatically.
 - **Provider grid** — pick PostgreSQL, MySQL, SQLite, Redis, Supabase, or NeonDB; managed presets surface in-app setup guides and an SSL hint.
@@ -120,7 +120,12 @@ Gridline is built for developers and small teams who manage multiple database en
 - **TLS / SSL** — full PostgreSQL/MySQL TLS modes plus client-certificate support.
 - **Connection status** — on-demand per-card test with real server version and latency.
 
+</details>
+
 ### Schema Explorer
+
+<details>
+<summary>Show features</summary>
 
 - **Tables, views, and materialized views** — column metadata, PK/FK, defaults, nullable flags.
 - **Functions & procedures** — syntax-highlighted source, argument signatures, overload disambiguation.
@@ -135,7 +140,12 @@ Gridline is built for developers and small teams who manage multiple database en
 - **FK management** — create/edit/drop foreign keys with cross-schema references and ON DELETE/UPDATE actions, inlined into CREATE TABLE.
 - **Table options** — tablespace and row-level security per table.
 
+</details>
+
 ### Data Grid
+
+<details>
+<summary>Show features</summary>
 
 - **Virtualized rows** — handles 100k+ rows via `@tanstack/react-virtual`.
 - **Server-side filtering & sorting** — pushed to SQL `WHERE`/`ORDER BY`.
@@ -147,7 +157,12 @@ Gridline is built for developers and small teams who manage multiple database en
 - **Export** — JSON, CSV, SQL, and Markdown downloads of visible rows.
 - **Auto-refresh** — configurable interval timer.
 
+</details>
+
 ### Query Workbench
+
+<details>
+<summary>Show features</summary>
 
 - **Monaco SQL editor** — lazy-loaded, with keywords + table/column autocomplete.
 - **Custom query execution** — arbitrary SQL with destructive-query confirmation.
@@ -156,7 +171,12 @@ Gridline is built for developers and small teams who manage multiple database en
 - **Saved queries** — name, folder, and manage them in the Queries view.
 - **Changes queue** — stage edits, review generated SQL, revert per change, then commit all.
 
+</details>
+
 ### PostgreSQL Admin Tools
+
+<details>
+<summary>Show features</summary>
 
 - **Visual Backup** — `pg_dump` wrapper with format selector, schema filter, no-owner toggle, real-time progress.
 - **Visual Restore** — `pg_restore` wrapper with clean toggle and destructive confirmation.
