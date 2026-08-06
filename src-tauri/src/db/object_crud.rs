@@ -62,6 +62,55 @@ pub fn validate_enum_label(label: &str) -> Result<String, String> {
     Ok(format!("'{}'", t.replace('\'', "''")))
 }
 
+#[derive(Deserialize)]
+pub struct EnumParams {
+    pub schema: String,
+    pub name: String,
+    pub action: EnumAction,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum EnumAction {
+    Create { labels: Vec<String> },
+    RenameType { new_name: String },
+    AddValue { value: String, if_not_exists: bool, before: Option<String>, after: Option<String> },
+    RenameValue { from: String, to: String },
+    Drop,
+}
+
+pub fn enum_ddl(p: &EnumParams) -> Result<Vec<String>, String> {
+    let q = qual(&p.schema, &p.name)?;
+    Ok(vec![match &p.action {
+        EnumAction::Create { labels } => {
+            let mut out = String::new();
+            for l in labels {
+                if !out.is_empty() { out.push_str(", "); }
+                out.push_str(&validate_enum_label(l)?);
+            }
+            format!("CREATE TYPE {} AS ENUM ({})", q, out)
+        }
+        EnumAction::RenameType { new_name } => {
+            validate_object_name(new_name)?;
+            format!("ALTER TYPE {} RENAME TO {}", q, quote_ident(new_name))
+        }
+        EnumAction::AddValue { value, if_not_exists, before, after } => {
+            let v = format!(" {}", validate_enum_label(value)?);
+            let ine = if *if_not_exists { " IF NOT EXISTS" } else { "" };
+            let pos = match (before, after) {
+                (Some(b), None) => format!(" BEFORE {}", validate_enum_label(b)?),
+                (None, Some(a)) => format!(" AFTER {}", validate_enum_label(a)?),
+                _ => String::new(),
+            };
+            format!("ALTER TYPE {} ADD VALUE{}{}{}", q, ine, v, pos)
+        }
+        EnumAction::RenameValue { from, to } => {
+            format!("ALTER TYPE {} RENAME VALUE {} TO {}", q, validate_enum_label(from)?, validate_enum_label(to)?)
+        }
+        EnumAction::Drop => format!("DROP TYPE {}", q),
+    }])
+}
+
 /// Validate a SQL expression body: non-empty, no trailing semicolon.
 pub fn validate_expression(expr: &str) -> Result<String, String> {
     let t = expr.trim();
@@ -81,6 +130,10 @@ pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, S
         "sequence" => {
             let p: SequenceParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
             sequence_ddl(&p)
+        }
+        "enum" => {
+            let p: EnumParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            enum_ddl(&p)
         }
         other => Err(format!("Unsupported object kind: {other}")),
     }
@@ -148,5 +201,47 @@ mod tests {
     fn sequence_rejects_bad_name() {
         let p = serde_json::json!({ "schema": "public", "name": "a; DROP", "action": { "op": "drop" } });
         assert!(build_ddl("sequence", p).is_err());
+    }
+
+    #[test]
+    fn enum_create_quotes_labels() {
+        let p = serde_json::json!({ "schema": "public", "name": "role", "action": { "op": "create", "labels": ["admin", "user's"] } });
+        assert_eq!(build_ddl("enum", p).unwrap(), vec!["CREATE TYPE \"public\".\"role\" AS ENUM ('admin', 'user''s')"]);
+    }
+
+    #[test]
+    fn enum_rename_type() {
+        let p = serde_json::json!({ "schema": "public", "name": "role", "action": { "op": "rename_type", "new_name": "user_role" } });
+        assert_eq!(build_ddl("enum", p).unwrap(), vec!["ALTER TYPE \"public\".\"role\" RENAME TO \"user_role\""]);
+    }
+
+    #[test]
+    fn enum_add_value_with_position() {
+        let p = serde_json::json!({ "schema": "public", "name": "color", "action": { "op": "add_value", "value": "orange", "if_not_exists": true, "before": "red", "after": null } });
+        assert_eq!(build_ddl("enum", p).unwrap(), vec!["ALTER TYPE \"public\".\"color\" ADD VALUE IF NOT EXISTS 'orange' BEFORE 'red'"]);
+    }
+
+    #[test]
+    fn enum_add_value_plain() {
+        let p = serde_json::json!({ "schema": "public", "name": "color", "action": { "op": "add_value", "value": "green", "if_not_exists": false, "before": null, "after": null } });
+        assert_eq!(build_ddl("enum", p).unwrap(), vec!["ALTER TYPE \"public\".\"color\" ADD VALUE 'green'"]);
+    }
+
+    #[test]
+    fn enum_rename_value() {
+        let p = serde_json::json!({ "schema": "public", "name": "color", "action": { "op": "rename_value", "from": "purple", "to": "mauve" } });
+        assert_eq!(build_ddl("enum", p).unwrap(), vec!["ALTER TYPE \"public\".\"color\" RENAME VALUE 'purple' TO 'mauve'"]);
+    }
+
+    #[test]
+    fn enum_drop() {
+        let p = serde_json::json!({ "schema": "public", "name": "role", "action": { "op": "drop" } });
+        assert_eq!(build_ddl("enum", p).unwrap(), vec!["DROP TYPE \"public\".\"role\""]);
+    }
+
+    #[test]
+    fn enum_add_value_rejects_empty_label() {
+        let p = serde_json::json!({ "schema": "public", "name": "color", "action": { "op": "add_value", "value": "", "if_not_exists": false, "before": null, "after": null } });
+        assert!(build_ddl("enum", p).is_err());
     }
 }
