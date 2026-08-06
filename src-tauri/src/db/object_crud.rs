@@ -421,10 +421,27 @@ pub struct TableParams { pub schema: String, pub name: String, pub action: Table
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum TableAction {
-    Create { columns: Vec<TableColumn>, tablespace: Option<String> },
+    Create {
+        columns: Vec<TableColumn>,
+        tablespace: Option<String>,
+        #[serde(default)]
+        foreign_keys: Vec<TableForeignKey>,
+    },
     Edit { columns: Vec<TableColumn>, old_columns: Vec<TableColumn> },
     Options { tablespace: Option<String>, rls: Option<String> },
     Drop,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct TableForeignKey {
+    pub columns: Vec<String>,
+    pub ref_schema: String,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub on_delete: Option<String>,
+    pub on_update: Option<String>,
+    pub deferrable: Option<bool>,
+    pub initially_deferred: Option<bool>,
 }
 
 fn col_def(c: &TableColumn) -> Result<String, String> {
@@ -440,7 +457,7 @@ fn col_def(c: &TableColumn) -> Result<String, String> {
 pub fn table_ddl(p: &TableParams) -> Result<Vec<String>, String> {
     let q = qual(&p.schema, &p.name)?;
     Ok(match &p.action {
-        TableAction::Create { columns, tablespace } => {
+        TableAction::Create { columns, tablespace, foreign_keys } => {
             if columns.is_empty() { return Err("CREATE TABLE requires at least one column".into()); }
             let mut seen = HashSet::new();
             for c in columns {
@@ -450,6 +467,25 @@ pub fn table_ddl(p: &TableParams) -> Result<Vec<String>, String> {
             let mut defs: Vec<String> = columns.iter().map(col_def).collect::<Result<_, _>>()?;
             let pk: Vec<String> = columns.iter().filter(|c| c.is_pk).map(|c| quote_ident(&c.name)).collect();
             if !pk.is_empty() { defs.push(format!("PRIMARY KEY ({})", pk.join(", "))); }
+            for fk in foreign_keys {
+                if fk.columns.is_empty() || fk.ref_columns.is_empty() {
+                    return Err("FOREIGN KEY requires source and referenced columns".into());
+                }
+                for c in &fk.columns { validate_object_name(c)?; }
+                for c in &fk.ref_columns { validate_object_name(c)?; }
+                validate_object_name(&fk.ref_schema)?;
+                validate_object_name(&fk.ref_table)?;
+                let refq = format!("{}.{}", quote_ident(&fk.ref_schema), quote_ident(&fk.ref_table));
+                let mut s = format!("FOREIGN KEY ({}) REFERENCES {} ({})", quoted_cols(&fk.columns), refq, quoted_cols(&fk.ref_columns));
+                if let Some(d) = &fk.on_delete { s.push_str(&format!(" ON DELETE {}", d)); }
+                if let Some(u) = &fk.on_update { s.push_str(&format!(" ON UPDATE {}", u)); }
+                match (fk.deferrable, fk.initially_deferred) {
+                    (Some(true), Some(true)) => s.push_str(" DEFERRABLE INITIALLY DEFERRED"),
+                    (Some(true), _) => s.push_str(" DEFERRABLE"),
+                    _ => {}
+                }
+                defs.push(s);
+            }
             let mut sql = format!("CREATE TABLE {} (\n  {}\n)", q, defs.join(",\n  "));
             if let Some(ts) = tablespace { validate_object_name(ts)?; sql.push_str(&format!(" TABLESPACE {}", quote_ident(ts))); }
             vec![sql]
@@ -1204,6 +1240,28 @@ mod tests {
             { "name": "id", "type": "int", "nullable": false, "default": null, "is_pk": false }
         ], "tablespace": null } });
         assert!(build_ddl("table", dup).is_err());
+    }
+
+    #[test]
+    fn table_create_with_inline_foreign_key() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "products",
+            "action": { "op": "create",
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "category_id", "type": "integer", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "tablespace": null,
+                "foreign_keys": [
+                    { "columns": ["category_id"], "ref_schema": "public", "ref_table": "categories",
+                      "ref_columns": ["id"], "on_delete": "CASCADE", "on_update": "SET NULL",
+                      "deferrable": true, "initially_deferred": false }
+                ]
+            }
+        });
+        assert_eq!(build_ddl("table", p).unwrap(), vec![
+            "CREATE TABLE \"public\".\"products\" (\n  \"id\" integer NOT NULL,\n  \"category_id\" integer,\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"category_id\") REFERENCES \"public\".\"categories\" (\"id\") ON DELETE CASCADE ON UPDATE SET NULL DEFERRABLE\n)"
+        ]);
     }
 
     #[test]

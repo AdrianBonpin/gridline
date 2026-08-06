@@ -57,6 +57,7 @@ function renderPanel(props: Partial<React.ComponentProps<typeof FkPanel>> = {}) 
       schema="public"
       table="orders"
       column="user_id"
+      mode="edit"
       localColumns={[
         { name: "user_id", data_type: "int" },
         { name: "amount", data_type: "numeric" },
@@ -188,6 +189,35 @@ describe("FkPanel", () => {
     expect(q[0].type).toBe("ddl");
     expect(q[0].sql).toBe("ALTER TABLE ... ADD CONSTRAINT ...");
     // hands back the local column + the referenced column's type (for auto-matching)
-    expect(onStaged).toHaveBeenCalledWith([{ localCol: "user_id", refType: "int" }]);
+    expect(onStaged).toHaveBeenCalledWith({
+      pairs: [{ localCol: "user_id", refType: "int" }],
+    });
+  });
+
+  it("create mode returns the FK inline instead of staging a separate ALTER", async () => {
+    const { onStaged } = renderPanel({ mode: "create" });
+    await screen.findByText("Foreign key");
+    await waitForTable();
+    const refCol = (await screen.findByLabelText("Referenced column 1")) as HTMLSelectElement;
+    await waitFor(() => {
+      expect([...refCol.options].map((o) => o.value)).toContain("id");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add FK" }));
+
+    // no separate ALTER change is staged
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+    expect(objectCrud.buildObjectDdl).not.toHaveBeenCalled();
+
+    // the FK definition is handed back for inlining into the CREATE TABLE
+    expect(onStaged).toHaveBeenCalledWith({
+      pairs: [{ localCol: "user_id", refType: "int" }],
+      fk: expect.objectContaining({
+        columns: ["user_id"],
+        ref_schema: "public",
+        ref_table: "orders",
+        ref_columns: ["id"],
+        on_delete: "NO ACTION",
+      }),
+    });
   });
 });

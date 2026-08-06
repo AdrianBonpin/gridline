@@ -21,6 +21,17 @@ export interface FkStagedPair {
     refType: string;
 }
 
+export interface FkDefinition {
+    columns: string[];
+    ref_schema: string;
+    ref_table: string;
+    ref_columns: string[];
+    on_delete?: string;
+    on_update?: string;
+    deferrable?: boolean;
+    initially_deferred?: boolean;
+}
+
 interface FkPair {
     localCol: string;
     refCol: string;
@@ -33,9 +44,11 @@ interface Props {
     column: string | null;
     /** Columns of the table being edited (from the form grid — works even when the table isn't created yet). */
     localColumns: FkColumn[];
+    mode: "create" | "edit";
     onClose: () => void;
-    /** Called after staging: one entry per column pair (local column, referenced column's data type). */
-    onStaged?: (pairs: FkStagedPair[]) => void;
+    /** Called after staging: pairs (for type auto-match); in create mode the FK definition is returned
+     * so the form can inline it into the CREATE TABLE instead of a separate ALTER change. */
+    onStaged?: (result: { pairs: FkStagedPair[]; fk?: FkDefinition }) => void;
 }
 
 const FK_ACTIONS = [
@@ -71,6 +84,7 @@ export function FkPanel({
     table,
     column,
     localColumns,
+    mode,
     onClose,
     onStaged,
 }: Props) {
@@ -225,7 +239,29 @@ export function FkPanel({
             return;
         setStaging(true);
         setError(null);
+        const refTypes: Record<string, string> = {};
+        for (const c of refTableInfo?.columns ?? []) refTypes[c.name] = c.data_type;
+        const pairsResult = pairs.map((p) => ({
+            localCol: p.localCol,
+            refType: refTypes[p.refCol] ?? "",
+        }));
+        const fk: FkDefinition = {
+            columns: cols,
+            ref_schema: refSchema,
+            ref_table: refTable,
+            ref_columns: refCols,
+            on_delete: onDelete,
+            on_update: onUpdate,
+            deferrable: false,
+            initially_deferred: false,
+        };
         try {
+            if (mode === "create") {
+                // Inline the FK into the CREATE TABLE — no separate ALTER change.
+                onStaged?.({ pairs: pairsResult, fk });
+                onClose();
+                return;
+            }
             const sqls = await buildObjectDdl(connectionId, "constraint", {
                 schema,
                 table,
@@ -240,9 +276,6 @@ export function FkPanel({
                     on_update: onUpdate,
                 },
             });
-            const refTypes: Record<string, string> = {};
-            for (const c of refTableInfo?.columns ?? [])
-                refTypes[c.name] = c.data_type;
             sqls.forEach((sql, i) =>
                 useDbViewerStore.getState().addChange({
                     type: "ddl",
@@ -253,12 +286,7 @@ export function FkPanel({
                             : `Add FK ${cols.join(", ")} → ${refSchema}.${refTable}`,
                 }),
             );
-            onStaged?.(
-                pairs.map((p) => ({
-                    localCol: p.localCol,
-                    refType: refTypes[p.refCol] ?? "",
-                })),
-            );
+            onStaged?.({ pairs: pairsResult });
             onClose();
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
@@ -356,7 +384,7 @@ export function FkPanel({
                                                 {schema}.{tableLabel}
                                             </span>
                                         </div>
-                                        <div className=" px-4 py-1">
+                                        <div className="px-4 py-1">
                                             <span className="truncate">
                                                 {refSchema}.{refTable || "—"}
                                             </span>

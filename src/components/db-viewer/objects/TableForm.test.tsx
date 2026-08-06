@@ -433,6 +433,16 @@ describe("TableForm", () => {
       expect(col.type).toBe("int");
       expect(col.fk).toBe(true);
     });
+    // the FK is staged inline into the CREATE TABLE (single change), not as a separate ALTER
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    await waitFor(() => {
+      const stageCall = (cmd.buildObjectDdl as any).mock.calls.find((call: any) =>
+        call[1] === "table" &&
+        call[2]?.action?.foreign_keys?.some((fk: any) => fk.columns[0] === "category_id"),
+      );
+      expect(stageCall).toBeTruthy();
+    });
   });
 
   it("shows staged FK changes in the Foreign keys section", async () => {

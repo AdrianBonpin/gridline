@@ -25,7 +25,7 @@ import { useConnectionStore } from "../../../stores/connectionStore";
 import * as cmd from "../../../lib/commands";
 import type { ColumnInfo, ConstraintInfo, TablespaceInfo } from "../../../lib/types";
 import { getCapabilities } from "../../../lib/dbCapabilities";
-import { FkPanel } from "./FkPanel";
+import { FkPanel, type FkDefinition } from "./FkPanel";
 import { FormRow, FormSectionHeader, inputClass, controlClass } from "./formRow";
 import { DataTypeIcon } from "../../ui/DataTypeIcon";
 
@@ -174,12 +174,22 @@ const cellInput =
 const cellMono =
   "min-w-0 flex-1 bg-transparent font-mono text-xs text-text outline-none placeholder:text-text-muted";
 
-function buildTablePayload(params: TableFormParams, op: "create" | "edit" | "rebuild"): Record<string, unknown> {
+function buildTablePayload(
+  params: TableFormParams,
+  op: "create" | "edit" | "rebuild",
+  foreignKeys: FkDefinition[] = [],
+): Record<string, unknown> {
   const action = params.action;
   const sqlColumns = action.columns.map((c) => toSqlColumn(c, action.op));
   return {
     ...params,
-    action: { ...action, op, columns: sqlColumns },
+    action: {
+      ...action,
+      op,
+      columns: sqlColumns,
+      // CREATE TABLE embeds FKs inline (single staged change); edit uses separate ALTERs.
+      ...(op === "create" ? { foreign_keys: foreignKeys } : {}),
+    },
   } as unknown as Record<string, unknown>;
 }
 
@@ -224,6 +234,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
 
   const [fkPanel, setFkPanel] = useState<{ open: boolean; column: string | null } | null>(null);
   const [fkColumns, setFkColumns] = useState<Set<string>>(new Set());
+  const [createFks, setCreateFks] = useState<FkDefinition[]>([]);
 
   const op = isRebuild ? "rebuild" : action.op;
 
@@ -283,7 +294,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
     setError(null);
     const promise = isRebuild
       ? cmd.buildRebuildScript(connectionId, params.schema, params.name, action.columns)
-      : cmd.buildObjectDdl(connectionId, "table", buildTablePayload(params, op));
+      : cmd.buildObjectDdl(connectionId, "table", buildTablePayload(params, op, createFks));
     promise
       .then((sqls: string[] | string) => {
         if (active) setPreview(Array.isArray(sqls) ? sqls.join("\n;\n") : (sqls as string));
@@ -297,7 +308,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
     return () => {
       active = false;
     };
-  }, [params, action, op, isRebuild, connectionId, params.schema, params.name]);
+  }, [params, action, op, isRebuild, connectionId, params.schema, params.name, createFks]);
 
   const patchColumns = (cols: TableFormColumn[]) =>
     setParams({ ...params, action: { ...action, columns: cols } });
@@ -323,6 +334,13 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
       return p ? { ...c, type: p.refType || c.type, fk: true } : c;
     });
     patchColumns(next);
+  };
+
+  const handleFkStaged = (result: { pairs: { localCol: string; refType: string }[]; fk?: FkDefinition }) => {
+    applyFkTypes(result.pairs);
+    if (mode === "create" && result.fk) {
+      setCreateFks((prev) => [...prev, result.fk as FkDefinition]);
+    }
   };
 
   const stage = async () => {
@@ -362,7 +380,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
         }
       }
 
-      const sqls = await cmd.buildObjectDdl(connectionId, "table", buildTablePayload(params, op));
+      const sqls = await cmd.buildObjectDdl(connectionId, "table", buildTablePayload(params, op, createFks));
       sqls.forEach((sql, i) =>
         useDbViewerStore.getState().addChange({
           type: "ddl",
@@ -562,6 +580,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
               connectionId={connectionId}
               schema={params.schema}
               table={params.name}
+              createFks={mode === "create" ? createFks : []}
               onAddFk={() => setFkPanel({ open: true, column: null })}
             />
 
@@ -572,8 +591,9 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                   schema={params.schema}
                   table={params.name}
                   column={fkPanel.column}
+                  mode={mode ?? "edit"}
                   localColumns={(action.columns ?? []).map((c) => ({ name: c.name, data_type: c.type }))}
-                  onStaged={applyFkTypes}
+                  onStaged={handleFkStaged}
                   onClose={() => setFkPanel(null)}
                 />
               )}
@@ -877,10 +897,12 @@ interface RelationshipsSectionProps {
   connectionId: string;
   schema: string;
   table: string;
+  /** FKs to inline into a CREATE TABLE (create mode only). */
+  createFks?: FkDefinition[];
   onAddFk: () => void;
 }
 
-function RelationshipsSection({ connectionId, schema, table, onAddFk }: RelationshipsSectionProps) {
+function RelationshipsSection({ connectionId, schema, table, createFks = [], onAddFk }: RelationshipsSectionProps) {
   const [constraints, setConstraints] = useState<ConstraintInfo[]>([]);
   const queued = useDbViewerStore((s) => s.changesQueue);
 
@@ -934,7 +956,18 @@ function RelationshipsSection({ connectionId, schema, table, onAddFk }: Relation
         </button>
       </div>
 
-      {allFks.length === 0 && (
+      {createFks.map((fk, i) => (
+        <div key={`cfk-${i}`} className="border-b border-border px-4 py-2">
+          <p className="text-xs text-text">
+            FOREIGN KEY ({fk.columns.join(", ")}) → {fk.ref_schema}.{fk.ref_table} (
+            {fk.ref_columns.join(", ")})
+            {fk.on_delete ? ` ON DELETE ${fk.on_delete}` : ""}
+            {fk.on_update ? ` ON UPDATE ${fk.on_update}` : ""}
+          </p>
+        </div>
+      ))}
+
+      {allFks.length === 0 && createFks.length === 0 && (
         <div className="border-b border-border px-4 py-2">
           <p className="text-xs text-text-muted">No foreign keys listed.</p>
         </div>
