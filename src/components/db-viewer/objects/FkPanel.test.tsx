@@ -57,7 +57,11 @@ function renderPanel(props: Partial<React.ComponentProps<typeof FkPanel>> = {}) 
       schema="public"
       table="orders"
       column="user_id"
-      localColumns={["user_id", "amount", "created_at"]}
+      localColumns={[
+        { name: "user_id", data_type: "int" },
+        { name: "amount", data_type: "numeric" },
+        { name: "created_at", data_type: "timestamp" },
+      ]}
       onClose={onClose}
       onStaged={onStaged}
       {...props}
@@ -66,14 +70,18 @@ function renderPanel(props: Partial<React.ComponentProps<typeof FkPanel>> = {}) 
   return { ...utils, onClose, onStaged };
 }
 
+/** The columns/actions sections only render once a referenced table is chosen. */
+async function waitForTable() {
+  await screen.findByLabelText("Table");
+  await waitFor(() => {
+    expect(screen.queryByLabelText("Local column 1")).not.toBeNull();
+  });
+}
+
 describe("FkPanel", () => {
   it("renders cascading dropdowns with schemas, tables, and PK-first columns", async () => {
     renderPanel();
     expect(await screen.findByText("Foreign key")).toBeInTheDocument();
-
-    // Local column select preselected
-    const local = screen.getByLabelText("Column") as HTMLSelectElement;
-    expect(local.value).toBe("user_id");
 
     // Schema select contains public and auth
     const schema = screen.getByLabelText("Schema") as HTMLSelectElement;
@@ -89,8 +97,14 @@ describe("FkPanel", () => {
       expect([...table.options].map((o) => o.value)).not.toContain("orgs");
     });
 
+    // Once a table is referenced, the local column pair appears, preselected
+    await waitForTable();
+    const local = screen.getByLabelText("Local column 1") as HTMLSelectElement;
+    expect(local.value).toBe("user_id");
+    expect([...local.options].map((o) => o.textContent)).toContain("user_id (int)");
+
     // Referenced column select lists PKs first and marks them
-    const refCol = screen.getByLabelText("Column (referenced)") as HTMLSelectElement;
+    const refCol = screen.getByLabelText("Referenced column 1") as HTMLSelectElement;
     await waitFor(() => {
       const opts = [...refCol.options].map((o) => o.textContent);
       expect(opts[0]).toMatch(/id/);
@@ -109,29 +123,42 @@ describe("FkPanel", () => {
     });
   });
 
-  it("renders relationship controls: ON DELETE, ON UPDATE, DEFERRABLE, INITIALLY DEFERRED", async () => {
+  it("hides the column-pairs and action sections until a referenced table is chosen", async () => {
+    let resolveGraph: (g: unknown) => void = () => {};
+    (cmd.getSchemaGraph as any).mockReturnValue(
+      new Promise((resolve) => {
+        resolveGraph = resolve;
+      }),
+    );
     renderPanel();
     await screen.findByText("Foreign key");
-    expect(screen.getByLabelText("On delete")).toBeInTheDocument();
+    // while the graph is still loading, the rest is hidden
+    expect(screen.queryByLabelText("Local column 1")).toBeNull();
+    // resolve the graph → table auto-selects → sections appear
+    resolveGraph(graph);
+    await waitFor(() => {
+      expect(screen.getByLabelText("Local column 1")).toBeInTheDocument();
+    });
     expect(screen.getByLabelText("On update")).toBeInTheDocument();
-    expect(screen.getByLabelText("DEFERRABLE")).toBeInTheDocument();
-    expect(screen.getByLabelText("INITIALLY DEFERRED")).toBeDisabled();
+    expect(screen.getByLabelText("On delete")).toBeInTheDocument();
   });
 
-  it("enables INITIALLY DEFERRED only when DEFERRABLE is checked", async () => {
+  it("supports adding multiple column pairs", async () => {
     renderPanel();
-    await screen.findByText("Foreign key");
-    const deferrable = screen.getByLabelText("DEFERRABLE");
-    const initiallyDeferred = screen.getByLabelText("INITIALLY DEFERRED");
-    expect(initiallyDeferred).toBeDisabled();
-    fireEvent.click(deferrable);
-    expect(initiallyDeferred).not.toBeDisabled();
+    await waitForTable();
+    fireEvent.click(screen.getByLabelText("Add another column"));
+    expect(screen.getAllByLabelText(/Local column/)).toHaveLength(2);
+    expect(screen.getAllByLabelText(/Referenced column/)).toHaveLength(2);
+    // removing a pair works
+    fireEvent.click(screen.getByLabelText("Remove pair 2"));
+    expect(screen.getAllByLabelText(/Local column/)).toHaveLength(1);
   });
 
   it("stages a foreign key DDL change and closes the panel", async () => {
-    renderPanel();
+    const { onStaged } = renderPanel();
     await screen.findByText("Foreign key");
 
+    await waitForTable();
     fireEvent.change(screen.getByLabelText("On delete"), { target: { value: "CASCADE" } });
     fireEvent.click(screen.getByRole("button", { name: "Add FK" }));
 
@@ -146,10 +173,11 @@ describe("FkPanel", () => {
           action: expect.objectContaining({
             op: "foreign_key",
             columns: ["user_id"],
+            ref_schema: "public",
+            ref_table: "orders",
+            ref_columns: ["id"],
             on_delete: "CASCADE",
             on_update: "NO ACTION",
-            deferrable: false,
-            initially_deferred: false,
           }),
         }),
       );
@@ -159,5 +187,7 @@ describe("FkPanel", () => {
     expect(q).toHaveLength(1);
     expect(q[0].type).toBe("ddl");
     expect(q[0].sql).toBe("ALTER TABLE ... ADD CONSTRAINT ...");
+    // hands back the local column + the referenced column's type (for auto-matching)
+    expect(onStaged).toHaveBeenCalledWith([{ localCol: "user_id", refType: "int" }]);
   });
 });

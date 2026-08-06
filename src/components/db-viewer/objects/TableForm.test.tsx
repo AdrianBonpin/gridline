@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { TableForm } from "./TableForm";
 import { useDbViewerStore } from "../../../stores/dbViewerStore";
 import * as cmd from "../../../lib/commands";
+import * as objectCrud from "../../../lib/objectCrud";
 
 beforeEach(() => {
   useDbViewerStore.getState().reset();
@@ -39,7 +40,7 @@ function seedFormTab(tab: any) {
 }
 
 describe("TableForm", () => {
-  it("add/remove rows; only one PK allowed at a time", () => {
+  it("add/remove rows; composite PK allowed", () => {
     const tab = {
       id: "t1",
       form: {
@@ -59,12 +60,10 @@ describe("TableForm", () => {
     expect(cols()).toHaveLength(2);
     // the first added column auto-starts as the PK
     expect(cols()[0].is_pk).toBe(true);
-    // marking a second column as PK clears the previous one
-    const pks = screen.getAllByLabelText(/PK/i);
-    fireEvent.click(pks[1]);
-    expect(cols().filter((c: any) => c.is_pk)).toHaveLength(1);
-    expect(cols()[1].is_pk).toBe(true);
-    expect(cols()[0].is_pk).toBe(false);
+    // marking a second column as PK keeps both (composite key)
+    fireEvent.click(screen.getAllByLabelText("Column settings")[1]);
+    fireEvent.click(screen.getByLabelText("PK"));
+    expect(cols().filter((c: any) => c.is_pk)).toHaveLength(2);
   });
 
   it("reorder triggers rebuild path and readiness refusal blocks staging", async () => {
@@ -242,7 +241,7 @@ describe("TableForm", () => {
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
   });
 
-  it("create-mode grid renders the redesigned header and constraint checkboxes", () => {
+  it("create-mode grid renders header and cog settings menus", () => {
     const tab = {
       id: "t1",
       form: {
@@ -271,15 +270,19 @@ describe("TableForm", () => {
     expect(screen.getByText("Type")).toBeInTheDocument();
     expect(screen.getByText("Parameters")).toBeInTheDocument();
     expect(screen.getByText("Default Value")).toBeInTheDocument();
-    expect(screen.getByText("Constraints")).toBeInTheDocument();
-    expect(screen.getAllByLabelText("PK").length).toBe(2);
-    // Auto-Increment only renders for int-family types (id) — not text (sku)
-    expect(screen.getAllByLabelText("Auto-Increment").length).toBe(1);
-    expect(screen.getAllByLabelText("Unique").length).toBe(2);
-    // Nullable is hidden on the PK column (id) and shown on the non-PK one (sku)
-    const nullableBoxes = screen.getAllByLabelText("Nullable");
-    expect(nullableBoxes).toHaveLength(1);
-    expect((nullableBoxes[0] as HTMLInputElement).checked).toBe(true); // sku is nullable
+    // first row (id, integer): Auto-Increment is available
+    fireEvent.click(screen.getAllByLabelText("Column settings")[0]);
+    expect(screen.getByLabelText("PK")).toBeInTheDocument();
+    expect(screen.getByLabelText("Auto-Increment")).toBeInTheDocument();
+    expect(screen.getByLabelText("Unique")).toBeInTheDocument();
+    expect(screen.getByLabelText("Nullable")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByLabelText("Column settings")[0]); // close
+    // second row (sku, text): no Auto-Increment
+    fireEvent.click(screen.getAllByLabelText("Column settings")[1]);
+    expect(screen.getByLabelText("PK")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Auto-Increment")).toBeNull();
+    expect(screen.getByLabelText("Unique")).toBeInTheDocument();
+    expect(screen.getByLabelText("Nullable")).toBeInTheDocument();
   });
 
   it("folds auto_increment integer to serial in the DDL payload", async () => {
@@ -303,10 +306,12 @@ describe("TableForm", () => {
     } as any;
     seedFormTab(tab);
     render(<TableForm connectionId="c1" tab={tab} />);
+    fireEvent.click(screen.getByLabelText("Column settings"));
     fireEvent.click(screen.getByLabelText("Auto-Increment"));
     await waitFor(() => {
       expect((useDbViewerStore.getState().tabs[0].form?.params.action as any).columns[0].auto_increment).toBe(true);
     });
+    fireEvent.click(screen.getByLabelText("Column settings")); // close menu
     fireEvent.click(screen.getByRole("button", { name: "Stage" }));
     await waitFor(() => expect(cmd.buildObjectDdl).toHaveBeenCalled());
     const calls = (cmd.buildObjectDdl as any).mock.calls;
@@ -341,11 +346,12 @@ describe("TableForm", () => {
     } as any;
     seedFormTab(tab);
     render(<TableForm connectionId="c1" tab={tab} />);
-    const uniqueBoxes = screen.getAllByLabelText("Unique");
-    fireEvent.click(uniqueBoxes[1]);
+    fireEvent.click(screen.getAllByLabelText("Column settings")[1]);
+    fireEvent.click(screen.getByLabelText("Unique"));
     await waitFor(() => {
       expect((useDbViewerStore.getState().tabs[0].form?.params.action as any).columns[1].unique).toBe(true);
     });
+    fireEvent.click(screen.getAllByLabelText("Column settings")[1]); // close menu
     fireEvent.click(screen.getByRole("button", { name: "Stage" }));
     await waitFor(() => expect(cmd.buildObjectDdl).toHaveBeenCalled());
     const calls = (cmd.buildObjectDdl as any).mock.calls;
@@ -379,6 +385,54 @@ describe("TableForm", () => {
     expect(sel.value).toBe("audit");
     fireEvent.change(sel, { target: { value: "public" } });
     expect((useDbViewerStore.getState().tabs[0].form?.params as any).schema).toBe("public");
+  });
+
+  it("staging an FK applies the referenced type to the local column", async () => {
+    (cmd.getSchemaGraph as any).mockResolvedValue({
+      tables: [
+        { name: "products", schema: "public", table_type: "BASE TABLE", columns: [{ name: "id", data_type: "int", is_pk: true, is_fk: false, is_unique: true, is_nullable: false, fk_ref: null }] },
+        { name: "categories", schema: "public", table_type: "BASE TABLE", columns: [{ name: "id", data_type: "int", is_pk: true, is_fk: false, is_unique: true, is_nullable: false, fk_ref: null }] },
+      ],
+      relationships: [],
+    });
+    vi.spyOn(objectCrud, "buildObjectDdl").mockResolvedValue(["ALTER TABLE \"public\".\"products\" ADD FOREIGN KEY (\"category_id\") REFERENCES \"public\".\"categories\" (\"id\")"]);
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "public",
+          name: "products",
+          action: {
+            op: "create",
+            columns: [
+              { name: "id", type: "integer", nullable: false, default: null, is_pk: true },
+              { name: "category_id", type: "integer", nullable: true, default: null, is_pk: false },
+            ],
+          },
+        },
+        title: "Create Table",
+        description: "Create Table",
+        mode: "create",
+      },
+      title: "Create Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+    fireEvent.click(screen.getAllByLabelText("Set foreign key")[1]); // category_id
+    await screen.findByText("Foreign key");
+    const refColSel = (await screen.findByLabelText("Referenced column 1")) as HTMLSelectElement;
+    await waitFor(() => {
+      expect([...refColSel.options].map((o) => o.value)).toContain("id");
+    });
+    const addFkButtons = screen.getAllByRole("button", { name: "Add FK" });
+    fireEvent.click(addFkButtons[addFkButtons.length - 1]);
+    await waitFor(() => {
+      const cols = (useDbViewerStore.getState().tabs[0].form?.params.action as any).columns;
+      const col = cols.find((c: any) => c.name === "category_id");
+      expect(col.type).toBe("int");
+      expect(col.fk).toBe(true);
+    });
   });
 
   it("opens the FK panel with the column preselected", async () => {
@@ -415,7 +469,7 @@ describe("TableForm", () => {
     const fkButtons = screen.getAllByLabelText("Set foreign key");
     fireEvent.click(fkButtons[1]);
     expect(await screen.findByText("Foreign key")).toBeInTheDocument();
-    const local = screen.getByLabelText("Column") as HTMLSelectElement;
+    const local = (await screen.findByLabelText("Local column 1")) as HTMLSelectElement;
     expect(local.value).toBe("category_id");
   });
 });

@@ -1,11 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
-import { X, Link } from "lucide-react";
+import type { ReactNode } from "react";
+import { X, Link, Plus } from "lucide-react";
 import { motion } from "motion/react";
 import { useDbViewerStore } from "../../../stores/dbViewerStore";
 import * as cmd from "../../../lib/commands";
 import { buildObjectDdl } from "../../../lib/objectCrud";
 import type { SchemaGraph } from "../../../lib/types";
-import { FormRow, controlClass } from "./formRow";
+import { controlClass } from "./formRow";
+
+export interface FkColumn {
+  name: string;
+  data_type: string;
+}
+
+export interface FkStagedPair {
+  localCol: string;
+  refType: string;
+}
+
+interface FkPair {
+  localCol: string;
+  refCol: string;
+}
 
 interface Props {
   connectionId: string;
@@ -13,12 +29,24 @@ interface Props {
   table: string;
   column: string | null;
   /** Columns of the table being edited (from the form grid — works even when the table isn't created yet). */
-  localColumns: string[];
+  localColumns: FkColumn[];
   onClose: () => void;
-  onStaged?: () => void;
+  /** Called after staging: one entry per column pair (local column, referenced column's data type). */
+  onStaged?: (pairs: FkStagedPair[]) => void;
 }
 
 const FK_ACTIONS = ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];
+
+function Section({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="border-b border-border px-4 py-2">
+      <div className="text-[11px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
 
 export function FkPanel({ connectionId, schema, table, column, localColumns, onClose, onStaged }: Props) {
   const [graph, setGraph] = useState<SchemaGraph>({ tables: [], relationships: [] });
@@ -26,14 +54,13 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
   const [error, setError] = useState<string | null>(null);
   const [staging, setStaging] = useState(false);
 
-  const [localColumn, setLocalColumn] = useState<string>(column ?? "");
+  const [pairs, setPairs] = useState<FkPair[]>(() =>
+    column ? [{ localCol: column, refCol: "" }] : [{ localCol: "", refCol: "" }],
+  );
   const [refSchema, setRefSchema] = useState<string>(schema);
   const [refTable, setRefTable] = useState<string>("");
-  const [refColumn, setRefColumn] = useState<string>("");
   const [onDelete, setOnDelete] = useState<string>("NO ACTION");
   const [onUpdate, setOnUpdate] = useState<string>("NO ACTION");
-  const [deferrable, setDeferrable] = useState(false);
-  const [initiallyDeferred, setInitiallyDeferred] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -55,7 +82,7 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
     };
   }, [connectionId]);
 
-  const currentColumns = localColumns;
+  const localNames = useMemo(() => localColumns.map((c) => c.name), [localColumns]);
 
   const schemas = useMemo(
     () => Array.from(new Set(graph.tables.map((t) => t.schema))).sort(),
@@ -81,7 +108,7 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
     });
   }, [refTableInfo]);
 
-  // Defaults: when graph loads or inputs change, keep selections valid.
+  // Defaults: keep selections valid as the graph loads / inputs change.
   useEffect(() => {
     if (schemas.length > 0 && !schemas.includes(refSchema)) {
       setRefSchema(schemas[0] ?? "");
@@ -97,18 +124,45 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
   }, [tablesInSchema, refTable]);
 
   useEffect(() => {
-    if (currentColumns.length > 0 && !currentColumns.includes(localColumn)) {
-      setLocalColumn(currentColumns[0] ?? "");
-    }
-  }, [currentColumns, localColumn]);
+    if (localNames.length === 0) return;
+    setPairs((prev) =>
+      prev.map((p) =>
+        localNames.includes(p.localCol) ? p : { ...p, localCol: localNames[0] ?? "" },
+      ),
+    );
+  }, [localNames]);
 
   useEffect(() => {
-    const firstPk = refColumns.find((c) => c.is_pk)?.name ?? refColumns[0]?.name ?? "";
-    setRefColumn(firstPk);
+    setPairs((prev) =>
+      prev.map((p) =>
+        p.refCol && refColumns.some((c) => c.name === p.refCol)
+          ? p
+          : { ...p, refCol: refColumns[0]?.name ?? "" },
+      ),
+    );
   }, [refColumns]);
 
+  const setPair = (i: number, key: keyof FkPair, value: string) =>
+    setPairs((prev) => prev.map((p, j) => (j === i ? { ...p, [key]: value } : p)));
+
+  const addPair = () => setPairs((prev) => [...prev, { localCol: localNames[0] ?? "", refCol: refColumns[0]?.name ?? "" }]);
+
+  const removePair = (i: number) =>
+    setPairs((prev) => (prev.length > 1 ? prev.filter((_, j) => j !== i) : prev));
+
+  const typeMappings = pairs
+    .map((p) => ({
+      localType: localColumns.find((c) => c.name === p.localCol)?.data_type ?? "",
+      refType: refTableInfo?.columns.find((c) => c.name === p.refCol)?.data_type ?? "",
+    }))
+    .filter((m) => m.localType !== "" || m.refType !== "");
+
+  const tableLabel = table.trim() === "" ? "unnamed table" : table;
+
   const addFk = async () => {
-    if (!localColumn || !refTable || !refColumn) return;
+    const cols = pairs.map((p) => p.localCol);
+    const refCols = pairs.map((p) => p.refCol);
+    if (cols.length === 0 || cols.some((c) => c === "") || refCols.some((c) => c === "")) return;
     setStaging(true);
     setError(null);
     try {
@@ -118,27 +172,27 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
         name: "",
         action: {
           op: "foreign_key",
-          columns: [localColumn],
+          columns: cols,
           ref_schema: refSchema,
           ref_table: refTable,
-          ref_columns: [refColumn],
+          ref_columns: refCols,
           on_delete: onDelete,
           on_update: onUpdate,
-          deferrable,
-          initially_deferred: deferrable && initiallyDeferred,
         },
       });
+      const refTypes: Record<string, string> = {};
+      for (const c of refTableInfo?.columns ?? []) refTypes[c.name] = c.data_type;
       sqls.forEach((sql, i) =>
         useDbViewerStore.getState().addChange({
           type: "ddl",
           sql,
           description:
             sqls.length > 1
-              ? `Add FK ${localColumn} → ${refSchema}.${refTable} (${refColumn}) (${i + 1}/${sqls.length})`
-              : `Add FK ${localColumn} → ${refSchema}.${refTable} (${refColumn})`,
+              ? `Add FK ${cols.join(", ")} → ${refSchema}.${refTable} (${i + 1}/${sqls.length})`
+              : `Add FK ${cols.join(", ")} → ${refSchema}.${refTable}`,
         }),
       );
-      onStaged?.();
+      onStaged?.(pairs.map((p) => ({ localCol: p.localCol, refType: refTypes[p.refCol] ?? "" })));
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -183,22 +237,7 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
 
         {!loading && graph.tables.length > 0 && (
           <>
-            <FormRow label="Column">
-              <select
-                aria-label="Column"
-                value={localColumn}
-                onChange={(e) => setLocalColumn(e.target.value)}
-                className={controlClass}
-              >
-                {currentColumns.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </FormRow>
-
-            <FormRow label="Schema">
+            <Section label="Select a Schema">
               <select
                 aria-label="Schema"
                 value={refSchema}
@@ -211,9 +250,9 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
                   </option>
                 ))}
               </select>
-            </FormRow>
+            </Section>
 
-            <FormRow label="Table">
+            <Section label="Select a Table to reference to">
               <select
                 aria-label="Table"
                 value={refTable}
@@ -226,45 +265,78 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
                   </option>
                 ))}
               </select>
-            </FormRow>
+            </Section>
 
-            <FormRow label="Column (referenced)">
-              <select
-                aria-label="Column (referenced)"
-                value={refColumn}
-                onChange={(e) => setRefColumn(e.target.value)}
-                className={controlClass}
-              >
-                {refColumns.map((c) => (
-                  <option key={c.name} value={c.name}>
-                    {c.name} {c.is_pk ? "(PK)" : ""}
-                  </option>
-                ))}
-              </select>
-            </FormRow>
-
-            {refSchema && refTable && refColumn && (
-              <p className="border-b border-border px-4 py-2 text-xs text-text-muted">
-                references {refSchema}.{refTable} ({refColumn})
+            {refSchema && refTable && (
+              <>
+            <Section label={`Select columns from ${schema}.${tableLabel} to reference to`}>
+              <p className="text-xs text-text-muted mb-2">
+                {schema}.{tableLabel}{" "}
+                <span className="text-border">|</span> {refSchema}.{refTable || "—"}
               </p>
+              {pairs.map((pair, i) => (
+                <div key={i} className="flex items-center gap-2 mb-2">
+                  <select
+                    aria-label={`Local column ${i + 1}`}
+                    value={pair.localCol}
+                    onChange={(e) => setPair(i, "localCol", e.target.value)}
+                    className={controlClass}
+                  >
+                    {localColumns.map((c) => (
+                      <option key={c.name} value={c.name}>
+                        {c.name} ({c.data_type})
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label={`Referenced column ${i + 1}`}
+                    value={pair.refCol}
+                    onChange={(e) => setPair(i, "refCol", e.target.value)}
+                    className={controlClass}
+                  >
+                    {refColumns.map((c) => (
+                      <option key={c.name} value={c.name}>
+                        {c.name} ({c.data_type})
+                        {c.is_pk ? " (PK)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {pairs.length > 1 && (
+                    <button
+                      type="button"
+                      aria-label={`Remove pair ${i + 1}`}
+                      onClick={() => removePair(i)}
+                      className="shrink-0 text-text-muted hover:text-red-400"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button
+                type="button"
+                aria-label="Add another column"
+                onClick={addPair}
+                className="text-xs text-accent hover:text-accent-hover"
+              >
+                <Plus size={12} className="inline" /> Add another column
+              </button>
+            </Section>
+
+            {typeMappings.length > 0 && (
+              <Section label="Types will be updated">
+                <ul className="space-y-0.5">
+                  {typeMappings.map((m, i) => (
+                    <li key={i} className="font-mono text-xs text-text">
+                      {m.localType || "?"} <span className="text-text-muted">→</span>{" "}
+                      {m.refType || "?"}
+                    </li>
+                  ))}
+                </ul>
+              </Section>
             )}
 
-            <FormRow label="On delete">
-              <select
-                aria-label="On delete"
-                value={onDelete}
-                onChange={(e) => setOnDelete(e.target.value)}
-                className={controlClass}
-              >
-                {FK_ACTIONS.map((a) => (
-                  <option key={a} value={a}>
-                    {a}
-                  </option>
-                ))}
-              </select>
-            </FormRow>
-
-            <FormRow label="On update">
+            <Section label="Action if referenced row is updated">
               <select
                 aria-label="On update"
                 value={onUpdate}
@@ -277,37 +349,24 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
                   </option>
                 ))}
               </select>
-            </FormRow>
+            </Section>
 
-            <FormRow label="Deferrable">
-              <label className="min-w-0 flex-1 flex items-center gap-2 px-3 font-heading text-xs text-text cursor-pointer">
-                <input
-                  type="checkbox"
-                  aria-label="DEFERRABLE"
-                  checked={deferrable}
-                  onChange={(e) => {
-                    setDeferrable(e.target.checked);
-                    if (!e.target.checked) setInitiallyDeferred(false);
-                  }}
-                  className="rounded border-border bg-surface text-accent focus:ring-accent"
-                />
-                <span>DEFERRABLE</span>
-              </label>
-            </FormRow>
-
-            <FormRow label="Initially deferred">
-              <label className="min-w-0 flex-1 flex items-center gap-2 px-3 font-heading text-xs text-text cursor-pointer">
-                <input
-                  type="checkbox"
-                  aria-label="INITIALLY DEFERRED"
-                  checked={initiallyDeferred}
-                  disabled={!deferrable}
-                  onChange={(e) => setInitiallyDeferred(e.target.checked)}
-                  className="rounded border-border bg-surface text-accent focus:ring-accent disabled:opacity-50"
-                />
-                <span className={deferrable ? "" : "text-text-muted"}>INITIALLY DEFERRED</span>
-              </label>
-            </FormRow>
+            <Section label="Action if referenced row is removed">
+              <select
+                aria-label="On delete"
+                value={onDelete}
+                onChange={(e) => setOnDelete(e.target.value)}
+                className={controlClass}
+              >
+                {FK_ACTIONS.map((a) => (
+                  <option key={a} value={a}>
+                    {a}
+                  </option>
+                ))}
+              </select>
+            </Section>
+              </>
+            )}
           </>
         )}
 
@@ -325,7 +384,7 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
         <button
           type="button"
           onClick={addFk}
-          disabled={staging || !localColumn || !refTable || !refColumn}
+          disabled={staging || pairs.length === 0 || pairs.some((p) => p.localCol === "" || p.refCol === "")}
           className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
         >
           Add FK

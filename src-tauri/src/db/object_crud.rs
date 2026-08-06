@@ -256,26 +256,35 @@ pub enum ConstraintAction {
 pub fn constraint_ddl(p: &ConstraintParams) -> Result<Vec<String>, String> {
     validate_object_name(&p.schema)?;
     validate_object_name(&p.table)?;
-    validate_object_name(&p.name)?;
     let table = format!("{}.{}", quote_ident(&p.schema), quote_ident(&p.table));
-    let name = quote_ident(&p.name);
     Ok(vec![match &p.action {
-        ConstraintAction::Check { expression } =>
-            format!("ALTER TABLE {} ADD CONSTRAINT {} CHECK ({})", table, name, validate_expression(expression)?),
+        ConstraintAction::Check { expression } => {
+            validate_object_name(&p.name)?;
+            format!("ALTER TABLE {} ADD CONSTRAINT {} CHECK ({})", table, quote_ident(&p.name), validate_expression(expression)?)
+        }
         ConstraintAction::Unique { columns } => {
             if columns.is_empty() { return Err("UNIQUE constraint requires a column".into()); }
-            format!("ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({})", table, name, quoted_cols(columns))
+            validate_object_name(&p.name)?;
+            format!("ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({})", table, quote_ident(&p.name), quoted_cols(columns))
         }
         ConstraintAction::PrimaryKey { columns } => {
             if columns.is_empty() { return Err("PRIMARY KEY requires a column".into()); }
-            format!("ALTER TABLE {} ADD CONSTRAINT {} PRIMARY KEY ({})", table, name, quoted_cols(columns))
+            validate_object_name(&p.name)?;
+            format!("ALTER TABLE {} ADD CONSTRAINT {} PRIMARY KEY ({})", table, quote_ident(&p.name), quoted_cols(columns))
         }
         ConstraintAction::ForeignKey { columns, ref_schema, ref_table, ref_columns, on_delete, on_update, deferrable, initially_deferred } => {
             if columns.is_empty() || ref_columns.is_empty() { return Err("FOREIGN KEY requires source and referenced columns".into()); }
             validate_object_name(ref_schema)?;
             validate_object_name(ref_table)?;
             let refq = format!("{}.{}", quote_ident(ref_schema), quote_ident(ref_table));
-            let mut sql = format!("ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})", table, name, quoted_cols(columns), refq, quoted_cols(ref_columns));
+            // An empty name is allowed for FKs — PG auto-generates it (ADD FOREIGN KEY …).
+            let name_clause = if p.name.trim().is_empty() {
+                String::new()
+            } else {
+                validate_object_name(&p.name)?;
+                format!("CONSTRAINT {} ", quote_ident(&p.name))
+            };
+            let mut sql = format!("ALTER TABLE {} ADD {}FOREIGN KEY ({}) REFERENCES {} ({})", table, name_clause, quoted_cols(columns), refq, quoted_cols(ref_columns));
             if let Some(d) = on_delete { sql.push_str(&format!(" ON DELETE {}", d)); }
             if let Some(u) = on_update { sql.push_str(&format!(" ON UPDATE {}", u)); }
             match (deferrable, initially_deferred) {
@@ -285,7 +294,10 @@ pub fn constraint_ddl(p: &ConstraintParams) -> Result<Vec<String>, String> {
             }
             sql
         }
-        ConstraintAction::Drop => format!("ALTER TABLE {} DROP CONSTRAINT {}", table, name),
+        ConstraintAction::Drop => {
+            validate_object_name(&p.name)?;
+            format!("ALTER TABLE {} DROP CONSTRAINT {}", table, quote_ident(&p.name))
+        }
     }])
 }
 
@@ -1029,6 +1041,23 @@ mod tests {
         });
         assert_eq!(build_ddl("constraint", p).unwrap(),
             vec!["ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"fk_user\" FOREIGN KEY (\"user_id\") REFERENCES \"public\".\"users\" (\"id\") ON DELETE CASCADE ON UPDATE SET NULL DEFERRABLE INITIALLY DEFERRED"]);
+    }
+
+    #[test]
+    fn constraint_foreign_key_empty_name_auto_names() {
+        let p = serde_json::json!({
+            "schema": "public", "table": "orders", "name": "",
+            "action": {
+                "op": "foreign_key",
+                "columns": ["user_id"],
+                "ref_schema": "public",
+                "ref_table": "users",
+                "ref_columns": ["id"],
+                "on_delete": "CASCADE"
+            }
+        });
+        assert_eq!(build_ddl("constraint", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"orders\" ADD FOREIGN KEY (\"user_id\") REFERENCES \"public\".\"users\" (\"id\") ON DELETE CASCADE"]);
     }
 
     #[test]

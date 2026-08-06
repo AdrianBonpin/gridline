@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { GripVertical, Link, Plus, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { GripVertical, Link, Plus, Settings2, X } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import {
   DndContext,
@@ -67,6 +68,8 @@ interface TableFormColumn {
   params?: string;
   auto_increment?: boolean;
   unique?: boolean;
+  /** transient: true when a FK was just assigned to this column */
+  fk?: boolean;
 }
 
 interface SqlColumn {
@@ -220,6 +223,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
   const [staging, setStaging] = useState(false);
 
   const [fkPanel, setFkPanel] = useState<{ open: boolean; column: string | null } | null>(null);
+  const [fkColumns, setFkColumns] = useState<Set<string>>(new Set());
 
   const op = isRebuild ? "rebuild" : action.op;
 
@@ -246,6 +250,32 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
       active = false;
     };
   }, [isRebuild, connectionId, params.schema, params.name]);
+
+  // Edit mode: mark columns that participate in FKs (from the constraint list).
+  useEffect(() => {
+    if (mode !== "edit") {
+      setFkColumns(new Set());
+      return;
+    }
+    let active = true;
+    cmd
+      .getConstraints(connectionId, params.schema)
+      .then((cs) => {
+        if (!active) return;
+        const names = new Set<string>();
+        for (const c of cs.filter((x) => x.table === params.name)) {
+          const m = /FOREIGN KEY\s*\(([^)]+)\)/i.exec(c.definition ?? "");
+          if (m) m[1].split(",").forEach((n) => names.add(n.trim()));
+        }
+        setFkColumns(names);
+      })
+      .catch(() => {
+        if (active) setFkColumns(new Set());
+      });
+    return () => {
+      active = false;
+    };
+  }, [mode, connectionId, params.schema, params.name]);
 
   // SQL preview
   useEffect(() => {
@@ -284,12 +314,14 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
   const setCell = (i: number, key: keyof TableFormColumn, value: unknown) => {
     const next = [...action.columns];
     next[i] = { ...next[i], [key]: value } as TableFormColumn;
-    // Only one PK allowed — setting a new one clears the previous.
-    if (key === "is_pk" && value === true) {
-      next.forEach((c, j) => {
-        if (j !== i) c.is_pk = false;
-      });
-    }
+    patchColumns(next);
+  };
+
+  const applyFkTypes = (pairs: { localCol: string; refType: string }[]) => {
+    const next = action.columns.map((c) => {
+      const p = pairs.find((x) => x.localCol === c.name);
+      return p ? { ...c, type: p.refType || c.type, fk: true } : c;
+    });
     patchColumns(next);
   };
 
@@ -475,7 +507,6 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                 <div className="flex-1 min-w-40 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Type</div>
                 <div className="w-24 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Parameters</div>
                 <div className="flex-1 min-w-44 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Default Value</div>
-                <div className="w-[360px] shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Constraints</div>
                 <div className="w-max shrink-0 border-r border-border px-3 py-1.5 flex items-center justify-end gap-1 invisible">
                   <Link size={12} />
                   <X size={12} />
@@ -495,6 +526,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                       index={i}
                       mode={mode}
                       setCell={setCell}
+                      hasFk={!!c.fk || fkColumns.has(c.name)}
                       onRemove={() => removeColumn(i)}
                       onFk={() => setFkPanel({ open: true, column: c.name })}
                     />
@@ -540,7 +572,8 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                   schema={params.schema}
                   table={params.name}
                   column={fkPanel.column}
-                  localColumns={(action.columns ?? []).map((c) => c.name)}
+                  localColumns={(action.columns ?? []).map((c) => ({ name: c.name, data_type: c.type }))}
+                  onStaged={applyFkTypes}
                   onClose={() => setFkPanel(null)}
                 />
               )}
@@ -571,9 +604,10 @@ interface ColumnRowProps {
   setCell: (i: number, key: keyof TableFormColumn, value: unknown) => void;
   onRemove: () => void;
   onFk: () => void;
+  hasFk: boolean;
 }
 
-function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) {
+function ColumnRow({ c, index, mode, setCell, onRemove, onFk, hasFk }: ColumnRowProps) {
   const {
     attributes,
     listeners,
@@ -583,6 +617,79 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
     transition,
     isDragging,
   } = useSortable({ id: c.rowId });
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const cogRef = useRef<HTMLButtonElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
+
+  const toggleMenu = () => {
+    if (!menuOpen && cogRef.current) {
+      const r = cogRef.current.getBoundingClientRect();
+      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
+    }
+    setMenuOpen((v) => !v);
+  };
+
+  const constraintsMenu =
+    menuOpen && menuPos
+      ? createPortal(
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+            <div
+              role="menu"
+              className="fixed z-50 bg-surface-raised border border-border rounded-lg shadow-lg p-2 min-w-44 flex flex-col gap-1"
+              style={{ top: menuPos.top, right: menuPos.right }}
+            >
+              <label className="flex items-center gap-2 px-2 py-1 text-xs text-text whitespace-nowrap cursor-pointer">
+                <input
+                  type="checkbox"
+                  aria-label="PK"
+                  checked={c.is_pk}
+                  disabled={mode === "edit"}
+                  onChange={(e) => setCell(index, "is_pk", e.target.checked)}
+                  className="rounded border-border bg-surface text-accent focus:ring-accent"
+                />
+                Primary key
+              </label>
+              {mode === "create" && supportsAutoIncrement(c.type) && (
+                <label className="flex items-center gap-2 px-2 py-1 text-xs text-text whitespace-nowrap cursor-pointer">
+                  <input
+                    type="checkbox"
+                    aria-label="Auto-Increment"
+                    checked={c.auto_increment ?? false}
+                    onChange={(e) => setCell(index, "auto_increment", e.target.checked)}
+                    className="rounded border-border bg-surface text-accent focus:ring-accent"
+                  />
+                  Auto-Increment
+                </label>
+              )}
+              {mode === "create" && (
+                <label className="flex items-center gap-2 px-2 py-1 text-xs text-text whitespace-nowrap cursor-pointer">
+                  <input
+                    type="checkbox"
+                    aria-label="Unique"
+                    checked={c.unique ?? false}
+                    onChange={(e) => setCell(index, "unique", e.target.checked)}
+                    className="rounded border-border bg-surface text-accent focus:ring-accent"
+                  />
+                  Unique
+                </label>
+              )}
+              <label className="flex items-center gap-2 px-2 py-1 text-xs text-text whitespace-nowrap cursor-pointer">
+                <input
+                  type="checkbox"
+                  aria-label="Nullable"
+                  checked={c.nullable}
+                  onChange={(e) => setCell(index, "nullable", e.target.checked)}
+                  className="rounded border-border bg-surface text-accent focus:ring-accent"
+                />
+                Nullable
+              </label>
+            </div>
+          </>,
+          document.body,
+        )
+      : null;
 
   return (
     <div
@@ -605,13 +712,22 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
       <div className="w-8 shrink-0 border-r border-border px-3 py-2 flex items-center text-xs font-mono text-text-muted">
         {index + 1}
       </div>
-      <div className="flex-1 min-w-48 border-r border-border px-3 py-2 flex items-center">
+      <div className="flex-1 min-w-48 border-r border-border px-3 py-2 flex items-center gap-2">
         <input
           className={cellInput}
           placeholder="name"
           value={c.name}
           onChange={(e) => setCell(index, "name", e.target.value)}
         />
+        <button
+          type="button"
+          aria-label="Set foreign key"
+          onClick={onFk}
+          title={hasFk ? "This column has a foreign key" : "Set foreign key"}
+          className={`shrink-0 transition-colors ${hasFk ? "text-accent" : "text-text-muted hover:text-accent"}`}
+        >
+          <Link size={12} />
+        </button>
       </div>
       <div className="flex-1 min-w-40 border-r border-border px-3 py-2 flex items-center gap-1.5">
         <DataTypeIcon dataType={c.type} size={12} />
@@ -653,59 +769,15 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
           onChange={(e) => setCell(index, "default", e.target.value)}
         />
       </div>
-      <div className="w-[360px] shrink-0 border-r border-border px-3 py-2 flex items-center gap-3">
-        {mode === "create" && supportsAutoIncrement(c.type) && (
-            <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
-              <input
-                type="checkbox"
-                aria-label="Auto-Increment"
-                checked={c.auto_increment ?? false}
-                onChange={(e) => setCell(index, "auto_increment", e.target.checked)}
-              />
-              Auto-Increment
-            </label>
-          )}
-        {mode === "create" && (
-            <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
-              <input
-                type="checkbox"
-                aria-label="Unique"
-                checked={c.unique ?? false}
-                onChange={(e) => setCell(index, "unique", e.target.checked)}
-              />
-              Unique
-            </label>
-        )}
-        <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
-          <input
-            type="checkbox"
-            aria-label={mode === "edit" ? "PK (read-only)" : "PK"}
-            checked={c.is_pk}
-            disabled={mode === "edit"}
-            onChange={(e) => setCell(index, "is_pk", e.target.checked)}
-          />
-          PK
-        </label>
-        {!c.is_pk && (
-          <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
-            <input
-              type="checkbox"
-              aria-label="Nullable"
-              checked={c.nullable}
-              onChange={(e) => setCell(index, "nullable", e.target.checked)}
-            />
-            Nullable
-          </label>
-        )}
-      </div>
       <div className="w-max shrink-0 px-3 py-2 flex items-center justify-end gap-1">
         <button
+          ref={cogRef}
           type="button"
-          aria-label="Set foreign key"
-          onClick={onFk}
-          className="text-text-muted hover:text-accent"
+          aria-label="Column settings"
+          onClick={toggleMenu}
+          className="text-text-muted hover:text-text transition-colors"
         >
-          <Link size={12} />
+          <Settings2 size={12} />
         </button>
         <button
           type="button"
@@ -716,6 +788,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
           <X size={12} />
         </button>
       </div>
+      {constraintsMenu}
     </div>
   );
 }
