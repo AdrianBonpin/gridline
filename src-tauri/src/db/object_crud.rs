@@ -394,6 +394,7 @@ pub struct TableColumn {
     pub nullable: bool,
     pub default: Option<Option<String>>, // null | Some(null) | Some(expr)
     pub is_pk: bool,
+    pub unique: Option<bool>,
 }
 
 impl TableColumn {
@@ -418,6 +419,7 @@ fn col_def(c: &TableColumn) -> Result<String, String> {
     validate_object_name(&c.name)?;
     let ty = validate_type(&c.type_)?;
     let mut s = format!("{} {}", quote_ident(&c.name), ty);
+    if c.unique == Some(true) { s.push_str(" UNIQUE"); }
     if !c.nullable { s.push_str(" NOT NULL"); }
     if let Some(d) = c.default_sql() { s.push_str(&format!(" DEFAULT {}", validate_expression(d)?)); }
     Ok(s)
@@ -1140,6 +1142,31 @@ mod tests {
     }
 
     #[test]
+    fn table_create_unique_column_emits_unique_keyword() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "create", "columns": [
+                { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                { "name": "email", "type": "text", "nullable": false, "default": null, "is_pk": false, "unique": true }
+            ], "tablespace": null }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        assert!(sql[0].contains("\"email\" text UNIQUE NOT NULL"), "expected UNIQUE in column def; got: {}", sql[0]);
+    }
+
+    #[test]
+    fn table_column_deserialization_ignores_unknown_fields() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "t",
+            "action": { "op": "create", "columns": [
+                { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true, "params": "(50)", "auto_increment": true }
+            ], "tablespace": null }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        assert!(sql[0].contains("\"id\" integer NOT NULL"), "expected column def; got: {}", sql[0]);
+    }
+
+    #[test]
     fn table_create_rejects_empty_and_duplicate_columns() {
         let empty = serde_json::json!({ "schema": "public", "name": "t", "action": { "op": "create", "columns": [], "tablespace": null } });
         assert!(build_ddl("table", empty).is_err());
@@ -1280,8 +1307,8 @@ mod tests {
             grants: vec![ RebuildGrant { grantee: "reader".into(), privileges: vec!["SELECT".into()], grantable: false } ],
             owned_sequences: vec![],
         };
-        let new = vec![ TableColumn { name: "id".into(), type_: "integer".into(), nullable: false, default: None, is_pk: false },
-                       TableColumn { name: "email".into(), type_: "text".into(), nullable: true, default: None, is_pk: false } ];
+        let new = vec![ TableColumn { name: "id".into(), type_: "integer".into(), nullable: false, default: None, is_pk: false, unique: None },
+                       TableColumn { name: "email".into(), type_: "text".into(), nullable: true, default: None, is_pk: false, unique: None } ];
         let script = rebuild_script(&input, &new).unwrap();
         assert!(script.contains("ALTER TABLE \"public\".\"orders\" DROP CONSTRAINT \"orders_user_fk\""), "drop fks_in first; got: {script}");
         assert!(script.contains("CREATE TABLE \"public\".\"_gridline_rb_users\" ("));
@@ -1307,7 +1334,7 @@ mod tests {
             fks_out: vec![], fks_in: vec![], grants: vec![],
             owned_sequences: vec![ RebuildOwnedSequence { seq_schema: "public".into(), seq_name: "t_id_seq".into(), column: "id".into() } ],
         };
-        let new = vec![ TableColumn { name: "id".into(), type_: "integer".into(), nullable: false, default: Some(Some("nextval('t_id_seq'::regclass)".into())), is_pk: false } ];
+        let new = vec![ TableColumn { name: "id".into(), type_: "integer".into(), nullable: false, default: Some(Some("nextval('t_id_seq'::regclass)".into())), is_pk: false, unique: None } ];
         let script = rebuild_script(&input, &new).unwrap();
         assert!(script.contains("ALTER SEQUENCE \"public\".\"t_id_seq\" OWNED BY NONE"));
         assert!(script.contains("ALTER SEQUENCE \"public\".\"t_id_seq\" OWNED BY \"public\".\"t\".\"id\""));

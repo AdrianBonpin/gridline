@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUp, ArrowDown, Plus, X } from "lucide-react";
+import { ArrowUp, ArrowDown, Plus, X, Link } from "lucide-react";
 import { useDbViewerStore, type ViewerTab } from "../../../stores/dbViewerStore";
 import { useConnectionStore } from "../../../stores/connectionStore";
 import * as cmd from "../../../lib/commands";
 import type { ColumnInfo, ConstraintInfo, TablespaceInfo } from "../../../lib/types";
 import { getCapabilities } from "../../../lib/dbCapabilities";
-import { ConstraintForm } from "./ConstraintForm";
+import { FkPanel } from "./FkPanel";
 import { FormRow, FormSectionHeader, inputClass, monoInputClass, controlClass } from "./formRow";
+import { DataTypeIcon } from "../../ui/DataTypeIcon";
 
 const PG_TYPES = [
   "integer",
@@ -43,6 +44,18 @@ interface TableFormColumn {
   nullable: boolean;
   default: string | null;
   is_pk: boolean;
+  params?: string;
+  auto_increment?: boolean;
+  unique?: boolean;
+}
+
+interface SqlColumn {
+  name: string;
+  type: string;
+  nullable: boolean;
+  default: string | null;
+  is_pk: boolean;
+  unique?: boolean;
 }
 
 interface TableFormAction {
@@ -57,6 +70,27 @@ interface TableFormParams {
   schema: string;
   name: string;
   action: TableFormAction;
+}
+
+function toSqlColumn(c: TableFormColumn, mode: "create" | "edit"): SqlColumn {
+  let type = c.type;
+  const base = c.type.trim().toLowerCase();
+  if (mode === "create" && c.auto_increment) {
+    if (base === "integer") type = "serial";
+    else if (base === "bigint") type = "bigserial";
+    else if (base === "smallint") type = "smallserial";
+  }
+  if (c.params && c.params.trim()) {
+    type = `${type}(${c.params.trim()})`;
+  }
+  return {
+    name: c.name,
+    type,
+    nullable: c.nullable,
+    default: c.default,
+    is_pk: c.is_pk,
+    unique: c.unique ?? undefined,
+  };
 }
 
 function sameColumns(a: TableFormColumn[], b: TableFormColumn[]): boolean {
@@ -79,7 +113,16 @@ function sameColumnNames(a: TableFormColumn[], b: TableFormColumn[]): boolean {
 }
 
 function emptyColumn(): TableFormColumn {
-  return { name: "", type: "text", nullable: true, default: null, is_pk: false };
+  return { name: "", type: "text", nullable: true, default: null, is_pk: false, params: "", auto_increment: false, unique: false };
+}
+
+function buildTablePayload(params: TableFormParams, op: "create" | "edit" | "rebuild"): Record<string, unknown> {
+  const action = params.action;
+  const sqlColumns = action.columns.map((c) => toSqlColumn(c, action.op));
+  return {
+    ...params,
+    action: { ...action, op, columns: sqlColumns },
+  } as unknown as Record<string, unknown>;
 }
 
 export function TableForm({ connectionId, tab }: { connectionId: string; tab: ViewerTab }) {
@@ -120,6 +163,8 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
   const [refusal, setRefusal] = useState<string | null>(null);
   const [staging, setStaging] = useState(false);
 
+  const [fkPanel, setFkPanel] = useState<{ open: boolean; column: string | null } | null>(null);
+
   const op = isRebuild ? "rebuild" : action.op;
 
   const setParams = (next: TableFormParams) => {
@@ -152,10 +197,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
     setError(null);
     const promise = isRebuild
       ? cmd.buildRebuildScript(connectionId, params.schema, params.name, action.columns)
-      : cmd.buildObjectDdl(connectionId, "table", {
-          ...params,
-          action: { ...action, op },
-        } as unknown as Record<string, unknown>);
+      : cmd.buildObjectDdl(connectionId, "table", buildTablePayload(params, op));
     promise
       .then((sqls: string[] | string) => {
         if (active) setPreview(Array.isArray(sqls) ? sqls.join("\n;\n") : (sqls as string));
@@ -228,10 +270,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
         }
       }
 
-      const sqls = await cmd.buildObjectDdl(connectionId, "table", {
-        ...params,
-        action: { ...action, op },
-      } as unknown as Record<string, unknown>);
+      const sqls = await cmd.buildObjectDdl(connectionId, "table", buildTablePayload(params, op));
       sqls.forEach((sql, i) =>
         useDbViewerStore.getState().addChange({
           type: "ddl",
@@ -312,8 +351,108 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
         {view === "visual" ? (
           <>
             <FormSectionHeader label="Columns" count={cols.length} />
+            <div className="border-b border-border px-4 py-1.5 flex items-center gap-2">
+              <span className="w-6 text-[11px] font-semibold text-text-muted uppercase tracking-wider">#</span>
+              <span className="min-w-0 flex-1 text-[11px] font-semibold text-text-muted uppercase tracking-wider">Name</span>
+              <span className="min-w-0 flex-1 text-[11px] font-semibold text-text-muted uppercase tracking-wider">Type</span>
+              <span className="w-24 text-[11px] font-semibold text-text-muted uppercase tracking-wider">Parameters</span>
+              <span className="min-w-0 flex-1 text-[11px] font-semibold text-text-muted uppercase tracking-wider">Default Value</span>
+              <span className="min-w-0 flex-[1.5] text-[11px] font-semibold text-text-muted uppercase tracking-wider">Constraints</span>
+              <span className="w-16" />
+            </div>
             {cols.map((c, i) => (
-                <div key={i} className="border-b border-border px-4 py-2 flex items-center gap-2">
+              <div key={i} className="border-b border-border px-4 py-2 flex items-center gap-2">
+                <span className="w-6 text-xs font-mono text-text-muted">{i + 1}</span>
+                <input
+                  className={inputClass}
+                  placeholder="name"
+                  value={c.name}
+                  onChange={(e) => setCell(i, "name", e.target.value)}
+                />
+                <div className="min-w-0 flex-1 flex items-center gap-1">
+                  <DataTypeIcon dataType={c.type} size={12} />
+                  <input
+                    className={monoInputClass}
+                    list="pg-types"
+                    placeholder="type"
+                    value={c.type}
+                    onChange={(e) => setCell(i, "type", e.target.value)}
+                  />
+                </div>
+                <input
+                  className={[monoInputClass, "w-24"].join(" ")}
+                  placeholder="length"
+                  value={c.params ?? ""}
+                  onChange={(e) => setCell(i, "params", e.target.value)}
+                />
+                <div className="min-w-0 flex-1 flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    aria-label="Has default"
+                    checked={c.default !== null}
+                    onChange={(e) => setCell(i, "default", e.target.checked ? (c.default ?? "") : null)}
+                    className="rounded border-border bg-surface text-accent focus:ring-accent"
+                  />
+                  <input
+                    className={monoInputClass}
+                    placeholder="default"
+                    disabled={c.default === null}
+                    value={c.default ?? ""}
+                    onChange={(e) => setCell(i, "default", e.target.value)}
+                  />
+                </div>
+                <div className="min-w-0 flex-[1.5] flex items-center gap-3">
+                  {mode === "create" && (
+                    <>
+                      <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
+                        <input
+                          type="checkbox"
+                          aria-label="Auto-Increment"
+                          checked={c.auto_increment ?? false}
+                          onChange={(e) => setCell(i, "auto_increment", e.target.checked)}
+                        />
+                        Auto-Increment
+                      </label>
+                      <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
+                        <input
+                          type="checkbox"
+                          aria-label="Unique"
+                          checked={c.unique ?? false}
+                          onChange={(e) => setCell(i, "unique", e.target.checked)}
+                        />
+                        Unique
+                      </label>
+                    </>
+                  )}
+                  <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
+                    <input
+                      type="checkbox"
+                      aria-label={mode === "edit" ? "PK (read-only)" : "PK"}
+                      checked={c.is_pk}
+                      disabled={mode === "edit"}
+                      onChange={(e) => setCell(i, "is_pk", e.target.checked)}
+                    />
+                    PK
+                  </label>
+                  <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
+                    <input
+                      type="checkbox"
+                      aria-label="Nullable"
+                      checked={c.nullable}
+                      onChange={(e) => setCell(i, "nullable", e.target.checked)}
+                    />
+                    Nullable
+                  </label>
+                </div>
+                <div className="w-16 flex items-center justify-end gap-1">
+                  <button
+                    type="button"
+                    aria-label="Set foreign key"
+                    onClick={() => setFkPanel({ open: true, column: c.name })}
+                    className="text-text-muted hover:text-accent"
+                  >
+                    <Link size={12} />
+                  </button>
                   <button
                     type="button"
                     aria-label="Move up"
@@ -330,48 +469,6 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                   >
                     <ArrowDown size={12} />
                   </button>
-                  <input
-                    className={inputClass}
-                    placeholder="name"
-                    value={c.name}
-                    onChange={(e) => setCell(i, "name", e.target.value)}
-                  />
-                  <input
-                    className={monoInputClass}
-                    list="pg-types"
-                    placeholder="type"
-                    value={c.type}
-                    onChange={(e) => setCell(i, "type", e.target.value)}
-                  />
-                  <datalist id="pg-types">
-                    {PG_TYPES.map((t) => (
-                      <option key={t} value={t} />
-                    ))}
-                  </datalist>
-                  <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
-                    <input
-                      type="checkbox"
-                      checked={!c.nullable}
-                      onChange={(e) => setCell(i, "nullable", !e.target.checked)}
-                    />
-                    NOT NULL
-                  </label>
-                  <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
-                    <input
-                      type="checkbox"
-                      aria-label={mode === "edit" ? "PK (read-only)" : "PK"}
-                      checked={c.is_pk}
-                      disabled={mode === "edit"}
-                      onChange={(e) => setCell(i, "is_pk", e.target.checked)}
-                    />
-                    PK
-                  </label>
-                  <input
-                    className={monoInputClass}
-                    placeholder="default"
-                    value={c.default ?? ""}
-                    onChange={(e) => setCell(i, "default", e.target.value || null)}
-                  />
                   <button
                     type="button"
                     aria-label="Remove column"
@@ -381,17 +478,23 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                     <X size={12} />
                   </button>
                 </div>
-              ))}
-              <div className="border-b border-border px-4 py-2">
-                <button
-                  type="button"
-                  aria-label="Add column"
-                  onClick={addColumn}
-                  className="text-xs text-accent hover:text-accent-hover"
-                >
-                  <Plus size={12} className="inline" /> Add column
-                </button>
               </div>
+            ))}
+            <datalist id="pg-types">
+              {PG_TYPES.map((t) => (
+                <option key={t} value={t} />
+              ))}
+            </datalist>
+            <div className="border-b border-border px-4 py-2">
+              <button
+                type="button"
+                aria-label="Add column"
+                onClick={addColumn}
+                className="text-xs text-accent hover:text-accent-hover"
+              >
+                <Plus size={12} className="inline" /> Add column
+              </button>
+            </div>
 
             {mode === "create" && (
               <FormRow label="Schema">
@@ -426,11 +529,20 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
               onRls={(rls) => setParams({ ...params, action: { ...action, rls } })}
             />
 
-            {mode === "edit" && (
-              <RelationshipsSection
+            <RelationshipsSection
+              connectionId={connectionId}
+              schema={params.schema}
+              table={params.name}
+              onAddFk={() => setFkPanel({ open: true, column: null })}
+            />
+
+            {fkPanel?.open && (
+              <FkPanel
                 connectionId={connectionId}
                 schema={params.schema}
                 table={params.name}
+                column={fkPanel.column}
+                onClose={() => setFkPanel(null)}
               />
             )}
           </>
@@ -536,11 +648,11 @@ interface RelationshipsSectionProps {
   connectionId: string;
   schema: string;
   table: string;
+  onAddFk: () => void;
 }
 
-function RelationshipsSection({ connectionId, schema, table }: RelationshipsSectionProps) {
+function RelationshipsSection({ connectionId, schema, table, onAddFk }: RelationshipsSectionProps) {
   const [constraints, setConstraints] = useState<ConstraintInfo[]>([]);
-  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -570,37 +682,15 @@ function RelationshipsSection({ connectionId, schema, table }: RelationshipsSect
         </span>
         <button
           type="button"
-          onClick={() => setAdding((v) => !v)}
+          aria-label="Add FK"
+          onClick={onAddFk}
           className="text-xs text-accent hover:text-accent-hover"
         >
-          {adding ? "Cancel" : "Add FK"}
+          Add FK
         </button>
       </div>
 
-      {adding && (
-        <ConstraintForm
-          connectionId={connectionId}
-          params={{
-            schema,
-            table,
-            name: "",
-            action: {
-              op: "foreign_key",
-              columns: [],
-              ref_schema: "",
-              ref_table: "",
-              ref_columns: [],
-              on_delete: "NO ACTION",
-              on_update: "NO ACTION",
-              deferrable: false,
-              initially_deferred: false,
-            },
-          }}
-          onChange={() => {}}
-        />
-      )}
-
-      {fks.length === 0 && !adding && (
+      {fks.length === 0 && (
         <div className="border-b border-border px-4 py-2">
           <p className="text-xs text-text-muted">No foreign keys listed.</p>
         </div>

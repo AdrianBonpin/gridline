@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { TableForm } from "./TableForm";
 import { useDbViewerStore } from "../../../stores/dbViewerStore";
 import * as cmd from "../../../lib/commands";
@@ -13,6 +13,10 @@ beforeEach(() => {
   vi.spyOn(cmd, "getTablespaces").mockReset().mockResolvedValue([]);
   vi.spyOn(cmd, "getConstraints").mockReset().mockResolvedValue([]);
   vi.spyOn(cmd, "getSchemaGraph").mockReset().mockResolvedValue({ tables: [], relationships: [] });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 function baseParams(mode: "create" | "edit") {
@@ -234,5 +238,150 @@ describe("TableForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stage" }));
     expect(await screen.findByText(/changed since you opened/i)).toBeInTheDocument();
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+  });
+
+  it("create-mode grid renders the redesigned header and constraint checkboxes", () => {
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "public",
+          name: "products",
+          action: {
+            op: "create",
+            columns: [{ name: "id", type: "integer", nullable: false, default: null, is_pk: true }],
+          },
+        },
+        title: "Create Table",
+        description: "Create Table",
+        mode: "create",
+      },
+      title: "Create Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+    const headers = screen.getAllByText("Name");
+    expect(headers.length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Type")).toBeInTheDocument();
+    expect(screen.getByText("Parameters")).toBeInTheDocument();
+    expect(screen.getByText("Default Value")).toBeInTheDocument();
+    expect(screen.getByText("Constraints")).toBeInTheDocument();
+    expect(screen.getByLabelText("PK")).toBeInTheDocument();
+    expect(screen.getByLabelText("Auto-Increment")).toBeInTheDocument();
+    expect(screen.getByLabelText("Unique")).toBeInTheDocument();
+    expect(screen.getByLabelText("Nullable")).toBeInTheDocument();
+  });
+
+  it("folds auto_increment integer to serial in the DDL payload", async () => {
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "public",
+          name: "products",
+          action: {
+            op: "create",
+            columns: [{ name: "id", type: "integer", nullable: false, default: null, is_pk: true }],
+          },
+        },
+        title: "Create Table",
+        description: "Create Table",
+        mode: "create",
+      },
+      title: "Create Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+    fireEvent.click(screen.getByLabelText("Auto-Increment"));
+    await waitFor(() => {
+      expect((useDbViewerStore.getState().tabs[0].form?.params.action as any).columns[0].auto_increment).toBe(true);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    await waitFor(() => expect(cmd.buildObjectDdl).toHaveBeenCalled());
+    const calls = (cmd.buildObjectDdl as any).mock.calls;
+    const stageCall = calls.find((call: any) => call[2].action.columns.some((c: any) => c.type === "serial"));
+    expect(stageCall).toBeTruthy();
+    expect(stageCall[2].action.columns).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "id", type: "serial", nullable: false, is_pk: true })]),
+    );
+  });
+
+  it("folds unique to the DDL payload column", async () => {
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "public",
+          name: "products",
+          action: {
+            op: "create",
+            columns: [
+              { name: "id", type: "integer", nullable: false, default: null, is_pk: true },
+              { name: "sku", type: "text", nullable: false, default: null, is_pk: false },
+            ],
+          },
+        },
+        title: "Create Table",
+        description: "Create Table",
+        mode: "create",
+      },
+      title: "Create Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+    const uniqueBoxes = screen.getAllByLabelText("Unique");
+    fireEvent.click(uniqueBoxes[1]);
+    await waitFor(() => {
+      expect((useDbViewerStore.getState().tabs[0].form?.params.action as any).columns[1].unique).toBe(true);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    await waitFor(() => expect(cmd.buildObjectDdl).toHaveBeenCalled());
+    const calls = (cmd.buildObjectDdl as any).mock.calls;
+    const stageCall = calls.find((call: any) => call[2].action.columns.some((c: any) => c.name === "sku" && c.unique === true));
+    expect(stageCall).toBeTruthy();
+    expect(stageCall[2].action.columns).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "sku", unique: true })]),
+    );
+  });
+
+  it("opens the FK panel with the column preselected", async () => {
+    (cmd.getSchemaGraph as any).mockResolvedValue({
+      tables: [
+        { name: "products", schema: "public", table_type: "BASE TABLE", columns: [{ name: "category_id", data_type: "int", is_pk: false, is_fk: false, is_unique: false, is_nullable: true, fk_ref: null }] },
+        { name: "categories", schema: "public", table_type: "BASE TABLE", columns: [{ name: "id", data_type: "int", is_pk: true, is_fk: false, is_unique: true, is_nullable: false, fk_ref: null }] },
+      ],
+      relationships: [],
+    });
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "public",
+          name: "products",
+          action: {
+            op: "create",
+            columns: [
+              { name: "id", type: "integer", nullable: false, default: null, is_pk: true },
+              { name: "category_id", type: "integer", nullable: true, default: null, is_pk: false },
+            ],
+          },
+        },
+        title: "Create Table",
+        description: "Create Table",
+        mode: "create",
+      },
+      title: "Create Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+    const fkButtons = screen.getAllByLabelText("Set foreign key");
+    fireEvent.click(fkButtons[1]);
+    expect(await screen.findByText("Foreign key")).toBeInTheDocument();
+    const local = screen.getByLabelText("Column") as HTMLSelectElement;
+    expect(local.value).toBe("category_id");
   });
 });
