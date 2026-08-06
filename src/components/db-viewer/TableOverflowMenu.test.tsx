@@ -19,6 +19,13 @@ describe("TableOverflowMenu", () => {
     vi.resetAllMocks();
   });
 
+  it("offers Create Index… and Create Constraint…", () => {
+    render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => "tab-1"} connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText(/table options/i));
+    expect(screen.getByText("Create Index…")).toBeInTheDocument();
+    expect(screen.getByText("Create Constraint…")).toBeInTheDocument();
+  });
+
   it("renders menu trigger button", () => {
     render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => "tab-1"} />);
     expect(screen.getByLabelText(/table options/i)).toBeInTheDocument();

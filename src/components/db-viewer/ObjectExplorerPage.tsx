@@ -6,7 +6,7 @@ import {
     GitBranch,
     ListChecks,
     ListOrdered,
-    MoreVertical,
+    Plus,
     SquareFunction,
     Tag,
     Puzzle,
@@ -17,6 +17,9 @@ import {
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { SelectDropdown } from "../ui/SelectDropdown";
 import { DependencyDialog } from "./DependencyDialog";
+import { ObjectContextMenu, ObjectFormFields } from "./objects/ObjectContextMenu";
+import { ObjectCrudDialog } from "./objects/ObjectCrudDialog";
+import { initialCrudParams, type DdlParams, type ObjectKind } from "../../lib/objectCrud";
 import * as cmd from "../../lib/commands";
 import type {
     FunctionInfo,
@@ -1085,6 +1088,8 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
     const [openKey, setOpenKey] = useState<string | null>(null);
     const [depOpen, setDepOpen] = useState(false);
     const [depDeps, setDepDeps] = useState<DependencyInfo[]>([]);
+    const [crudOpen, setCrudOpen] = useState(false);
+    const [crudParams, setCrudParams] = useState<DdlParams>({});
     const [searchOpen, setSearchOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
     const searchInputRef = useRef<HTMLInputElement>(null);
@@ -1212,6 +1217,15 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
     const label = TYPE_LABELS[type];
     const singular = SINGULAR_LABELS[type];
 
+    // Header create button: open the CRUD dialog prefilled with create state for the current type.
+    const openCreate = useCallback(() => {
+        const kind = typeToDdlType(type) as ObjectKind;
+        setCrudParams(
+            initialCrudParams(kind, { schema: currentSchema ?? "public", name: "" }, "create"),
+        );
+        setCrudOpen(true);
+    }, [type, currentSchema]);
+
     // Switching object type: reset selection/search, clear the stale list so
     // the loading state renders (no flash of the previous type's objects), and
     // reset the last-fetched-schema marker so the fetch effect re-runs.
@@ -1252,6 +1266,13 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                             aria-label="Object type"
                         />
                         <div className="flex items-center gap-1">
+                            <button
+                                aria-label={`Create ${singular}`}
+                                onClick={openCreate}
+                                className="w-7 h-7 rounded-md flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised cursor-pointer"
+                            >
+                                <Plus size={14} />
+                            </button>
                             <button
                                 aria-label="Refresh"
                                 onClick={fetch}
@@ -1379,7 +1400,6 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                             const isSelected =
                                 selectedItem !== null &&
                                 itemKey(selectedItem) === itemKey(item);
-                            const menuOpen = openKey === key;
 
                             const handleCopyDdl = async () => {
                                 setOpenKey(null);
@@ -1412,6 +1432,10 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                                 <div
                                     key={key}
                                     onClick={() => setSelectedItem(item)}
+                                    onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        setOpenKey(key);
+                                    }}
                                     className={`group flex items-center gap-1 px-3 py-1 cursor-pointer transition-colors ${
                                         isSelected
                                             ? "bg-accent/10 text-accent"
@@ -1424,41 +1448,33 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                                     </span>
                                     <div
                                         onClick={(e) => e.stopPropagation()}
-                                        className="relative"
+                                        className="relative shrink-0"
                                     >
-                                        <button
-                                            aria-label="options"
-                                            onClick={() =>
-                                                setOpenKey((k) =>
-                                                    k === key ? null : key,
-                                                )
+                                        <ObjectContextMenu
+                                            connectionId={connectionId}
+                                            objectType={
+                                                typeToDdlType(type) as ObjectKind
                                             }
-                                            className={`w-6 h-6 rounded flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised cursor-pointer transition-opacity ${
-                                                menuOpen
-                                                    ? "opacity-100"
-                                                    : "opacity-0 group-hover:opacity-100"
-                                            }`}
-                                        >
-                                            <MoreVertical size={14} />
-                                        </button>
-                                        {menuOpen && (
-                                            <div className="absolute right-0 mt-1 z-20 min-w-[140px] rounded-md bg-surface border border-border shadow-lg py-1">
-                                                <button
-                                                    type="button"
-                                                    onClick={handleCopyDdl}
-                                                    className="w-full text-left px-3 py-1.5 text-xs text-text hover:bg-surface-raised cursor-pointer"
-                                                >
-                                                    Copy DDL
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={handleViewDependencies}
-                                                    className="w-full text-left px-3 py-1.5 text-xs text-text hover:bg-surface-raised cursor-pointer"
-                                                >
-                                                    Dependencies
-                                                </button>
-                                            </div>
-                                        )}
+                                            item={item}
+                                            onRefresh={fetch}
+                                            open={openKey === key}
+                                            onOpenChange={(o) =>
+                                                setOpenKey(o ? key : null)
+                                            }
+                                            extraItems={[
+                                                {
+                                                    id: "copy-ddl",
+                                                    label: "Copy DDL",
+                                                    onClick: handleCopyDdl,
+                                                },
+                                                {
+                                                    id: "dependencies",
+                                                    label: "Dependencies",
+                                                    onClick:
+                                                        handleViewDependencies,
+                                                },
+                                            ]}
+                                        />
                                     </div>
                                     <ChevronRight
                                         size={14}
@@ -1525,6 +1541,23 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                 onProceed={() => setDepOpen(false)}
                 onCancel={() => setDepOpen(false)}
             />
+
+            <ObjectCrudDialog
+                open={crudOpen}
+                connectionId={connectionId}
+                kind={typeToDdlType(type) as ObjectKind}
+                title={`Create ${typeToDdlType(type)}`}
+                params={crudParams}
+                description={`Create ${typeToDdlType(type)}`}
+                onClose={() => setCrudOpen(false)}
+            >
+                <ObjectFormFields
+                    connectionId={connectionId}
+                    kind={typeToDdlType(type) as ObjectKind}
+                    params={crudParams}
+                    onChange={setCrudParams}
+                />
+            </ObjectCrudDialog>
         </div>
     );
 }

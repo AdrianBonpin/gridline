@@ -7,6 +7,14 @@ import { useUiStore } from "../../stores/uiStore";
 import { exportData } from "../../lib/exportData";
 import * as cmd from "../../lib/commands";
 import { DependencyDialog } from "./DependencyDialog";
+import { ObjectCrudDialog } from "./objects/ObjectCrudDialog";
+import { IndexForm } from "./objects/IndexForm";
+import { ConstraintForm } from "./objects/ConstraintForm";
+import {
+  initialCrudParams,
+  type DdlParams,
+  type ObjectKind,
+} from "../../lib/objectCrud";
 import type { ColumnInfo, DependencyInfo } from "../../lib/types";
 
 interface TableOverflowMenuProps {
@@ -40,6 +48,7 @@ export function TableOverflowMenu({
   const [confirmAction, setConfirmAction] = useState<"empty" | "delete" | null>(null);
   const [dropDeps, setDropDeps] = useState<DependencyInfo[]>([]);
   const [importOpen, setImportOpen] = useState(false);
+  const [crud, setCrud] = useState<{ kind: ObjectKind; params: DdlParams } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -96,6 +105,22 @@ export function TableOverflowMenu({
         setImportOpen(true);
         setOpen(false);
         break;
+      case "create_index":
+        if (!connectionId) break;
+        setCrud({
+          kind: "index",
+          params: initialCrudParams("index", { schema, table, name: "" }, "create"),
+        });
+        setOpen(false);
+        break;
+      case "create_constraint":
+        if (!connectionId) break;
+        setCrud({
+          kind: "constraint",
+          params: initialCrudParams("constraint", { schema, table, name: "" }, "create"),
+        });
+        setOpen(false);
+        break;
       case "empty":
         setConfirmAction("empty");
         setOpen(false);
@@ -125,6 +150,8 @@ export function TableOverflowMenu({
     { id: "export-sql", label: "Export data (SQL)" },
     { id: "export-md", label: "Export data (Markdown)" },
     { id: "import", label: "Import data (CSV/JSON)" },
+    { id: "create_index", label: "Create Index…" },
+    { id: "create_constraint", label: "Create Constraint…" },
     { id: "empty", label: "Empty Table", danger: true },
     { id: "delete", label: "Delete Table", danger: true },
   ];
@@ -220,6 +247,32 @@ export function TableOverflowMenu({
         }}
         onClose={() => setImportOpen(false)}
       />
+
+      {crud && connectionId && (
+        <ObjectCrudDialog
+          open
+          connectionId={connectionId}
+          kind={crud.kind}
+          title={`Create ${crud.kind}`}
+          params={crud.params}
+          description={`Create ${crud.kind}`}
+          onClose={() => setCrud(null)}
+        >
+          {crud.kind === "index" ? (
+            <IndexForm
+              connectionId={connectionId}
+              params={crud.params}
+              onChange={(p) => setCrud({ ...crud, params: p })}
+            />
+          ) : (
+            <ConstraintForm
+              connectionId={connectionId}
+              params={crud.params}
+              onChange={(p) => setCrud({ ...crud, params: p })}
+            />
+          )}
+        </ObjectCrudDialog>
+      )}
     </div>
   );
 }

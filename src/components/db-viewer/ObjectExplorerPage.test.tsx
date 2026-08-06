@@ -204,7 +204,7 @@ describe("ObjectExplorerPage", () => {
     fireEvent.click(screen.getByLabelText("Object type"));
     fireEvent.click(screen.getByText("Enums"));
     await waitFor(() => screen.getByText("role"));
-    fireEvent.click(screen.getAllByLabelText(/options/i)[0]);
+    fireEvent.click(screen.getAllByLabelText(/actions/i)[0]);
     fireEvent.click(screen.getByText(/copy ddl/i));
     await waitFor(() =>
       expect(commands.getObjectDdl).toHaveBeenCalledWith("c1", "public", "enum", "role"),
@@ -231,10 +231,52 @@ describe("ObjectExplorerPage", () => {
     ]);
     render(<ObjectExplorerPage connectionId="c1" />);
     await waitFor(() => screen.getByText("add_one(int)"));
-    fireEvent.click(screen.getAllByLabelText(/options/i)[0]);
+    fireEvent.click(screen.getAllByLabelText(/actions/i)[0]);
     fireEvent.click(screen.getByText(/dependencies/i));
     await waitFor(() => expect(commands.getObjectDependencies).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByText("v")).toBeTruthy());
+  });
+
+  it("per-item menu offers Create…/Edit…/Drop… and Edit opens the dialog", async () => {
+    vi.spyOn(commands, "getEnums").mockResolvedValue([
+      { name: "role", schema: "public", labels: ["admin"] },
+    ]);
+    render(<ObjectExplorerPage connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText("Object type"));
+    fireEvent.click(screen.getByText("Enums"));
+    await waitFor(() => screen.getByText("role"));
+    fireEvent.click(screen.getAllByLabelText(/actions/i)[0]);
+    expect(screen.getByText("Create…")).toBeInTheDocument();
+    expect(screen.getByText("Edit…")).toBeInTheDocument();
+    expect(screen.getByText("Drop…")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Edit…"));
+    expect(screen.getByText("Edit enum")).toBeInTheDocument();
+  });
+
+  it("right-click on a list row opens the context menu", async () => {
+    vi.spyOn(commands, "getEnums").mockResolvedValue([
+      { name: "role", schema: "public", labels: ["admin"] },
+    ]);
+    render(<ObjectExplorerPage connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText("Object type"));
+    fireEvent.click(screen.getByText("Enums"));
+    const row = await screen.findByText("role");
+    fireEvent.contextMenu(row);
+    expect(screen.getByText("Create…")).toBeInTheDocument();
+    expect(screen.getByText("Edit…")).toBeInTheDocument();
+  });
+
+  it("header + create button opens the create dialog for the current type", async () => {
+    vi.spyOn(commands, "getEnums").mockResolvedValue([
+      { name: "role", schema: "public", labels: ["admin"] },
+    ]);
+    render(<ObjectExplorerPage connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText("Object type"));
+    fireEvent.click(screen.getByText("Enums"));
+    await waitFor(() => screen.getByText("role"));
+    fireEvent.click(screen.getByRole("button", { name: /create enum/i }));
+    expect(screen.getByText("Create enum")).toBeInTheDocument();
+    expect(screen.getByText(/SQL preview/i)).toBeInTheDocument();
   });
 
   it("refetches the current object list after a ddl commit succeeds", async () => {
