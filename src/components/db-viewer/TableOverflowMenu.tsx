@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { MoreVertical } from "lucide-react";
+import { MoreVertical, RefreshCw } from "lucide-react";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { AnimatedModal } from "../ui/AnimatedModal";
+import { Button } from "../ui/Button";
 import { ImportDialog } from "./ImportDialog";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useNotificationStore } from "../../stores/notificationStore";
 import { exportData } from "../../lib/exportData";
 import * as cmd from "../../lib/commands";
+import { getCapabilities } from "../../lib/dbCapabilities";
 import { DependencyDialog } from "./DependencyDialog";
 import { initialCrudParams } from "../../lib/objectCrud";
-import type { ColumnInfo, DependencyInfo } from "../../lib/types";
+import type { ColumnInfo, DependencyInfo, MaintenanceResult } from "../../lib/types";
 
 interface TableOverflowMenuProps {
   schema: string;
@@ -17,12 +21,26 @@ interface TableOverflowMenuProps {
   connectionId?: string;
   columns?: ColumnInfo[];
   rows?: unknown[][];
+  dbType?: string;
 }
 
 interface MenuItem {
   id: string;
-  label: string;
+  label?: string;
   danger?: boolean;
+  divider?: boolean;
+}
+
+type MaintenanceAction = "vacuum" | "analyze" | "reindex";
+
+const maintenanceLockCopy: Record<MaintenanceAction, string> = {
+  vacuum: "VACUUM blocks concurrent DDL only on this table.",
+  analyze: "ANALYZE blocks concurrent DDL only on this table.",
+  reindex: "REINDEX takes an ACCESS EXCLUSIVE lock — blocks reads and writes on this table until complete.",
+};
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 export function TableOverflowMenu({
@@ -32,15 +50,23 @@ export function TableOverflowMenu({
   connectionId: connectionIdProp,
   columns,
   rows,
+  dbType,
 }: TableOverflowMenuProps) {
   const storeConnectionId = useUiStore((s) => s.activeConnectionId);
   const connectionId = connectionIdProp ?? storeConnectionId;
   const addChange = useDbViewerStore((s) => s.addChange);
+  const notify = useNotificationStore((s) => s.notify);
+  const caps = getCapabilities(dbType ?? "postgresql");
 
   const [open, setOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"empty" | "delete" | null>(null);
   const [dropDeps, setDropDeps] = useState<DependencyInfo[]>([]);
   const [importOpen, setImportOpen] = useState(false);
+  const [maintenance, setMaintenance] = useState<{ action: MaintenanceAction; lockCopy: string } | null>(null);
+  const [maintenanceRunning, setMaintenanceRunning] = useState(false);
+  const [maintenanceResult, setMaintenanceResult] = useState<
+    { type: "success" | "error"; message: string; duration_ms: number } | null
+  >(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -62,6 +88,28 @@ export function TableOverflowMenu({
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [open]);
+
+  const handleMaintenanceConfirm = async () => {
+    if (!connectionId || !maintenance) return;
+    setMaintenanceRunning(true);
+    setMaintenanceResult(null);
+    try {
+      const result: MaintenanceResult = await cmd.runMaintenance(
+        connectionId,
+        schema,
+        table,
+        maintenance.action,
+      );
+      setMaintenanceResult({ type: "success", message: result.message, duration_ms: result.duration_ms });
+      notify(`${result.message} · ${result.duration_ms}ms`, "success");
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setMaintenanceResult({ type: "error", message, duration_ms: 0 });
+      notify(message, "error");
+    } finally {
+      setMaintenanceRunning(false);
+    }
+  };
 
   const handleAction = async (id: string) => {
     switch (id) {
@@ -97,6 +145,34 @@ export function TableOverflowMenu({
         setImportOpen(true);
         setOpen(false);
         break;
+      case "edit_table": {
+        const columnMeta = (columns ?? []).map((c) => ({
+          name: c.name,
+          type: c.data_type,
+          nullable: c.is_nullable,
+          default: c.default_value,
+          is_pk: c.is_pk,
+        }));
+        useDbViewerStore.getState().openFormTab({
+          kind: "table",
+          schema,
+          name: table,
+          title: "Edit Table",
+          description: `Edit ${schema}.${table}`,
+          mode: "edit",
+          params: {
+            schema,
+            name: table,
+            action: {
+              op: "edit",
+              columns: columnMeta,
+              old_columns: columnMeta,
+            },
+          },
+        });
+        setOpen(false);
+        break;
+      }
       case "create_index":
         if (!connectionId) break;
         useDbViewerStore.getState().openFormTab({
@@ -121,6 +197,12 @@ export function TableOverflowMenu({
           mode: "create",
           params: initialCrudParams("constraint", { schema, table, name: "" }, "create"),
         });
+        setOpen(false);
+        break;
+      case "vacuum":
+      case "analyze":
+      case "reindex":
+        setMaintenance({ action: id, lockCopy: maintenanceLockCopy[id] });
         setOpen(false);
         break;
       case "empty":
@@ -154,6 +236,15 @@ export function TableOverflowMenu({
     { id: "import", label: "Import data (CSV/JSON)" },
     { id: "create_index", label: "Create Index…" },
     { id: "create_constraint", label: "Create Constraint…" },
+    ...(caps.tableManagement ? [{ id: "edit_table", label: "Edit Table…" }] : []),
+    ...(caps.maintenance
+      ? [
+          { id: "maintenance-divider", divider: true },
+          { id: "vacuum", label: "VACUUM" },
+          { id: "analyze", label: "ANALYZE" },
+          { id: "reindex", label: "REINDEX", danger: true },
+        ]
+      : []),
     { id: "empty", label: "Empty Table", danger: true },
     { id: "delete", label: "Delete Table", danger: true },
   ];
@@ -169,20 +260,67 @@ export function TableOverflowMenu({
       </button>
       {open && (
         <div className="absolute right-0 mt-1 rounded-xl bg-surface border border-border py-1 z-20 min-w-[180px] shadow-lg">
-          {items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => handleAction(item.id)}
-              className={[
-                "flex items-center justify-between px-3 py-2 text-sm w-full text-left transition-colors cursor-pointer",
-                item.danger ? "text-red-400 hover:bg-red-500/10 hover:text-red-300" : "text-text-muted hover:text-text hover:bg-surface-raised",
-              ].join(" ")}
-            >
-              <span>{item.label}</span>
-            </button>
-          ))}
+          {items.map((item) =>
+            item.divider ? (
+              <div key={item.id} className="border-t border-border my-1" />
+            ) : (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handleAction(item.id)}
+                className={[
+                  "flex items-center justify-between px-3 py-2 text-sm w-full text-left transition-colors cursor-pointer",
+                  item.danger ? "text-red-400 hover:bg-red-500/10 hover:text-red-300" : "text-text-muted hover:text-text hover:bg-surface-raised",
+                ].join(" ")}
+              >
+                <span>{item.label}</span>
+              </button>
+            ),
+          )}
         </div>
+      )}
+
+      {maintenance && (
+        <AnimatedModal open onClose={() => setMaintenance(null)}>
+          <div className="w-80">
+            <h3 className="font-heading text-text text-lg mb-3">
+              {maintenanceResult
+                ? maintenanceResult.type === "success"
+                  ? "Maintenance Complete"
+                  : "Maintenance Failed"
+                : `${capitalize(maintenance.action)}: ${schema}.${table}`}
+            </h3>
+            <p className="text-sm text-text-muted mb-4">
+              {maintenanceResult
+                ? `${maintenanceResult.message} · ${maintenanceResult.duration_ms}ms`
+                : maintenance.lockCopy}
+            </p>
+            {maintenanceRunning && (
+              <div className="flex items-center gap-2 text-sm text-text-muted mb-4">
+                <RefreshCw size={14} className="animate-spin" />
+                <span>Running {maintenance.action}…</span>
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => setMaintenance(null)}
+                disabled={maintenanceRunning}
+              >
+                {maintenanceResult ? "Close" : "Cancel"}
+              </Button>
+              {!maintenanceResult && (
+                <Button
+                  variant="primary"
+                  onClick={handleMaintenanceConfirm}
+                  disabled={maintenanceRunning}
+                >
+                  {maintenanceRunning ? "Running…" : capitalize(maintenance.action)}
+                </Button>
+              )}
+            </div>
+          </div>
+        </AnimatedModal>
       )}
 
       {confirmAction === "delete" && dropDeps.length > 0 && (

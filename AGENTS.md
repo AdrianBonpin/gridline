@@ -156,7 +156,7 @@ Cut a release from the **`prod`** branch (never feature branches) by tagging it 
 **Before tagging**, keep everything in sync:
 - Version number across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`
 - `src/lib/version.test.ts` and `src/lib/docs-coverage.test.ts` if they assert the version
-- **README download links are static (versioned)** — both download tables (top **Download** section + **Which file should I download?**) link directly to the release-tag assets (`releases/download/v0.7.6/<file>`). tauri-action uses default versioned asset names (`Gridline_<ver>_aarch64.dmg`, `Gridline-<ver>-1.x86_64.rpm`, etc.) — update BOTH tables to the new names on every release (see the MAINTENANCE comment in README.md).
+- **README download links are static (versioned)** — both download tables (top **Download** section + **Which file should I download?**) link directly to the release-tag assets (`releases/download/v0.7.7/<file>`). tauri-action uses default versioned asset names (`Gridline_<ver>_aarch64.dmg`, `Gridline-<ver>-1.x86_64.rpm`, etc.) — update BOTH tables to the new names on every release (see the MAINTENANCE comment in README.md).
 - **Bundled pg tools:** `tauri.conf.json` `bundle.resources` lists `resources/pg_tools/*`; the `release.yml` matrix builds/downloads + checksum-verifies the static binaries before the Tauri build step.
 
 ### Adding a Tauri Command
@@ -215,6 +215,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | SSH tunnel runtime | ✅ | Real ssh2 tunnel (password + key auth), binds 127.0.0.1 only, secrets in OS keychain (`ssh_password:<id>` / `ssh_passphrase:<id>`), closed on pool eviction / app exit; TLS downgraded to `require` through the tunnel |
 | SSL/TLS config UI | ✅ | Mode (disable/require/verify-ca/verify-full), cert paths |
 | SSL/TLS runtime | ✅ | PostgreSQL all modes via rustls (disable/require/verify-ca/verify-full; **v1: `verify-ca` behaves as `verify-full`** — documented refinement), client certs PKCS#1/PKCS#8/EC, encrypted client keys rejected; MySQL test path maps modes (verify-full → VerifyIdentity) |
+| Roles & grants (PG) | ✅ | Create/edit/drop PostgreSQL roles and GRANT/REVOKE privileges per object class from a UI (v0.7.7) |
 
 ### Home Screen & Organization
 | Feature | Status | Details |
@@ -262,7 +263,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Export toolbar (JSON, CSV, SQL, Markdown) | ✅ | Client-side Blob download of visible rows |
 | Auto-refresh timer | ✅ | Configurable interval in settings |
 | Changes queue (INSERT, UPDATE, DELETE, bulk_insert, empty_table, drop_table) | ✅ | Stage → **Commit All**. Tab bar **Changes** button (amber border + count badge when pending) toggles a **popover** anchored to it: header with **Visual/SQL** toggle (cards showing op badge + table + description + per-change **Revert**, or a generated-SQL preview via `buildChangeSql`), footer **Clear All** + **Commit All (N)** with **⌘S/Ctrl+S** shortcut. Committed cards show a green ✓ (failed ✗); committing `drop_table` auto-closes open tabs of that table |
-| Auto schema-tree refresh | ✅ | Tree auto-refreshes after a successful schema-modifying query run (`CREATE`/`DROP`/`ALTER`/`TRUNCATE` via `isSchemaModifyingQuery`) and after committing `drop_table` via the queue — no manual refresh needed |
+| Auto schema-tree refresh | ✅ | Tree auto-refreshes after a successful schema-modifying query run (`CREATE`/`DROP`/`ALTER`/`TRUNCATE` via `isSchemaModifyingQuery`) and after committing schema-modifying queue changes — `drop_table`, schema-modifying `ddl` (e.g. `CREATE TABLE`), and `rebuild_table` — no manual refresh needed |
 | Data import (CSV/JSON) | ✅ | Table overflow menu → ImportDialog: file pick, parse, preview (first 100 rows), header→column mapping, caps 100k rows / 100 MB; stages a bulk_insert change through the queue → Commit All |
 | Table menu actions | ✅ | Copy table schema (DDL via pg_dump / sqlite_master), Empty Table (DELETE) / Delete Table (DROP) through the queue with confirm, export stubs wired (JSON/CSV/SQL/Markdown) |
 | Edit connection modal (from DB viewer) | ✅ | AnimatedModal with keychain password fetch on test |
@@ -273,6 +274,18 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Keyboard cell navigation (arrow keys, Tab) | ✅ | Arrow keys + Tab/Shift+Tab wrap (`keyboardNav`); Enter opens the editor; **Esc cancels editing even after the editor lost focus** (document-level listener) and closes the context menu |
 | Cell-level copy (right-click or Ctrl+C) | ✅ | CellContextMenu: Copy / Copy JSON (jsonb) / Edit / Set NULL / Open FK reference + **View Row** and **Select Row** items; right-click or Ctrl/Cmd+C on the focused cell; menu closes on outside click/Esc |
 | FK reference | ✅ | Small ↗ icon at the start of FK cells opens the FK preview popover (also via context menu Open FK reference); plain click on the cell selects/edits and does not open it |
+| Maintenance actions (VACUUM/ANALYZE/REINDEX) | ✅ | Right-click table → VACUUM / ANALYZE / REINDEX (v0.7.7) |
+
+### Table Editor & Roles (v0.7.7)
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| Create Table (visual editor) | ✅ | "Create Table…" workspace tab: columns grid (name / type dropdown / default / PK per row, drag-to-reorder, add/remove), single + composite PK (first column auto-PK), shorthand PG types (`int`/`int8`/`int2`/`float8`/`bool`), auto-increment gating, live Monaco SQL preview, transparent selects + form-row focus `amber-400/20` |
+| Edit Table (column diff) | ✅ | Same grid on existing tables; Stage diffs old vs new columns → one queue item per statement: `ADD COLUMN`, `DROP COLUMN`, `RENAME COLUMN`, `ALTER COLUMN … TYPE`, `SET|DROP DEFAULT`, `SET|DROP NOT NULL`; stale-write guard (re-fetches live columns, refuses if changed) |
+| Column reorder (atomic rebuild) | ✅ | Drag-to-reorder triggers a table rebuild: single transaction, preserves constraints/indexes/FKs/grants/sequences (copied DDL), fail-closed when triggers/RLS policies/inheritance/partitioning/generated columns are present (`get_table_rebuild_readiness`) |
+| FK management | ✅ | Multi-column FK composer (local col → ref col pairs, referenced PKs first, type-match preview `localType → refType`, auto-named constraints, ref-table picker with `name (type)` options); cross-schema references; ON DELETE / ON UPDATE actions; create mode inlines FKs into the single CREATE TABLE change, edit mode stages ALTERs; FK rows in the form with Edit/Remove (queued changes revert, DB FKs stage DROP CONSTRAINT) |
+| Table options | ✅ | Tablespace picker (non-system, from `pg_tablespace`) + row-level security toggle in the Options section |
+| Roles & grants management | ✅ | Objects → Roles: list non-system roles (attributes incl. connection limit — `rolconnlimit::int8` cast fix), role detail with attribute grid + memberships + privilege explorer; create/edit/drop roles staged through the queue |
+| Role privilege explorer | ✅ | Per-role privileges grouped by object class (tables/sequences/routines/schemas/databases) with collapsible sections — collapsed shows first 5 + fade, expand shows all, chevron hidden when ≤5; GRANT/REVOKE composer (object class + schema + name, WITH GRANT OPTION); aclexplode-based queries (`role_sequence_grants` removed in PG 15, `schema_privileges` never existed) |
 
 ### Object Explorer (non-table objects)
 | Feature | Status | Details |
@@ -294,6 +307,8 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Object management CRUD | ✅ | Right-click / ⋮ create/edit/drop for every PG object type; create/edit open as **workspace tabs** with a Visual ⇄ SQL toggle, staged through the changes queue with generated-SQL preview (v0.7.6). Enum value removal unsupported (PG has no DROP VALUE) |
 | Objects view tabbed workspace | ✅ | Objects view uses the shared tabbed workspace: object details open as tabs (per-type icons), inline manual query tab, and the changes queue reachable from the tab bar (v0.7.6) |
 | Schema visualizer (ER diagram) | ✅ | Full React Flow ER diagram with dagre auto-layout, crow's foot notation, schema selector, legend with cardinality colors, collapsible columns (PK/FK/unique-only), cross-schema FK support. PostgreSQL (single round-trip LATERAL query) + SQLite (PRAGMA). Uses @xyflow/react + dagre. |
+| Create/Edit table + column-diff + rebuild | ✅ | Create Table + Edit Table column-diff editor (ADD/DROP/RENAME/ALTER TYPE/SET|DROP DEFAULT/SET|DROP NOT NULL, staged one-per-queue-item); atomic column-reorder table rebuild in a single transaction, preserving constraints/indexes/FKs/grants/sequences (v0.7.7) |
+| Relationships (FK CRUD, cross-schema, ON DELETE/UPDATE) | ✅ | FK create/edit/drop with cross-schema references and ON DELETE/UPDATE actions (v0.7.7) |
 
 ### Query Editor
 | Feature | Status | Details |

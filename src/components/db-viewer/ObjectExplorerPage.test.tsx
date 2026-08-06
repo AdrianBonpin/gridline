@@ -351,6 +351,39 @@ describe("ObjectExplorerPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("roles fetch ignores the schema filter", async () => {
+    const user = userEvent.setup();
+    const getRoles = vi.spyOn(commands, "getRoles").mockResolvedValue([
+      {
+        name: "app",
+        superuser: false,
+        inherit: true,
+        create_db: false,
+        create_role: false,
+        can_login: true,
+        replication: false,
+        bypass_rls: false,
+        connection_limit: -1,
+        valid_until: null,
+        memberships: [],
+      },
+    ]);
+    render(<ObjectExplorerPage connectionId="c1" />);
+    await user.click(screen.getByLabelText("Object type"));
+    await user.click(screen.getByText("Roles"));
+    await waitFor(() =>
+      expect(screen.getByText("app")).toBeInTheDocument(),
+    );
+    // Roles are cluster-scoped: no schema argument is ever passed, even when
+    // the schema changes (no schema-change refetch for roles).
+    expect(getRoles).toHaveBeenCalledTimes(1);
+    expect(getRoles).toHaveBeenCalledWith("c1");
+    expect(getRoles).not.toHaveBeenCalledWith("c1", "public");
+    useDbViewerStore.setState({ currentSchema: "analytics" });
+    await waitFor(() => expect(getRoles).toHaveBeenCalledTimes(1));
+    expect(getRoles).toHaveBeenCalledWith("c1");
+  });
+
   it("preselects type from store on mount", () => {
     useDbViewerStore.setState({ selectedObjectType: "sequences" });
     render(<ObjectExplorerPage connectionId="c1" />);

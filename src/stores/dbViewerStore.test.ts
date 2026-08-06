@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useDbViewerStore } from "./dbViewerStore";
-import type { QueryResult, TableInfo } from "../lib/types";
+import type { QueryResult, TableInfo, RoleInfo } from "../lib/types";
 import * as commands from "../lib/commands";
 
 vi.mock("../lib/commands", () => ({
@@ -596,5 +596,35 @@ describe("openFormTab", () => {
     expect(after?.description).toBe(before?.description);
     expect(after?.mode).toBe(before?.mode);
     expect(after?.kind).toBe(before?.kind);
+  });
+});
+
+describe("roles slice", () => {
+  it("setRoles stores roles", () => {
+    useDbViewerStore.getState().reset();
+    const r: RoleInfo = {
+      name: "app", superuser: false, inherit: true, create_db: false, create_role: false,
+      can_login: true, replication: false, bypass_rls: false, connection_limit: -1,
+      valid_until: null, memberships: [],
+    };
+    useDbViewerStore.getState().setRoles([r]);
+    expect(useDbViewerStore.getState().roles).toEqual([r]);
+  });
+
+  it("openFormTab accepts kind table and role", () => {
+    useDbViewerStore.getState().reset();
+    useDbViewerStore.getState().openFormTab({
+      kind: "table", schema: "public", name: "", title: "Create Table",
+      description: "Create Table", mode: "create", params: { schema: "public", name: "", action: { op: "create", columns: [] } },
+    });
+    const t = useDbViewerStore.getState().tabs[0];
+    expect(t.tabType).toBe("objectForm");
+    expect(t.form?.kind).toBe("table");
+    // dedup: second create of same kind focuses existing
+    useDbViewerStore.getState().openFormTab({
+      kind: "table", schema: "public", name: "", title: "Create Table",
+      description: "Create Table", mode: "create", params: { schema: "public", name: "", action: { op: "create", columns: [] } },
+    });
+    expect(useDbViewerStore.getState().tabs.filter((x) => x.form?.kind === "table").length).toBe(1);
   });
 });

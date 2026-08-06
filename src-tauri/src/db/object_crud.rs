@@ -249,35 +249,55 @@ pub enum ConstraintAction {
     Check { expression: String },
     Unique { columns: Vec<String> },
     PrimaryKey { columns: Vec<String> },
-    ForeignKey { columns: Vec<String>, ref_schema: String, ref_table: String, ref_columns: Vec<String> },
+    ForeignKey { columns: Vec<String>, ref_schema: String, ref_table: String, ref_columns: Vec<String>, on_delete: Option<String>, on_update: Option<String>, deferrable: Option<bool>, initially_deferred: Option<bool> },
     Drop,
 }
 
 pub fn constraint_ddl(p: &ConstraintParams) -> Result<Vec<String>, String> {
     validate_object_name(&p.schema)?;
     validate_object_name(&p.table)?;
-    validate_object_name(&p.name)?;
     let table = format!("{}.{}", quote_ident(&p.schema), quote_ident(&p.table));
-    let name = quote_ident(&p.name);
     Ok(vec![match &p.action {
-        ConstraintAction::Check { expression } =>
-            format!("ALTER TABLE {} ADD CONSTRAINT {} CHECK ({})", table, name, validate_expression(expression)?),
+        ConstraintAction::Check { expression } => {
+            validate_object_name(&p.name)?;
+            format!("ALTER TABLE {} ADD CONSTRAINT {} CHECK ({})", table, quote_ident(&p.name), validate_expression(expression)?)
+        }
         ConstraintAction::Unique { columns } => {
             if columns.is_empty() { return Err("UNIQUE constraint requires a column".into()); }
-            format!("ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({})", table, name, quoted_cols(columns))
+            validate_object_name(&p.name)?;
+            format!("ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({})", table, quote_ident(&p.name), quoted_cols(columns))
         }
         ConstraintAction::PrimaryKey { columns } => {
             if columns.is_empty() { return Err("PRIMARY KEY requires a column".into()); }
-            format!("ALTER TABLE {} ADD CONSTRAINT {} PRIMARY KEY ({})", table, name, quoted_cols(columns))
+            validate_object_name(&p.name)?;
+            format!("ALTER TABLE {} ADD CONSTRAINT {} PRIMARY KEY ({})", table, quote_ident(&p.name), quoted_cols(columns))
         }
-        ConstraintAction::ForeignKey { columns, ref_schema, ref_table, ref_columns } => {
+        ConstraintAction::ForeignKey { columns, ref_schema, ref_table, ref_columns, on_delete, on_update, deferrable, initially_deferred } => {
             if columns.is_empty() || ref_columns.is_empty() { return Err("FOREIGN KEY requires source and referenced columns".into()); }
             validate_object_name(ref_schema)?;
             validate_object_name(ref_table)?;
             let refq = format!("{}.{}", quote_ident(ref_schema), quote_ident(ref_table));
-            format!("ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})", table, name, quoted_cols(columns), refq, quoted_cols(ref_columns))
+            // An empty name is allowed for FKs — PG auto-generates it (ADD FOREIGN KEY …).
+            let name_clause = if p.name.trim().is_empty() {
+                String::new()
+            } else {
+                validate_object_name(&p.name)?;
+                format!("CONSTRAINT {} ", quote_ident(&p.name))
+            };
+            let mut sql = format!("ALTER TABLE {} ADD {}FOREIGN KEY ({}) REFERENCES {} ({})", table, name_clause, quoted_cols(columns), refq, quoted_cols(ref_columns));
+            if let Some(d) = on_delete { sql.push_str(&format!(" ON DELETE {}", d)); }
+            if let Some(u) = on_update { sql.push_str(&format!(" ON UPDATE {}", u)); }
+            match (deferrable, initially_deferred) {
+                (Some(true), Some(true)) => sql.push_str(" DEFERRABLE INITIALLY DEFERRED"),
+                (Some(true), _) => sql.push_str(" DEFERRABLE INITIALLY IMMEDIATE"),
+                _ => {}
+            }
+            sql
         }
-        ConstraintAction::Drop => format!("ALTER TABLE {} DROP CONSTRAINT {}", table, name),
+        ConstraintAction::Drop => {
+            validate_object_name(&p.name)?;
+            format!("ALTER TABLE {} DROP CONSTRAINT {}", table, quote_ident(&p.name))
+        }
     }])
 }
 
@@ -369,10 +389,403 @@ pub fn trigger_ddl(p: &TriggerParams) -> Result<Vec<String>, String> {
     }])
 }
 
+use std::collections::HashSet;
+
+fn validate_type(t: &str) -> Result<String, String> {
+    let s = t.trim();
+    if s.is_empty() { return Err("Column type must not be empty".into()); }
+    if s.ends_with(';') { return Err("Column type must not end with ';'".into()); }
+    if s.contains("--") || s.contains("/*") { return Err("Column type must not contain comments".into()); }
+    Ok(s.to_string())
+}
+
+#[derive(Deserialize, Clone)]
+pub struct TableColumn {
+    pub name: String,
+    #[serde(rename = "type")] pub type_: String,
+    pub nullable: bool,
+    pub default: Option<Option<String>>, // null | Some(null) | Some(expr)
+    pub is_pk: bool,
+    pub unique: Option<bool>,
+}
+
+impl TableColumn {
+    fn default_sql(&self) -> Option<&str> {
+        match &self.default { Some(Some(d)) => Some(d.as_str()), _ => None }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct TableParams { pub schema: String, pub name: String, pub action: TableAction }
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum TableAction {
+    Create {
+        columns: Vec<TableColumn>,
+        tablespace: Option<String>,
+        #[serde(default)]
+        foreign_keys: Vec<TableForeignKey>,
+    },
+    Edit { columns: Vec<TableColumn>, old_columns: Vec<TableColumn> },
+    Options { tablespace: Option<String>, rls: Option<String> },
+    Drop,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct TableForeignKey {
+    pub columns: Vec<String>,
+    pub ref_schema: String,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub on_delete: Option<String>,
+    pub on_update: Option<String>,
+    pub deferrable: Option<bool>,
+    pub initially_deferred: Option<bool>,
+}
+
+fn col_def(c: &TableColumn) -> Result<String, String> {
+    validate_object_name(&c.name)?;
+    let ty = validate_type(&c.type_)?;
+    let mut s = format!("{} {}", quote_ident(&c.name), ty);
+    if c.unique == Some(true) { s.push_str(" UNIQUE"); }
+    if !c.nullable { s.push_str(" NOT NULL"); }
+    if let Some(d) = c.default_sql() { s.push_str(&format!(" DEFAULT {}", validate_expression(d)?)); }
+    Ok(s)
+}
+
+pub fn table_ddl(p: &TableParams) -> Result<Vec<String>, String> {
+    let q = qual(&p.schema, &p.name)?;
+    Ok(match &p.action {
+        TableAction::Create { columns, tablespace, foreign_keys } => {
+            if columns.is_empty() { return Err("CREATE TABLE requires at least one column".into()); }
+            let mut seen = HashSet::new();
+            for c in columns {
+                validate_object_name(&c.name)?;
+                if !seen.insert(c.name.clone()) { return Err(format!("Duplicate column name: {}", c.name)); }
+            }
+            let mut defs: Vec<String> = columns.iter().map(col_def).collect::<Result<_, _>>()?;
+            let pk: Vec<String> = columns.iter().filter(|c| c.is_pk).map(|c| quote_ident(&c.name)).collect();
+            if !pk.is_empty() { defs.push(format!("PRIMARY KEY ({})", pk.join(", "))); }
+            for fk in foreign_keys {
+                if fk.columns.is_empty() || fk.ref_columns.is_empty() {
+                    return Err("FOREIGN KEY requires source and referenced columns".into());
+                }
+                for c in &fk.columns { validate_object_name(c)?; }
+                for c in &fk.ref_columns { validate_object_name(c)?; }
+                validate_object_name(&fk.ref_schema)?;
+                validate_object_name(&fk.ref_table)?;
+                let refq = format!("{}.{}", quote_ident(&fk.ref_schema), quote_ident(&fk.ref_table));
+                let mut s = format!("FOREIGN KEY ({}) REFERENCES {} ({})", quoted_cols(&fk.columns), refq, quoted_cols(&fk.ref_columns));
+                if let Some(d) = &fk.on_delete { s.push_str(&format!(" ON DELETE {}", d)); }
+                if let Some(u) = &fk.on_update { s.push_str(&format!(" ON UPDATE {}", u)); }
+                match (fk.deferrable, fk.initially_deferred) {
+                    (Some(true), Some(true)) => s.push_str(" DEFERRABLE INITIALLY DEFERRED"),
+                    (Some(true), _) => s.push_str(" DEFERRABLE"),
+                    _ => {}
+                }
+                defs.push(s);
+            }
+            let mut sql = format!("CREATE TABLE {} (\n  {}\n)", q, defs.join(",\n  "));
+            if let Some(ts) = tablespace { validate_object_name(ts)?; sql.push_str(&format!(" TABLESPACE {}", quote_ident(ts))); }
+            vec![sql]
+        }
+        TableAction::Edit { columns, old_columns } => table_diff(&q, old_columns, columns)?,
+        TableAction::Options { tablespace, rls } => {
+            let mut out = Vec::new();
+            if let Some(ts) = tablespace { validate_object_name(ts)?; out.push(format!("ALTER TABLE {} SET TABLESPACE {}", q, quote_ident(ts))); }
+            match rls.as_deref() {
+                Some("enable") | Some("force") => out.push(format!("ALTER TABLE {} ENABLE ROW LEVEL SECURITY", q)),
+                _ => {}
+            }
+            if rls.as_deref() == Some("force") { out.push(format!("ALTER TABLE {} FORCE ROW LEVEL SECURITY", q)); }
+            if rls.as_deref() == Some("disable") { out.push(format!("ALTER TABLE {} DISABLE ROW LEVEL SECURITY", q)); }
+            out
+        }
+        TableAction::Drop => vec![format!("DROP TABLE {}", q)],
+    })
+}
+
+fn table_diff(q: &str, old: &[TableColumn], new: &[TableColumn]) -> Result<Vec<String>, String> {
+    for c in new { validate_object_name(&c.name)?; validate_type(&c.type_)?; }
+    let mut old_by_name: std::collections::HashMap<&str, &TableColumn> = old.iter().map(|c| (c.name.as_str(), c)).collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut used_old: HashSet<usize> = HashSet::new();
+    // 1. RENAMEs: unmatched new col at ordinal i matching an unmatched old col at ordinal i with identical type/nullable/default
+    let mut renames: Vec<(usize, String, String)> = Vec::new(); // (old_idx, old_name, new_name)
+    for (i, nc) in new.iter().enumerate() {
+        if old_by_name.contains_key(nc.name.as_str()) { continue; }
+        if let Some(oc) = old.get(i) {
+            if !used_old.contains(&i) && oc.type_.trim() == nc.type_.trim()
+                && oc.nullable == nc.nullable && oc.default_sql() == nc.default_sql() {
+                renames.push((i, oc.name.clone(), nc.name.clone()));
+                used_old.insert(i);
+                old_by_name.remove(oc.name.as_str());
+            }
+        }
+    }
+    for (_, oldn, newn) in &renames {
+        out.push(format!("ALTER TABLE {} RENAME COLUMN \"{}\" TO \"{}\"", q, oldn, newn));
+    }
+    // 2. ADDs: remaining unmatched new cols
+    for nc in new {
+        if old_by_name.contains_key(nc.name.as_str()) || renames.iter().any(|r| r.2 == nc.name) { continue; }
+        let s = format!("ALTER TABLE {} ADD COLUMN {}", q, col_def(nc)?);
+        out.push(s);
+    }
+    // 3. ALTERs for kept (name-matched) cols
+    for nc in new {
+        let Some(oc) = old.iter().find(|c| c.name == nc.name) else { continue; };
+        if oc.type_.trim() != nc.type_.trim() {
+            out.push(format!("ALTER TABLE {} ALTER COLUMN {} TYPE {}", q, quote_ident(&nc.name), validate_type(&nc.type_)?));
+        }
+        match (oc.default_sql(), nc.default_sql()) {
+            (None, Some(d)) => out.push(format!("ALTER TABLE {} ALTER COLUMN {} SET DEFAULT {}", q, quote_ident(&nc.name), validate_expression(d)?)),
+            (Some(_), None) => out.push(format!("ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT", q, quote_ident(&nc.name))),
+            (Some(a), Some(b)) if a != b => out.push(format!("ALTER TABLE {} ALTER COLUMN {} SET DEFAULT {}", q, quote_ident(&nc.name), validate_expression(b)?)),
+            _ => {}
+        }
+        match (oc.nullable, nc.nullable) {
+            (true, false) => out.push(format!("ALTER TABLE {} ALTER COLUMN {} SET NOT NULL", q, quote_ident(&nc.name))),
+            (false, true) => out.push(format!("ALTER TABLE {} ALTER COLUMN {} DROP NOT NULL", q, quote_ident(&nc.name))),
+            _ => {}
+        }
+    }
+    // 4. DROPs last: old cols not present in new and not renamed-away
+    let new_names: HashSet<&str> = new.iter().map(|c| c.name.as_str()).collect();
+    for oc in old {
+        if !new_names.contains(oc.name.as_str()) && !renames.iter().any(|r| r.1 == oc.name) {
+            out.push(format!("ALTER TABLE {} DROP COLUMN {}", q, quote_ident(&oc.name)));
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone)]
+pub struct RebuildConstraint { pub name: String, pub definition: String }
+
+#[derive(Debug, Clone)]
+pub struct RebuildIndex { pub name: String, pub definition: String }
+
+#[derive(Debug, Clone)]
+pub struct RebuildFk { pub name: String, pub definition: String }
+
+#[derive(Debug, Clone)]
+pub struct RebuildFkIn {
+    pub name: String,
+    pub own_schema: String,
+    pub own_table: String,
+    pub definition: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RebuildGrant {
+    pub grantee: String,
+    pub privileges: Vec<String>,
+    pub grantable: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RebuildOwnedSequence {
+    pub seq_schema: String,
+    pub seq_name: String,
+    pub column: String,
+}
+
+/// Everything needed to reconstruct a table's metadata after a reorder-only rebuild.
+/// Rebuild is reorder-only: column names + types in `new_columns` must equal the live
+/// snapshot (validated by the Task 2.4 command). These structs are assembled in Rust
+/// from introspection rows, so they derive Clone/Debug only (no IPC Deserialize).
+#[derive(Debug, Clone)]
+pub struct RebuildInput {
+    pub schema: String,
+    pub name: String,
+    pub constraints: Vec<RebuildConstraint>,
+    pub indexes: Vec<RebuildIndex>,
+    pub fks_out: Vec<RebuildFk>,
+    pub fks_in: Vec<RebuildFkIn>,
+    pub grants: Vec<RebuildGrant>,
+    pub owned_sequences: Vec<RebuildOwnedSequence>,
+}
+
+/// Assemble the full rebuild script for a reorder-only table rebuild.
+///
+/// Order (transactional at the caller — the script itself is BEGIN-free):
+/// detach owned sequences → drop inbound FKs → create temp table in the new column
+/// order → INSERT..SELECT (cast-free: names/types unchanged) → DROP original → RENAME
+/// temp → recreate PK/unique/check constraints → recreate indexes → re-add outbound
+/// FKs → re-add inbound FKs → re-grant privileges → re-attach owned sequences.
+///
+/// The caller executes this via transactional `batch_execute` (Task 2.4), so the
+/// script must NOT contain BEGIN/COMMIT.
+pub fn rebuild_script(input: &RebuildInput, new_columns: &[TableColumn]) -> Result<String, String> {
+    validate_object_name(&input.schema)?;
+    validate_object_name(&input.name)?;
+    for c in new_columns {
+        validate_object_name(&c.name)?;
+        validate_type(&c.type_)?;
+    }
+    let q = qual(&input.schema, &input.name)?;
+    let tmp = qual(&input.schema, &format!("_gridline_rb_{}", input.name))?;
+    let mut s = String::new();
+    // 1. detach owned sequences (OWNED BY NONE keeps the sequence alive but decoupled)
+    for seq in &input.owned_sequences {
+        validate_object_name(&seq.seq_schema)?;
+        validate_object_name(&seq.seq_name)?;
+        s.push_str(&format!("ALTER SEQUENCE \"{}\".\"{}\" OWNED BY NONE;\n", seq.seq_schema, seq.seq_name));
+    }
+    // 2. drop FKs IN (from other tables) before DROP TABLE
+    for fk in &input.fks_in {
+        validate_object_name(&fk.own_schema)?;
+        validate_object_name(&fk.own_table)?;
+        validate_object_name(&fk.name)?;
+        s.push_str(&format!("ALTER TABLE \"{}\".\"{}\" DROP CONSTRAINT \"{}\";\n", fk.own_schema, fk.own_table, fk.name));
+    }
+    // 3. create temp table (new order, NOT NULL + DEFAULT only)
+    let defs: Vec<String> = new_columns.iter().map(col_def).collect::<Result<_, _>>()?;
+    s.push_str(&format!("CREATE TABLE {} (\n  {}\n);\n", tmp, defs.join(",\n  ")));
+    // 4. copy data (names unchanged = cast-free SELECT in new order)
+    let cols: Vec<String> = new_columns.iter().map(|c| quote_ident(&c.name)).collect();
+    s.push_str(&format!("INSERT INTO {} ({}) SELECT {} FROM {};\n", tmp, cols.join(", "), cols.join(", "), q));
+    // 5. drop old + 6. rename temp
+    s.push_str(&format!("DROP TABLE {};\n", q));
+    s.push_str(&format!("ALTER TABLE {} RENAME TO \"{}\";\n", tmp, input.name));
+    // 7. recreate constraints (PK/unique/check)
+    for c in &input.constraints {
+        validate_object_name(&c.name)?;
+        s.push_str(&format!("ALTER TABLE {} ADD CONSTRAINT \"{}\" {};\n", q, c.name, c.definition));
+    }
+    // 8. recreate indexes (pg_get_indexdef references schema.name = the renamed table)
+    for idx in &input.indexes {
+        s.push_str(&format!("{};\n", idx.definition));
+    }
+    // 9. recreate FKs OUT (this table's FKs)
+    for fk in &input.fks_out {
+        validate_object_name(&fk.name)?;
+        s.push_str(&format!("ALTER TABLE {} ADD CONSTRAINT \"{}\" {};\n", q, fk.name, fk.definition));
+    }
+    // 10. recreate FKs IN (other tables)
+    for fk in &input.fks_in {
+        s.push_str(&format!("ALTER TABLE \"{}\".\"{}\" ADD CONSTRAINT \"{}\" {};\n", fk.own_schema, fk.own_table, fk.name, fk.definition));
+    }
+    // 11. re-apply grants
+    for g in &input.grants {
+        validate_object_name(&g.grantee)?;
+        let opt = if g.grantable { " WITH GRANT OPTION" } else { "" };
+        s.push_str(&format!("GRANT {} ON {} TO {}{};\n", g.privileges.join(", "), q, quote_ident(&g.grantee), opt));
+    }
+    // 12. re-attach owned sequences
+    for seq in &input.owned_sequences {
+        validate_object_name(&seq.column)?;
+        s.push_str(&format!("ALTER SEQUENCE \"{}\".\"{}\" OWNED BY {}.\"{}\";\n", seq.seq_schema, seq.seq_name, q, seq.column));
+    }
+    Ok(s.trim_end().to_string())
+}
+
+#[derive(Deserialize)]
+pub struct RoleParams {
+    pub schema: String,
+    pub name: String,
+    pub action: RoleAction,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum RoleAction {
+    Create { login: bool, superuser: bool, createdb: bool, createrole: bool, inherit: bool,
+             replication: bool, bypassrls: bool, connection_limit: i64, valid_until: String,
+             password: String, members: Vec<String> },
+    Edit { login: bool, superuser: bool, createdb: bool, createrole: bool, inherit: bool,
+           replication: bool, bypassrls: bool, connection_limit: i64, valid_until: String,
+           password: String, members: Vec<String> },
+    Drop,
+    Grant { object_class: String, object_schema: Option<String>, object_name: String,
+            privileges: Vec<String>, grantee: String, grant_option: bool },
+    Revoke { object_class: String, object_schema: Option<String>, object_name: String,
+             privileges: Vec<String>, grantee: String, grant_option: bool },
+}
+
+/// Compose the option-clause portion of CREATE/ALTER ROLE.
+fn role_options(a: &RoleAction) -> String {
+    let (login, superuser, createdb, createrole, inherit, replication, bypassrls, conn, until, pw) = match a {
+        RoleAction::Create { login, superuser, createdb, createrole, inherit, replication, bypassrls, connection_limit, valid_until, password, .. }
+        | RoleAction::Edit { login, superuser, createdb, createrole, inherit, replication, bypassrls, connection_limit, valid_until, password, .. } =>
+            (*login, *superuser, *createdb, *createrole, *inherit, *replication, *bypassrls, *connection_limit, valid_until.clone(), password.clone()),
+        _ => return String::new(),
+    };
+    let mut o: Vec<String> = Vec::new();
+    if login { o.push("LOGIN".into()); }
+    if superuser { o.push("SUPERUSER".into()); }
+    if createdb { o.push("CREATEDB".into()); }
+    if createrole { o.push("CREATEROLE".into()); }
+    o.push(if inherit { "INHERIT".into() } else { "NOINHERIT".into() });
+    if replication { o.push("REPLICATION".into()); }
+    if bypassrls { o.push("BYPASSRLS".into()); }
+    o.push(format!("CONNECTION LIMIT {}", conn));
+    if !pw.is_empty() { o.push(format!("PASSWORD '{}'", pw.replace('\'', "''"))); }
+    if !until.is_empty() { o.push(format!("VALID UNTIL '{}'", until.replace('\'', "''"))); }
+    o.join(" ")
+}
+
+/// Qualified object reference for GRANT/REVOKE. Schemaless classes (schema, database)
+/// quote the bare name; everything else is emitted as schema.name.
+fn grant_object_ref(class: &str, schema: Option<&str>, name: &str) -> Result<String, String> {
+    validate_object_name(name)?;
+    match class {
+        "schema" | "database" => Ok(quote_ident(name)),
+        _ => {
+            let s = match schema {
+                Some(s) => { validate_object_name(s)?; quote_ident(s) }
+                None => String::new(),
+            };
+            Ok(format!("{}.{}", s, quote_ident(name)))
+        }
+    }
+}
+
+pub fn role_ddl(p: &RoleParams) -> Result<Vec<String>, String> {
+    if !p.name.is_empty() { validate_object_name(&p.name)?; }
+    let name = quote_ident(&p.name);
+    Ok(match &p.action {
+        RoleAction::Create { members, .. } => {
+            let mut out = vec![format!("CREATE ROLE {} {}", name, role_options(&p.action))];
+            for m in members {
+                validate_object_name(m)?;
+                out.push(format!("GRANT {} TO {}", quote_ident(m), name));
+            }
+            out
+        }
+        RoleAction::Edit { members, .. } => {
+            // membership edits are advisory in v1 (no diff); skip
+            let _ = members;
+            vec![format!("ALTER ROLE {} {}", name, role_options(&p.action))]
+        }
+        RoleAction::Drop => vec![format!("DROP ROLE {}", name)],
+        RoleAction::Grant { object_class, object_schema, object_name, privileges, grantee, grant_option } => {
+            validate_object_name(grantee)?;
+            let obj = grant_object_ref(object_class, object_schema.as_deref(), object_name)?;
+            let privs = privileges.join(", ");
+            let opt = if *grant_option { " WITH GRANT OPTION" } else { "" };
+            vec![format!("GRANT {} ON {} TO {}{}", privs, obj, quote_ident(grantee), opt)]
+        }
+        RoleAction::Revoke { object_class, object_schema, object_name, privileges, grantee, grant_option } => {
+            validate_object_name(grantee)?;
+            let obj = grant_object_ref(object_class, object_schema.as_deref(), object_name)?;
+            let privs = privileges.join(", ");
+            let opt = if *grant_option { " GRANT OPTION FOR" } else { "" };
+            vec![format!("REVOKE{} {} ON {} FROM {}", opt, privs, obj, quote_ident(grantee))]
+        }
+    })
+}
+
 /// Dispatch a DDL build by kind. `params` is the JSON payload from the frontend.
 /// Returns one or more single SQL statements.
 pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, String> {
     match kind {
+        "role" => {
+            let p: RoleParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            role_ddl(&p)
+        }
         "sequence" => {
             let p: SequenceParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
             sequence_ddl(&p)
@@ -405,6 +818,10 @@ pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, S
         "trigger" => {
             let p: TriggerParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
             trigger_ddl(&p)
+        }
+        "table" => {
+            let p: TableParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            table_ddl(&p)
         }
         other => Err(format!("Unsupported object kind: {other}")),
     }
@@ -643,6 +1060,43 @@ mod tests {
     }
 
     #[test]
+    fn constraint_foreign_key_with_actions() {
+        let p = serde_json::json!({
+            "schema": "public", "table": "orders", "name": "fk_user",
+            "action": {
+                "op": "foreign_key",
+                "columns": ["user_id"],
+                "ref_schema": "public",
+                "ref_table": "users",
+                "ref_columns": ["id"],
+                "on_delete": "CASCADE",
+                "on_update": "SET NULL",
+                "deferrable": true,
+                "initially_deferred": true
+            }
+        });
+        assert_eq!(build_ddl("constraint", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"fk_user\" FOREIGN KEY (\"user_id\") REFERENCES \"public\".\"users\" (\"id\") ON DELETE CASCADE ON UPDATE SET NULL DEFERRABLE INITIALLY DEFERRED"]);
+    }
+
+    #[test]
+    fn constraint_foreign_key_empty_name_auto_names() {
+        let p = serde_json::json!({
+            "schema": "public", "table": "orders", "name": "",
+            "action": {
+                "op": "foreign_key",
+                "columns": ["user_id"],
+                "ref_schema": "public",
+                "ref_table": "users",
+                "ref_columns": ["id"],
+                "on_delete": "CASCADE"
+            }
+        });
+        assert_eq!(build_ddl("constraint", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"orders\" ADD FOREIGN KEY (\"user_id\") REFERENCES \"public\".\"users\" (\"id\") ON DELETE CASCADE"]);
+    }
+
+    #[test]
     fn constraint_drop() {
         let p = serde_json::json!({ "schema": "public", "table": "orders", "name": "ck_pos", "action": { "op": "drop" } });
         assert_eq!(build_ddl("constraint", p).unwrap(),
@@ -723,5 +1177,257 @@ mod tests {
         assert_eq!(build_ddl("trigger", base("enable")).unwrap(), vec!["ALTER TABLE \"public\".\"orders\" ENABLE TRIGGER \"tr_audit\""]);
         assert_eq!(build_ddl("trigger", base("disable")).unwrap(), vec!["ALTER TABLE \"public\".\"orders\" DISABLE TRIGGER \"tr_audit\""]);
         assert_eq!(build_ddl("trigger", base("drop")).unwrap(), vec!["DROP TRIGGER \"tr_audit\" ON \"public\".\"orders\""]);
+    }
+
+    #[test]
+    fn table_create_multi_col_pk_and_default() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "create", "columns": [
+                { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                { "name": "email", "type": "text", "nullable": false, "default": null, "is_pk": false }
+            ], "tablespace": null }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        assert_eq!(sql, vec![
+            "CREATE TABLE \"public\".\"users\" (\n  \"id\" integer NOT NULL,\n  \"email\" text NOT NULL,\n  PRIMARY KEY (\"id\")\n)"
+        ]);
+    }
+
+    #[test]
+    fn table_create_with_tablespace() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "t",
+            "action": { "op": "create", "columns": [
+                { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true }
+            ], "tablespace": "fastdisk" }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        assert!(sql[0].ends_with(" TABLESPACE \"fastdisk\""));
+    }
+
+    #[test]
+    fn table_create_unique_column_emits_unique_keyword() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "create", "columns": [
+                { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                { "name": "email", "type": "text", "nullable": false, "default": null, "is_pk": false, "unique": true }
+            ], "tablespace": null }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        assert!(sql[0].contains("\"email\" text UNIQUE NOT NULL"), "expected UNIQUE in column def; got: {}", sql[0]);
+    }
+
+    #[test]
+    fn table_column_deserialization_ignores_unknown_fields() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "t",
+            "action": { "op": "create", "columns": [
+                { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true, "params": "(50)", "auto_increment": true }
+            ], "tablespace": null }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        assert!(sql[0].contains("\"id\" integer NOT NULL"), "expected column def; got: {}", sql[0]);
+    }
+
+    #[test]
+    fn table_create_rejects_empty_and_duplicate_columns() {
+        let empty = serde_json::json!({ "schema": "public", "name": "t", "action": { "op": "create", "columns": [], "tablespace": null } });
+        assert!(build_ddl("table", empty).is_err());
+        let dup = serde_json::json!({ "schema": "public", "name": "t", "action": { "op": "create", "columns": [
+            { "name": "id", "type": "int", "nullable": false, "default": null, "is_pk": true },
+            { "name": "id", "type": "int", "nullable": false, "default": null, "is_pk": false }
+        ], "tablespace": null } });
+        assert!(build_ddl("table", dup).is_err());
+    }
+
+    #[test]
+    fn table_create_with_inline_foreign_key() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "products",
+            "action": { "op": "create",
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "category_id", "type": "integer", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "tablespace": null,
+                "foreign_keys": [
+                    { "columns": ["category_id"], "ref_schema": "public", "ref_table": "categories",
+                      "ref_columns": ["id"], "on_delete": "CASCADE", "on_update": "SET NULL",
+                      "deferrable": true, "initially_deferred": false }
+                ]
+            }
+        });
+        assert_eq!(build_ddl("table", p).unwrap(), vec![
+            "CREATE TABLE \"public\".\"products\" (\n  \"id\" integer NOT NULL,\n  \"category_id\" integer,\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"category_id\") REFERENCES \"public\".\"categories\" (\"id\") ON DELETE CASCADE ON UPDATE SET NULL DEFERRABLE\n)"
+        ]);
+    }
+
+    #[test]
+    fn table_edit_emits_rename_add_alter_drop_in_order() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "label", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "email", "type": "text", "nullable": false, "default": "'x'", "is_pk": false }
+                ]
+            }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        let joined = sql.join("\n");
+        let rename_idx = joined.find("ALTER TABLE \"public\".\"users\" RENAME COLUMN \"name\" TO \"label\"").unwrap();
+        let add_idx = joined.find("ALTER TABLE \"public\".\"users\" ADD COLUMN \"email\" text NOT NULL DEFAULT 'x'").unwrap();
+        let drop_idx = joined.find("ALTER TABLE \"public\".\"users\" DROP COLUMN \"age\"").unwrap();
+        assert!(rename_idx < add_idx, "RENAME before ADD; got: {}", joined);
+        assert!(add_idx < drop_idx, "ADD before DROP; got: {}", joined);
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"users\" RENAME COLUMN \"name\" TO \"label\""));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"users\" ADD COLUMN \"email\" text NOT NULL DEFAULT 'x'"));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"users\" DROP COLUMN \"age\""));
+    }
+
+    #[test]
+    fn table_edit_emits_alter_type_default_notnull() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "t",
+            "action": { "op": "edit",
+                "old_columns": [ { "name": "c", "type": "int", "nullable": true, "default": null, "is_pk": false } ],
+                "columns": [ { "name": "c", "type": "bigint", "nullable": false, "default": "0", "is_pk": false } ]
+            }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" ALTER COLUMN \"c\" TYPE bigint"));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" ALTER COLUMN \"c\" SET DEFAULT 0"));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" ALTER COLUMN \"c\" SET NOT NULL"));
+    }
+
+    #[test]
+    fn table_options_rls_and_tablespace() {
+        let p = serde_json::json!({ "schema": "public", "name": "t", "action": { "op": "options", "tablespace": "fastdisk", "rls": "force" } });
+        let sql = build_ddl("table", p).unwrap();
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" SET TABLESPACE \"fastdisk\""));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" ENABLE ROW LEVEL SECURITY"));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" FORCE ROW LEVEL SECURITY"));
+    }
+
+    #[test]
+    fn table_drop() {
+        let p = serde_json::json!({ "schema": "public", "name": "t", "action": { "op": "drop" } });
+        assert_eq!(build_ddl("table", p).unwrap(), vec!["DROP TABLE \"public\".\"t\""]);
+    }
+
+    #[test]
+    fn role_create_with_options_and_membership() {
+        let p = serde_json::json!({
+            "schema": "", "name": "app",
+            "action": { "op": "create", "login": true, "superuser": false, "createdb": true,
+                "createrole": false, "inherit": true, "replication": false, "bypassrls": false,
+                "connection_limit": 10, "valid_until": "", "password": "s3cr3t", "members": ["reader"] }
+        });
+        let sql = build_ddl("role", p).unwrap();
+        assert_eq!(sql[0], "CREATE ROLE \"app\" LOGIN CREATEDB INHERIT CONNECTION LIMIT 10 PASSWORD 's3cr3t'");
+        assert!(sql.iter().any(|s| s == "GRANT \"reader\" TO \"app\""));
+    }
+
+    #[test]
+    fn role_create_escapes_password_literal() {
+        let p = serde_json::json!({ "schema": "", "name": "r", "action": { "op": "create",
+            "login": false, "superuser": false, "createdb": false, "createrole": false, "inherit": true,
+            "replication": false, "bypassrls": false, "connection_limit": -1, "valid_until": "", "password": "a'b", "members": [] } });
+        let sql = build_ddl("role", p).unwrap();
+        assert!(sql[0].contains("PASSWORD 'a''b'"));
+    }
+
+    #[test]
+    fn role_edit_blank_password_omits_password_clause() {
+        let p = serde_json::json!({ "schema": "", "name": "app",
+            "action": { "op": "edit", "login": true, "superuser": false, "createdb": false,
+                "createrole": false, "inherit": true, "replication": false, "bypassrls": false,
+                "connection_limit": -1, "valid_until": "2027-01-01", "password": "", "members": [] } });
+        let sql = build_ddl("role", p).unwrap();
+        assert!(sql[0].contains("ALTER ROLE \"app\""));
+        assert!(!sql[0].contains("PASSWORD")); // blank = keep
+        assert!(sql[0].contains("VALID UNTIL '2027-01-01'"));
+    }
+
+    #[test]
+    fn role_drop() {
+        let p = serde_json::json!({ "schema": "", "name": "app", "action": { "op": "drop" } });
+        assert_eq!(build_ddl("role", p).unwrap(), vec!["DROP ROLE \"app\""]);
+    }
+
+    #[test]
+    fn role_grant_and_revoke() {
+        let g = serde_json::json!({ "schema": "", "name": "",
+            "action": { "op": "grant", "object_class": "table", "object_schema": "public", "object_name": "users",
+                "privileges": ["SELECT", "INSERT"], "grantee": "app", "grant_option": false } });
+        assert_eq!(build_ddl("role", g).unwrap(), vec!["GRANT SELECT, INSERT ON \"public\".\"users\" TO \"app\""]);
+        let r = serde_json::json!({ "schema": "", "name": "",
+            "action": { "op": "revoke", "object_class": "table", "object_schema": "public", "object_name": "users",
+                "privileges": ["SELECT"], "grantee": "app", "grant_option": false } });
+        assert_eq!(build_ddl("role", r).unwrap(), vec!["REVOKE SELECT ON \"public\".\"users\" FROM \"app\""]);
+    }
+
+    #[test]
+    fn role_grant_rejects_bad_identifier() {
+        let p = serde_json::json!({ "schema": "", "name": "",
+            "action": { "op": "grant", "object_class": "table", "object_schema": "public", "object_name": "a; DROP",
+                "privileges": ["SELECT"], "grantee": "app", "grant_option": false } });
+        assert!(build_ddl("role", p).is_err());
+    }
+
+    #[test]
+    fn rebuild_script_preserves_order_and_recreates_fk_index_grant() {
+        let input = RebuildInput {
+            schema: "public".into(), name: "users".into(),
+            constraints: vec![ RebuildConstraint { name: "users_pkey".into(), definition: "PRIMARY KEY (id)".into() } ],
+            indexes: vec![ RebuildIndex { name: "users_email_key".into(), definition: "CREATE UNIQUE INDEX users_email_key ON public.users (email)".into() } ],
+            fks_out: vec![],
+            fks_in: vec![ RebuildFkIn { name: "orders_user_fk".into(), own_schema: "public".into(), own_table: "orders".into(), definition: "FOREIGN KEY (user_id) REFERENCES public.users(id)".into() } ],
+            grants: vec![ RebuildGrant { grantee: "reader".into(), privileges: vec!["SELECT".into()], grantable: false } ],
+            owned_sequences: vec![],
+        };
+        let new = vec![ TableColumn { name: "id".into(), type_: "integer".into(), nullable: false, default: None, is_pk: false, unique: None },
+                       TableColumn { name: "email".into(), type_: "text".into(), nullable: true, default: None, is_pk: false, unique: None } ];
+        let script = rebuild_script(&input, &new).unwrap();
+        assert!(script.contains("ALTER TABLE \"public\".\"orders\" DROP CONSTRAINT \"orders_user_fk\""), "drop fks_in first; got: {script}");
+        assert!(script.contains("CREATE TABLE \"public\".\"_gridline_rb_users\" ("));
+        assert!(script.contains("INSERT INTO \"public\".\"_gridline_rb_users\" (\"id\", \"email\") SELECT \"id\", \"email\" FROM \"public\".\"users\""));
+        assert!(script.contains("DROP TABLE \"public\".\"users\""));
+        assert!(script.contains("ALTER TABLE \"public\".\"_gridline_rb_users\" RENAME TO \"users\""));
+        assert!(script.contains("ALTER TABLE \"public\".\"users\" ADD CONSTRAINT \"users_pkey\" PRIMARY KEY (id)"));
+        assert!(script.contains("CREATE UNIQUE INDEX users_email_key ON public.users (email)"));
+        assert!(script.contains("ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"orders_user_fk\" FOREIGN KEY (user_id) REFERENCES public.users(id)"));
+        assert!(script.contains("GRANT SELECT ON \"public\".\"users\" TO \"reader\""));
+        // ordering: drop fks_in before DROP TABLE; DROP before RENAME; RENAME before recreate
+        let d_fk = script.find("DROP CONSTRAINT \"orders_user_fk\"").unwrap();
+        let drop = script.find("DROP TABLE \"public\".\"users\"").unwrap();
+        let rename = script.find("RENAME TO \"users\"").unwrap();
+        let addcon = script.find("ADD CONSTRAINT \"users_pkey\"").unwrap();
+        assert!(d_fk < drop && drop < rename && rename < addcon, "ordering wrong; got: {script}");
+    }
+
+    #[test]
+    fn rebuild_script_detaches_and_reattaches_owned_sequence() {
+        let input = RebuildInput {
+            schema: "public".into(), name: "t".into(), constraints: vec![], indexes: vec![],
+            fks_out: vec![], fks_in: vec![], grants: vec![],
+            owned_sequences: vec![ RebuildOwnedSequence { seq_schema: "public".into(), seq_name: "t_id_seq".into(), column: "id".into() } ],
+        };
+        let new = vec![ TableColumn { name: "id".into(), type_: "integer".into(), nullable: false, default: Some(Some("nextval('t_id_seq'::regclass)".into())), is_pk: false, unique: None } ];
+        let script = rebuild_script(&input, &new).unwrap();
+        assert!(script.contains("ALTER SEQUENCE \"public\".\"t_id_seq\" OWNED BY NONE"));
+        assert!(script.contains("ALTER SEQUENCE \"public\".\"t_id_seq\" OWNED BY \"public\".\"t\".\"id\""));
+        let detach = script.find("OWNED BY NONE").unwrap();
+        let drop = script.find("DROP TABLE").unwrap();
+        let attach = script.find("OWNED BY \"public\".\"t\".\"id\"").unwrap();
+        assert!(detach < drop && drop < attach, "detach before drop before reattach; got: {script}");
     }
 }

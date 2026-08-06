@@ -23,7 +23,7 @@ interface Props {
   extraItems?: { id: string; label: string; danger?: boolean; onClick: () => void }[];
 }
 
-const DROP_TITLE: Record<ObjectKind, string> = {
+export const DROP_TITLE: Record<ObjectKind, string> = {
   sequence: "sequence",
   enum: "type",
   view: "view",
@@ -33,6 +33,8 @@ const DROP_TITLE: Record<ObjectKind, string> = {
   function: "function",
   procedure: "procedure",
   trigger: "trigger",
+  table: "table",
+  role: "role",
 };
 
 export function ObjectContextMenu({

@@ -117,4 +117,22 @@ describe("TableOverflowMenu", () => {
     fireEvent.click(screen.getByText(/export data \(csv\)/i));
     await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "csv", "public.t"));
   });
+
+  it("maintenance items are gated by capability and run via confirm", async () => {
+    vi.spyOn(commands, "runMaintenance").mockResolvedValue({ duration_ms: 3, message: "VACUUM completed" });
+    render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => ""} connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("VACUUM"));
+    fireEvent.click(screen.getByRole("button", { name: /vacuum/i }));
+    await screen.findByText(/completed/i);
+    expect(commands.runMaintenance).toHaveBeenCalledWith("c1", "public", "users", "vacuum");
+  });
+
+  it("Edit Table opens a table form tab", () => {
+    const openFormTab = vi.spyOn(useDbViewerStore.getState(), "openFormTab");
+    render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => ""} connectionId="c1" columns={[{ name: "id", data_type: "int", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false }]} />);
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Edit Table…"));
+    expect(openFormTab).toHaveBeenCalledWith(expect.objectContaining({ kind: "table", mode: "edit" }));
+  });
 });

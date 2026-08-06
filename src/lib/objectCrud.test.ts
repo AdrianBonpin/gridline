@@ -11,6 +11,7 @@ import {
   getAvailableExtensions,
   initialCrudParams,
 } from "./objectCrud";
+import type { CrudItem } from "./objectCrud";
 
 describe("buildObjectDdl", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -459,5 +460,32 @@ describe("dropCrudParams", () => {
       is_procedure: false,
       action: { op: "drop", arg_types: ["int"] },
     });
+  });
+});
+
+describe("table/role crud params", () => {
+  it("initialCrudParams(table, create) starts empty with columns", () => {
+    const p = initialCrudParams("table", { schema: "public", name: "" }, "create");
+    expect(p).toEqual({ schema: "public", name: "", action: { op: "create", columns: [] } });
+  });
+  it("initialCrudParams(table, edit) prefills columns", () => {
+    const item: CrudItem = { schema: "public", name: "users", columns: ["id"], columnMeta: [
+      { name: "id", type: "integer", nullable: false, is_pk: true, default: null },
+    ] };
+    const p = initialCrudParams("table", item, "edit");
+    expect((p as any).action.op).toBe("edit");
+    expect((p as any).action.old_columns).toEqual(item.columnMeta);
+  });
+  it("initialCrudParams(role, create) starts empty with options", () => {
+    const p = initialCrudParams("role", { schema: "", name: "" }, "create");
+    expect(p).toEqual({ schema: "", name: "", action: { op: "create", login: false, superuser: false, createdb: false, createrole: false, inherit: true, replication: false, bypassrls: false, connection_limit: -1, valid_until: "", password: "", members: [] } });
+  });
+  it("dropCrudParams(role) drops by name", () => {
+    const p = dropCrudParams("role", { schema: "", name: "app" });
+    expect(p).toEqual({ schema: "", name: "app", action: { op: "drop" } });
+  });
+  it("dropCrudParams(table) drops the table", () => {
+    const p = dropCrudParams("table", { schema: "public", name: "users" });
+    expect(p).toEqual({ schema: "public", name: "users", action: { op: "drop" } });
   });
 });

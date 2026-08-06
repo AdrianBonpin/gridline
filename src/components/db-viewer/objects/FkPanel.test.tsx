@@ -1,0 +1,223 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { FkPanel } from "./FkPanel";
+import { useDbViewerStore } from "../../../stores/dbViewerStore";
+import * as cmd from "../../../lib/commands";
+import * as objectCrud from "../../../lib/objectCrud";
+
+const graph = {
+  tables: [
+    {
+      name: "orders",
+      schema: "public",
+      table_type: "BASE TABLE",
+      columns: [
+        { name: "id", data_type: "int", is_pk: true, is_fk: false, is_unique: true, is_nullable: false, fk_ref: null },
+        { name: "user_id", data_type: "int", is_pk: false, is_fk: true, is_unique: false, is_nullable: true, fk_ref: ["public", "users", "id"] },
+      ],
+    },
+    {
+      name: "users",
+      schema: "public",
+      table_type: "BASE TABLE",
+      columns: [
+        { name: "id", data_type: "int", is_pk: true, is_fk: false, is_unique: true, is_nullable: false, fk_ref: null },
+        { name: "email", data_type: "text", is_pk: false, is_fk: false, is_unique: false, is_nullable: true, fk_ref: null },
+      ],
+    },
+    {
+      name: "orgs",
+      schema: "auth",
+      table_type: "BASE TABLE",
+      columns: [
+        { name: "id", data_type: "int", is_pk: true, is_fk: false, is_unique: true, is_nullable: false, fk_ref: null },
+        { name: "name", data_type: "text", is_pk: false, is_fk: false, is_unique: false, is_nullable: true, fk_ref: null },
+      ],
+    },
+  ],
+  relationships: [],
+};
+
+beforeEach(() => {
+  useDbViewerStore.getState().reset();
+  vi.spyOn(cmd, "getSchemaGraph").mockReset().mockResolvedValue(graph as any);
+  vi.spyOn(objectCrud, "buildObjectDdl").mockReset().mockResolvedValue(["ALTER TABLE ... ADD CONSTRAINT ..."]);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+function renderPanel(props: Partial<React.ComponentProps<typeof FkPanel>> = {}) {
+  const onClose = vi.fn();
+  const onStaged = vi.fn();
+  const utils = render(
+    <FkPanel
+      connectionId="c1"
+      schema="public"
+      table="orders"
+      column="user_id"
+      mode="edit"
+      localColumns={[
+        { name: "user_id", data_type: "int" },
+        { name: "amount", data_type: "numeric" },
+        { name: "created_at", data_type: "timestamp" },
+      ]}
+      onClose={onClose}
+      onStaged={onStaged}
+      {...props}
+    />,
+  );
+  return { ...utils, onClose, onStaged };
+}
+
+/** The columns/actions sections only render once a referenced table is chosen. */
+async function waitForTable() {
+  await screen.findByLabelText("Table");
+  await waitFor(() => {
+    expect(screen.queryByLabelText("Local column 1")).not.toBeNull();
+  });
+}
+
+describe("FkPanel", () => {
+  it("renders cascading dropdowns with schemas, tables, and PK-first columns", async () => {
+    renderPanel();
+    expect(await screen.findByText("Foreign key")).toBeInTheDocument();
+
+    // Schema select contains public and auth
+    const schema = screen.getByLabelText("Schema") as HTMLSelectElement;
+    await waitFor(() => {
+      expect([...schema.options].map((o) => o.value)).toContain("public");
+      expect([...schema.options].map((o) => o.value)).toContain("auth");
+    });
+
+    // Table select contains public tables by default
+    const table = screen.getByLabelText("Table") as HTMLSelectElement;
+    await waitFor(() => {
+      expect([...table.options].map((o) => o.value)).toContain("users");
+      expect([...table.options].map((o) => o.value)).not.toContain("orgs");
+    });
+
+    // Once a table is referenced, the local column pair appears, preselected
+    await waitForTable();
+    const local = screen.getByLabelText("Local column 1") as HTMLSelectElement;
+    expect(local.value).toBe("user_id");
+    expect([...local.options].map((o) => o.textContent)).toContain("user_id (int)");
+
+    // Referenced column select lists PKs first and marks them
+    const refCol = screen.getByLabelText("Referenced column 1") as HTMLSelectElement;
+    await waitFor(() => {
+      const opts = [...refCol.options].map((o) => o.textContent);
+      expect(opts[0]).toMatch(/id/);
+    });
+  });
+
+  it("updates table and column lists when schema changes", async () => {
+    renderPanel();
+    const schema = await screen.findByLabelText("Schema");
+    fireEvent.change(schema, { target: { value: "auth" } });
+
+    const table = screen.getByLabelText("Table") as HTMLSelectElement;
+    await waitFor(() => {
+      expect([...table.options].map((o) => o.value)).toContain("orgs");
+      expect([...table.options].map((o) => o.value)).not.toContain("users");
+    });
+  });
+
+  it("hides the column-pairs and action sections until a referenced table is chosen", async () => {
+    let resolveGraph: (g: unknown) => void = () => {};
+    (cmd.getSchemaGraph as any).mockReturnValue(
+      new Promise((resolve) => {
+        resolveGraph = resolve;
+      }),
+    );
+    renderPanel();
+    await screen.findByText("Foreign key");
+    // while the graph is still loading, the rest is hidden
+    expect(screen.queryByLabelText("Local column 1")).toBeNull();
+    // resolve the graph → table auto-selects → sections appear
+    resolveGraph(graph);
+    await waitFor(() => {
+      expect(screen.getByLabelText("Local column 1")).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText("On update")).toBeInTheDocument();
+    expect(screen.getByLabelText("On delete")).toBeInTheDocument();
+  });
+
+  it("supports adding multiple column pairs", async () => {
+    renderPanel();
+    await waitForTable();
+    fireEvent.click(screen.getByLabelText("Add another column"));
+    expect(screen.getAllByLabelText(/Local column/)).toHaveLength(2);
+    expect(screen.getAllByLabelText(/Referenced column/)).toHaveLength(2);
+    // removing a pair works
+    fireEvent.click(screen.getByLabelText("Remove pair 2"));
+    expect(screen.getAllByLabelText(/Local column/)).toHaveLength(1);
+  });
+
+  it("stages a foreign key DDL change and closes the panel", async () => {
+    const { onStaged } = renderPanel();
+    await screen.findByText("Foreign key");
+
+    await waitForTable();
+    fireEvent.change(screen.getByLabelText("On delete"), { target: { value: "CASCADE" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add FK" }));
+
+    await waitFor(() => {
+      expect(objectCrud.buildObjectDdl).toHaveBeenCalledWith(
+        "c1",
+        "constraint",
+        expect.objectContaining({
+          schema: "public",
+          table: "orders",
+          name: "",
+          action: expect.objectContaining({
+            op: "foreign_key",
+            columns: ["user_id"],
+            ref_schema: "public",
+            ref_table: "orders",
+            ref_columns: ["id"],
+            on_delete: "CASCADE",
+            on_update: "NO ACTION",
+          }),
+        }),
+      );
+    });
+
+    const q = useDbViewerStore.getState().changesQueue;
+    expect(q).toHaveLength(1);
+    expect(q[0].type).toBe("ddl");
+    expect(q[0].sql).toBe("ALTER TABLE ... ADD CONSTRAINT ...");
+    // hands back the local column + the referenced column's type (for auto-matching)
+    expect(onStaged).toHaveBeenCalledWith({
+      pairs: [{ localCol: "user_id", refType: "int" }],
+    });
+  });
+
+  it("create mode returns the FK inline instead of staging a separate ALTER", async () => {
+    const { onStaged } = renderPanel({ mode: "create" });
+    await screen.findByText("Foreign key");
+    await waitForTable();
+    const refCol = (await screen.findByLabelText("Referenced column 1")) as HTMLSelectElement;
+    await waitFor(() => {
+      expect([...refCol.options].map((o) => o.value)).toContain("id");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add FK" }));
+
+    // no separate ALTER change is staged
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+    expect(objectCrud.buildObjectDdl).not.toHaveBeenCalled();
+
+    // the FK definition is handed back for inlining into the CREATE TABLE
+    expect(onStaged).toHaveBeenCalledWith({
+      pairs: [{ localCol: "user_id", refType: "int" }],
+      fk: expect.objectContaining({
+        columns: ["user_id"],
+        ref_schema: "public",
+        ref_table: "orders",
+        ref_columns: ["id"],
+        on_delete: "NO ACTION",
+      }),
+    });
+  });
+});

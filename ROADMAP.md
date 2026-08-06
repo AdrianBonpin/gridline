@@ -6,6 +6,21 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ---
 
+## ✅ Shipped (0.7.7)
+
+### Admin follow-up
+
+- **PostgreSQL users/roles + grants management** — create/edit/drop roles with attributes; a per-role **privilege explorer** grouped by object class (tables, sequences, routines, schemas, databases) with collapsible sections (5-entry preview + fade, expand to show all) and GRANT/REVOKE staging through the changes queue (DB Pro has this at 0% on their roadmap — a differentiator to hold)
+- **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
+
+### Table & relationship management
+
+- **Create table** — a "Create Table…" tab in the workspace using the same Visual ⇄ SQL flow as object create/edit: a columns grid (name / type / nullable / default / PK per row, type dropdowns with shorthand PG types, drag-to-reorder, add/remove rows) with a live Monaco SQL preview; multi-column PRIMARY KEY on create
+- **Edit table (robust column diff)** — open an existing table's columns in the same grid; on Stage, diff old vs new columns and emit the right statements, one per queue item: `ADD COLUMN`, `DROP COLUMN`, `RENAME COLUMN`, `ALTER COLUMN … TYPE`, `ALTER COLUMN … SET|DROP DEFAULT`, `SET|DROP NOT NULL`
+- **FK management** — multi-column FK composer (local column → referenced column pairs, referenced PKs first, type-match preview) with cross-schema references and ON DELETE / ON UPDATE actions; inlined into CREATE TABLE in create mode, separate ALTER staging in edit mode; FK rows in the form with Edit/Remove
+- **Related niceties** — column reordering via atomic table rebuild (single transaction, preserves constraints/indexes/FKs/grants/sequences, fail-closed for triggers/RLS/inheritance/partitioning), table options (tablespace, row-level security), changes queue auto-refreshes the object tree after schema-modifying commits
+- **Version bump** 0.7.6 → **0.7.7**.
+
 ## ✅ Shipped (0.7.6)
 
 - **Full Object Management (PostgreSQL)** — create/edit/drop for every PostgreSQL object type (enums, functions, procedures, triggers, sequences, extensions, views, materialized views, indexes, constraints), staged through the changes queue with generated-SQL previews.
@@ -36,19 +51,15 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 **Not in 0.7.0** (deferred, tracked below): Redis key browsing, MySQL Objects/ERD views, backup/restore/sync for MySQL + SQLite, multiple result sets, SSH key-file management, settings import/export, onboarding tour.
 
-## 🎯 Next up
+## 🎯 Next up (0.7.8) — Quick wins
 
-### Admin follow-up (0.7.7)
+Scope: small, individually shippable items that round out tooling gaps. Picked to follow the v0.7.7 features milestone; tag **v0.7.8** when done.
 
-- **PostgreSQL users/roles + grants management** — create roles and set privileges from a UI (DB Pro has this at 0% on their roadmap — a differentiator to hold)
-- **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
-
-### Table & relationship management (next)
-
-- **Create table** — a "Create Table…" tab in the workspace using the same Visual ⇄ SQL flow as object create/edit: a columns grid (name / type / nullable / default / PK per row, add/remove rows) with a live SQL preview
-- **Edit table (robust column diff)** — open an existing table's columns in the same grid; on Stage, diff old vs new columns and emit the right statements, one per queue item: `ADD COLUMN`, `DROP COLUMN`, `RENAME COLUMN`, `ALTER COLUMN … TYPE`, `ALTER COLUMN … SET|DROP DEFAULT`, `SET|DROP NOT NULL`
-- **Relationships between tables & schemas** — FK create/edit/drop from a table editor (including cross-schema FKs) and schema-level relationship maintenance
-- **Related niceties** — column reordering (PG requires a table rebuild — decide semantics), table options (tablespace, row-level security), multi-column PRIMARY KEY on create
+- **SQLite `.dump` support** — match the pg_dump UX for SQLite (backup a SQLite database to a portable SQL dump, restore it back)
+- **Backup / Restore / Sync for MySQL & SQLite** — extend the pg-only tooling today: SQLite backup/restore + MySQL via `mysqldump` (system-first; decide bundling)
+- **Excel (.xlsx) export** — alongside CSV/JSON/SQL/Markdown in the grid export toolbar
+- **Cancel long-running queries** — per-connection cancel button (`pg_cancel_backend` and equivalents) instead of waiting or killing the app
+- **Settings export / import** — share theme, accent, editor options, page sizes, and defaults across machines (JSON file)
 
 ## 📋 In the queue
 

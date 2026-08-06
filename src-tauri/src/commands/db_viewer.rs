@@ -1864,6 +1864,60 @@ pub async fn get_table_data(
     .await
 }
 
+/// Headless column introspection for a table, shared by the `get_table_columns`
+/// command and integration tests (thin-command principle — no Tauri `State`).
+/// Mirrors the `pg_columns_query` row mapping `get_table_data` uses.
+pub(crate) async fn get_table_columns_inner(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    connection_id: &str,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<crate::models::ColumnInfo>, String> {
+    let mut pm = pm.lock().await;
+    let client = match pm.get(connection_id) {
+        Some(crate::db::pool::DbHandle::Postgresql(c, _)) => c,
+        Some(_) => return Err("Table columns are PostgreSQL-only".into()),
+        None => return Err("Connection not found".into()),
+    };
+    let rows = client
+        .query(&crate::db::introspection::pg_columns_query(schema, table), &[])
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let is_fk: bool = r.get::<_, Option<String>>(10).is_some();
+            let fk_schema: Option<String> = r.get(9);
+            let fk_table: Option<String> = r.get(10);
+            crate::models::ColumnInfo {
+                name: r.get(0),
+                data_type: r.get(1),
+                is_nullable: r.get::<_, String>(2) == "YES",
+                is_pk: r.get::<_, Option<String>>(8).as_deref() == Some("PRIMARY KEY"),
+                is_fk,
+                fk_ref: if is_fk {
+                    Some((fk_schema.unwrap_or_default(), fk_table.unwrap_or_default()))
+                } else {
+                    None
+                },
+                default_value: r.get::<_, Option<String>>(6),
+                editable: true,
+                is_generated: false,
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn get_table_columns(
+    connection_id: String,
+    schema: String,
+    table: String,
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<crate::models::ColumnInfo>, String> {
+    get_table_columns_inner(&state.pool_manager, &connection_id, &schema, &table).await
+}
+
 #[tauri::command]
 pub async fn get_fk_preview(
     connection_id: String,
@@ -2110,14 +2164,15 @@ pub(crate) fn affected_count_error(n: u64) -> Option<String> {
     }
 }
 
-#[tauri::command]
-pub async fn execute_change(
-    connection_id: String,
+/// Headless change-application shared by the `execute_change` command and
+/// integration tests (thin-command principle — no Tauri `State`).
+pub(crate) async fn execute_change_inner(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    connection_id: &str,
     change: Change,
-    state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    let mut pm = pm.lock().await;
+    match pm.get(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             // Build the parameterized SQL + bound values from the change.
             let (sql, params): (String, Vec<serde_json::Value>) = match &change {
@@ -2157,6 +2212,23 @@ pub async fn execute_change(
                 }
                 Change::Ddl { sql, .. } => {
                     client.execute(sql, &[]).await.map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
+                Change::RebuildTable { sql, .. } => {
+                    // Single transaction: all-or-nothing rebuild (multi-statement
+                    // DDL only; VACUUM never reaches here). Rolls back on any
+                    // statement failure.
+                    let tx = client
+                        .build_transaction()
+                        .start()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    tx.batch_execute(sql)
+                        .await
+                        .map_err(|e| sanitize_error(&format!("{e}")))?;
+                    tx.commit()
+                        .await
+                        .map_err(|e| sanitize_error(&format!("{e}")))?;
                     return Ok(());
                 }
                 Change::BulkInsert {
@@ -2254,6 +2326,9 @@ pub async fn execute_change(
                 Change::Ddl { .. } => {
                     return Err("Object management is PostgreSQL-only".to_string());
                 }
+                Change::RebuildTable { .. } => {
+                    return Err("Object management is PostgreSQL-only".to_string());
+                }
                 Change::BulkInsert {
                     table,
                     columns,
@@ -2329,6 +2404,9 @@ pub async fn execute_change(
                 Change::Ddl { .. } => {
                     return Err("Object management is PostgreSQL-only".to_string());
                 }
+                Change::RebuildTable { .. } => {
+                    return Err("Object management is PostgreSQL-only".to_string());
+                }
                 Change::BulkInsert {
                     schema,
                     table,
@@ -2382,6 +2460,15 @@ pub async fn execute_change(
         }
         None => Err("Connection not found".to_string()),
     }
+}
+
+#[tauri::command]
+pub async fn execute_change(
+    connection_id: String,
+    change: Change,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    execute_change_inner(&state.pool_manager, &connection_id, change).await
 }
 
 #[tauri::command]

@@ -6,6 +6,7 @@ import { IndexForm } from "./IndexForm";
 import { ConstraintForm } from "./ConstraintForm";
 import { FunctionForm } from "./FunctionForm";
 import { TriggerForm } from "./TriggerForm";
+import { RoleForm } from "./RoleForm";
 import type { ObjectKind, DdlParams } from "../../../lib/objectCrud";
 
 interface Props {
@@ -64,5 +65,11 @@ export function KindForm({ connectionId, kind, params, schemas, onChange }: Prop
           onChange={onChange}
         />
       );
+    case "table":
+      // Unreachable in the form-tab flow (ObjectFormTab delegates table to
+      // TableForm directly); kept only so the switch is exhaustive.
+      return null;
+    case "role":
+      return <RoleForm connectionId={connectionId} params={params} onChange={onChange} />;
   }
 }

@@ -356,6 +356,165 @@ pub fn pg_constraints_query(_schema: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Roles, privileges, tablespaces, rebuild readiness
+// ---------------------------------------------------------------------------
+
+/// List non-system roles with all attributes used by the role form.
+pub fn pg_roles_query() -> String {
+    "SELECT rolname, rolsuper, rolinherit, rolcreatedb, rolcreaterole, rolcanlogin, \
+     rolreplication, rolbypassrls, rolconnlimit::int8, COALESCE(rolvaliduntil::text, '') AS rolvaliduntil \
+     FROM pg_roles WHERE rolname !~ '^pg_' ORDER BY rolname"
+        .to_string()
+}
+
+/// All role-to-role memberships (member/admin/grantor).
+pub fn pg_role_memberships_query() -> String {
+    "SELECT roleid::regrole::text AS role, member::regrole::text AS member, \
+     grantor::regrole::text AS grantor, admin_option \
+     FROM pg_auth_members ORDER BY role"
+        .to_string()
+}
+
+/// Table/view/matview privileges for a grantee, grouped one row per object.
+pub fn pg_table_privileges_query(role: &str) -> String {
+    format!(
+        "SELECT table_schema AS schema, table_name AS name, \
+         array_agg(privilege_type::text) AS privileges, \
+         bool_or(is_grantable = 'YES') AS grantable \
+         FROM information_schema.table_privileges \
+         WHERE grantee = '{}' AND table_schema NOT IN ('pg_catalog','information_schema') \
+         GROUP BY table_schema, table_name \
+         ORDER BY table_schema, table_name",
+        role
+    )
+}
+
+/// Sequence privileges for a grantee, grouped one row per sequence.
+/// aclexplode-based (role_sequence_grants was removed in PG 15).
+pub fn pg_sequence_privileges_query(role: &str) -> String {
+    format!(
+        "SELECT n.nspname AS schema, c.relname AS name, \
+         array_agg(p.privilege_type::text) AS privileges, \
+         bool_or(p.is_grantable) AS grantable \
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace, \
+         LATERAL aclexplode(c.relacl) p \
+         WHERE c.relkind = 'S' AND n.nspname NOT IN ('pg_catalog','information_schema') \
+         AND p.grantee = (SELECT oid FROM pg_roles WHERE rolname = '{}') \
+         GROUP BY n.nspname, c.relname \
+         ORDER BY n.nspname, c.relname",
+        role
+    )
+}
+
+/// Routine (function/procedure) privileges for a grantee.
+pub fn pg_routine_privileges_query(role: &str) -> String {
+    format!(
+        "SELECT routine_schema AS schema, routine_name AS name, \
+         array_agg(privilege_type::text) AS privileges, \
+         bool_or(is_grantable = 'YES') AS grantable \
+         FROM information_schema.routine_privileges \
+         WHERE grantee = '{}' \
+         GROUP BY routine_schema, routine_name \
+         ORDER BY routine_schema, routine_name",
+        role
+    )
+}
+
+/// Schema privileges for a grantee (USAGE/CREATE). aclexplode-based —
+/// information_schema has no schema_privileges view.
+pub fn pg_schema_privileges_query(role: &str) -> String {
+    format!(
+        "SELECT n.nspname AS name, \
+         array_agg(p.privilege_type::text) AS privileges, \
+         bool_or(p.is_grantable) AS grantable \
+         FROM pg_namespace n, LATERAL aclexplode(n.nspacl) p \
+         WHERE n.nspname NOT IN ('pg_catalog','information_schema') \
+         AND p.grantee = (SELECT oid FROM pg_roles WHERE rolname = '{}') \
+         GROUP BY n.nspname ORDER BY n.nspname",
+        role
+    )
+}
+
+/// Database privileges for a grantee via aclexplode (broadly compatible; avoids PG15-only view).
+pub fn pg_database_privileges_query(role: &str) -> String {
+    format!(
+        "SELECT d.datname AS name, array_agg(a.privilege_type) AS privileges, \
+         bool_or(a.is_grantable) AS grantable \
+         FROM pg_database d, LATERAL aclexplode(d.datacl) a \
+         WHERE a.grantee = (SELECT oid FROM pg_roles WHERE rolname = '{}') \
+           AND d.datistemplate = false \
+         GROUP BY d.datname \
+         ORDER BY d.datname",
+        role
+    )
+}
+
+/// Non-system tablespaces for the table-options picker.
+pub fn pg_tablespaces_query() -> String {
+    "SELECT spcname FROM pg_tablespace WHERE spcname !~ '^pg_' ORDER BY spcname".to_string()
+}
+
+/// Single query returning boolean blockers for a table rebuild (triggers, policies,
+/// inheritance, partitioning, generated/identity columns). Parameterized via $1/$2.
+pub fn pg_rebuild_readiness_query() -> String {
+    "SELECT \
+       EXISTS(SELECT 1 FROM pg_trigger t JOIN pg_class c ON t.tgrelid = c.oid \
+            JOIN pg_namespace n ON c.relnamespace = n.oid \
+            WHERE n.nspname = $1 AND c.relname = $2 AND NOT t.tgisinternal) AS has_triggers, \
+       EXISTS(SELECT 1 FROM pg_policy p JOIN pg_class c ON p.polrelid = c.oid \
+            JOIN pg_namespace n ON c.relnamespace = n.oid \
+            WHERE n.nspname = $1 AND c.relname = $2) AS has_policies, \
+       EXISTS(SELECT 1 FROM pg_inherits i JOIN pg_class c ON i.inhrelid = c.oid \
+            JOIN pg_namespace n ON c.relnamespace = n.oid \
+            WHERE n.nspname = $1 AND c.relname = $2) AS is_inherits, \
+       EXISTS(SELECT 1 FROM pg_partitioned_table pt JOIN pg_class c ON pt.partrelid = c.oid \
+            JOIN pg_namespace n ON c.relnamespace = n.oid \
+            WHERE n.nspname = $1 AND c.relname = $2) AS is_partitioned, \
+       EXISTS(SELECT 1 FROM information_schema.columns \
+            WHERE table_schema = $1 AND table_name = $2 AND is_generated <> '') AS has_generated"
+        .to_string()
+}
+
+/// FKs owned by this table (contype='f'). Parameterized $1 schema, $2 table.
+pub fn pg_table_fk_out_query() -> String {
+    "SELECT c.conname, pg_get_constraintdef(c.oid) AS definition \
+     FROM pg_constraint c JOIN pg_class cl ON c.conrelid = cl.oid \
+     JOIN pg_namespace n ON cl.relnamespace = n.oid \
+     WHERE n.nspname = $1 AND cl.relname = $2 AND c.contype = 'f'".to_string()
+}
+
+/// FKs from other tables referencing this table. Parameterized $1 schema, $2 table.
+pub fn pg_table_fk_in_query() -> String {
+    "SELECT c.conname, cn.nspname AS own_schema, cl.relname AS own_table, \
+     pg_get_constraintdef(c.oid) AS definition \
+     FROM pg_constraint c JOIN pg_class cl ON c.conrelid = cl.oid \
+     JOIN pg_namespace cn ON cl.relnamespace = cn.oid \
+     JOIN pg_class r ON c.confrelid = r.oid \
+     JOIN pg_namespace rn ON r.relnamespace = rn.oid \
+     WHERE rn.nspname = $1 AND r.relname = $2 AND c.contype = 'f'".to_string()
+}
+
+/// Grants on this table (all grantees), grouped. Parameterized $1 schema, $2 table.
+pub fn pg_table_grants_query() -> String {
+    "SELECT grantee, array_agg(privilege_type::text) AS privileges, \
+     bool_or(is_grantable = 'YES') AS grantable \
+     FROM information_schema.table_privileges \
+     WHERE table_schema = $1 AND table_name = $2 AND grantee <> 'PUBLIC' \
+     GROUP BY grantee".to_string()
+}
+
+/// Sequences owned by this table's columns (via pg_depend). Parameterized $1 schema, $2 table.
+pub fn pg_table_owned_sequences_query() -> String {
+    "SELECT sn.nspname AS seq_schema, s.relname AS seq_name, a.attname AS column \
+     FROM pg_depend d JOIN pg_class s ON d.objid = s.oid \
+     JOIN pg_namespace sn ON s.relnamespace = sn.oid \
+     JOIN pg_class t ON d.refobjid = t.oid \
+     JOIN pg_namespace tn ON t.relnamespace = tn.oid \
+     JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid \
+     WHERE tn.nspname = $1 AND t.relname = $2 AND d.classid = 'pg_class'::regclass AND s.relkind = 'S'".to_string()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -640,5 +799,91 @@ mod tests {
         assert!(sql.contains("default_version"), "should select default version; got: {sql}");
         assert!(sql.contains("comment"), "should select comment; got: {sql}");
         assert!(sql.contains("ORDER BY name"), "should order by name; got: {sql}");
+    }
+
+    // ---------------------------------------------------------------
+    // Roles, privileges, tablespaces, rebuild readiness
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn pg_roles_query_filters_pg_prefix() {
+        let sql = pg_roles_query();
+        assert!(sql.contains("pg_roles"));
+        assert!(sql.contains("rolname !~ '^pg_'"));
+        assert!(sql.contains("rolcanlogin"));
+        assert!(sql.contains("rolconnlimit::int8"));
+    }
+
+    #[test]
+    fn pg_role_memberships_query_uses_pg_auth_members() {
+        let sql = pg_role_memberships_query();
+        assert!(sql.contains("pg_auth_members"));
+        assert!(sql.contains("admin_option"));
+    }
+
+    #[test]
+    fn pg_table_privileges_query_filters_grantee_and_aggregates() {
+        let sql = pg_table_privileges_query("appuser");
+        assert!(sql.contains("information_schema.table_privileges"));
+        assert!(sql.contains("grantee = 'appuser'"));
+        assert!(sql.contains("array_agg"));
+        assert!(sql.contains("GROUP BY"));
+    }
+
+    #[test]
+    fn pg_database_privileges_query_uses_aclexplode() {
+        let sql = pg_database_privileges_query("appuser");
+        assert!(sql.contains("aclexplode"));
+        assert!(sql.contains("pg_database"));
+        assert!(sql.contains("appuser"));
+    }
+
+    #[test]
+    fn pg_rebuild_readiness_query_checks_blockers() {
+        let sql = pg_rebuild_readiness_query();
+        assert!(sql.contains("pg_trigger"));
+        assert!(sql.contains("pg_policy"));
+        assert!(sql.contains("pg_inherits"));
+        assert!(sql.contains("pg_partitioned_table"));
+        assert!(sql.contains("is_generated"));
+    }
+
+    #[test]
+    fn pg_tablespaces_query_filters_pg_prefix() {
+        let sql = pg_tablespaces_query();
+        assert!(sql.contains("pg_tablespace"));
+        assert!(sql.contains("spcname !~ '^pg_'"));
+    }
+
+    #[test]
+    fn pg_table_fk_out_query_uses_pg_constraint_f() {
+        let sql = pg_table_fk_out_query();
+        assert!(sql.contains("pg_constraint"));
+        assert!(sql.contains("contype = 'f'"));
+        assert!(sql.contains("$1") && sql.contains("$2"));
+    }
+
+    #[test]
+    fn pg_table_fk_in_query_finds_referencing_tables() {
+        let sql = pg_table_fk_in_query();
+        assert!(sql.contains("pg_constraint"));
+        assert!(sql.contains("confrel"));
+        assert!(sql.contains("$1") && sql.contains("$2"));
+    }
+
+    #[test]
+    fn pg_table_grants_query_uses_table_privileges() {
+        let sql = pg_table_grants_query();
+        assert!(sql.contains("information_schema.table_privileges"));
+        assert!(sql.contains("$1") && sql.contains("$2"));
+        assert!(sql.contains("array_agg"));
+    }
+
+    #[test]
+    fn pg_table_owned_sequences_query_uses_pg_depend() {
+        let sql = pg_table_owned_sequences_query();
+        assert!(sql.contains("pg_depend"));
+        assert!(sql.contains("pg_class"));
+        assert!(sql.contains("$1") && sql.contains("$2"));
     }
 }

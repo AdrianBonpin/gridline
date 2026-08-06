@@ -144,6 +144,23 @@ describe("ChangesQueuePanel", () => {
     await waitFor(() => expect(getSchemas).toHaveBeenCalledWith("c1"));
   });
 
+  it("refreshes the schema tree after committing a schema-modifying ddl change", async () => {
+    vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    const getSchemas = vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    vi.spyOn(commands, "getDatabases").mockResolvedValue(["mydb"]);
+    vi.spyOn(commands, "getTables").mockResolvedValue([] as any);
+    useDbViewerStore.getState().addChange({
+      type: "ddl",
+      schema: "public",
+      table: "products",
+      sql: 'CREATE TABLE "public"."products" ("id" integer NOT NULL)',
+      description: "Create Table",
+    });
+    render(<ChangesQueuePanel />);
+    fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
+    await waitFor(() => expect(getSchemas).toHaveBeenCalledWith("c1"));
+  });
+
   it("SQL toggle shows the generated SQL", async () => {
     const user = userEvent.setup();
     useDbViewerStore.getState().addChange({
@@ -221,5 +238,19 @@ describe("ChangesQueuePanel", () => {
       expect(tabs.some((t) => t.table === "users")).toBe(false);
       expect(tabs.some((t) => t.table === "posts")).toBe(true);
     });
+  });
+
+  it("renders a rebuild_table change with an amber REBUILD badge and SQL preview", () => {
+    useDbViewerStore.getState().addChange({
+      type: "rebuild_table",
+      schema: "public",
+      table: "users",
+      sql: "BEGIN; ALTER TABLE \"public\".\"users\" ...; COMMIT;",
+      description: "Rebuild public.users",
+    } as any);
+    render(<ChangesQueuePanel />);
+    expect(screen.getByText("REBUILD")).toBeInTheDocument();
+    expect(screen.getByText(/rebuild public\.users/i)).toBeInTheDocument();
+    expect(screen.getByText(/BEGIN;/)).toBeInTheDocument();
   });
 });

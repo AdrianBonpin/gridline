@@ -32,7 +32,7 @@ export function FormRow({ label, children, className, outline = true }: FormRowP
         className={[
           "flex-1 min-w-0 flex flex-row items-center",
           outline
-            ? "focus-within:outline focus-within:outline-2 focus-within:outline-amber-400 focus-within:outline-offset-[-2px]"
+            ? "focus-within:outline focus-within:outline-2 focus-within:outline-amber-400/20 focus-within:outline-offset-[-2px]"
             : "",
         ].join(" ")}
       >

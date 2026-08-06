@@ -6,6 +6,7 @@ import {
     ListChecks,
     ListOrdered,
     Puzzle,
+    ShieldCheck,
     SquareFunction,
     Tag,
 } from "lucide-react";
@@ -18,7 +19,9 @@ import type {
     ExtensionInfo,
     IndexInfo,
     ConstraintInfo,
+    RoleInfo,
 } from "../../../lib/types";
+import { RoleDetail } from "./RoleDetail";
 
 export const TYPE_LABELS: Record<ObjectType, string> = {
     functions: "Functions",
@@ -29,6 +32,7 @@ export const TYPE_LABELS: Record<ObjectType, string> = {
     indexes: "Indexes",
     constraints: "Constraints",
     procedures: "Procedures",
+    roles: "Roles",
 };
 
 export const SINGULAR_LABELS: Record<ObjectType, string> = {
@@ -40,6 +44,7 @@ export const SINGULAR_LABELS: Record<ObjectType, string> = {
     indexes: "index",
     constraints: "constraint",
     procedures: "procedure",
+    roles: "role",
 };
 
 export const OBJECT_ICONS: Record<ObjectType, React.ReactNode> = {
@@ -53,6 +58,7 @@ export const OBJECT_ICONS: Record<ObjectType, React.ReactNode> = {
     indexes: <BookMarked size={14} className="text-text-muted shrink-0" />,
     constraints: <ListChecks size={14} className="text-text-muted shrink-0" />,
     procedures: <SquareFunction size={14} className="text-text-muted shrink-0" />,
+    roles: <ShieldCheck size={14} className="text-text-muted shrink-0" />,
 };
 
 export type AnyObject =
@@ -62,7 +68,8 @@ export type AnyObject =
     | EnumInfo
     | ExtensionInfo
     | IndexInfo
-    | ConstraintInfo;
+    | ConstraintInfo
+    | RoleInfo;
 
 // ─── syntax highlighting for PL/pgSQL / SQL ──────────────
 
@@ -562,8 +569,10 @@ function renderFunctionDetail(f: FunctionInfo) {
     );
 }
 
-function renderDetail(type: ObjectType, item: AnyObject) {
+function renderDetail(connectionId: string, type: ObjectType, item: AnyObject) {
     switch (type) {
+        case "roles":
+            return <RoleDetail connectionId={connectionId} item={item as RoleInfo} />;
         case "functions":
             return renderFunctionDetail(item as FunctionInfo);
         case "procedures":
@@ -969,6 +978,6 @@ interface ObjectDetailProps {
     item: AnyObject;
 }
 
-export function ObjectDetail({ connectionId: _connectionId, type, item }: ObjectDetailProps) {
-    return <>{renderDetail(type, item)}</>;
+export function ObjectDetail({ connectionId, type, item }: ObjectDetailProps) {
+    return <>{renderDetail(connectionId, type, item)}</>;
 }

@@ -1,9 +1,15 @@
-import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ConstraintForm } from "./ConstraintForm";
 import * as cmd from "../../../lib/commands";
 
-vi.mock("../../../lib/commands", () => ({ getSchemaGraph: vi.fn() }));
+beforeEach(() => {
+  vi.spyOn(cmd, "getSchemaGraph").mockReset().mockResolvedValue({ tables: [], relationships: [] });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const graph = {
   tables: [
@@ -44,12 +50,8 @@ const graph = {
 };
 
 describe("ConstraintForm", () => {
-  afterEach(() => {
-    vi.mocked(cmd.getSchemaGraph).mockReset();
-  });
-
   it("check: emits the expression", () => {
-    vi.mocked(cmd.getSchemaGraph).mockResolvedValue(graph as any);
+    (cmd.getSchemaGraph as any).mockResolvedValue(graph as any);
     const onChange = vi.fn();
     render(
       <ConstraintForm
@@ -74,7 +76,7 @@ describe("ConstraintForm", () => {
   });
 
   it("foreign_key: picks referenced table + column", async () => {
-    vi.mocked(cmd.getSchemaGraph).mockResolvedValue(graph as any);
+    (cmd.getSchemaGraph as any).mockResolvedValue(graph as any);
     const onChange = vi.fn();
     render(
       <ConstraintForm
@@ -97,8 +99,8 @@ describe("ConstraintForm", () => {
     const kindSelect = screen.getByLabelText("Kind");
     fireEvent.change(kindSelect, { target: { value: "foreign_key" } });
     await screen.findByText("user_id");
-    const refTable = await screen.findByPlaceholderText("Referenced table");
-    fireEvent.change(refTable, { target: { value: "users" } });
+    const refTable = await screen.findByLabelText("Referenced table");
+    fireEvent.change(refTable, { target: { value: "public.users" } });
     expect(onChange).toHaveBeenLastCalledWith(
       expect.objectContaining({
         action: expect.objectContaining({
@@ -107,5 +109,60 @@ describe("ConstraintForm", () => {
         }),
       }),
     );
+  });
+
+  it("FK form includes ON DELETE/UPDATE + deferrable and cross-schema ref picker", async () => {
+    // mock getSchemaGraph to return tables across two schemas
+    (cmd.getSchemaGraph as any).mockResolvedValue({
+      tables: [
+        {
+          name: "users",
+          schema: "public",
+          table_type: "TABLE",
+          columns: [
+            { name: "id", data_type: "int", is_pk: true, is_fk: false, is_unique: false, is_nullable: false, fk_ref: null },
+          ],
+        },
+        {
+          name: "orgs",
+          schema: "auth",
+          table_type: "TABLE",
+          columns: [
+            { name: "id", data_type: "int", is_pk: true, is_fk: false, is_unique: false, is_nullable: false, fk_ref: null },
+          ],
+        },
+      ],
+      relationships: [],
+    } as any);
+    render(
+      <ConstraintForm
+        connectionId="c1"
+        schemas={["public", "auth"]}
+        params={{
+          schema: "public",
+          table: "orders",
+          name: "fk1",
+          action: {
+            op: "foreign_key",
+            columns: ["org_id"],
+            ref_schema: "auth",
+            ref_table: "orgs",
+            ref_columns: ["id"],
+            on_delete: "CASCADE",
+            on_update: "NO ACTION",
+            deferrable: false,
+            initially_deferred: false,
+          },
+        }}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText("On delete")).toBeInTheDocument();
+    expect(screen.getByLabelText("On update")).toBeInTheDocument();
+    // referenced-table picker includes the auth.orgs option
+    const ref = screen.getByLabelText("Referenced table") as HTMLSelectElement;
+    await waitFor(() => {
+      expect([...ref.options].map((o) => o.value)).toContain("auth.orgs");
+    });
   });
 });

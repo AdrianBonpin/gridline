@@ -1,6 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { ObjectDetail } from "./ObjectDetail";
+import {
+    ObjectDetail,
+    OBJECT_ICONS,
+    SINGULAR_LABELS,
+    TYPE_LABELS,
+} from "./ObjectDetail";
+import * as commands from "../../../lib/commands";
 
 describe("ObjectDetail", () => {
   it("renders an enum's labels as list items", () => {
@@ -35,5 +41,35 @@ describe("ObjectDetail", () => {
     );
     expect(screen.getByText("int")).toBeInTheDocument();
     expect(screen.getAllByText(/plpgsql/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("roles detail renders RoleDetail", () => {
+    vi.spyOn(commands, "getRolePrivileges").mockResolvedValue([]);
+    render(
+      <ObjectDetail
+        connectionId="c1"
+        type="roles"
+        item={{
+          name: "app",
+          superuser: false,
+          inherit: true,
+          create_db: false,
+          create_role: false,
+          can_login: true,
+          replication: false,
+          bypass_rls: false,
+          connection_limit: -1,
+          valid_until: null,
+          memberships: [],
+        }}
+      />,
+    );
+    expect(screen.getByText("app")).toBeInTheDocument();
+  });
+
+  it("registries include roles", () => {
+    expect(TYPE_LABELS.roles).toBe("Roles");
+    expect(SINGULAR_LABELS.roles).toBe("role");
+    expect(OBJECT_ICONS.roles).toBeTruthy();
   });
 });

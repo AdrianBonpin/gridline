@@ -5,6 +5,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import * as cmd from "../../lib/commands";
 import { buildChangePayload, buildChangeSql } from "../../lib/changePayload";
+import { isSchemaModifyingQuery } from "../../lib/utils";
 import type { QueueItem, QueueStatus } from "../../stores/dbViewerStore";
 
 const statusBg: Record<QueueStatus, string> = {
@@ -25,6 +26,8 @@ function formatChangeLabel(change: QueueItem): string {
       return `Empty Table: ${fullName}`;
     case "drop_table":
       return `Drop Table: ${fullName}`;
+    case "rebuild_table":
+      return change.description ?? `Rebuild ${fullName}`;
     case "ddl":
       return change.description ?? "DDL";
     default:
@@ -52,9 +55,11 @@ function capitalizeType(type: string) {
   return type.charAt(0).toUpperCase() + type.slice(1);
 }
 
-/** Badge label for a queue-item type — ddl renders uppercase to match its acronym. */
+/** Badge label for a queue-item type — ddl/rebuild render uppercase. */
 function badgeLabel(type: string): string {
-  return type === "ddl" ? "DDL" : capitalizeType(type);
+  if (type === "ddl") return "DDL";
+  if (type === "rebuild_table") return "REBUILD";
+  return capitalizeType(type);
 }
 
 function tableRef(change: QueueItem): string {
@@ -97,6 +102,11 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
           treeDirty = true;
           const st = useDbViewerStore.getState();
           st.closeTabsForTable(change.schema ?? "", change.table ?? "");
+        } else if (
+          change.type === "rebuild_table" ||
+          (change.type === "ddl" && change.sql && isSchemaModifyingQuery(change.sql))
+        ) {
+          treeDirty = true;
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -177,7 +187,14 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="rounded bg-surface-raised px-1.5 py-0.5 text-xs font-medium text-text-muted">
+                  <span
+                    className={[
+                      "rounded px-1.5 py-0.5 text-xs font-medium",
+                      change.type === "rebuild_table"
+                        ? "bg-amber-500/10 text-amber-400"
+                        : "bg-surface-raised text-text-muted",
+                    ].join(" ")}
+                  >
                     {badgeLabel(change.type)}
                   </span>
                   <span className="text-sm text-text truncate">
@@ -204,19 +221,32 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
                   </span>
                 ) : null}
               </div>
-              <div className="mt-1 text-xs text-text-muted truncate">
-                {formatChangeLabel(change)}
-              </div>
-              {formatValueDiff(change) && (
-                <div className="mt-0.5 font-mono text-xs text-text">
-                  <span className="text-text-muted line-through">
-                    {formatValueDiff(change)!.split(" → ")[0]}
-                  </span>
-                  <span className="mx-1 text-text-muted">→</span>
-                  <span className="text-accent">
-                    {formatValueDiff(change)!.split(" → ")[1]}
-                  </span>
-                </div>
+              {change.type === "rebuild_table" ? (
+                <>
+                  <div className="mt-1 text-xs text-text-muted truncate">
+                    {formatChangeLabel(change)}
+                  </div>
+                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-canvas border border-border p-2 text-xs text-text-muted font-mono">
+                    {buildChangeSql(change)}
+                  </pre>
+                </>
+              ) : (
+                <>
+                  <div className="mt-1 text-xs text-text-muted truncate">
+                    {formatChangeLabel(change)}
+                  </div>
+                  {formatValueDiff(change) && (
+                    <div className="mt-0.5 font-mono text-xs text-text">
+                      <span className="text-text-muted line-through">
+                        {formatValueDiff(change)!.split(" → ")[0]}
+                      </span>
+                      <span className="mx-1 text-text-muted">→</span>
+                      <span className="text-accent">
+                        {formatValueDiff(change)!.split(" → ")[1]}
+                      </span>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           ))

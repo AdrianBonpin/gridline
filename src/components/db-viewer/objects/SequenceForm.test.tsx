@@ -75,7 +75,7 @@ describe("SequenceForm", () => {
     const valueArea = input.parentElement;
     expect(valueArea).not.toBeNull();
     expect(valueArea!.className).toContain("focus-within:outline");
-    expect(valueArea!.className).toContain("focus-within:outline-amber-400");
+    expect(valueArea!.className).toContain("focus-within:outline-amber-400/20");
     expect(valueArea!.className).toContain("focus-within:outline-offset-[-2px]");
 
     // The label cell must stay clean: no ancestor of the label may carry

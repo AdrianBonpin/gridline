@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
@@ -82,6 +82,17 @@ describe("DbViewerToolbar", () => {
     );
     expect(screen.getByLabelText(/refresh/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/create table/i)).toBeInTheDocument();
+  });
+
+  it("opens a create table form tab when Create Table is clicked", () => {
+    const openFormTab = vi.spyOn(useDbViewerStore.getState(), "openFormTab");
+    render(
+      <TooltipProvider>
+        <DbViewerToolbar {...defaultProps} currentSchema="public" />
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByLabelText(/create table/i));
+    expect(openFormTab).toHaveBeenCalledWith(expect.objectContaining({ kind: "table", mode: "create" }));
   });
 
   it("shows a disabled schema loading indicator while schema tree is loading", () => {

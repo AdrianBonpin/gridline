@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { KindForm } from "./KindForm";
+import { TableForm } from "./TableForm";
 import {
   buildObjectDdl,
   type DdlParams,
@@ -18,6 +19,10 @@ interface Props {
 export function ObjectFormTab({ connectionId, tab }: Props) {
   const form = tab.form;
   if (!form) return null;
+
+  if (form.kind === "table") {
+    return <TableForm connectionId={connectionId} tab={tab} />;
+  }
 
   const { kind, params, description, mode } = form;
 

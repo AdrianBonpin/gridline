@@ -13,10 +13,21 @@ interface Props {
 }
 
 const KINDS = ["check", "unique", "primary_key", "foreign_key"];
+const FK_ACTIONS = ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];
 
 function patchAction(params: DdlParams, patch: Record<string, unknown>): DdlParams {
   const action = (params.action ?? {}) as Record<string, unknown>;
   return { ...params, action: { ...action, ...patch } };
+}
+
+function refKey(schema: string, table: string): string {
+  return `${schema}.${table}`;
+}
+
+function parseRefKey(key: string): { schema: string; table: string } {
+  const parts = key.split(".");
+  if (parts.length >= 2) return { schema: parts[0] ?? "", table: parts.slice(1).join(".") };
+  return { schema: "", table: key };
 }
 
 export function ConstraintForm({ connectionId, params, schemas, onChange }: Props) {
@@ -28,10 +39,10 @@ export function ConstraintForm({ connectionId, params, schemas, onChange }: Prop
 
   useEffect(() => {
     cmd
-      .getSchemaGraph(connectionId, (p.schema as string) || undefined)
+      .getSchemaGraph(connectionId, undefined)
       .then((g: SchemaGraph) => setGraph(g))
       .catch(() => setGraph({ tables: [], relationships: [] }));
-  }, [connectionId, p.schema]);
+  }, [connectionId]);
 
   const setAction = (patch: Record<string, unknown>) => onChange(patchAction(params, patch));
 
@@ -147,20 +158,43 @@ export function ConstraintForm({ connectionId, params, schemas, onChange }: Prop
             </div>
           </FormRow>
           <FormRow label="Referenced table">
-            <input
-              type="text"
-              placeholder="Referenced table"
-              value={(action.ref_table as string) ?? ""}
+            <select
+              aria-label="Referenced table"
+              value={refKey(
+                (action.ref_schema as string) ?? "",
+                (action.ref_table as string) ?? "",
+              )}
               onChange={(e) => {
-                const t = graph.tables.find((t) => t.name === e.target.value);
+                const { schema, table } = parseRefKey(e.target.value);
+                const t = graph.tables.find(
+                  (tbl) => tbl.name === table && tbl.schema === schema,
+                );
                 setAction({
-                  ref_table: e.target.value,
-                  ref_schema: t?.schema ?? "",
+                  ref_table: table,
+                  ref_schema: schema,
                   ref_columns: [],
                 });
+                if (!t) return;
+                const pkCols = t.columns.filter((c) => c.is_pk).map((c) => c.name);
+                if (pkCols.length > 0 && selected.length > 0) {
+                  setAction({
+                    ref_table: table,
+                    ref_schema: schema,
+                    ref_columns: pkCols.slice(0, selected.length),
+                  });
+                }
               }}
-              className={inputClass}
-            />
+              className={controlClass}
+            >
+              <option value="" disabled>
+                Select a table
+              </option>
+              {graph.tables.map((t) => (
+                <option key={refKey(t.schema, t.name)} value={refKey(t.schema, t.name)}>
+                  {t.schema}.{t.name}
+                </option>
+              ))}
+            </select>
           </FormRow>
           <FormRow label="Referenced columns" className="items-stretch">
             <div className="min-w-0 flex-1 flex flex-col gap-1 px-4 py-2">
@@ -171,6 +205,65 @@ export function ConstraintForm({ connectionId, params, schemas, onChange }: Prop
               />
             </div>
           </FormRow>
+          <FormRow label="On delete">
+            <select
+              aria-label="On delete"
+              value={(action.on_delete as string) ?? "NO ACTION"}
+              onChange={(e) => setAction({ on_delete: e.target.value })}
+              className={controlClass}
+            >
+              {FK_ACTIONS.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </FormRow>
+          <FormRow label="On update">
+            <select
+              aria-label="On update"
+              value={(action.on_update as string) ?? "NO ACTION"}
+              onChange={(e) => setAction({ on_update: e.target.value })}
+              className={controlClass}
+            >
+              {FK_ACTIONS.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </FormRow>
+          <FormRow label="Deferrable">
+            <label className="min-w-0 flex-1 flex items-center gap-2 px-3 font-heading text-xs text-text cursor-pointer">
+              <input
+                type="checkbox"
+                aria-label="DEFERRABLE"
+                checked={!!action.deferrable}
+                onChange={(e) =>
+                  setAction({
+                    deferrable: e.target.checked,
+                    initially_deferred: e.target.checked ? action.initially_deferred ?? false : false,
+                  })
+                }
+                className="rounded border-border bg-surface text-accent focus:ring-accent"
+              />
+              <span>DEFERRABLE</span>
+            </label>
+          </FormRow>
+          {!!action.deferrable && (
+            <FormRow label="Initially deferred">
+              <label className="min-w-0 flex-1 flex items-center gap-2 px-3 font-heading text-xs text-text cursor-pointer">
+                <input
+                  type="checkbox"
+                  aria-label="INITIALLY DEFERRED"
+                  checked={!!action.initially_deferred}
+                  onChange={(e) => setAction({ initially_deferred: e.target.checked })}
+                  className="rounded border-border bg-surface text-accent focus:ring-accent"
+                />
+                <span>INITIALLY DEFERRED</span>
+              </label>
+            </FormRow>
+          )}
         </>
       )}
     </div>
