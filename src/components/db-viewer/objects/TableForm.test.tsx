@@ -464,12 +464,14 @@ describe("TableForm", () => {
     seedFormTab(tab);
     useDbViewerStore.getState().addChange({
       type: "ddl",
-      sql: 'ALTER TABLE "public"."products" ADD FOREIGN KEY ("category_id") REFERENCES "public"."categories" ("id")',
+      sql: 'ALTER TABLE "public"."products" ADD FOREIGN KEY ("category_id") REFERENCES "public"."categories" ("id") ON DELETE CASCADE',
       description: "Add FK category_id → public.categories",
     });
     render(<TableForm connectionId="c1" tab={tab} />);
-    expect(await screen.findByText(/Add FK category_id/)).toBeInTheDocument();
-    expect(screen.getByText(/ADD FOREIGN KEY/)).toBeInTheDocument();
+    expect(await screen.findByText("Foreign key relation to")).toBeInTheDocument();
+    expect(screen.getByText("public.categories")).toBeInTheDocument();
+    expect(screen.getByText(/products.category_id → categories.id/)).toBeInTheDocument();
+    expect(screen.getByText(/· CASCADE/)).toBeInTheDocument();
   });
 
   it("opens the FK panel with the column preselected", async () => {

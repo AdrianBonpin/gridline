@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { GripVertical, Link, Plus, Settings2, X } from "lucide-react";
+import { GripVertical, Link, Plus, Settings2, Table2, X } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import {
   DndContext,
@@ -347,6 +347,14 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
     }
   };
 
+  const removeCreateFk = (fk: FkDefinition) =>
+    setCreateFks((prev) => prev.filter((f) => f !== fk));
+
+  const editCreateFk = (fk: FkDefinition) => {
+    setCreateFks((prev) => prev.filter((f) => f !== fk));
+    setFkPanel({ open: true, column: fk.columns[0] ?? null });
+  };
+
   const stage = async () => {
     setStaging(true);
     setError(null);
@@ -586,6 +594,9 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
               table={params.name}
               createFks={mode === "create" ? createFks : []}
               onAddFk={() => setFkPanel({ open: true, column: null })}
+              onRemoveCreateFk={removeCreateFk}
+              onEditCreateFk={editCreateFk}
+              onOpenPanel={(col) => setFkPanel({ open: true, column: col })}
             />
 
             <AnimatePresence>
@@ -912,9 +923,66 @@ interface RelationshipsSectionProps {
   /** FKs to inline into a CREATE TABLE (create mode only). */
   createFks?: FkDefinition[];
   onAddFk: () => void;
+  onRemoveCreateFk: (fk: FkDefinition) => void;
+  onEditCreateFk: (fk: FkDefinition) => void;
+  onOpenPanel: (column: string | null) => void;
 }
 
-function RelationshipsSection({ connectionId, schema, table, createFks = [], onAddFk }: RelationshipsSectionProps) {
+interface FkRow {
+  key: string;
+  source: "create" | "queued" | "db";
+  localTable: string;
+  localCols: string[];
+  refSchema: string;
+  refTable: string;
+  refCols: string[];
+  onDelete?: string;
+  onUpdate?: string;
+  changeId?: string;
+  constraintName?: string;
+  fk?: FkDefinition;
+}
+
+/** Normalize a raw FK SQL fragment (ALTER … or pg_get_constraintdef) into structured parts. */
+function parseFkSql(text: string): Omit<FkRow, "key" | "source" | "localTable"> {
+  const strip = (s: string) => s.replace(/"/g, "").trim();
+  const local = /FOREIGN\s+KEY\s*\(([^)]*)\)/i.exec(text);
+  const ref = /REFERENCES\s+([^(\s]+)\s*\(([^)]*)\)/i.exec(text);
+  const del = /ON\s+DELETE\s+([A-Z\s]+?)(?=\s+ON\s|$)/i.exec(text);
+  const upd = /ON\s+UPDATE\s+([A-Z\s]+?)(?=\s+ON\s|$)/i.exec(text);
+  const localCols = local ? local[1].split(",").map(strip).filter(Boolean) : [];
+  const refCols = ref ? ref[2].split(",").map(strip).filter(Boolean) : [];
+  let refSchema = "";
+  let refTable = "";
+  if (ref) {
+    const parts = strip(ref[1]).split(".");
+    if (parts.length >= 2) {
+      refSchema = parts[0];
+      refTable = parts.slice(1).join(".");
+    } else {
+      refTable = parts[0] ?? "";
+    }
+  }
+  return {
+    localCols,
+    refSchema,
+    refTable,
+    refCols,
+    onDelete: del ? del[1].trim() : undefined,
+    onUpdate: upd ? upd[1].trim() : undefined,
+  };
+}
+
+function RelationshipsSection({
+  connectionId,
+  schema,
+  table,
+  createFks = [],
+  onAddFk,
+  onRemoveCreateFk,
+  onEditCreateFk,
+  onOpenPanel,
+}: RelationshipsSectionProps) {
   const [constraints, setConstraints] = useState<ConstraintInfo[]>([]);
   const queued = useDbViewerStore((s) => s.changesQueue);
 
@@ -938,7 +1006,7 @@ function RelationshipsSection({ connectionId, schema, table, createFks = [], onA
     [constraints],
   );
 
-  // FKs staged in this session live in the changes queue (create mode has no DB row yet).
+  // FKs staged this session live in the changes queue.
   const queuedFks = useMemo(
     () =>
       queued.filter(
@@ -950,7 +1018,79 @@ function RelationshipsSection({ connectionId, schema, table, createFks = [], onA
     [queued, schema, table],
   );
 
-  const allFks = [...queuedFks, ...fks];
+  const rows = useMemo<FkRow[]>(() => {
+    const out: FkRow[] = createFks.map((fk, i) => ({
+      key: `cfk-${i}`,
+      source: "create",
+      localTable: table,
+      localCols: fk.columns,
+      refSchema: fk.ref_schema,
+      refTable: fk.ref_table,
+      refCols: fk.ref_columns,
+      onDelete: fk.on_delete,
+      onUpdate: fk.on_update,
+      fk,
+    }));
+    for (const q of queuedFks) {
+      out.push({
+        key: q.id,
+        source: "queued",
+        localTable: table,
+        changeId: q.id,
+        ...parseFkSql(q.sql),
+      });
+    }
+    for (const c of fks) {
+      out.push({
+        key: `db-${c.name}`,
+        source: "db",
+        localTable: table,
+        constraintName: c.name,
+        ...parseFkSql(c.definition ?? ""),
+      });
+    }
+    return out;
+  }, [createFks, queuedFks, fks, table]);
+
+  const removeFk = async (row: FkRow) => {
+    if (row.source === "create") {
+      if (row.fk) onRemoveCreateFk(row.fk);
+      return;
+    }
+    if (row.source === "queued") {
+      useDbViewerStore.getState().removeChange(row.changeId!);
+      return;
+    }
+    // db: stage a DROP CONSTRAINT change
+    try {
+      const sqls = await cmd.buildObjectDdl(connectionId, "constraint", {
+        schema,
+        table,
+        name: row.constraintName,
+        action: { op: "drop" },
+      });
+      sqls.forEach((sql) =>
+        useDbViewerStore.getState().addChange({
+          type: "ddl",
+          sql,
+          description: `Drop FK ${row.constraintName}`,
+        }),
+      );
+    } catch {
+      // ignore — preview handles errors
+    }
+  };
+
+  const editFk = (row: FkRow) => {
+    if (row.source === "create") {
+      if (row.fk) onEditCreateFk(row.fk);
+      return;
+    }
+    if (row.source === "queued") {
+      useDbViewerStore.getState().removeChange(row.changeId!);
+    }
+    onOpenPanel(row.localCols[0] ?? null);
+  };
 
   return (
     <div>
@@ -968,36 +1108,51 @@ function RelationshipsSection({ connectionId, schema, table, createFks = [], onA
         </button>
       </div>
 
-      {createFks.map((fk, i) => (
-        <div key={`cfk-${i}`} className="border-b border-border px-4 py-2">
-          <p className="text-xs text-text">
-            FOREIGN KEY ({fk.columns.join(", ")}) → {fk.ref_schema}.{fk.ref_table} (
-            {fk.ref_columns.join(", ")})
-            {fk.on_delete ? ` ON DELETE ${fk.on_delete}` : ""}
-            {fk.on_update ? ` ON UPDATE ${fk.on_update}` : ""}
-          </p>
-        </div>
-      ))}
-
-      {allFks.length === 0 && createFks.length === 0 && (
+      {rows.length === 0 && (
         <div className="border-b border-border px-4 py-2">
           <p className="text-xs text-text-muted">No foreign keys listed.</p>
         </div>
       )}
 
-      {allFks.map((fk, i) => (
-        <div key={i} className="border-b border-border px-4 py-2">
-          {"sql" in fk ? (
-            <>
-              <p className="text-xs text-text">{fk.description}</p>
-              <p className="font-mono text-[11px] text-text-muted break-all mt-0.5">{fk.sql}</p>
-            </>
-          ) : (
-            <p className="text-xs text-text">
-              <span className="font-mono">{fk.name}</span>{" "}
-              <span className="text-text-muted">{fk.definition}</span>
-            </p>
-          )}
+      {rows.map((row) => (
+        <div key={row.key} className="border-b border-border px-4 py-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+                Foreign key relation to
+              </p>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <Table2 size={12} className="text-text-muted shrink-0" />
+                <span className="font-mono text-xs text-text truncate">
+                  {row.refSchema}.{row.refTable}
+                </span>
+              </div>
+              <p className="font-mono text-[11px] text-text-muted mt-0.5 truncate">
+                {row.localTable ? `${row.localTable}.` : ""}
+                {row.localCols.join(", ")} → {row.refTable}.{row.refCols.join(", ")}
+                {row.onDelete ? ` · ${row.onDelete}` : ""}
+                {row.onUpdate ? ` · ${row.onUpdate}` : ""}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                aria-label={`Edit FK ${row.refSchema}.${row.refTable}`}
+                onClick={() => editFk(row)}
+                className="text-xs text-accent hover:text-accent-hover cursor-pointer"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                aria-label={`Remove FK ${row.refSchema}.${row.refTable}`}
+                onClick={() => removeFk(row)}
+                className="text-xs text-text-muted hover:text-red-400 cursor-pointer"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
         </div>
       ))}
     </div>
