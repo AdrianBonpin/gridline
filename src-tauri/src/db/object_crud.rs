@@ -369,6 +369,140 @@ pub fn trigger_ddl(p: &TriggerParams) -> Result<Vec<String>, String> {
     }])
 }
 
+use std::collections::HashSet;
+
+fn validate_type(t: &str) -> Result<String, String> {
+    let s = t.trim();
+    if s.is_empty() { return Err("Column type must not be empty".into()); }
+    if s.ends_with(';') { return Err("Column type must not end with ';'".into()); }
+    if s.contains("--") || s.contains("/*") { return Err("Column type must not contain comments".into()); }
+    Ok(s.to_string())
+}
+
+#[derive(Deserialize, Clone)]
+pub struct TableColumn {
+    pub name: String,
+    #[serde(rename = "type")] pub type_: String,
+    pub nullable: bool,
+    pub default: Option<Option<String>>, // null | Some(null) | Some(expr)
+    pub is_pk: bool,
+}
+
+impl TableColumn {
+    fn default_sql(&self) -> Option<&str> {
+        match &self.default { Some(Some(d)) => Some(d.as_str()), _ => None }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct TableParams { pub schema: String, pub name: String, pub action: TableAction }
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum TableAction {
+    Create { columns: Vec<TableColumn>, tablespace: Option<String> },
+    Edit { columns: Vec<TableColumn>, old_columns: Vec<TableColumn> },
+    Options { tablespace: Option<String>, rls: Option<String> },
+    Drop,
+}
+
+fn col_def(c: &TableColumn) -> Result<String, String> {
+    validate_object_name(&c.name)?;
+    let ty = validate_type(&c.type_)?;
+    let mut s = format!("{} {}", quote_ident(&c.name), ty);
+    if !c.nullable { s.push_str(" NOT NULL"); }
+    if let Some(d) = c.default_sql() { s.push_str(&format!(" DEFAULT {}", validate_expression(d)?)); }
+    Ok(s)
+}
+
+pub fn table_ddl(p: &TableParams) -> Result<Vec<String>, String> {
+    let q = qual(&p.schema, &p.name)?;
+    Ok(match &p.action {
+        TableAction::Create { columns, tablespace } => {
+            if columns.is_empty() { return Err("CREATE TABLE requires at least one column".into()); }
+            let mut seen = HashSet::new();
+            for c in columns {
+                validate_object_name(&c.name)?;
+                if !seen.insert(c.name.clone()) { return Err(format!("Duplicate column name: {}", c.name)); }
+            }
+            let mut defs: Vec<String> = columns.iter().map(col_def).collect::<Result<_, _>>()?;
+            let pk: Vec<String> = columns.iter().filter(|c| c.is_pk).map(|c| quote_ident(&c.name)).collect();
+            if !pk.is_empty() { defs.push(format!("PRIMARY KEY ({})", pk.join(", "))); }
+            let mut sql = format!("CREATE TABLE {} (\n  {}\n)", q, defs.join(",\n  "));
+            if let Some(ts) = tablespace { validate_object_name(ts)?; sql.push_str(&format!(" TABLESPACE {}", quote_ident(ts))); }
+            vec![sql]
+        }
+        TableAction::Edit { columns, old_columns } => table_diff(&q, old_columns, columns)?,
+        TableAction::Options { tablespace, rls } => {
+            let mut out = Vec::new();
+            if let Some(ts) = tablespace { validate_object_name(ts)?; out.push(format!("ALTER TABLE {} SET TABLESPACE {}", q, quote_ident(ts))); }
+            match rls.as_deref() {
+                Some("enable") | Some("force") => out.push(format!("ALTER TABLE {} ENABLE ROW LEVEL SECURITY", q)),
+                _ => {}
+            }
+            if rls.as_deref() == Some("force") { out.push(format!("ALTER TABLE {} FORCE ROW LEVEL SECURITY", q)); }
+            if rls.as_deref() == Some("disable") { out.push(format!("ALTER TABLE {} DISABLE ROW LEVEL SECURITY", q)); }
+            out
+        }
+        TableAction::Drop => vec![format!("DROP TABLE {}", q)],
+    })
+}
+
+fn table_diff(q: &str, old: &[TableColumn], new: &[TableColumn]) -> Result<Vec<String>, String> {
+    for c in new { validate_object_name(&c.name)?; validate_type(&c.type_)?; }
+    let mut old_by_name: std::collections::HashMap<&str, &TableColumn> = old.iter().map(|c| (c.name.as_str(), c)).collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut used_old: HashSet<usize> = HashSet::new();
+    // 1. RENAMEs: unmatched new col at ordinal i matching an unmatched old col at ordinal i with identical type/nullable/default
+    let mut renames: Vec<(usize, String, String)> = Vec::new(); // (old_idx, old_name, new_name)
+    for (i, nc) in new.iter().enumerate() {
+        if old_by_name.contains_key(nc.name.as_str()) { continue; }
+        if let Some(oc) = old.get(i) {
+            if !used_old.contains(&i) && oc.type_.trim() == nc.type_.trim()
+                && oc.nullable == nc.nullable && oc.default_sql() == nc.default_sql() {
+                renames.push((i, oc.name.clone(), nc.name.clone()));
+                used_old.insert(i);
+                old_by_name.remove(oc.name.as_str());
+            }
+        }
+    }
+    for (_, oldn, newn) in &renames {
+        out.push(format!("ALTER TABLE {} RENAME COLUMN \"{}\" TO \"{}\"", q, oldn, newn));
+    }
+    // 2. ADDs: remaining unmatched new cols
+    for nc in new {
+        if old_by_name.contains_key(nc.name.as_str()) || renames.iter().any(|r| r.2 == nc.name) { continue; }
+        let s = format!("ALTER TABLE {} ADD COLUMN {}", q, col_def(nc)?);
+        out.push(s);
+    }
+    // 3. ALTERs for kept (name-matched) cols
+    for nc in new {
+        let Some(oc) = old.iter().find(|c| c.name == nc.name) else { continue; };
+        if oc.type_.trim() != nc.type_.trim() {
+            out.push(format!("ALTER TABLE {} ALTER COLUMN {} TYPE {}", q, quote_ident(&nc.name), validate_type(&nc.type_)?));
+        }
+        match (oc.default_sql(), nc.default_sql()) {
+            (None, Some(d)) => out.push(format!("ALTER TABLE {} ALTER COLUMN {} SET DEFAULT {}", q, quote_ident(&nc.name), validate_expression(d)?)),
+            (Some(_), None) => out.push(format!("ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT", q, quote_ident(&nc.name))),
+            (Some(a), Some(b)) if a != b => out.push(format!("ALTER TABLE {} ALTER COLUMN {} SET DEFAULT {}", q, quote_ident(&nc.name), validate_expression(b)?)),
+            _ => {}
+        }
+        match (oc.nullable, nc.nullable) {
+            (true, false) => out.push(format!("ALTER TABLE {} ALTER COLUMN {} SET NOT NULL", q, quote_ident(&nc.name))),
+            (false, true) => out.push(format!("ALTER TABLE {} ALTER COLUMN {} DROP NOT NULL", q, quote_ident(&nc.name))),
+            _ => {}
+        }
+    }
+    // 4. DROPs last: old cols not present in new and not renamed-away
+    let new_names: HashSet<&str> = new.iter().map(|c| c.name.as_str()).collect();
+    for oc in old {
+        if !new_names.contains(oc.name.as_str()) && !renames.iter().any(|r| r.1 == oc.name) {
+            out.push(format!("ALTER TABLE {} DROP COLUMN {}", q, quote_ident(&oc.name)));
+        }
+    }
+    Ok(out)
+}
+
 /// Dispatch a DDL build by kind. `params` is the JSON payload from the frontend.
 /// Returns one or more single SQL statements.
 pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, String> {
@@ -405,6 +539,10 @@ pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, S
         "trigger" => {
             let p: TriggerParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
             trigger_ddl(&p)
+        }
+        "table" => {
+            let p: TableParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            table_ddl(&p)
         }
         other => Err(format!("Unsupported object kind: {other}")),
     }
@@ -723,5 +861,102 @@ mod tests {
         assert_eq!(build_ddl("trigger", base("enable")).unwrap(), vec!["ALTER TABLE \"public\".\"orders\" ENABLE TRIGGER \"tr_audit\""]);
         assert_eq!(build_ddl("trigger", base("disable")).unwrap(), vec!["ALTER TABLE \"public\".\"orders\" DISABLE TRIGGER \"tr_audit\""]);
         assert_eq!(build_ddl("trigger", base("drop")).unwrap(), vec!["DROP TRIGGER \"tr_audit\" ON \"public\".\"orders\""]);
+    }
+
+    #[test]
+    fn table_create_multi_col_pk_and_default() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "create", "columns": [
+                { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                { "name": "email", "type": "text", "nullable": false, "default": null, "is_pk": false }
+            ], "tablespace": null }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        assert_eq!(sql, vec![
+            "CREATE TABLE \"public\".\"users\" (\n  \"id\" integer NOT NULL,\n  \"email\" text NOT NULL,\n  PRIMARY KEY (\"id\")\n)"
+        ]);
+    }
+
+    #[test]
+    fn table_create_with_tablespace() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "t",
+            "action": { "op": "create", "columns": [
+                { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true }
+            ], "tablespace": "fastdisk" }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        assert!(sql[0].ends_with(" TABLESPACE \"fastdisk\""));
+    }
+
+    #[test]
+    fn table_create_rejects_empty_and_duplicate_columns() {
+        let empty = serde_json::json!({ "schema": "public", "name": "t", "action": { "op": "create", "columns": [], "tablespace": null } });
+        assert!(build_ddl("table", empty).is_err());
+        let dup = serde_json::json!({ "schema": "public", "name": "t", "action": { "op": "create", "columns": [
+            { "name": "id", "type": "int", "nullable": false, "default": null, "is_pk": true },
+            { "name": "id", "type": "int", "nullable": false, "default": null, "is_pk": false }
+        ], "tablespace": null } });
+        assert!(build_ddl("table", dup).is_err());
+    }
+
+    #[test]
+    fn table_edit_emits_rename_add_alter_drop_in_order() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "label", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "email", "type": "text", "nullable": false, "default": "'x'", "is_pk": false }
+                ]
+            }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        let joined = sql.join("\n");
+        let rename_idx = joined.find("ALTER TABLE \"public\".\"users\" RENAME COLUMN \"name\" TO \"label\"").unwrap();
+        let add_idx = joined.find("ALTER TABLE \"public\".\"users\" ADD COLUMN \"email\" text NOT NULL DEFAULT 'x'").unwrap();
+        let drop_idx = joined.find("ALTER TABLE \"public\".\"users\" DROP COLUMN \"age\"").unwrap();
+        assert!(rename_idx < add_idx, "RENAME before ADD; got: {}", joined);
+        assert!(add_idx < drop_idx, "ADD before DROP; got: {}", joined);
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"users\" RENAME COLUMN \"name\" TO \"label\""));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"users\" ADD COLUMN \"email\" text NOT NULL DEFAULT 'x'"));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"users\" DROP COLUMN \"age\""));
+    }
+
+    #[test]
+    fn table_edit_emits_alter_type_default_notnull() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "t",
+            "action": { "op": "edit",
+                "old_columns": [ { "name": "c", "type": "int", "nullable": true, "default": null, "is_pk": false } ],
+                "columns": [ { "name": "c", "type": "bigint", "nullable": false, "default": "0", "is_pk": false } ]
+            }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" ALTER COLUMN \"c\" TYPE bigint"));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" ALTER COLUMN \"c\" SET DEFAULT 0"));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" ALTER COLUMN \"c\" SET NOT NULL"));
+    }
+
+    #[test]
+    fn table_options_rls_and_tablespace() {
+        let p = serde_json::json!({ "schema": "public", "name": "t", "action": { "op": "options", "tablespace": "fastdisk", "rls": "force" } });
+        let sql = build_ddl("table", p).unwrap();
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" SET TABLESPACE \"fastdisk\""));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" ENABLE ROW LEVEL SECURITY"));
+        assert!(sql.iter().any(|s| s == "ALTER TABLE \"public\".\"t\" FORCE ROW LEVEL SECURITY"));
+    }
+
+    #[test]
+    fn table_drop() {
+        let p = serde_json::json!({ "schema": "public", "name": "t", "action": { "op": "drop" } });
+        assert_eq!(build_ddl("table", p).unwrap(), vec!["DROP TABLE \"public\".\"t\""]);
     }
 }
