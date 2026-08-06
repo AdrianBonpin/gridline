@@ -518,7 +518,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
 
             <FormSectionHeader label="Columns" count={cols.length} />
             <div className="overflow-x-auto" style={{ overscrollBehavior: "none" }}>
-              <div className="border-b border-border flex items-stretch w-full min-w-max">
+              <div className="border-b border-border flex items-stretch w-full min-w-[760px]">
                 <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center justify-center" />
                 <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">#</div>
                 <div className="flex-1 min-w-48 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Name</div>
@@ -715,7 +715,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk, hasFk }: ColumnRow
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`border-b border-border flex items-stretch w-full min-w-max ${isDragging ? "opacity-60" : ""}`}
+      className={`border-b border-border flex items-stretch w-full min-w-[760px] ${isDragging ? "opacity-60" : ""}`}
     >
       <div className="w-8 shrink-0 border-r border-border px-2 py-2 flex items-center justify-center">
         <button
@@ -739,15 +739,17 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk, hasFk }: ColumnRow
           value={c.name}
           onChange={(e) => setCell(index, "name", e.target.value)}
         />
-        <button
-          type="button"
-          aria-label="Set foreign key"
-          onClick={onFk}
-          title={hasFk ? "This column has a foreign key" : "Set foreign key"}
-          className={`shrink-0 transition-colors ${hasFk ? "text-accent" : "text-text-muted hover:text-accent"}`}
-        >
-          <Link size={12} />
-        </button>
+        {!c.is_pk && (
+          <button
+            type="button"
+            aria-label="Set foreign key"
+            onClick={onFk}
+            title={hasFk ? "This column has a foreign key" : "Set foreign key"}
+            className={`shrink-0 transition-colors ${hasFk ? "text-accent" : "text-text-muted hover:text-accent"}`}
+          >
+            <Link size={12} />
+          </button>
+        )}
       </div>
       <div className="flex-1 min-w-40 border-r border-border px-3 py-2 flex items-center gap-1.5">
         <DataTypeIcon dataType={c.type} size={12} />
@@ -789,7 +791,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk, hasFk }: ColumnRow
           onChange={(e) => setCell(index, "default", e.target.value)}
         />
       </div>
-      <div className="w-max shrink-0 px-3 py-2 flex items-center justify-end gap-1">
+      <div className="w-max shrink-0 border-r border-border px-3 py-2 flex items-center justify-end gap-1">
         <button
           ref={cogRef}
           type="button"

@@ -419,7 +419,7 @@ describe("TableForm", () => {
     } as any;
     seedFormTab(tab);
     render(<TableForm connectionId="c1" tab={tab} />);
-    fireEvent.click(screen.getAllByLabelText("Set foreign key")[1]); // category_id
+    fireEvent.click(screen.getByLabelText("Set foreign key")); // category_id (id is PK → no FK icon)
     await screen.findByText("Foreign key");
     const refColSel = (await screen.findByLabelText("Referenced column 1")) as HTMLSelectElement;
     await waitFor(() => {
@@ -504,7 +504,9 @@ describe("TableForm", () => {
     seedFormTab(tab);
     render(<TableForm connectionId="c1" tab={tab} />);
     const fkButtons = screen.getAllByLabelText("Set foreign key");
-    fireEvent.click(fkButtons[1]);
+    // id is the PK column → its FK icon is hidden; category_id is the only one
+    expect(fkButtons).toHaveLength(1);
+    fireEvent.click(fkButtons[0]);
     expect(await screen.findByText("Foreign key")).toBeInTheDocument();
     const local = (await screen.findByLabelText("Local column 1")) as HTMLSelectElement;
     expect(local.value).toBe("category_id");
