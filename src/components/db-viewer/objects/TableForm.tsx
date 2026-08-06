@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { GripVertical, Link, Plus, X } from "lucide-react";
+import { AnimatePresence } from "motion/react";
 import {
   DndContext,
   closestCenter,
@@ -532,15 +533,17 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
               onAddFk={() => setFkPanel({ open: true, column: null })}
             />
 
-            {fkPanel?.open && (
-              <FkPanel
-                connectionId={connectionId}
-                schema={params.schema}
-                table={params.name}
-                column={fkPanel.column}
-                onClose={() => setFkPanel(null)}
-              />
-            )}
+            <AnimatePresence>
+              {fkPanel?.open && (
+                <FkPanel
+                  connectionId={connectionId}
+                  schema={params.schema}
+                  table={params.name}
+                  column={fkPanel.column}
+                  onClose={() => setFkPanel(null)}
+                />
+              )}
+            </AnimatePresence>
           </>
         ) : (
           <div className="px-4 py-3">

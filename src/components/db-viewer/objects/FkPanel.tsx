@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { X, Link } from "lucide-react";
+import { motion } from "motion/react";
 import { useDbViewerStore } from "../../../stores/dbViewerStore";
 import * as cmd from "../../../lib/commands";
 import { buildObjectDdl } from "../../../lib/objectCrud";
@@ -153,7 +154,13 @@ export function FkPanel({ connectionId, schema, table, column, onClose, onStaged
   };
 
   return (
-    <div className="fixed top-0 right-0 h-full w-[420px] bg-canvas border-l border-border z-40 flex flex-col">
+    <motion.div
+      initial={{ x: "100%" }}
+      animate={{ x: 0 }}
+      exit={{ x: "100%" }}
+      transition={{ duration: 0.2, ease: "easeOut" }}
+      className="fixed top-0 right-0 h-full w-[420px] bg-canvas border-l border-border z-40 flex flex-col"
+    >
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2 text-text">
           <Link size={14} />
@@ -169,12 +176,14 @@ export function FkPanel({ connectionId, schema, table, column, onClose, onStaged
         </button>
       </div>
 
-      <div className="flex-1 overflow-auto p-3 space-y-2">
+      <div className="flex-1 overflow-auto" style={{ overscrollBehavior: "none" }}>
         {loading && (
-          <p className="text-xs text-text-muted">Loading schema graph…</p>
+          <p className="border-b border-border px-4 py-2 text-xs text-text-muted">Loading schema graph…</p>
         )}
         {!loading && graph.tables.length === 0 && (
-          <p className="text-xs text-text-muted">No tables available for foreign key reference.</p>
+          <p className="border-b border-border px-4 py-2 text-xs text-text-muted">
+            No tables available for foreign key reference.
+          </p>
         )}
 
         {!loading && graph.tables.length > 0 && (
@@ -240,7 +249,7 @@ export function FkPanel({ connectionId, schema, table, column, onClose, onStaged
             </FormRow>
 
             {refSchema && refTable && refColumn && (
-              <p className="text-xs text-text-muted px-3">
+              <p className="border-b border-border px-4 py-2 text-xs text-text-muted">
                 references {refSchema}.{refTable} ({refColumn})
               </p>
             )}
@@ -307,7 +316,7 @@ export function FkPanel({ connectionId, schema, table, column, onClose, onStaged
           </>
         )}
 
-        {error && <p className="text-xs text-red-400 px-3">{error}</p>}
+        {error && <p className="border-b border-border px-4 py-2 text-xs text-red-400">{error}</p>}
       </div>
 
       <div className="border-t border-border px-4 py-3 flex items-center justify-end gap-2">
@@ -327,6 +336,6 @@ export function FkPanel({ connectionId, schema, table, column, onClose, onStaged
           Add FK
         </button>
       </div>
-    </div>
+    </motion.div>
   );
 }
