@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useConnectionStore } from "./connectionStore";
 import * as commands from "../lib/commands";
-import type { Connection, Folder, Tag } from "../lib/types";
+import type { Connection, ConnectionInput, Folder, Tag } from "../lib/types";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -240,6 +240,8 @@ describe("favorites / recents / move-selection", () => {
         folder_id: "f1",
         tag_ids: ["t1"],
         password: null,
+        // absent use_keychain on the source defaults to true (opt-out)
+        use_keychain: true,
       }));
     });
 
@@ -262,5 +264,96 @@ describe("favorites / recents / move-selection", () => {
     expect(useConnectionStore.getState().folders[0].parent_id).toBe("target");
     // Restore the real action so the mock doesn't linger on future state objects
     useConnectionStore.setState({ moveConnection: originalMoveConnection });
+  });
+});
+
+describe("keychain toggle + session passwords (Task 3.1)", () => {
+  const baseInput = (overrides: Partial<ConnectionInput> = {}): ConnectionInput => ({
+    name: "n", db_type: "postgresql", host: "h", port: 5432, username: "u",
+    database: "d", folder_id: null, tag_ids: [], password: "pw", use_keychain: true,
+    ...overrides,
+  });
+
+  it("saves to keychain when use_keychain=true", async () => {
+    const created = makeConn({ id: "c1", use_keychain: true });
+    vi.spyOn(commands, "createConnection").mockResolvedValue(created);
+    const save = vi.spyOn(commands, "saveConnectionPassword").mockResolvedValue(undefined);
+    const purge = vi.spyOn(commands, "deleteConnectionPassword").mockResolvedValue(undefined);
+    await useConnectionStore.getState().createConnection(baseInput({ use_keychain: true }));
+    expect(save).toHaveBeenCalledWith("c1", "pw");
+    expect(purge).not.toHaveBeenCalled();
+  });
+
+  it("purges keychain and skips save when use_keychain=false", async () => {
+    const created = makeConn({ id: "c2", use_keychain: false });
+    vi.spyOn(commands, "createConnection").mockResolvedValue(created);
+    const save = vi.spyOn(commands, "saveConnectionPassword").mockResolvedValue(undefined);
+    const purge = vi.spyOn(commands, "deleteConnectionPassword").mockResolvedValue(undefined);
+    await useConnectionStore.getState().createConnection(baseInput({ use_keychain: false }));
+    expect(save).not.toHaveBeenCalled();
+    expect(purge).toHaveBeenCalledWith("c2");
+  });
+
+  it("use_keychain absent defaults to true (saves to keychain)", async () => {
+    const created = makeConn({ id: "c1", use_keychain: true });
+    vi.spyOn(commands, "createConnection").mockResolvedValue(created);
+    const save = vi.spyOn(commands, "saveConnectionPassword").mockResolvedValue(undefined);
+    const { use_keychain: _kc, ...withoutFlag } = baseInput({ use_keychain: true });
+    await useConnectionStore.getState().createConnection(withoutFlag as ConnectionInput);
+    expect(save).toHaveBeenCalledWith("c1", "pw");
+  });
+
+  it("getConnectionPassword returns the session password when use_keychain=false", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c3", use_keychain: false })] });
+    useConnectionStore.getState().setSessionPassword("c3", "secret");
+    const kc = vi.spyOn(commands, "getConnectionPassword").mockResolvedValue("kc");
+    expect(await useConnectionStore.getState().getConnectionPassword("c3")).toBe("secret");
+    expect(kc).not.toHaveBeenCalled();
+  });
+
+  it("getConnectionPassword falls back to the keychain when use_keychain=true", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c4", use_keychain: true })] });
+    const kc = vi.spyOn(commands, "getConnectionPassword").mockResolvedValue("kc");
+    expect(await useConnectionStore.getState().getConnectionPassword("c4")).toBe("kc");
+    expect(kc).toHaveBeenCalledWith("c4");
+  });
+
+  it("cachePassword stays session-only when use_keychain=false", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c5", use_keychain: false })] });
+    const save = vi.spyOn(commands, "saveConnectionPassword").mockResolvedValue(undefined);
+    await useConnectionStore.getState().cachePassword("c5", "s3cret");
+    expect(save).not.toHaveBeenCalled();
+    expect(await useConnectionStore.getState().getConnectionPassword("c5")).toBe("s3cret");
+  });
+
+  it("cachePassword saves to the keychain when use_keychain=true", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c6", use_keychain: true })] });
+    const save = vi.spyOn(commands, "saveConnectionPassword").mockResolvedValue(undefined);
+    await useConnectionStore.getState().cachePassword("c6", "kc-pass");
+    expect(save).toHaveBeenCalledWith("c6", "kc-pass");
+  });
+
+  it("setSessionPassword/clearSessionPassword manage the in-memory map", () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "cx", use_keychain: false })] });
+    useConnectionStore.getState().setSessionPassword("cx", "p");
+    expect(useConnectionStore.getState().getConnectionPassword).toBeDefined();
+    useConnectionStore.getState().clearSessionPassword("cx");
+  });
+
+  it("deleteConnection clears the session password", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c8", use_keychain: false })] });
+    useConnectionStore.getState().setSessionPassword("c8", "secret");
+    vi.spyOn(commands, "deleteConnection").mockResolvedValue(undefined);
+    await useConnectionStore.getState().deleteConnection("c8");
+    // re-add the same connection so the cleared session map is observable
+    useConnectionStore.setState({ connections: [makeConn({ id: "c8", use_keychain: false })] });
+    expect(await useConnectionStore.getState().getConnectionPassword("c8")).toBeNull();
+  });
+
+  it("duplicateConnection inherits use_keychain from the source", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c1", use_keychain: true })] });
+    vi.spyOn(commands, "createConnection").mockResolvedValue(makeConn({ id: "c2", name: "P (copy)", use_keychain: true }));
+    await useConnectionStore.getState().duplicateConnection("c1");
+    expect(commands.createConnection).toHaveBeenCalledWith(expect.objectContaining({ use_keychain: true }));
   });
 });

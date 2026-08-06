@@ -23,6 +23,7 @@ pub struct Connection {
     pub ssl_cert_path: Option<String>,
     pub ssl_key_path: Option<String>,
     pub tag_ids: Vec<String>,
+    pub use_keychain: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -50,6 +51,12 @@ pub struct ConnectionInput {
     pub ssl_ca_path: Option<String>,
     pub ssl_cert_path: Option<String>,
     pub ssl_key_path: Option<String>,
+    #[serde(default = "default_true")]
+    pub use_keychain: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -66,6 +73,7 @@ mod tests {
             username: Some("admin".to_string()),
             folder_id: Some("folder1".to_string()),
             tag_ids: vec!["tag1".to_string(), "tag2".to_string()],
+            use_keychain: true,
             password: Some("secret123".to_string()),
             database: Some("mydb".to_string()),
             ssh_host: Some("jumphost.example.com".to_string()),
@@ -133,6 +141,7 @@ mod tests {
             environment: None,
             favorite: false,
             tag_ids: vec![],
+            use_keychain: true,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             database: Some("mydb".to_string()),
@@ -177,11 +186,26 @@ mod tests {
             ssl_cert_path: None,
             ssl_key_path: None,
             tag_ids: vec![],
+            use_keychain: true,
             favorite: true,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_string(&conn).unwrap();
         assert!(json.contains("\"favorite\":true"));
+    }
+
+    #[test]
+    fn connection_input_use_keychain_defaults_true_when_absent() {
+        let json = r#"{"name":"n","db_type":"postgresql","host":"h","port":5432,"tag_ids":[]}"#;
+        let input: ConnectionInput = serde_json::from_str(json).unwrap();
+        assert!(input.use_keychain, "absent use_keychain defaults to true (opt-out)");
+    }
+
+    #[test]
+    fn connection_input_use_keychain_preserves_false() {
+        let json = r#"{"name":"n","db_type":"postgresql","host":"h","port":5432,"tag_ids":[],"use_keychain":false}"#;
+        let input: ConnectionInput = serde_json::from_str(json).unwrap();
+        assert!(!input.use_keychain);
     }
 }

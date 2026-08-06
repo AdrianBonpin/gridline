@@ -1060,6 +1060,7 @@ mod tests {
                 username: None,
                 folder_id: None,
                 tag_ids: vec![],
+                use_keychain: true,
                 password: None,
                 database: None,
                 environment: None,

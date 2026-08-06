@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { cloneElement, useEffect, useRef, type ReactElement, type ReactNode } from "react";
 import {
   DndContext,
   closestCenter,
@@ -16,9 +16,10 @@ import {
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ListChecks, Play, Table2, Layers, Eye, Terminal, X } from "lucide-react";
+import { ListChecks, Play, Table2, Layers, Eye, Terminal, X, Plus, Pencil } from "lucide-react";
 import { useDbViewerStore, type ViewerTab } from "../../stores/dbViewerStore";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
+import { OBJECT_ICONS } from "./objects/ObjectDetail";
 
 function SortableTab({
   tab,
@@ -181,6 +182,39 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
                       data-testid="tab-icon-query"
                       className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
                     />
+                  ) : tab.tabType === "object" ? (
+                    <span
+                        aria-label={`object icon: ${tab.objectType}`}
+                        className="contents"
+                    >
+                      {cloneElement(
+                          OBJECT_ICONS[tab.objectType!] as ReactElement<{
+                              className?: string;
+                          }>,
+                          {
+                              // Same handling as the query/table icons: the svg
+                              // itself is display:inline (preflight vertical-align:
+                              // middle centers it with the text) with the same
+                              // optical-centering nudge. `display: contents` on the
+                              // labelled span renders no box, so the geometry is
+                              // identical to the bare Terminal/Table2 icons.
+                              className:
+                                  "mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current",
+                          },
+                      )}
+                    </span>
+                  ) : tab.tabType === "objectForm" ? (
+                    tab.form?.mode === "create" ? (
+                      <Plus
+                        data-testid="tab-icon-form-create"
+                        className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
+                      />
+                    ) : (
+                      <Pencil
+                        data-testid="tab-icon-form-edit"
+                        className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
+                      />
+                    )
                   ) : objectType === "VIEW" ? (
                     <Eye
                       data-testid="tab-icon-view"

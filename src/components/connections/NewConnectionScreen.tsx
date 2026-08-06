@@ -50,7 +50,7 @@ function createEmptyForm(
         username: null,
         password: null,
         database: null,
-        use_keychain: false,
+        use_keychain: true,
         ssh_password: null,
     };
 }

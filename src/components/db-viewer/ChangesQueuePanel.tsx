@@ -25,6 +25,8 @@ function formatChangeLabel(change: QueueItem): string {
       return `Empty Table: ${fullName}`;
     case "drop_table":
       return `Drop Table: ${fullName}`;
+    case "ddl":
+      return change.description ?? "DDL";
     default:
       return change.table ?? "-";
   }
@@ -48,6 +50,11 @@ function formatValueDiff(change: QueueItem): string | null {
 
 function capitalizeType(type: string) {
   return type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+/** Badge label for a queue-item type — ddl renders uppercase to match its acronym. */
+function badgeLabel(type: string): string {
+  return type === "ddl" ? "DDL" : capitalizeType(type);
 }
 
 function tableRef(change: QueueItem): string {
@@ -171,7 +178,7 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="rounded bg-surface-raised px-1.5 py-0.5 text-xs font-medium text-text-muted">
-                    {capitalizeType(change.type)}
+                    {badgeLabel(change.type)}
                   </span>
                   <span className="text-sm text-text truncate">
                     {tableRef(change)}

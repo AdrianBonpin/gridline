@@ -242,6 +242,30 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
 
+    // v8: use_keychain opt-out flag on connections
+    if current_ver < 8 {
+        let existing: Vec<String> = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(connections)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        if !existing.iter().any(|c| c == "use_keychain") {
+            conn.execute(
+                "ALTER TABLE connections ADD COLUMN use_keychain INTEGER NOT NULL DEFAULT 1",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        conn.execute("INSERT INTO schema_version (version) VALUES (8)", [])
+            .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -292,7 +316,49 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 6);
+        assert_eq!(count, 7);
+    }
+
+    #[test]
+    fn migration_v8_adds_use_keychain_column_default_1() {
+        let conn = Connection::open_in_memory().unwrap();
+        // v7 baseline
+        run_migrations(&conn).unwrap();
+        // simulate an existing connection row (pre-v8 shape had no use_keychain)
+        conn.execute(
+            "INSERT INTO connections (id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, environment, created_at, updated_at) VALUES ('c1','n','postgresql','h',5432,'u','d',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'t','t','t')",
+            [],
+        )
+        .unwrap();
+        run_migrations(&conn).unwrap();
+        let uses: i64 = conn
+            .query_row("SELECT use_keychain FROM connections WHERE id='c1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(uses, 1, "existing connections default to use_keychain=1 (ON)");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_version WHERE version=8", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "schema_version row 8 inserted exactly once");
+    }
+
+    #[test]
+    fn migration_v8_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+        let v8: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_version WHERE version=8", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v8, 1);
+        // PRAGMA confirms exactly one use_keychain column
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(connections)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(cols.iter().filter(|c| c == &"use_keychain").count(), 1);
     }
 
     #[test]
@@ -541,12 +607,12 @@ mod tests {
     }
 
     #[test]
-    fn v7_bumps_schema_version_to_7() {
+    fn v8_bumps_schema_version_to_8() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         let ver: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(ver, 7);
+        assert_eq!(ver, 8);
     }
 }

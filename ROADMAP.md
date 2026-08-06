@@ -6,6 +6,14 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ---
 
+## ✅ Shipped (0.7.6)
+
+- **Full Object Management (PostgreSQL)** — create/edit/drop for every PostgreSQL object type (enums, functions, procedures, triggers, sequences, extensions, views, materialized views, indexes, constraints), staged through the changes queue with generated-SQL previews.
+- **Enable Keychain toggle** — wired end-to-end (default ON, opt-out): OFF = don't persist the DB password (session-only, re-prompt on connect) + purge the existing keychain entry; SSH secrets stay keychain-only.
+- **Objects view tabbed workspace** — object details open as tabs in the shared tabbed workspace (per-type icons), with an inline manual query tab and the changes queue reachable from the tab bar.
+- **⌘K object-search fixes** — clicking a result now switches to the Objects view / opens the table tab; arrow-key navigation + Enter to pick.
+- **Version bump** 0.7.5 → **0.7.6**.
+
 ## ✅ Shipped (0.7.5)
 
 - **Bundled PG client tools** — static `pg_dump`/`pg_restore`/`psql` ship with the app (system-first, bundled fallback) so backup/restore/sync work with no separate install.
@@ -30,37 +38,17 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ## 🎯 Next up
 
-### Full Object Management (PostgreSQL)
-
-Gridline can already **browse** every PostgreSQL object type (functions, triggers, sequences, enums, extensions, views, materialized views, procedures, indexes, constraints). Next up: full **CRUD** on those objects without ever touching the Query tab.
-
-- Right-click any object → create / edit / drop with a generated-SQL preview before applying
-- Enums: add/remove values, rename types
-- Functions & procedures: edit signature + body, drop overloads by signature
-- Triggers: create/edit/disable/enable, timing + event pickers
-- Sequences: alter increment/start/min/max/cycle, restart
-- Extensions: install/uninstall, schema reassignment
-- Views & materialized views: edit definition, refresh matviews
-- Indexes & constraints: create/drop per table with column pickers
-- Staged through the changes queue (with confirmation) — never a surprise DDL
-- **Out of scope this release:** the MySQL "Objects" view stays deferred (see In the queue) — this iteration is PostgreSQL-only
-
-### Admin follow-up (after object management)
+### Admin follow-up (0.7.7)
 
 - **PostgreSQL users/roles + grants management** — create roles and set privileges from a UI (DB Pro has this at 0% on their roadmap — a differentiator to hold)
 - **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
 
-### Connection & credentials
+### Table & relationship management (next)
 
-- **Wire up the "Enable Keychain" toggle** — currently a form-only placeholder: the flag is submitted and stored with the connection record, but the Rust backend never reads it and the frontend store unconditionally calls `saveConnectionPassword`. Decide the intended behavior (e.g. off = store the password with the connection record / don't persist at all, on = OS keychain as today) and implement the conditional path + migration for existing records.
-
-### DB viewer: ⌘K object search (0.7.6)
-
-- **Fix: clicking a search result does nothing** — reported from 0.7.5 testing. `ObjectSearchPalette.handleSelect` sets store state but the UI doesn't react:
-  - *Non-table results* (function/enum/sequence/…) set `selectedObjectType` but **never switch the view to the Objects page** — the palette needs to also call the view switch (e.g. `setCurrentView("objects")` or the DbViewerScreen equivalent) so `ObjectExplorerPage` mounts and consumes `selectedObjectType`.
-  - *Table/view results* call `openTab(schema, name)` but nothing visibly happens from the Explorer — verify `openTab` reaches the tab system from the palette's context (tab store + active-view wiring) and opens the tab.
-  - Add component tests that render the palette inside DbViewerScreen (or a harness) and assert the view/tab actually changes on click.
-- **Add arrow-key navigation + Enter to pick** — currently mouse-click only. Move the highlighted row with ↑/↓ (wrapping), Enter selects the highlighted hit (same `handleSelect` path), Esc still closes. Optional: home/end + typeahead on the result list.
+- **Create table** — a "Create Table…" tab in the workspace using the same Visual ⇄ SQL flow as object create/edit: a columns grid (name / type / nullable / default / PK per row, add/remove rows) with a live SQL preview
+- **Edit table (robust column diff)** — open an existing table's columns in the same grid; on Stage, diff old vs new columns and emit the right statements, one per queue item: `ADD COLUMN`, `DROP COLUMN`, `RENAME COLUMN`, `ALTER COLUMN … TYPE`, `ALTER COLUMN … SET|DROP DEFAULT`, `SET|DROP NOT NULL`
+- **Relationships between tables & schemas** — FK create/edit/drop from a table editor (including cross-schema FKs) and schema-level relationship maintenance
+- **Related niceties** — column reordering (PG requires a table rebuild — decide semantics), table options (tablespace, row-level security), multi-column PRIMARY KEY on create
 
 ## 📋 In the queue
 
@@ -142,6 +130,9 @@ Deferred from 0.7.0, slated for this bucket:
 
 ## ✅ Shipped
 
+- Full PostgreSQL object management — create/edit/drop staged through the changes queue (v0.7.6)
+- Enable Keychain toggle — opt-out password persistence (v0.7.6)
+- Objects view tabbed workspace (v0.7.6)
 - Bundled PG client tools — `pg_dump`/`pg_restore`/`psql` shipped with the app, system-first with bundled fallback (v0.7.5)
 - Schema CRUD — create/rename/drop schemas with CASCADE + dependency warning (v0.7.5)
 - Global object search — Cmd+K across all object types in the current schema (v0.7.5)

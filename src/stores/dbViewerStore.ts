@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, IndexInfo, ConstraintInfo, ObjectType } from "../lib/types";
 import { getDatabases, getSchemas, getTables } from "../lib/commands";
+import type { ObjectKind, DdlParams } from "../lib/objectCrud";
 
 // ─── Local types ────────────────────────────────────────────────
 
@@ -38,6 +39,16 @@ export interface QueueItem {
   createdAt: number;
 }
 
+/** Payload carried by an "objectForm" tab — the kind + params for the
+ * object create/edit form and the SQL toggle it renders. */
+export interface ViewerFormTabPayload {
+  kind: ObjectKind;
+  params: DdlParams;
+  title: string;
+  description: string;
+  mode: "create" | "edit";
+}
+
 export interface ViewerTab {
   id: string;
   schema: string;
@@ -52,8 +63,11 @@ export interface ViewerTab {
   sortRules: SortRule[];
   hiddenColumns: string[];
   smartSortApplied: boolean;
-  tabType: "table" | "query";
+  tabType: "table" | "query" | "object" | "objectForm";
   query?: string;
+  objectType?: ObjectType | null;
+  objectItem?: unknown;
+  form?: ViewerFormTabPayload;
 }
 
 // ─── Auto-increment counters ───────────────────────────────────
@@ -110,6 +124,17 @@ interface DbViewerState {
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
   openQueryTab: () => void;
+  openObjectTab: (objectType: ObjectType, schema: string, name: string, item?: unknown) => void;
+  openFormTab: (opts: {
+    kind: ObjectKind;
+    schema: string;
+    name: string;
+    title: string;
+    description: string;
+    mode: "create" | "edit";
+    params: DdlParams;
+  }) => void;
+  updateFormTabParams: (tabId: string, params: DdlParams) => void;
   setDefaultPageSize: (size: number) => void;
   closeTab: (tabId: string) => void;
   reorderTab: (fromIndex: number, toIndex: number) => void;
@@ -245,6 +270,103 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     };
     set({ tabs: [...tabs, tab], activeTabId: tab.id });
   },
+
+  openObjectTab: (objectType, schema, name, item) => {
+    const { tabs } = get();
+
+    // Dedup on the object's identity (objectType + schema + name); an object
+    // tab is distinct from a table tab of the same name.
+    const existing = tabs.find(
+      (t) =>
+        t.tabType === "object" &&
+        t.objectType === objectType &&
+        t.schema === schema &&
+        t.table === name,
+    );
+    if (existing) {
+      set({ activeTabId: existing.id });
+      return;
+    }
+
+    const tab: ViewerTab = {
+      id: `tab-${++tabCounter}`,
+      schema,
+      table: name,
+      page: 1,
+      pageSize: get().defaultPageSize,
+      loading: false,
+      error: null,
+      data: null,
+      filterRules: [],
+      sortRules: [],
+      hiddenColumns: [],
+      smartSortApplied: false,
+      tabType: "object",
+      objectType,
+      objectItem: item,
+    };
+    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+  },
+
+  openFormTab: ({ kind, schema, name, title, description, mode, params }) => {
+    const { tabs } = get();
+
+    // Resolve the effective schema before building the tab: an explicit schema
+    // wins, otherwise fall back to the viewer's current schema, then "public".
+    // The form payload (params) is left untouched — the tab schema is used for
+    // dedup/identity only.
+    const effSchema = schema || get().currentSchema || "public";
+
+    // Dedup key semantics:
+    //   create -> `create:<kind>`              (one create form per kind;
+    //   schema/name excluded because the user may rename while typing)
+    //   edit   -> `edit:<kind>:<schema>:<name>`
+    // The key is derived from the stored form payload (params carries
+    // { schema, name } per the objectCrud contract), so no extra field is
+    // needed on ViewerTab.
+    const existing = tabs.find(
+      (t) =>
+        t.tabType === "objectForm" &&
+        t.form?.kind === kind &&
+        t.form?.mode === mode &&
+        (mode === "create" ||
+          (t.schema === schema && t.form?.params?.name === name)),
+    );
+    if (existing) {
+      // Re-clicking the same form focuses the tab and never clobbers its
+      // in-progress params.
+      set({ activeTabId: existing.id });
+      return;
+    }
+
+    const tab: ViewerTab = {
+      id: `tab-${++tabCounter}`,
+      schema: effSchema,
+      table: title,
+      page: 1,
+      pageSize: get().defaultPageSize,
+      loading: false,
+      error: null,
+      data: null,
+      filterRules: [],
+      sortRules: [],
+      hiddenColumns: [],
+      smartSortApplied: false,
+      tabType: "objectForm",
+      objectType: null,
+      form: { kind, params, title, description, mode },
+    };
+    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+  },
+
+  updateFormTabParams: (tabId, params) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId && t.tabType === "objectForm" && t.form
+          ? { ...t, form: { ...t.form, params } }
+          : t,
+      ),
+    })),
 
   setDefaultPageSize: (size) => set({ defaultPageSize: size }),
 

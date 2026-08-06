@@ -1,7 +1,8 @@
 use tauri::State;
 use crate::db::pool::{ConnectionPoolManager, DbHandle};
+use crate::db::object_crud::build_ddl;
 use crate::db::object_ddl::*;
-use crate::models::db_viewer::{ObjectSearchHit, DependencyInfo};
+use crate::models::db_viewer::{ObjectSearchHit, DependencyInfo, ExtensionInfo};
 
 fn sanitize(e: &str) -> String { crate::commands::db_viewer::sanitize_error(e) }
 
@@ -144,6 +145,47 @@ pub(crate) async fn get_object_dependencies_inner(pm: &tokio::sync::Mutex<Connec
 #[tauri::command]
 pub async fn get_object_dependencies(connection_id: String, schema: String, object_type: String, name: String, state: State<'_, crate::AppState>) -> Result<Vec<DependencyInfo>, String> {
     get_object_dependencies_inner(&state.pool_manager, &connection_id, &schema, &object_type, &name).await
+}
+
+/// Build SQL for an object CRUD operation. The pool is resolved only to enforce
+/// PostgreSQL-only / present-connection; the SQL itself is built by the pure
+/// `crate::db::object_crud::build_ddl` dispatcher (one statement per String).
+pub(crate) async fn build_object_ddl_inner(pm: &tokio::sync::Mutex<ConnectionPoolManager>, connection_id: &str, kind: &str, params: serde_json::Value) -> Result<Vec<String>, String> {
+    let mut pm = pm.lock().await;
+    match pm.get(connection_id) {
+        Some(DbHandle::Postgresql(_, _)) => build_ddl(kind, params),
+        Some(_) => Err("Object management is PostgreSQL-only".into()),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn build_object_ddl(connection_id: String, kind: String, params: serde_json::Value, state: State<'_, crate::AppState>) -> Result<Vec<String>, String> {
+    build_object_ddl_inner(&state.pool_manager, &connection_id, &kind, params).await
+}
+
+/// List extensions installable on this server (`pg_available_extensions`):
+/// name + default version + comment. The picker uses name/version only;
+/// `schema` is left empty (available extensions are schema-wide).
+pub(crate) async fn get_available_extensions_inner(pm: &tokio::sync::Mutex<ConnectionPoolManager>, connection_id: &str) -> Result<Vec<ExtensionInfo>, String> {
+    let mut pm = pm.lock().await;
+    let client = match pm.get(connection_id) {
+        Some(DbHandle::Postgresql(c, _)) => c,
+        Some(_) => return Err("Extensions are PostgreSQL-only".into()),
+        None => return Err("Connection not found".into()),
+    };
+    let rows = client.query(&crate::db::introspection::pg_available_extensions_query(), &[]).await.map_err(|e| sanitize(&e.to_string()))?;
+    Ok(rows.iter().map(|r| ExtensionInfo {
+        name: r.get(0),
+        schema: String::new(),
+        version: r.get(1),
+        comment: r.get(2),
+    }).collect())
+}
+
+#[tauri::command]
+pub async fn get_available_extensions(connection_id: String, state: State<'_, crate::AppState>) -> Result<Vec<ExtensionInfo>, String> {
+    get_available_extensions_inner(&state.pool_manager, &connection_id).await
 }
 
 #[cfg(test)]

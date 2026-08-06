@@ -2155,6 +2155,10 @@ pub async fn execute_change(
                     client.execute(sql, &[]).await.map_err(|e| e.to_string())?;
                     return Ok(());
                 }
+                Change::Ddl { sql, .. } => {
+                    client.execute(sql, &[]).await.map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
                 Change::BulkInsert {
                     schema,
                     table,
@@ -2247,6 +2251,9 @@ pub async fn execute_change(
                     conn.execute(sql, []).map_err(|e| e.to_string())?;
                     return Ok(());
                 }
+                Change::Ddl { .. } => {
+                    return Err("Object management is PostgreSQL-only".to_string());
+                }
                 Change::BulkInsert {
                     table,
                     columns,
@@ -2318,6 +2325,9 @@ pub async fn execute_change(
                         .await
                         .map_err(|e| sanitize_error(&format!("{e}")))?;
                     return Ok(());
+                }
+                Change::Ddl { .. } => {
+                    return Err("Object management is PostgreSQL-only".to_string());
                 }
                 Change::BulkInsert {
                     schema,
@@ -2818,6 +2828,33 @@ mod tests {
             "chg-42",
             "id() should return the 'id' field of the Insert variant"
         );
+    }
+
+    /// Verify that a `Change::Ddl` serializes with the snake_case `ddl` tag.
+    #[test]
+    fn change_ddl_serialization_uses_snake_case_tag() {
+        let change = Change::Ddl {
+            id: "chg-ddl-1".to_string(),
+            sql: "CREATE TYPE public.role AS ENUM ('admin')".to_string(),
+        };
+        let json = serde_json::to_string(&change).unwrap();
+        assert!(
+            json.contains(r#""type":"ddl""#),
+            "serialized Change::Ddl should use snake_case tag 'ddl'; got: {}",
+            json
+        );
+        assert!(json.contains(r#""id":"chg-ddl-1""#));
+        assert!(json.contains(r#""sql":"CREATE TYPE public.role AS ENUM ('admin')""#));
+    }
+
+    /// Verify that `Change::id()` returns the identifier of a `Change::Ddl`.
+    #[test]
+    fn change_ddl_id_is_accessible() {
+        let change = Change::Ddl {
+            id: "chg-ddl-42".to_string(),
+            sql: "DROP INDEX public.i".to_string(),
+        };
+        assert_eq!(change.id(), "chg-ddl-42");
     }
 
     /// Verify that `build_update_sql` produces valid SQL with all required

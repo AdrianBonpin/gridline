@@ -440,3 +440,161 @@ describe("tabType discriminator", () => {
     expect(tab.tabType).toBe("table");
   });
 });
+describe("openObjectTab", () => {
+  beforeEach(() => useDbViewerStore.getState().reset());
+
+  it("opens an object tab carrying the per-type identity + item", () => {
+    useDbViewerStore.getState().openObjectTab("functions", "public", "add", { name: "add", schema: "public" });
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.tabs[0]).toMatchObject({ tabType: "object", objectType: "functions", schema: "public", table: "add" });
+    expect(st.tabs[0].objectItem).toEqual({ name: "add", schema: "public" });
+    expect(st.activeTabId).toBe(st.tabs[0].id);
+  });
+
+  it("dedups: re-clicking the same object focuses the existing tab", () => {
+    useDbViewerStore.getState().openObjectTab("enums", "public", "role", { name: "role" });
+    const first = useDbViewerStore.getState().tabs[0];
+    useDbViewerStore.getState().openObjectTab("enums", "public", "role", { name: "role" });
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.activeTabId).toBe(first.id);
+  });
+
+  it("does not collide with a table tab of the same name", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openObjectTab("functions", "public", "users", { name: "users" });
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(2);
+    expect(st.tabs.find((t) => t.tabType === "object")).toBeDefined();
+  });
+});
+
+describe("openFormTab", () => {
+  beforeEach(() => useDbViewerStore.getState().reset());
+
+  const createOpts = (name: string, title = "Create sequence") => ({
+    kind: "sequence" as const,
+    schema: "public",
+    name,
+    title,
+    description: `Create ${name}`,
+    mode: "create" as const,
+    params: { schema: "public", name, action: { op: "create" } },
+  });
+
+  it("opens a create form tab carrying kind/params/title/description/mode", () => {
+    useDbViewerStore.getState().openFormTab(createOpts("my_seq"));
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    const tab = st.tabs[0];
+    expect(tab.tabType).toBe("objectForm");
+    // table holds the display title, used as the TabBar label
+    expect(tab.table).toBe("Create sequence");
+    expect(tab.schema).toBe("public");
+    expect(tab.objectType).toBeNull();
+    expect(tab.form).toBeDefined();
+    expect(tab.form!.kind).toBe("sequence");
+    expect(tab.form!.mode).toBe("create");
+    expect(tab.form!.title).toBe("Create sequence");
+    expect(tab.form!.description).toBe("Create my_seq");
+    expect(tab.form!.params).toEqual({
+      schema: "public",
+      name: "my_seq",
+      action: { op: "create" },
+    });
+    expect(st.activeTabId).toBe(tab.id);
+  });
+
+  it("dedups create tabs per kind regardless of schema/name and does not clobber params", () => {
+    useDbViewerStore.getState().openFormTab(createOpts("first_seq"));
+    const first = useDbViewerStore.getState().tabs[0];
+    useDbViewerStore.getState().openFormTab(createOpts("second_seq"));
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.activeTabId).toBe(first.id);
+    // the existing tab keeps its original params (name not clobbered)
+    expect(st.tabs[0].form!.params.name).toBe("first_seq");
+  });
+
+  it("dedups edit tabs by kind+schema+name but a create tab of the same kind coexists", () => {
+    const editOpts = {
+      kind: "enum" as const,
+      schema: "public",
+      name: "role",
+      title: "Edit role",
+      description: "Edit public.role",
+      mode: "edit" as const,
+      params: { schema: "public", name: "role", action: { op: "update" } },
+    };
+    useDbViewerStore.getState().openFormTab(editOpts);
+    const first = useDbViewerStore.getState().tabs[0];
+    useDbViewerStore.getState().openFormTab(editOpts);
+    let st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.activeTabId).toBe(first.id);
+
+    // A create tab of the same kind is a distinct tab.
+    useDbViewerStore.getState().openFormTab(createOpts("new_enum", "Create enum"));
+    st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(2);
+    expect(st.tabs.every((t) => t.tabType === "objectForm")).toBe(true);
+    expect(st.tabs.some((t) => t.form!.mode === "edit")).toBe(true);
+    expect(st.tabs.some((t) => t.form!.mode === "create")).toBe(true);
+  });
+
+  it("does not collide with a table tab (distinct types)", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openFormTab(createOpts("users_id_seq"));
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(2);
+    expect(st.tabs[0].tabType).toBe("table");
+    expect(st.tabs[1].tabType).toBe("objectForm");
+  });
+
+  it("resolves an empty schema to the current schema", () => {
+    useDbViewerStore.setState({ currentSchema: "utils" });
+    useDbViewerStore
+      .getState()
+      .openFormTab({ ...createOpts("my_seq"), schema: "" });
+    const tab = useDbViewerStore.getState().tabs[0];
+    expect(tab.schema).toBe("utils");
+    // params stay untouched — the form owns them
+    expect(tab.form!.params.schema).toBe("public");
+  });
+
+  it("falls back to public when no schema and no currentSchema", () => {
+    useDbViewerStore
+      .getState()
+      .openFormTab({ ...createOpts("my_seq"), schema: "" });
+    const tab = useDbViewerStore.getState().tabs[0];
+    expect(tab.schema).toBe("public");
+  });
+
+  it("keeps an explicit schema even when currentSchema is set", () => {
+    useDbViewerStore.setState({ currentSchema: "utils" });
+    useDbViewerStore
+      .getState()
+      .openFormTab({ ...createOpts("my_seq"), schema: "public" });
+    const tab = useDbViewerStore.getState().tabs[0];
+    expect(tab.schema).toBe("public");
+  });
+
+  it("updateFormTabParams updates params without touching title/description/mode/kind", () => {
+    useDbViewerStore.getState().openFormTab(createOpts("my_seq"));
+    const tabId = useDbViewerStore.getState().tabs[0].id;
+    const before = useDbViewerStore.getState().tabs[0].form;
+    expect(before).toBeDefined();
+
+    useDbViewerStore
+      .getState()
+      .updateFormTabParams(tabId, { schema: "other", name: "renamed", action: { op: "create" } });
+
+    const after = useDbViewerStore.getState().tabs[0].form;
+    expect(after?.params).toEqual({ schema: "other", name: "renamed", action: { op: "create" } });
+    expect(after?.title).toBe(before?.title);
+    expect(after?.description).toBe(before?.description);
+    expect(after?.mode).toBe(before?.mode);
+    expect(after?.kind).toBe(before?.kind);
+  });
+});

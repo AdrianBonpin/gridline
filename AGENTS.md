@@ -156,7 +156,7 @@ Cut a release from the **`prod`** branch (never feature branches) by tagging it 
 **Before tagging**, keep everything in sync:
 - Version number across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`
 - `src/lib/version.test.ts` and `src/lib/docs-coverage.test.ts` if they assert the version
-- **README download links are static (versioned)** — both download tables (top **Download** section + **Which file should I download?**) link directly to the release-tag assets (`releases/download/v0.7.5/<file>`). tauri-action uses default versioned asset names (`Gridline_<ver>_aarch64.dmg`, `Gridline-<ver>-1.x86_64.rpm`, etc.) — update BOTH tables to the new names on every release (see the MAINTENANCE comment in README.md).
+- **README download links are static (versioned)** — both download tables (top **Download** section + **Which file should I download?**) link directly to the release-tag assets (`releases/download/v0.7.6/<file>`). tauri-action uses default versioned asset names (`Gridline_<ver>_aarch64.dmg`, `Gridline-<ver>-1.x86_64.rpm`, etc.) — update BOTH tables to the new names on every release (see the MAINTENANCE comment in README.md).
 - **Bundled pg tools:** `tauri.conf.json` `bundle.resources` lists `resources/pg_tools/*`; the `release.yml` matrix builds/downloads + checksum-verifies the static binaries before the Tauri build step.
 
 ### Adding a Tauri Command
@@ -210,6 +210,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | DB Viewer: MySQL browse + query + edit | ✅ | Full viewer: connect (SSL + SSH tunnel), databases/tables/columns/FKs, query + pagination, inline cell editing + changes queue, DDL copy (`SHOW CREATE TABLE`), CSV/JSON import — added in v0.7.0. PK-only editing (no ctid equivalent); VARBINARY `information_schema` columns decoded correctly |
 | DB Viewer: Redis browse | ❌ | Connection + test only; browsing gated off with a clean "not supported" state (v0.7.0) |
 | Password storage in OS keychain | ✅ | macOS Keychain, Linux Secret Service, Windows Credential Manager |
+| Enable keychain toggle | ✅ | Default ON (opt-out); OFF = don't persist the DB password (session-only, re-prompt on connect) + purge existing keychain entry; SSH secrets stay keychain-only (v0.7.6) |
 | SSH tunnel config UI | ✅ | Host, port, user, auth method, key path, passphrase fields |
 | SSH tunnel runtime | ✅ | Real ssh2 tunnel (password + key auth), binds 127.0.0.1 only, secrets in OS keychain (`ssh_password:<id>` / `ssh_passphrase:<id>`), closed on pool eviction / app exit; TLS downgraded to `require` through the tunnel |
 | SSL/TLS config UI | ✅ | Mode (disable/require/verify-ca/verify-full), cert paths |
@@ -290,6 +291,8 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Global object search | ✅ | Cmd+K palette in the DB viewer, current-schema scope, all object types; results open a table tab or jump to the Objects view (v0.7.5) |
 | Copy as DDL for any object | ✅ | `CREATE` DDL for every browsable type (tables via pg_dump; pg_get_*def passthrough; sequences/enums/extensions/views synthesized) (v0.7.5) |
 | Object dependencies | ✅ | `pg_depend` "what depends on this?" view, shown before destructive drops (table drop, schema drop) (v0.7.5) |
+| Object management CRUD | ✅ | Right-click / ⋮ create/edit/drop for every PG object type; create/edit open as **workspace tabs** with a Visual ⇄ SQL toggle, staged through the changes queue with generated-SQL preview (v0.7.6). Enum value removal unsupported (PG has no DROP VALUE) |
+| Objects view tabbed workspace | ✅ | Objects view uses the shared tabbed workspace: object details open as tabs (per-type icons), inline manual query tab, and the changes queue reachable from the tab bar (v0.7.6) |
 | Schema visualizer (ER diagram) | ✅ | Full React Flow ER diagram with dagre auto-layout, crow's foot notation, schema selector, legend with cardinality colors, collapsible columns (PK/FK/unique-only), cross-schema FK support. PostgreSQL (single round-trip LATERAL query) + SQLite (PRAGMA). Uses @xyflow/react + dagre. |
 
 ### Query Editor

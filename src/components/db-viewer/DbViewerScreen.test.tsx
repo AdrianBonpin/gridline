@@ -16,6 +16,9 @@ vi.mock("../../hooks/useDbConnection", () => ({
     useDbConnection: (_connectionId: string) => ({
         connectionError: null,
         connect: vi.fn(),
+        passwordPromptOpen: false,
+        submitPassword: vi.fn(),
+        cancelPassword: vi.fn(),
     }),
 }));
 
@@ -896,7 +899,66 @@ describe("DbViewerScreen", () => {
         ).toBeInTheDocument();
     });
 
-    it("guards the Objects view for MySQL (capability false)", () => {
+    it("objects view renders the sidebar + the tabbed workspace (New query + Changes)", () => {
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /objects/i }));
+        expect(
+            screen.getByRole("button", { name: /new query/i }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Changes queue" }),
+        ).toBeInTheDocument();
+    });
+
+    it("objects view renders ObjectDetail for an open object tab", () => {
+        useDbViewerStore.getState().openObjectTab("enums", "public", "role", { name: "role", schema: "public", labels: ["admin"] });
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /objects/i }));
+        expect(screen.getByText("admin")).toBeInTheDocument();
+    });
+
+    it("renders an objectForm tab with the Visual/SQL toggle in the objects view", async () => {
+    vi.spyOn(commands, "executeQuery").mockResolvedValue({ columns: [], rows: [], total_rows: 0, page: 1, page_size: 50 } as any);
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    vi.spyOn(commands, "getDatabases").mockResolvedValue(["mydb"]);
+    vi.spyOn(commands, "getTables").mockResolvedValue([] as any);
+    useDbViewerStore.getState().openFormTab({
+      kind: "sequence",
+      schema: "public",
+      name: "",
+      title: "Create sequence",
+      description: "Create sequence",
+      mode: "create",
+      params: { schema: "public", name: "", action: { op: "create" } },
+    });
+    render(
+      <DbViewerScreen
+        connectionId="c1"
+        onHome={() => {}}
+        onSettings={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /objects/i }));
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Sequence name")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "Visual" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SQL" })).toBeInTheDocument();
+  });
+
+  it("guards the Objects view for MySQL (capability false)", () => {
         useConnectionStore.setState({
             connections: [
                 {

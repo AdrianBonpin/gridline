@@ -7,6 +7,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { exportData } from "../../lib/exportData";
 import * as cmd from "../../lib/commands";
 import { DependencyDialog } from "./DependencyDialog";
+import { initialCrudParams } from "../../lib/objectCrud";
 import type { ColumnInfo, DependencyInfo } from "../../lib/types";
 
 interface TableOverflowMenuProps {
@@ -96,6 +97,32 @@ export function TableOverflowMenu({
         setImportOpen(true);
         setOpen(false);
         break;
+      case "create_index":
+        if (!connectionId) break;
+        useDbViewerStore.getState().openFormTab({
+          kind: "index",
+          schema,
+          name: "",
+          title: "Create Index",
+          description: `Create index on ${schema}.${table}`,
+          mode: "create",
+          params: initialCrudParams("index", { schema, table, name: "" }, "create"),
+        });
+        setOpen(false);
+        break;
+      case "create_constraint":
+        if (!connectionId) break;
+        useDbViewerStore.getState().openFormTab({
+          kind: "constraint",
+          schema,
+          name: "",
+          title: "Create Constraint",
+          description: `Create constraint on ${schema}.${table}`,
+          mode: "create",
+          params: initialCrudParams("constraint", { schema, table, name: "" }, "create"),
+        });
+        setOpen(false);
+        break;
       case "empty":
         setConfirmAction("empty");
         setOpen(false);
@@ -125,6 +152,8 @@ export function TableOverflowMenu({
     { id: "export-sql", label: "Export data (SQL)" },
     { id: "export-md", label: "Export data (Markdown)" },
     { id: "import", label: "Import data (CSV/JSON)" },
+    { id: "create_index", label: "Create Index…" },
+    { id: "create_constraint", label: "Create Constraint…" },
     { id: "empty", label: "Empty Table", danger: true },
     { id: "delete", label: "Delete Table", danger: true },
   ];

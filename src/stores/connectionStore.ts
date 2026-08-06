@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import type { Connection, ConnectionInput, Folder, FolderInput, Tag, TagInput } from "../lib/types";
 import * as cmd from "../lib/commands";
+import { persistDbPassword } from "../lib/keychain";
+
+// In-memory passwords for connections with use_keychain=false (never persisted).
+const sessionPasswords = new Map<string, string>();
 
 interface ConnectionState {
   connections: Connection[]; folders: Folder[]; tags: Tag[];
@@ -27,6 +31,8 @@ interface ConnectionState {
   moveSelectionToFolder: (selectedIds: string[], targetFolderId: string | null) => Promise<void>;
   cachePassword: (connectionId: string, password: string) => Promise<void>;
   getConnectionPassword: (connectionId: string) => Promise<string | null>;
+  setSessionPassword: (connectionId: string, password: string) => void;
+  clearSessionPassword: (connectionId: string) => void;
 }
 
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
@@ -83,10 +89,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   },
   createConnection: async (input) => {
     const conn = await cmd.createConnection(input);
-    // Persist password to OS keychain (not SQLite)
-    if (input.password) {
-      await cmd.saveConnectionPassword(conn.id, input.password);
-    }
+    // Persist (or purge) the DB password according to the keychain toggle.
+    await persistDbPassword(conn.id, input.use_keychain, input.password);
     // Persist SSH secrets to OS keychain (not SQLite): password for password
     // auth, passphrase for private-key auth.
     if (input.ssh_host && (input.ssh_auth_method ?? "password") === "password" && input.ssh_password) {
@@ -102,7 +106,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     const source = get().connections.find((c) => c.id === id);
     if (!source) throw new Error("Connection not found");
     // Passwords live in the OS keychain and are NEVER copied; the duplicate
-    // starts unkeyed and with no favorite flag.
+    // starts unkeyed and with no favorite flag. The keychain toggle is inherited
+    // from the source (absent defaults to true / opt-out).
     const input: ConnectionInput = {
       name: `${source.name} (copy)`,
       db_type: source.db_type,
@@ -123,7 +128,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       ssl_cert_path: source.ssl_cert_path ?? null,
       ssl_key_path: source.ssl_key_path ?? null,
       password: null,
-      use_keychain: false,
+      use_keychain: source.use_keychain ?? true,
     };
     return get().createConnection(input);
   },
@@ -131,6 +136,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     await cmd.deleteConnection(id);
     // Remove password from keychain
     try { await cmd.deleteConnectionPassword(id); } catch { /* ignore */ }
+    // Drop any session-only password for the connection
+    sessionPasswords.delete(id);
     set((s) => ({ connections: s.connections.filter((c) => c.id !== id) }));
   },
   createFolder: async (input) => {
@@ -162,10 +169,25 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     }));
   },
   cachePassword: async (connectionId, password) => {
+    const conn = get().connections.find((c) => c.id === connectionId);
+    if (conn && conn.use_keychain === false) {
+      sessionPasswords.set(connectionId, password);
+      return;
+    }
     await cmd.saveConnectionPassword(connectionId, password);
   },
   getConnectionPassword: async (connectionId) => {
+    const conn = get().connections.find((c) => c.id === connectionId);
+    if (conn && conn.use_keychain === false) {
+      return sessionPasswords.get(connectionId) ?? null;
+    }
     return cmd.getConnectionPassword(connectionId);
+  },
+  setSessionPassword: (connectionId, password) => {
+    sessionPasswords.set(connectionId, password);
+  },
+  clearSessionPassword: (connectionId) => {
+    sessionPasswords.delete(connectionId);
   },
   addTagToItems: async (tagId, folderIds, connectionIds) => {
     await Promise.all([

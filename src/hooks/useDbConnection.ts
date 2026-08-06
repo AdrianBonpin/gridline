@@ -15,6 +15,7 @@ export function useDbConnection(connectionId: string) {
   const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
   const notify = useNotificationStore((s) => s.notify);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [passwordPromptOpen, setPasswordPromptOpen] = useState(false);
   const inputRef = useRef<ConnectionInput | null>(null);
   // The database the pool is currently connected to. Unlike the selected
   // `currentDatabase`, this lets us reconnect whenever the selection drifts
@@ -31,6 +32,12 @@ export function useDbConnection(connectionId: string) {
     }
     try {
       const password = await useConnectionStore.getState().getConnectionPassword(conn.id).catch(() => null);
+      // Keychain-off + no session password: prompt the user instead of
+      // connecting with an empty password (early return, no Tauri call).
+      if (conn.use_keychain === false && !password) {
+        setPasswordPromptOpen(true);
+        return;
+      }
       const sshPassword = conn.ssh_host
         ? await cmd.getConnectionSshPassword(conn.id).catch(() => null)
         : null;
@@ -160,5 +167,16 @@ export function useDbConnection(connectionId: string) {
     };
   }, [currentDatabase, connectionId, populate, setCurrentSchema, setSchemaTreeLoading, notify]);
 
-  return { connectionError, connect };
+  const submitPassword = useCallback(
+    (pw: string) => {
+      useConnectionStore.getState().setSessionPassword(connectionId, pw);
+      setPasswordPromptOpen(false);
+      void connect();
+    },
+    [connectionId, connect],
+  );
+
+  const cancelPassword = useCallback(() => setPasswordPromptOpen(false), []);
+
+  return { connectionError, connect, passwordPromptOpen, submitPassword, cancelPassword };
 }

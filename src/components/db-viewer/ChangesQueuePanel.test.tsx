@@ -93,6 +93,20 @@ describe("ChangesQueuePanel", () => {
     expect(screen.getByText(/drop table: public.t/i)).toBeInTheDocument();
   });
 
+  it("renders a ddl change with a DDL badge + description (visual) and SQL preview (sql view)", async () => {
+    const user = userEvent.setup();
+    useDbViewerStore.getState().addChange({
+      type: "ddl",
+      sql: "DROP INDEX public.i",
+      description: "Drop index i",
+    } as any);
+    render(<ChangesQueuePanel />);
+    expect(screen.getByText("DDL")).toBeInTheDocument();
+    expect(screen.getByText("Drop index i")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /sql/i }));
+    expect(screen.getByText(/DROP INDEX public\.i/)).toBeInTheDocument();
+  });
+
   it("commit calls executeChange with buildChangePayload output for insert", async () => {
     const exec = vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
     useDbViewerStore.getState().addChange({

@@ -193,6 +193,10 @@ pub enum Change {
         schema: String,
         table: String,
     },
+    Ddl {
+        id: String,
+        sql: String,
+    },
 }
 
 impl Change {
@@ -204,7 +208,8 @@ impl Change {
             | Change::AlterTable { id, .. }
             | Change::BulkInsert { id, .. }
             | Change::DropTable { id, .. }
-            | Change::EmptyTable { id, .. } => id,
+            | Change::EmptyTable { id, .. }
+            | Change::Ddl { id, .. } => id,
         }
     }
 }

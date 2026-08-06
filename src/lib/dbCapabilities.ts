@@ -17,15 +17,17 @@ export interface DbCapabilities {
   import: boolean;
   /** Copy table schema (DDL). */
   ddl: boolean;
+  /** Create / edit / drop PostgreSQL objects via the changes queue. */
+  objectCrud: boolean;
 }
 
 const ALL_FALSE: DbCapabilities = {
   explorer: false, queries: false, objects: false, visualizer: false,
-  tools: false, editing: false, import: false, ddl: false,
+  tools: false, editing: false, import: false, ddl: false, objectCrud: false,
 };
 
 export const DB_CAPABILITIES: Record<DbType, DbCapabilities> = {
-  postgresql: { ...ALL_FALSE, explorer: true, queries: true, objects: true, visualizer: true, tools: true, editing: true, import: true, ddl: true },
+  postgresql: { ...ALL_FALSE, explorer: true, queries: true, objects: true, visualizer: true, tools: true, editing: true, import: true, ddl: true, objectCrud: true },
   mysql:      { ...ALL_FALSE, explorer: true, queries: true, editing: true, import: true, ddl: true },
   sqlite:     { ...ALL_FALSE, explorer: true, queries: true, visualizer: true, editing: true, import: true, ddl: true },
   redis:      { ...ALL_FALSE },

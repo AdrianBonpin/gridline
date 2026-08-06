@@ -257,7 +257,7 @@ impl Store {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, environment, favorite, created_at, updated_at FROM connections ORDER BY name",
+                "SELECT id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, environment, favorite, created_at, updated_at, use_keychain FROM connections ORDER BY name",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -286,6 +286,7 @@ impl Store {
                     tag_ids: vec![],
                     created_at: row.get(20)?,
                     updated_at: row.get(21)?,
+                    use_keychain: row.get(22)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -308,8 +309,8 @@ impl Store {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Self::now();
         conn.execute(
-            "INSERT INTO connections (id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, environment, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
-            params![id, input.name, input.db_type, input.host, input.port, input.username, input.database, input.folder_id, input.ssh_host, input.ssh_port, input.ssh_user, input.ssh_auth_method, input.ssh_private_key_path, input.ssl_mode, input.ssl_ca_path, input.ssl_cert_path, input.ssl_key_path, input.environment, now, now],
+            "INSERT INTO connections (id, name, db_type, host, port, username, database, folder_id, keychain_ref, ssh_host, ssh_port, ssh_user, ssh_auth_method, ssh_private_key_path, ssl_mode, ssl_ca_path, ssl_cert_path, ssl_key_path, environment, created_at, updated_at, use_keychain) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            params![id, input.name, input.db_type, input.host, input.port, input.username, input.database, input.folder_id, input.ssh_host, input.ssh_port, input.ssh_user, input.ssh_auth_method, input.ssh_private_key_path, input.ssl_mode, input.ssl_ca_path, input.ssl_cert_path, input.ssl_key_path, input.environment, now, now, input.use_keychain],
         )
         .map_err(|e| e.to_string())?;
         for tag_id in &input.tag_ids {
@@ -341,6 +342,7 @@ impl Store {
             ssl_cert_path: input.ssl_cert_path,
             ssl_key_path: input.ssl_key_path,
             tag_ids: input.tag_ids,
+            use_keychain: input.use_keychain,
             created_at: now.clone(),
             updated_at: now,
         })
@@ -419,13 +421,13 @@ impl Store {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = Self::now();
         conn.execute(
-            "UPDATE connections SET name=?1, db_type=?2, host=?3, port=?4, username=?5, database=?6, folder_id=?7, ssh_host=?8, ssh_port=?9, ssh_user=?10, ssh_auth_method=?11, ssh_private_key_path=?12, ssl_mode=?13, ssl_ca_path=?14, ssl_cert_path=?15, ssl_key_path=?16, environment=?17, updated_at=?18 WHERE id=?19",
+            "UPDATE connections SET name=?1, db_type=?2, host=?3, port=?4, username=?5, database=?6, folder_id=?7, ssh_host=?8, ssh_port=?9, ssh_user=?10, ssh_auth_method=?11, ssh_private_key_path=?12, ssl_mode=?13, ssl_ca_path=?14, ssl_cert_path=?15, ssl_key_path=?16, environment=?17, use_keychain=?18, updated_at=?19 WHERE id=?20",
             params![
                 input.name, input.db_type, input.host, input.port, input.username,
                 input.database, input.folder_id, input.ssh_host, input.ssh_port,
                 input.ssh_user, input.ssh_auth_method, input.ssh_private_key_path,
                 input.ssl_mode, input.ssl_ca_path, input.ssl_cert_path, input.ssl_key_path,
-                input.environment, now, id
+                input.environment, input.use_keychain, now, id
             ],
         ).map_err(|e| e.to_string())?;
         // Update tags
@@ -463,6 +465,7 @@ impl Store {
             ssl_cert_path: input.ssl_cert_path,
             ssl_key_path: input.ssl_key_path,
             tag_ids: input.tag_ids.clone(),
+            use_keychain: input.use_keychain,
             created_at: String::new(), // not updated
             updated_at: now,
         })
@@ -954,6 +957,7 @@ mod tests {
                 ssl_key_path: None,
                 environment: None,
                 tag_ids: vec![],
+                use_keychain: true,
             })
             .unwrap();
         let got = store.get_connections().unwrap();
@@ -1002,6 +1006,7 @@ mod tests {
                 ssl_key_path: None,
                 environment: None,
                 tag_ids: vec![t1.id.clone(), t2.id.clone()],
+                use_keychain: true,
             })
             .unwrap();
         let got = store.get_connections().unwrap();
@@ -1043,6 +1048,7 @@ mod tests {
                 ssl_key_path: None,
                 environment: None,
                 tag_ids: vec![],
+                use_keychain: true,
             })
             .unwrap();
         store.delete_folder(&folder.id).unwrap();
@@ -1082,6 +1088,7 @@ mod tests {
                 ssl_key_path: None,
                 environment: None,
                 tag_ids: vec![tag.id.clone()],
+                use_keychain: true,
             })
             .unwrap();
         store.delete_tag(&tag.id).unwrap();
@@ -1142,6 +1149,7 @@ mod tests {
                 ssl_key_path: Some("/etc/ssl/private/client-key.pem".into()),
                 environment: None,
                 tag_ids: vec![],
+                use_keychain: true,
             })
             .unwrap();
         let got = store.get_connections().unwrap();
@@ -1194,6 +1202,7 @@ mod tests {
                 ssl_key_path: None,
                 environment: None,
                 tag_ids: vec![],
+                use_keychain: true,
             })
             .unwrap();
 
@@ -1278,6 +1287,7 @@ mod tests {
                 ssl_key_path: None,
                 environment: None,
                 tag_ids: vec![],
+                use_keychain: true,
             })
             .unwrap();
         // Insert 510 rows — should trigger pruning beyond 500
@@ -1334,6 +1344,7 @@ mod tests {
                 ssl_key_path: None,
                 environment: None,
                 tag_ids: vec![],
+                use_keychain: true,
             })
             .unwrap();
         store
@@ -1378,6 +1389,7 @@ mod tests {
                 ssl_key_path: None,
                 environment: None,
                 tag_ids: vec![],
+                use_keychain: true,
             })
             .unwrap();
         store
@@ -1480,6 +1492,7 @@ mod tests {
                 ssl_key_path: None,
                 environment: None,
                 tag_ids: vec![],
+                use_keychain: true,
             })
             .unwrap()
     }

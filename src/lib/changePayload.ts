@@ -57,6 +57,8 @@ export function buildChangeSql(item: QueueItem): string {
     }
     case "empty_table":
       return `DELETE FROM ${t}`;
+    case "ddl":
+      return item.sql ?? "";
     case "drop_table":
       return `DROP TABLE ${t}`;
     default:
@@ -84,6 +86,8 @@ export function buildChangePayload(item: QueueItem): ChangePayload {
       return { id: item.id, type: "drop_table", schema, table };
     case "empty_table":
       return { id: item.id, type: "empty_table", schema, table };
+    case "ddl":
+      return { id: item.id, type: "ddl", sql: item.sql };
     default:
       return { id: item.id, type: item.type, sql: item.sql };
   }

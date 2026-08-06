@@ -122,6 +122,8 @@ pub fn run() {
             objects::search_objects,
             objects::get_object_ddl,
             objects::get_object_dependencies,
+            objects::build_object_ddl,
+            objects::get_available_extensions,
             keychain::save_connection_password,
             keychain::get_connection_password,
             keychain::delete_connection_password,

@@ -1,6 +1,6 @@
 import type { ColumnInfo, ChangeItemType } from "../../lib/types";
 
-export type TabKind = "table" | "query";
+export type TabKind = "table" | "query" | "object" | "objectForm";
 export type EditableDbType = "postgresql" | "sqlite";
 
 /** A cell is editable iff: table tab, PG/SQLite, column flagged editable, not PK, not generated, and not read-only. */

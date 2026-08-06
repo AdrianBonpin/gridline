@@ -83,6 +83,22 @@ describe("TabBar", () => {
     expect(screen.queryByTestId("tab-icon-table")).not.toBeInTheDocument();
   });
 
+  it("renders the per-type icon on an object tab", () => {
+    useDbViewerStore.getState().openObjectTab("functions", "public", "add", { name: "add", schema: "public" });
+    render(<TabBar />);
+    const icon = screen.getByLabelText(/object icon: functions/i);
+    const svg = icon.querySelector("svg");
+    expect(svg).toBeTruthy();
+    // Regression: the icon must use the SAME handling as the query/table icons —
+    // the svg itself is display:inline with the shared optical-centering classes.
+    // That defeats preflight svg{display:block} (no stacking) and lets
+    // vertical-align:middle center it with the tab name.
+    const cls = svg!.getAttribute("class") ?? "";
+    expect(cls).toContain("inline");
+    expect(cls).toContain("-mt-0.5");
+    expect(screen.getByText("add")).toBeInTheDocument();
+  });
+
   it("renders a view icon on view tabs", () => {
     useDbViewerStore.getState().openTab("main", "order_summary");
     useDbViewerStore.setState({
@@ -93,6 +109,35 @@ describe("TabBar", () => {
     render(<TabBar />);
     expect(screen.getByTestId("tab-icon-view")).toBeInTheDocument();
     expect(screen.queryByTestId("tab-icon-table")).not.toBeInTheDocument();
+  });
+
+  it("renders a create icon and title on an objectForm create tab", () => {
+    useDbViewerStore.getState().openFormTab({
+      kind: "sequence",
+      schema: "public",
+      name: "",
+      title: "Create sequence",
+      description: "Create sequence",
+      mode: "create",
+      params: { schema: "public", name: "", action: { op: "create" } },
+    });
+    render(<TabBar />);
+    expect(screen.getByTestId("tab-icon-form-create")).toBeInTheDocument();
+    expect(screen.getByText("Create sequence")).toBeInTheDocument();
+  });
+
+  it("renders an edit icon on an objectForm edit tab", () => {
+    useDbViewerStore.getState().openFormTab({
+      kind: "sequence",
+      schema: "public",
+      name: "s",
+      title: "Edit sequence",
+      description: "Edit sequence",
+      mode: "edit",
+      params: { schema: "public", name: "s", action: { op: "alter" } },
+    });
+    render(<TabBar />);
+    expect(screen.getByTestId("tab-icon-form-edit")).toBeInTheDocument();
   });
 
   it("renders a layers icon on materialized view tabs", () => {

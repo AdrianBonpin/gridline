@@ -15,11 +15,14 @@ const DestructiveQueryDialog = lazy(() =>
 );
 import { TableTree } from "./TableTree";
 import { ObjectExplorerPage } from "./ObjectExplorerPage";
+import { ObjectDetail, type AnyObject } from "./objects/ObjectDetail";
+import { ObjectFormTab } from "./objects/ObjectFormTab";
 import { TabBar } from "./TabBar";
 import { VirtualDataGrid } from "../grid/VirtualDataGrid";
 import { RowDetailDrawer } from "../grid/RowDetailDrawer";
 import { TableControls } from "./TableControls";
 import { EditConnectionModal } from "./EditConnectionModal";
+import { PasswordPromptDialog } from "./PasswordPromptDialog";
 import { useDbConnection } from "../../hooks/useDbConnection";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useConnectionStore } from "../../stores/connectionStore";
@@ -162,7 +165,8 @@ export function DbViewerScreen({
     onHome,
     onSettings,
 }: DbViewerScreenProps) {
-    const { connectionError, connect } = useDbConnection(connectionId);
+    const { connectionError, connect, passwordPromptOpen, submitPassword, cancelPassword } =
+        useDbConnection(connectionId);
     const [dismissedError, setDismissedError] = useState<string | null>(null);
     const [currentView, setCurrentView] = useState<string>("db-viewer");
     const [tablePanelWidth, setTablePanelWidth] = useState(280);
@@ -984,15 +988,30 @@ const onQueriesPanelResizeStart = useCallback(
                                     <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
                                         {currentView === "queries" ? (
                                             <Terminal size={32} />
+                                        ) : currentView === "objects" ? (
+                                            <Database size={32} />
                                         ) : (
                                             <Table2 size={32} />
                                         )}
                                         <span>
                                             {currentView === "queries"
                                                 ? "Open a new query tab or run a query from the history"
-                                                : "Select a table from the tree to browse its data, or open a new query tab"}
+                                                : currentView === "objects"
+                                                  ? "Open an object from the list, or open a new query tab"
+                                                  : "Select a table from the tree to browse its data, or open a new query tab"}
                                         </span>
                                     </div>
+                                ) : activeTab?.tabType === "objectForm" ? (
+                                    <ObjectFormTab
+                                        connectionId={connectionId}
+                                        tab={activeTab}
+                                    />
+                                ) : activeTab?.tabType === "object" ? (
+                                    <ObjectDetail
+                                        connectionId={connectionId}
+                                        type={activeTab.objectType!}
+                                        item={activeTab.objectItem as AnyObject}
+                                    />
                                 ) : activeTab?.tabType === "query" ? (
                                     <Suspense
                                         fallback={
@@ -1439,7 +1458,20 @@ const onQueriesPanelResizeStart = useCallback(
                             {renderQueryWorkspace()}
                         </div>
                     ) : currentView === "objects" ? (
-                        <ObjectExplorerPage connectionId={connectionId} />
+                        <div className="flex flex-1 min-h-0 overflow-hidden">
+                            <div
+                                className="border-r border-border flex flex-col shrink-0"
+                                style={{ width: tablePanelWidth }}
+                            >
+                                <ObjectExplorerPage connectionId={connectionId} sidebarMode />
+                            </div>
+                            <div
+                                className="w-1 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0 border-r border-border"
+                                onMouseDown={onPanelResizeStart}
+                                onDoubleClick={() => setTablePanelWidth(280)}
+                            />
+                            {renderQueryWorkspace()}
+                        </div>
                     ) : currentView === "tools" ? (
                         <ToolsPage connectionId={connectionId} />
                     ) : currentView === "queries" ? (
@@ -1473,6 +1505,12 @@ const onQueriesPanelResizeStart = useCallback(
                         onSaved={() => {}}
                     />
                 )}
+                <PasswordPromptDialog
+                    open={passwordPromptOpen}
+                    connectionName={currentConnection?.name ?? ""}
+                    onConnect={submitPassword}
+                    onCancel={cancelPassword}
+                />
                 {capabilities.objects && (
                     <ObjectSearchPalette connectionId={connectionId} />
                 )}

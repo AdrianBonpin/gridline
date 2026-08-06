@@ -19,6 +19,31 @@ describe("TableOverflowMenu", () => {
     vi.resetAllMocks();
   });
 
+  it("offers Create Index… and Create Constraint…", () => {
+    render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => "tab-1"} connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText(/table options/i));
+    expect(screen.getByText("Create Index…")).toBeInTheDocument();
+    expect(screen.getByText("Create Constraint…")).toBeInTheDocument();
+  });
+
+  it("opens objectForm create tabs for Create Index… and Create Constraint…", async () => {
+    render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => "tab-1"} connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText(/table options/i));
+    fireEvent.click(screen.getByText("Create Index…"));
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.tabs[0].tabType).toBe("objectForm");
+    expect(st.tabs[0].form?.kind).toBe("index");
+    expect(st.tabs[0].form?.mode).toBe("create");
+
+    useDbViewerStore.getState().reset();
+    render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => "tab-1"} connectionId="c1" />);
+    fireEvent.click(screen.getAllByLabelText(/table options/i)[1]);
+    fireEvent.click(screen.getByText("Create Constraint…"));
+    expect(useDbViewerStore.getState().tabs[0].tabType).toBe("objectForm");
+    expect(useDbViewerStore.getState().tabs[0].form?.kind).toBe("constraint");
+  });
+
   it("renders menu trigger button", () => {
     render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => "tab-1"} />);
     expect(screen.getByLabelText(/table options/i)).toBeInTheDocument();

@@ -1,6 +1,6 @@
 [package]
 name = "gridline"
-version = "0.7.5"
+version = "0.7.6"
 description = "An open-source, high-performance database GUI client for PostgreSQL and beyond"
 authors = ["you"]
 edition = "2021"
