@@ -291,7 +291,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Global object search | ✅ | Cmd+K palette in the DB viewer, current-schema scope, all object types; results open a table tab or jump to the Objects view (v0.7.5) |
 | Copy as DDL for any object | ✅ | `CREATE` DDL for every browsable type (tables via pg_dump; pg_get_*def passthrough; sequences/enums/extensions/views synthesized) (v0.7.5) |
 | Object dependencies | ✅ | `pg_depend` "what depends on this?" view, shown before destructive drops (table drop, schema drop) (v0.7.5) |
-| Object management CRUD | ✅ | Right-click / ⋮ create/edit/drop for every PG object type, staged through the changes queue with generated-SQL preview (v0.7.6). Enum value removal unsupported (PG has no DROP VALUE) |
+| Object management CRUD | ✅ | Right-click / ⋮ create/edit/drop for every PG object type; create/edit open as **workspace tabs** with a Visual ⇄ SQL toggle, staged through the changes queue with generated-SQL preview (v0.7.6). Enum value removal unsupported (PG has no DROP VALUE) |
 | Objects view tabbed workspace | ✅ | Objects view uses the shared tabbed workspace: object details open as tabs (per-type icons), inline manual query tab, and the changes queue reachable from the tab bar (v0.7.6) |
 | Schema visualizer (ER diagram) | ✅ | Full React Flow ER diagram with dagre auto-layout, crow's foot notation, schema selector, legend with cardinality colors, collapsible columns (PK/FK/unique-only), cross-schema FK support. PostgreSQL (single round-trip LATERAL query) + SQLite (PRAGMA). Uses @xyflow/react + dagre. |
 
