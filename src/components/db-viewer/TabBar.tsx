@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { cloneElement, useEffect, useRef, type ReactElement, type ReactNode } from "react";
 import {
   DndContext,
   closestCenter,
@@ -185,9 +185,23 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
                   ) : tab.tabType === "object" ? (
                     <span
                         aria-label={`object icon: ${tab.objectType}`}
-                        className="mr-1.5 inline-flex shrink-0 items-center -mt-0.5"
+                        className="contents"
                     >
-                      {OBJECT_ICONS[tab.objectType!]}
+                      {cloneElement(
+                          OBJECT_ICONS[tab.objectType!] as ReactElement<{
+                              className?: string;
+                          }>,
+                          {
+                              // Same handling as the query/table icons: the svg
+                              // itself is display:inline (preflight vertical-align:
+                              // middle centers it with the text) with the same
+                              // optical-centering nudge. `display: contents` on the
+                              // labelled span renders no box, so the geometry is
+                              // identical to the bare Terminal/Table2 icons.
+                              className:
+                                  "mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current",
+                          },
+                      )}
                     </span>
                   ) : objectType === "VIEW" ? (
                     <Eye

@@ -87,14 +87,15 @@ describe("TabBar", () => {
     useDbViewerStore.getState().openObjectTab("functions", "public", "add", { name: "add", schema: "public" });
     render(<TabBar />);
     const icon = screen.getByLabelText(/object icon: functions/i);
-    expect(icon).toBeInTheDocument();
-    // Regression: the icon must stay inline with the tab name. Tailwind preflight
-    // ships svg{display:block}, so the wrapper needs an explicit inline-level
-    // container (inline-flex) or the icon stacks above the name. The -mt-0.5
-    // nudge optically centers the 14px icon with the text (same as the other
-    // tab icons).
-    expect(icon.className).toContain("inline-flex");
-    expect(icon.className).toContain("-mt-0.5");
+    const svg = icon.querySelector("svg");
+    expect(svg).toBeTruthy();
+    // Regression: the icon must use the SAME handling as the query/table icons —
+    // the svg itself is display:inline with the shared optical-centering classes.
+    // That defeats preflight svg{display:block} (no stacking) and lets
+    // vertical-align:middle center it with the tab name.
+    const cls = svg!.getAttribute("class") ?? "";
+    expect(cls).toContain("inline");
+    expect(cls).toContain("-mt-0.5");
     expect(screen.getByText("add")).toBeInTheDocument();
   });
 
