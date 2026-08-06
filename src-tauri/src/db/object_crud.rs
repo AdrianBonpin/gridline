@@ -123,6 +123,76 @@ pub fn validate_expression(expr: &str) -> Result<String, String> {
     Ok(t.to_string())
 }
 
+#[derive(Deserialize)]
+pub struct ViewParams {
+    pub schema: String,
+    pub name: String,
+    pub materialized: bool,
+    pub action: ViewAction,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ViewAction {
+    Create { definition: String },
+    Replace { definition: String },
+    Refresh,
+    Drop,
+}
+
+pub fn view_ddl(p: &ViewParams) -> Result<Vec<String>, String> {
+    let q = qual(&p.schema, &p.name)?;
+    Ok(match &p.action {
+        ViewAction::Create { definition } if !p.materialized =>
+            vec![format!("CREATE OR REPLACE VIEW {} AS\n{}", q, definition)],
+        ViewAction::Create { definition } =>
+            vec![format!("CREATE MATERIALIZED VIEW {} AS\n{}", q, definition)],
+        ViewAction::Replace { definition } if !p.materialized =>
+            vec![format!("CREATE OR REPLACE VIEW {} AS\n{}", q, definition)],
+        ViewAction::Replace { definition } => vec![
+            format!("DROP MATERIALIZED VIEW {}", q),
+            format!("CREATE MATERIALIZED VIEW {} AS\n{}", q, definition),
+        ],
+        ViewAction::Refresh if p.materialized => vec![format!("REFRESH MATERIALIZED VIEW {}", q)],
+        ViewAction::Refresh => return Err("Cannot REFRESH a non-materialized view".into()),
+        ViewAction::Drop if p.materialized => vec![format!("DROP MATERIALIZED VIEW {}", q)],
+        ViewAction::Drop => vec![format!("DROP VIEW {}", q)],
+    })
+}
+
+#[derive(Deserialize)]
+pub struct ExtensionParams {
+    pub schema: String,
+    pub name: String,
+    pub action: ExtensionAction,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ExtensionAction {
+    Create { version: Option<String> },
+    SetSchema { new_schema: String },
+    Drop,
+}
+
+pub fn extension_ddl(p: &ExtensionParams) -> Result<Vec<String>, String> {
+    validate_object_name(&p.schema)?;
+    validate_object_name(&p.name)?;
+    let name = quote_ident(&p.name);
+    let schema = quote_ident(&p.schema);
+    Ok(vec![match &p.action {
+        ExtensionAction::Create { version: None } =>
+            format!("CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {}", name, schema),
+        ExtensionAction::Create { version: Some(v) } =>
+            format!("CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {} VERSION '{}'", name, schema, v.replace('\'', "''")),
+        ExtensionAction::SetSchema { new_schema } => {
+            validate_object_name(new_schema)?;
+            format!("ALTER EXTENSION {} SET SCHEMA {}", name, quote_ident(new_schema))
+        }
+        ExtensionAction::Drop => format!("DROP EXTENSION {}", name),
+    }])
+}
+
 /// Dispatch a DDL build by kind. `params` is the JSON payload from the frontend.
 /// Returns one or more single SQL statements.
 pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, String> {
@@ -134,6 +204,14 @@ pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, S
         "enum" => {
             let p: EnumParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
             enum_ddl(&p)
+        }
+        "view" => {
+            let p: ViewParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            view_ddl(&p)
+        }
+        "extension" => {
+            let p: ExtensionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            extension_ddl(&p)
         }
         other => Err(format!("Unsupported object kind: {other}")),
     }
@@ -243,5 +321,68 @@ mod tests {
     fn enum_add_value_rejects_empty_label() {
         let p = serde_json::json!({ "schema": "public", "name": "color", "action": { "op": "add_value", "value": "", "if_not_exists": false, "before": null, "after": null } });
         assert!(build_ddl("enum", p).is_err());
+    }
+
+    #[test]
+    fn view_create_or_replace() {
+        let p = serde_json::json!({ "schema": "public", "name": "v_users", "materialized": false, "action": { "op": "create", "definition": "SELECT * FROM users" } });
+        assert_eq!(build_ddl("view", p).unwrap(), vec!["CREATE OR REPLACE VIEW \"public\".\"v_users\" AS\nSELECT * FROM users"]);
+    }
+
+    #[test]
+    fn matview_create() {
+        let p = serde_json::json!({ "schema": "public", "name": "mv_sales", "materialized": true, "action": { "op": "create", "definition": "SELECT count(*) FROM sales" } });
+        assert_eq!(build_ddl("view", p).unwrap(), vec!["CREATE MATERIALIZED VIEW \"public\".\"mv_sales\" AS\nSELECT count(*) FROM sales"]);
+    }
+
+    #[test]
+    fn matview_replace_is_drop_then_create() {
+        let p = serde_json::json!({ "schema": "public", "name": "mv_sales", "materialized": true, "action": { "op": "replace", "definition": "SELECT count(*) FROM sales" } });
+        assert_eq!(build_ddl("view", p).unwrap(), vec![
+            "DROP MATERIALIZED VIEW \"public\".\"mv_sales\"",
+            "CREATE MATERIALIZED VIEW \"public\".\"mv_sales\" AS\nSELECT count(*) FROM sales",
+        ]);
+    }
+
+    #[test]
+    fn matview_refresh() {
+        let p = serde_json::json!({ "schema": "public", "name": "mv_sales", "materialized": true, "action": { "op": "refresh" } });
+        assert_eq!(build_ddl("view", p).unwrap(), vec!["REFRESH MATERIALIZED VIEW \"public\".\"mv_sales\""]);
+    }
+
+    #[test]
+    fn view_refresh_errors() {
+        let p = serde_json::json!({ "schema": "public", "name": "v_users", "materialized": false, "action": { "op": "refresh" } });
+        assert!(build_ddl("view", p).is_err());
+    }
+
+    #[test]
+    fn view_drop() {
+        let p = serde_json::json!({ "schema": "public", "name": "v_users", "materialized": false, "action": { "op": "drop" } });
+        assert_eq!(build_ddl("view", p).unwrap(), vec!["DROP VIEW \"public\".\"v_users\""]);
+    }
+
+    #[test]
+    fn extension_create_with_version() {
+        let p = serde_json::json!({ "schema": "public", "name": "pgcrypto", "action": { "op": "create", "version": "1.3" } });
+        assert_eq!(build_ddl("extension", p).unwrap(), vec!["CREATE EXTENSION IF NOT EXISTS \"pgcrypto\" WITH SCHEMA \"public\" VERSION '1.3'"]);
+    }
+
+    #[test]
+    fn extension_create_without_version() {
+        let p = serde_json::json!({ "schema": "public", "name": "pgcrypto", "action": { "op": "create", "version": null } });
+        assert_eq!(build_ddl("extension", p).unwrap(), vec!["CREATE EXTENSION IF NOT EXISTS \"pgcrypto\" WITH SCHEMA \"public\""]);
+    }
+
+    #[test]
+    fn extension_set_schema() {
+        let p = serde_json::json!({ "schema": "public", "name": "pgcrypto", "action": { "op": "set_schema", "new_schema": "utils" } });
+        assert_eq!(build_ddl("extension", p).unwrap(), vec!["ALTER EXTENSION \"pgcrypto\" SET SCHEMA \"utils\""]);
+    }
+
+    #[test]
+    fn extension_drop() {
+        let p = serde_json::json!({ "schema": "public", "name": "pgcrypto", "action": { "op": "drop" } });
+        assert_eq!(build_ddl("extension", p).unwrap(), vec!["DROP EXTENSION \"pgcrypto\""]);
     }
 }
