@@ -58,12 +58,14 @@ export function ObjectFormTab({ connectionId, tab }: Props) {
     useDbViewerStore.getState().closeTab(tab.id);
   };
 
+  const schemas = useDbViewerStore((s) => s.schemas);
+
   const handleChange = (next: DdlParams) => {
     useDbViewerStore.getState().updateFormTabParams(tab.id, next);
   };
 
   return (
-    <div className="flex h-full flex-col bg-surface">
+    <div className="flex h-full flex-col bg-transparent">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <div className="flex flex-col gap-0.5">
           <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
@@ -119,10 +121,11 @@ export function ObjectFormTab({ connectionId, tab }: Props) {
             connectionId={connectionId}
             kind={kind}
             params={params}
+            schemas={schemas}
             onChange={handleChange}
           />
         ) : (
-          <pre className="font-mono text-xs bg-surface rounded-lg p-3 border border-border overflow-auto max-h-full text-text whitespace-pre-wrap">
+          <pre className="text-xs text-text whitespace-pre-wrap rounded-md bg-canvas px-3 py-2 font-mono border border-border">
             {preview}
           </pre>
         )}

@@ -39,6 +39,27 @@ describe("SequenceForm", () => {
     );
   });
 
+  it("renders a schema dropdown when schemas are provided", () => {
+    const onChange = vi.fn();
+    render(
+      <SequenceForm
+        params={{ schema: "public", name: "s", action: { op: "create" } }}
+        schemas={["public", "utils"]}
+        onChange={onChange}
+      />,
+    );
+
+    const select = screen.getByLabelText("Schema");
+    expect(select).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "public" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "utils" })).toBeInTheDocument();
+
+    fireEvent.change(select, { target: { value: "utils" } });
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ schema: "utils" }),
+    );
+  });
+
   it("switching to restart shows only the with-field", () => {
     render(
       <StatefulSequenceForm

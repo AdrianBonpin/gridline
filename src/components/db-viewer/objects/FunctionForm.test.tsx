@@ -31,6 +31,41 @@ describe("FunctionForm", () => {
     );
   });
 
+  it("renders a schema dropdown when schemas are provided", () => {
+    const onChange = vi.fn();
+    const params: DdlParams = {
+      schema: "public",
+      name: "add",
+      is_procedure: false,
+      action: {
+        op: "create_or_replace",
+        args: [],
+        return_type: "int",
+        language: "plpgsql",
+        body: "",
+        volatility: null,
+        strict: false,
+      },
+    };
+    render(
+      <FunctionForm
+        kind="function"
+        params={params}
+        schemas={["public", "utils"]}
+        onChange={onChange}
+      />,
+    );
+
+    const select = screen.getByLabelText("Schema");
+    expect(select).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "utils" })).toBeInTheDocument();
+
+    fireEvent.change(select, { target: { value: "utils" } });
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ schema: "utils" }),
+    );
+  });
+
   it("procedure: hides return type", () => {
     const params: DdlParams = {
       schema: "public",

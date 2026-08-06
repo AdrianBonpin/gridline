@@ -2,6 +2,7 @@ import type { DdlParams } from "../../../lib/objectCrud";
 
 interface Props {
   params: DdlParams;
+  schemas?: string[];
   onChange: (p: DdlParams) => void;
 }
 
@@ -40,20 +41,32 @@ function NoRemovalNote() {
   );
 }
 
-export function EnumForm({ params, onChange }: Props) {
+export function EnumForm({ params, schemas, onChange }: Props) {
   const op = getOp(params);
   const action = (params.action ?? {}) as Record<string, unknown>;
   const labels = (action.labels as string[]) ?? [];
 
   return (
     <div className="flex flex-col gap-2">
-      <input
-        type="text"
-        placeholder="Schema"
-        value={(params.schema as string) ?? ""}
-        onChange={(e) => onChange({ ...params, schema: e.target.value })}
-        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-      />
+      {schemas && schemas.length > 0 ? (
+        <select
+          value={(params.schema as string) ?? ""}
+          onChange={(e) => onChange({ ...params, schema: e.target.value })}
+          aria-label="Schema"
+          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+        >
+          <option value="" disabled>Schema</option>
+          {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+      ) : (
+        <input
+          type="text"
+          placeholder="Schema"
+          value={(params.schema as string) ?? ""}
+          onChange={(e) => onChange({ ...params, schema: e.target.value })}
+          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+        />
+      )}
       <input
         type="text"
         placeholder="Enum name"

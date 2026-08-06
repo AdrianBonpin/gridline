@@ -8,6 +8,7 @@ import {
 interface Props {
   connectionId: string;
   params: DdlParams;
+  schemas?: string[];
   onChange: (p: DdlParams) => void;
 }
 
@@ -18,7 +19,7 @@ const OP_LABELS: Record<ExtensionOp, string> = {
   set_schema: "Set schema",
 };
 
-export function ExtensionForm({ connectionId, params, onChange }: Props) {
+export function ExtensionForm({ connectionId, params, schemas, onChange }: Props) {
   const p = params as Record<string, unknown>;
   const action = (p.action ?? {}) as Record<string, unknown>;
   const op = (action.op as ExtensionOp) ?? "create";
@@ -45,13 +46,25 @@ export function ExtensionForm({ connectionId, params, onChange }: Props) {
 
   return (
     <div className="flex flex-col gap-2">
-      <input
-        type="text"
-        placeholder="Schema"
-        value={(p.schema as string) ?? ""}
-        onChange={(e) => onChange({ ...p, schema: e.target.value })}
-        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
-      />
+      {schemas && schemas.length > 0 ? (
+        <select
+          value={(p.schema as string) ?? ""}
+          onChange={(e) => onChange({ ...p, schema: e.target.value })}
+          aria-label="Schema"
+          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+        >
+          <option value="" disabled>Schema</option>
+          {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+      ) : (
+        <input
+          type="text"
+          placeholder="Schema"
+          value={(p.schema as string) ?? ""}
+          onChange={(e) => onChange({ ...p, schema: e.target.value })}
+          className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text"
+        />
+      )}
 
       <label className="flex flex-col gap-1">
         <span className="text-xs text-text-muted">Operation</span>
