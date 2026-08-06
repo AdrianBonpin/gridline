@@ -12,13 +12,15 @@ interface Props {
   schema: string;
   table: string;
   column: string | null;
+  /** Columns of the table being edited (from the form grid — works even when the table isn't created yet). */
+  localColumns: string[];
   onClose: () => void;
   onStaged?: () => void;
 }
 
 const FK_ACTIONS = ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];
 
-export function FkPanel({ connectionId, schema, table, column, onClose, onStaged }: Props) {
+export function FkPanel({ connectionId, schema, table, column, localColumns, onClose, onStaged }: Props) {
   const [graph, setGraph] = useState<SchemaGraph>({ tables: [], relationships: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,15 +55,7 @@ export function FkPanel({ connectionId, schema, table, column, onClose, onStaged
     };
   }, [connectionId]);
 
-  const currentTable = useMemo(
-    () => graph.tables.find((t) => t.schema === schema && t.name === table),
-    [graph, schema, table],
-  );
-
-  const currentColumns = useMemo(
-    () => currentTable?.columns.map((c) => c.name) ?? [],
-    [currentTable],
-  );
+  const currentColumns = localColumns;
 
   const schemas = useMemo(
     () => Array.from(new Set(graph.tables.map((t) => t.schema))).sort(),
@@ -158,7 +152,8 @@ export function FkPanel({ connectionId, schema, table, column, onClose, onStaged
       initial={{ x: "100%" }}
       animate={{ x: 0 }}
       exit={{ x: "100%" }}
-      transition={{ duration: 0.2, ease: "easeOut" }}
+      transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
+      style={{ willChange: "transform" }}
       className="fixed top-0 right-0 h-full w-[420px] bg-canvas border-l border-border z-40 flex flex-col"
     >
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">

@@ -540,6 +540,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                   schema={params.schema}
                   table={params.name}
                   column={fkPanel.column}
+                  localColumns={(action.columns ?? []).map((c) => c.name)}
                   onClose={() => setFkPanel(null)}
                 />
               )}

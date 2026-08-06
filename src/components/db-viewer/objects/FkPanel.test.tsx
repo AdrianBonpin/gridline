@@ -57,6 +57,7 @@ function renderPanel(props: Partial<React.ComponentProps<typeof FkPanel>> = {}) 
       schema="public"
       table="orders"
       column="user_id"
+      localColumns={["user_id", "amount", "created_at"]}
       onClose={onClose}
       onStaged={onStaged}
       {...props}
