@@ -281,6 +281,94 @@ pub fn constraint_ddl(p: &ConstraintParams) -> Result<Vec<String>, String> {
     }])
 }
 
+#[derive(Deserialize)]
+pub struct FunctionArg { pub mode: String, pub name: String, #[serde(rename = "type")] pub type_: String }
+
+#[derive(Deserialize)]
+pub struct FunctionParams {
+    pub schema: String,
+    pub name: String,
+    pub is_procedure: bool,
+    pub action: FunctionAction,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum FunctionAction {
+    CreateOrReplace { args: Vec<FunctionArg>, return_type: Option<String>, language: String, body: String, volatility: Option<String>, strict: bool },
+    Drop { arg_types: Vec<String> },
+}
+
+fn arg_sql(a: &FunctionArg) -> String {
+    let mode = match a.mode.trim().to_lowercase().as_str() {
+        "in" | "" => String::new(),
+        m => format!("{} ", m.to_uppercase()),
+    };
+    format!("{}{} {}", mode, a.name, a.type_)
+}
+
+pub fn function_ddl(p: &FunctionParams) -> Result<Vec<String>, String> {
+    let q = qual(&p.schema, &p.name)?;
+    let kind = if p.is_procedure { "PROCEDURE" } else { "FUNCTION" };
+    Ok(vec![match &p.action {
+        FunctionAction::CreateOrReplace { args, return_type, language, body, volatility, strict } => {
+            let arglist: Vec<String> = args.iter().map(arg_sql).collect();
+            let ret = match (p.is_procedure, return_type) {
+                (false, Some(r)) => format!(" RETURNS {}", r),
+                _ => String::new(),
+            };
+            let vol = match volatility.as_deref() {
+                Some("IMMUTABLE") => " IMMUTABLE", Some("STABLE") => " STABLE", Some("VOLATILE") => " VOLATILE", _ => "",
+            };
+            let strict = if *strict { " STRICT" } else { "" };
+            format!("CREATE OR REPLACE {} {}({}){} LANGUAGE {}{}{} AS $${}$$", kind, q, arglist.join(", "), ret, language, vol, strict, body)
+        }
+        FunctionAction::Drop { arg_types } => format!("DROP {} {}({})", kind, q, arg_types.join(", ")),
+    }])
+}
+
+#[derive(Deserialize)]
+pub struct TriggerParams {
+    pub schema: String,
+    pub name: String,
+    pub action: TriggerAction,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum TriggerAction {
+    Create { table: String, timing: String, events: Vec<String>, orientation: String, function_schema: String, function_name: String, function_args: Vec<String>, when: Option<String> },
+    Enable { table: String },
+    Disable { table: String },
+    Drop { table: String },
+}
+
+pub fn trigger_ddl(p: &TriggerParams) -> Result<Vec<String>, String> {
+    validate_object_name(&p.schema)?;
+    validate_object_name(&p.name)?;
+    let schema = quote_ident(&p.schema);
+    let name = quote_ident(&p.name);
+    Ok(vec![match &p.action {
+        TriggerAction::Create { table, timing, events, orientation, function_schema, function_name, function_args, when } => {
+            validate_object_name(table)?;
+            validate_object_name(function_schema)?;
+            validate_object_name(function_name)?;
+            let evs = events.join(" OR ");
+            let orient = match orientation.trim().to_uppercase().as_str() { "STATEMENT" => "FOR EACH STATEMENT", _ => "FOR EACH ROW" };
+            let when_clause = match when {
+                Some(w) if !w.trim().is_empty() => format!(" WHEN ({})", w),
+                _ => String::new(),
+            };
+            let fq = format!("{}.{}", quote_ident(function_schema), quote_ident(function_name));
+            format!("CREATE TRIGGER {} {} {} ON {}.{} {}{} EXECUTE FUNCTION {}({})",
+                name, timing, evs, schema, quote_ident(table), orient, when_clause, fq, function_args.join(", "))
+        }
+        TriggerAction::Enable { table } => format!("ALTER TABLE {}.{} ENABLE TRIGGER {}", schema, quote_ident(table), name),
+        TriggerAction::Disable { table } => format!("ALTER TABLE {}.{} DISABLE TRIGGER {}", schema, quote_ident(table), name),
+        TriggerAction::Drop { table } => format!("DROP TRIGGER {} ON {}.{}", name, schema, quote_ident(table)),
+    }])
+}
+
 /// Dispatch a DDL build by kind. `params` is the JSON payload from the frontend.
 /// Returns one or more single SQL statements.
 pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, String> {
@@ -308,6 +396,15 @@ pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, S
         "constraint" => {
             let p: ConstraintParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
             constraint_ddl(&p)
+        }
+        "function" | "procedure" => {
+            let mut p: FunctionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            p.is_procedure = kind == "procedure";
+            function_ddl(&p)
+        }
+        "trigger" => {
+            let p: TriggerParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            trigger_ddl(&p)
         }
         other => Err(format!("Unsupported object kind: {other}")),
     }
@@ -550,5 +647,81 @@ mod tests {
         let p = serde_json::json!({ "schema": "public", "table": "orders", "name": "ck_pos", "action": { "op": "drop" } });
         assert_eq!(build_ddl("constraint", p).unwrap(),
             vec!["ALTER TABLE \"public\".\"orders\" DROP CONSTRAINT \"ck_pos\""]);
+    }
+
+    #[test]
+    fn function_create_or_replace_basic() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "add", "is_procedure": false,
+            "action": { "op": "create_or_replace",
+                "args": [ { "mode": "in", "name": "a", "type": "int" }, { "mode": "in", "name": "b", "type": "int" } ],
+                "return_type": "int", "language": "plpgsql", "body": "BEGIN RETURN a+b; END",
+                "volatility": "IMMUTABLE", "strict": true }
+        });
+        assert_eq!(build_ddl("function", p).unwrap(), vec![
+            "CREATE OR REPLACE FUNCTION \"public\".\"add\"(a int, b int) RETURNS int LANGUAGE plpgsql IMMUTABLE STRICT AS $$BEGIN RETURN a+b; END$$"
+        ]);
+    }
+
+    #[test]
+    fn procedure_create_or_replace_no_returns() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "do_thing", "is_procedure": true,
+            "action": { "op": "create_or_replace",
+                "args": [ { "mode": "in", "name": "x", "type": "int" } ],
+                "return_type": null, "language": "plpgsql", "body": "BEGIN PERFORM x; END",
+                "volatility": null, "strict": false }
+        });
+        assert_eq!(build_ddl("procedure", p).unwrap(), vec![
+            "CREATE OR REPLACE PROCEDURE \"public\".\"do_thing\"(x int) LANGUAGE plpgsql AS $$BEGIN PERFORM x; END$$"
+        ]);
+    }
+
+    #[test]
+    fn function_drop_by_signature() {
+        let p = serde_json::json!({ "schema": "public", "name": "add", "is_procedure": false, "action": { "op": "drop", "arg_types": ["int", "int"] } });
+        assert_eq!(build_ddl("function", p).unwrap(), vec!["DROP FUNCTION \"public\".\"add\"(int, int)"]);
+    }
+
+    #[test]
+    fn procedure_drop_by_signature() {
+        let p = serde_json::json!({ "schema": "public", "name": "do_thing", "is_procedure": true, "action": { "op": "drop", "arg_types": ["int"] } });
+        assert_eq!(build_ddl("procedure", p).unwrap(), vec!["DROP PROCEDURE \"public\".\"do_thing\"(int)"]);
+    }
+
+    #[test]
+    fn trigger_create_row() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "tr_audit",
+            "action": { "op": "create", "table": "orders", "timing": "BEFORE",
+                "events": ["INSERT", "UPDATE"], "orientation": "ROW",
+                "function_schema": "public", "function_name": "audit_fn",
+                "function_args": [], "when": null }
+        });
+        assert_eq!(build_ddl("trigger", p).unwrap(), vec![
+            "CREATE TRIGGER \"tr_audit\" BEFORE INSERT OR UPDATE ON \"public\".\"orders\" FOR EACH ROW EXECUTE FUNCTION \"public\".\"audit_fn\"()"
+        ]);
+    }
+
+    #[test]
+    fn trigger_create_with_when_and_args() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "tr_audit",
+            "action": { "op": "create", "table": "orders", "timing": "AFTER",
+                "events": ["UPDATE"], "orientation": "STATEMENT",
+                "function_schema": "public", "function_name": "audit_fn",
+                "function_args": ["'log'"], "when": "OLD.amount IS DISTINCT FROM NEW.amount" }
+        });
+        assert_eq!(build_ddl("trigger", p).unwrap(), vec![
+            "CREATE TRIGGER \"tr_audit\" AFTER UPDATE ON \"public\".\"orders\" FOR EACH STATEMENT WHEN (OLD.amount IS DISTINCT FROM NEW.amount) EXECUTE FUNCTION \"public\".\"audit_fn\"('log')"
+        ]);
+    }
+
+    #[test]
+    fn trigger_enable_disable_drop() {
+        let base = |op: &str| serde_json::json!({ "schema": "public", "name": "tr_audit", "action": { "op": op, "table": "orders" } });
+        assert_eq!(build_ddl("trigger", base("enable")).unwrap(), vec!["ALTER TABLE \"public\".\"orders\" ENABLE TRIGGER \"tr_audit\""]);
+        assert_eq!(build_ddl("trigger", base("disable")).unwrap(), vec!["ALTER TABLE \"public\".\"orders\" DISABLE TRIGGER \"tr_audit\""]);
+        assert_eq!(build_ddl("trigger", base("drop")).unwrap(), vec!["DROP TRIGGER \"tr_audit\" ON \"public\".\"orders\""]);
     }
 }
