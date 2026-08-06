@@ -766,7 +766,7 @@ export function TableForm({
                         </AnimatePresence>
                     </>
                 ) : (
-                    <div className="px-4 py-3">
+                    <div>
                         <Suspense
                             fallback={
                                 <pre className="text-xs leading-6 font-mono whitespace-pre-wrap text-text">
