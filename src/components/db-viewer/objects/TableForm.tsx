@@ -1,5 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUp, ArrowDown, Plus, X, Link } from "lucide-react";
+import { GripVertical, Link, Plus, X } from "lucide-react";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type Modifier,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useDbViewerStore, type ViewerTab } from "../../../stores/dbViewerStore";
 import { useConnectionStore } from "../../../stores/connectionStore";
 import * as cmd from "../../../lib/commands";
@@ -39,6 +57,7 @@ const PG_TYPES = [
 ];
 
 interface TableFormColumn {
+  rowId: string;
   name: string;
   type: string;
   nullable: boolean;
@@ -112,9 +131,27 @@ function sameColumnNames(a: TableFormColumn[], b: TableFormColumn[]): boolean {
   return sa.size === sb.size && [...sa].every((n) => sb.has(n));
 }
 
+let rowSeq = 0;
 function emptyColumn(): TableFormColumn {
-  return { name: "", type: "text", nullable: true, default: null, is_pk: false, params: "", auto_increment: false, unique: false };
+  rowSeq += 1;
+  return {
+    rowId: `col-${rowSeq}-${Math.random().toString(36).slice(2, 8)}`,
+    name: "",
+    type: "text",
+    nullable: true,
+    default: null,
+    is_pk: false,
+    params: "",
+    auto_increment: false,
+    unique: false,
+  };
 }
+
+// Y-axis-only drag (like the tab bar): zero out the X component of the transform.
+const restrictToVerticalAxis: Modifier = ({ transform }) => ({
+  ...transform,
+  x: 0,
+});
 
 // Cell-local input styles for the columns grid — no horizontal padding so the
 // cell's px-3 supplies it (matches the data-grid cell look).
@@ -220,20 +257,18 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
     };
   }, [params, action, op, isRebuild, connectionId, params.schema, params.name]);
 
-  const patchColumns = (cols: TableFormColumn[]) =>
-    setParams({ ...params, action: { ...action, columns: cols } });
+  const patchColumns = (cols: TableFormColumn[]) => {
+    // First column is always the PK in create mode.
+    let next = cols;
+    if (mode === "create" && next.length > 0 && !next[0].is_pk) {
+      next = next.map((c, i) => (i === 0 ? { ...c, is_pk: true } : c));
+    }
+    setParams({ ...params, action: { ...action, columns: next } });
+  };
 
   const addColumn = () => patchColumns([...action.columns, emptyColumn()]);
 
   const removeColumn = (i: number) => patchColumns(action.columns.filter((_, j) => j !== i));
-
-  const moveColumn = (i: number, dir: -1 | 1) => {
-    const j = i + dir;
-    if (j < 0 || j >= action.columns.length) return;
-    const next = [...action.columns];
-    [next[i], next[j]] = [next[j], next[i]];
-    patchColumns(next);
-  };
 
   const setCell = (i: number, key: keyof TableFormColumn, value: unknown) => {
     const next = [...action.columns];
@@ -264,7 +299,8 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
 
       if (mode === "edit" && action.old_columns !== undefined) {
         const live = await cmd.getTableColumns(connectionId, params.schema, params.name);
-        const liveCols: TableFormColumn[] = live.map((c: ColumnInfo) => ({
+        const liveCols: TableFormColumn[] = live.map((c: ColumnInfo, i) => ({
+          rowId: `live-${i}`,
           name: c.name,
           type: c.data_type,
           nullable: c.is_nullable,
@@ -296,7 +332,24 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
     }
   };
 
-  const cols = action.columns ?? [];
+  const cols = useMemo(
+    () => (action.columns ?? []).map((c, i) => ({ ...c, rowId: c.rowId ?? `col-${i}` })),
+    [action.columns],
+  );
+
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const handleDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const from = cols.findIndex((c) => c.rowId === active.id);
+    const to = cols.findIndex((c) => c.rowId === over.id);
+    if (from === -1 || to === -1) return;
+    patchColumns(arrayMove(cols, from, to));
+  };
 
   return (
     <div className="flex h-full flex-col bg-transparent">
@@ -359,6 +412,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
           <>
             <FormSectionHeader label="Columns" count={cols.length} />
             <div className="border-b border-border flex items-stretch">
+              <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center justify-center" />
               <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">#</div>
               <div className="min-w-0 flex-1 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Name</div>
               <div className="min-w-0 flex-1 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Type</div>
@@ -367,141 +421,32 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
               <div className="min-w-0 flex-[1.5] border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Constraints</div>
               <div className="w-24 shrink-0 px-3 py-1.5" />
             </div>
-            {cols.map((c, i) => (
-              <div key={i} className="border-b border-border flex items-stretch">
-                <div className="w-8 shrink-0 border-r border-border px-3 py-2 flex items-center text-xs font-mono text-text-muted">{i + 1}</div>
-                <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center">
-                  <input
-                    className={cellInput}
-                    placeholder="name"
-                    value={c.name}
-                    onChange={(e) => setCell(i, "name", e.target.value)}
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              modifiers={[restrictToVerticalAxis]}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext items={cols.map((c) => c.rowId)} strategy={verticalListSortingStrategy}>
+                {cols.map((c, i) => (
+                  <ColumnRow
+                    key={c.rowId}
+                    c={c}
+                    index={i}
+                    mode={mode}
+                    setCell={setCell}
+                    onRemove={() => removeColumn(i)}
+                    onFk={() => setFkPanel({ open: true, column: c.name })}
                   />
-                </div>
-                <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center gap-1.5">
-                  <DataTypeIcon dataType={c.type} size={12} />
-                  <input
-                    className={cellMono}
-                    list="pg-types"
-                    placeholder="type"
-                    value={c.type}
-                    onChange={(e) => setCell(i, "type", e.target.value)}
-                  />
-                </div>
-                <div className="w-24 shrink-0 border-r border-border px-3 py-2 flex items-center">
-                  <input
-                    className={cellMono}
-                    placeholder="length"
-                    value={c.params ?? ""}
-                    onChange={(e) => setCell(i, "params", e.target.value)}
-                  />
-                </div>
-                <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    aria-label="Has default"
-                    checked={c.default !== null}
-                    onChange={(e) => setCell(i, "default", e.target.checked ? (c.default ?? "") : null)}
-                    className="rounded border-border bg-surface text-accent focus:ring-accent"
-                  />
-                  <input
-                    className={cellMono}
-                    placeholder="default"
-                    disabled={c.default === null}
-                    value={c.default ?? ""}
-                    onChange={(e) => setCell(i, "default", e.target.value)}
-                  />
-                </div>
-                <div className="min-w-0 flex-[1.5] border-r border-border px-3 py-2 flex items-center gap-3 flex-wrap">
-                  {mode === "create" && (
-                    <>
-                      <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
-                        <input
-                          type="checkbox"
-                          aria-label="Auto-Increment"
-                          checked={c.auto_increment ?? false}
-                          onChange={(e) => setCell(i, "auto_increment", e.target.checked)}
-                        />
-                        Auto-Increment
-                      </label>
-                      <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
-                        <input
-                          type="checkbox"
-                          aria-label="Unique"
-                          checked={c.unique ?? false}
-                          onChange={(e) => setCell(i, "unique", e.target.checked)}
-                        />
-                        Unique
-                      </label>
-                    </>
-                  )}
-                  <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
-                    <input
-                      type="checkbox"
-                      aria-label={mode === "edit" ? "PK (read-only)" : "PK"}
-                      checked={c.is_pk}
-                      disabled={mode === "edit"}
-                      onChange={(e) => setCell(i, "is_pk", e.target.checked)}
-                    />
-                    PK
-                  </label>
-                  <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
-                    <input
-                      type="checkbox"
-                      aria-label="Nullable"
-                      checked={c.nullable}
-                      onChange={(e) => setCell(i, "nullable", e.target.checked)}
-                    />
-                    Nullable
-                  </label>
-                </div>
-                <div className="w-24 shrink-0 px-3 py-2 flex items-center justify-end gap-1">
-                  <button
-                    type="button"
-                    aria-label="Set foreign key"
-                    onClick={() => setFkPanel({ open: true, column: c.name })}
-                    className="text-text-muted hover:text-accent"
-                  >
-                    <Link size={12} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Move up"
-                    onClick={() => moveColumn(i, -1)}
-                    className="text-text-muted hover:text-text"
-                  >
-                    <ArrowUp size={12} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Move down"
-                    onClick={() => moveColumn(i, 1)}
-                    className="text-text-muted hover:text-text"
-                  >
-                    <ArrowDown size={12} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Remove column"
-                    onClick={() => removeColumn(i)}
-                    className="text-text-muted hover:text-red-400"
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-              </div>
-            ))}
-            <datalist id="pg-types">
-              {PG_TYPES.map((t) => (
-                <option key={t} value={t} />
-              ))}
-            </datalist>
-            <div className="border-b border-border px-4 py-2">
+                ))}
+              </SortableContext>
+            </DndContext>
+            <div className="border-b border-border px-4 h-max">
               <button
                 type="button"
                 aria-label="Add column"
                 onClick={addColumn}
-                className="text-xs text-accent hover:text-accent-hover"
+                className="text-xs text-accent hover:text-accent-hover cursor-pointer"
               >
                 <Plus size={12} className="inline" /> Add column
               </button>
@@ -571,6 +516,164 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
           <p className="text-xs text-red-400">{error}</p>
         </div>
       )}
+    </div>
+  );
+}
+
+interface ColumnRowProps {
+  c: TableFormColumn;
+  index: number;
+  mode: "create" | "edit";
+  setCell: (i: number, key: keyof TableFormColumn, value: unknown) => void;
+  onRemove: () => void;
+  onFk: () => void;
+}
+
+function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: c.rowId });
+
+  const pkLocked = mode === "create" && index === 0;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`border-b border-border flex items-stretch ${isDragging ? "opacity-60" : ""}`}
+    >
+      <div className="w-8 shrink-0 border-r border-border px-2 py-2 flex items-center justify-center">
+        <button
+          ref={setActivatorNodeRef}
+          {...attributes}
+          {...listeners}
+          type="button"
+          aria-label="Drag to reorder"
+          className="cursor-grab active:cursor-grabbing touch-none text-text-muted hover:text-text transition-colors"
+        >
+          <GripVertical size={14} />
+        </button>
+      </div>
+      <div className="w-8 shrink-0 border-r border-border px-3 py-2 flex items-center text-xs font-mono text-text-muted">
+        {index + 1}
+      </div>
+      <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center">
+        <input
+          className={cellInput}
+          placeholder="name"
+          value={c.name}
+          onChange={(e) => setCell(index, "name", e.target.value)}
+        />
+      </div>
+      <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center gap-1.5">
+        <DataTypeIcon dataType={c.type} size={12} />
+        <select
+          aria-label="type"
+          value={c.type}
+          onChange={(e) => setCell(index, "type", e.target.value)}
+          className="min-w-0 flex-1 bg-transparent font-mono text-xs text-text outline-none cursor-pointer"
+        >
+          {c.type !== "" && !PG_TYPES.includes(c.type) && <option value={c.type}>{c.type}</option>}
+          {PG_TYPES.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="w-24 shrink-0 border-r border-border px-3 py-2 flex items-center">
+        <input
+          className={cellMono}
+          placeholder="length"
+          value={c.params ?? ""}
+          onChange={(e) => setCell(index, "params", e.target.value)}
+        />
+      </div>
+      <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center gap-2">
+        <input
+          type="checkbox"
+          aria-label="Has default"
+          checked={c.default !== null}
+          onChange={(e) => setCell(index, "default", e.target.checked ? (c.default ?? "") : null)}
+          className="rounded border-border bg-surface text-accent focus:ring-accent"
+        />
+        <input
+          className={cellMono}
+          placeholder="default"
+          disabled={c.default === null}
+          value={c.default ?? ""}
+          onChange={(e) => setCell(index, "default", e.target.value)}
+        />
+      </div>
+      <div className="min-w-0 flex-[1.5] border-r border-border px-3 py-2 flex items-center gap-3 flex-wrap">
+        {mode === "create" && (
+          <>
+            <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
+              <input
+                type="checkbox"
+                aria-label="Auto-Increment"
+                checked={c.auto_increment ?? false}
+                onChange={(e) => setCell(index, "auto_increment", e.target.checked)}
+              />
+              Auto-Increment
+            </label>
+            <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
+              <input
+                type="checkbox"
+                aria-label="Unique"
+                checked={c.unique ?? false}
+                onChange={(e) => setCell(index, "unique", e.target.checked)}
+              />
+              Unique
+            </label>
+          </>
+        )}
+        <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
+          <input
+            type="checkbox"
+            aria-label={mode === "edit" ? "PK (read-only)" : "PK"}
+            checked={c.is_pk || pkLocked}
+            disabled={mode === "edit" || pkLocked}
+            onChange={(e) => setCell(index, "is_pk", e.target.checked)}
+          />
+          PK
+        </label>
+        {!c.is_pk && !pkLocked && (
+          <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
+            <input
+              type="checkbox"
+              aria-label="Nullable"
+              checked={c.nullable}
+              onChange={(e) => setCell(index, "nullable", e.target.checked)}
+            />
+            Nullable
+          </label>
+        )}
+      </div>
+      <div className="w-24 shrink-0 px-3 py-2 flex items-center justify-end gap-1">
+        <button
+          type="button"
+          aria-label="Set foreign key"
+          onClick={onFk}
+          className="text-text-muted hover:text-accent"
+        >
+          <Link size={12} />
+        </button>
+        <button
+          type="button"
+          aria-label="Remove column"
+          onClick={onRemove}
+          className="text-text-muted hover:text-red-400"
+        >
+          <X size={12} />
+        </button>
+      </div>
     </div>
   );
 }

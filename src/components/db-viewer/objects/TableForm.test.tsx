@@ -250,7 +250,10 @@ describe("TableForm", () => {
           name: "products",
           action: {
             op: "create",
-            columns: [{ name: "id", type: "integer", nullable: false, default: null, is_pk: true }],
+            columns: [
+              { name: "id", type: "integer", nullable: false, default: null, is_pk: true },
+              { name: "sku", type: "text", nullable: true, default: null, is_pk: false },
+            ],
           },
         },
         title: "Create Table",
@@ -267,10 +270,13 @@ describe("TableForm", () => {
     expect(screen.getByText("Parameters")).toBeInTheDocument();
     expect(screen.getByText("Default Value")).toBeInTheDocument();
     expect(screen.getByText("Constraints")).toBeInTheDocument();
-    expect(screen.getByLabelText("PK")).toBeInTheDocument();
-    expect(screen.getByLabelText("Auto-Increment")).toBeInTheDocument();
-    expect(screen.getByLabelText("Unique")).toBeInTheDocument();
-    expect(screen.getByLabelText("Nullable")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("PK").length).toBe(2);
+    expect(screen.getAllByLabelText("Auto-Increment").length).toBe(2);
+    expect(screen.getAllByLabelText("Unique").length).toBe(2);
+    // Nullable is hidden on the PK column (id) and shown on the non-PK one (sku)
+    const nullableBoxes = screen.getAllByLabelText("Nullable");
+    expect(nullableBoxes).toHaveLength(1);
+    expect((nullableBoxes[0] as HTMLInputElement).checked).toBe(true); // sku is nullable
   });
 
   it("folds auto_increment integer to serial in the DDL payload", async () => {
