@@ -171,6 +171,243 @@ describe("initialCrudParams", () => {
       action: { op: "create", definition: "SELECT 1" },
     });
   });
+
+  it("function edit prefills body, zipped args, return_type, and language", () => {
+    const p = initialCrudParams(
+      "function",
+      {
+        schema: "public",
+        name: "add_one",
+        return_type: "integer",
+        argument_types: ["integer"],
+        argument_names: ["x"],
+        argument_modes: ["IN"],
+        language: "plpgsql",
+        source: "BEGIN RETURN x + 1; END",
+        kind: "f",
+      },
+      "edit",
+    );
+    expect(p).toMatchObject({
+      schema: "public",
+      name: "add_one",
+      is_procedure: false,
+      action: {
+        op: "create_or_replace",
+        args: [{ mode: "IN", name: "x", type: "integer" }],
+        return_type: "integer",
+        language: "plpgsql",
+        body: "BEGIN RETURN x + 1; END",
+      },
+    });
+  });
+
+  it("procedure edit prefills source and zips multiple args", () => {
+    const p = initialCrudParams(
+      "procedure",
+      {
+        schema: "public",
+        name: "do_thing",
+        return_type: "void",
+        argument_types: ["int", "text"],
+        argument_names: ["a", "b"],
+        argument_modes: ["IN", "OUT"],
+        language: "plpgsql",
+        source: "BEGIN PERFORM a; END",
+        kind: "p",
+      },
+      "edit",
+    );
+    expect(p).toMatchObject({
+      is_procedure: true,
+      action: {
+        op: "create_or_replace",
+        args: [
+          { mode: "IN", name: "a", type: "int" },
+          { mode: "OUT", name: "b", type: "text" },
+        ],
+        return_type: "void",
+        body: "BEGIN PERFORM a; END",
+      },
+    });
+  });
+
+  it("function create keeps empty args/body and the default language", () => {
+    const p = initialCrudParams(
+      "function",
+      { schema: "public", name: "add_one" },
+      "create",
+    );
+    expect(p.action).toMatchObject({
+      op: "create_or_replace",
+      args: [],
+      return_type: null,
+      language: "plpgsql",
+      body: "",
+    });
+  });
+
+  it("sequence edit prefills increment/min/max/start/cycle from the item", () => {
+    const p = initialCrudParams(
+      "sequence",
+      {
+        schema: "public",
+        name: "s",
+        start_value: "5",
+        min_value: "1",
+        max_value: "999",
+        increment: "2",
+        cycle: true,
+      },
+      "edit",
+    );
+    expect(p.action).toMatchObject({
+      op: "create",
+      increment: "2",
+      min_value: "1",
+      max_value: "999",
+      start: "5",
+      cycle: true,
+    });
+  });
+
+  it("trigger edit prefills table, timing, events, and orientation", () => {
+    const p = initialCrudParams(
+      "trigger",
+      {
+        schema: "public",
+        name: "trg",
+        table_name: "users",
+        event_manipulation: "INSERT",
+        action_timing: "AFTER",
+        action_orientation: "row",
+      },
+      "edit",
+    );
+    expect(p.action).toMatchObject({
+      op: "create",
+      table: "users",
+      timing: "AFTER",
+      events: ["INSERT"],
+      orientation: "ROW",
+    });
+  });
+
+  it("trigger edit splits OR-joined event_manipulation into separate events", () => {
+    const p = initialCrudParams(
+      "trigger",
+      {
+        schema: "public",
+        name: "trg",
+        table_name: "orders",
+        event_manipulation: "INSERT OR UPDATE",
+        action_timing: "BEFORE",
+        action_orientation: "STATEMENT",
+      },
+      "edit",
+    );
+    expect(p.action).toMatchObject({
+      events: ["INSERT", "UPDATE"],
+      orientation: "STATEMENT",
+    });
+  });
+
+  it("index edit prefills name, unique, method, and columns", () => {
+    const p = initialCrudParams(
+      "index",
+      {
+        schema: "public",
+        table: "users",
+        name: "idx_users_email",
+        is_unique: true,
+        method: "btree",
+        columns: ["email"],
+      },
+      "edit",
+    );
+    expect(p).toMatchObject({
+      schema: "public",
+      table: "users",
+      name: "idx_users_email",
+      action: {
+        op: "create",
+        unique: true,
+        method: "btree",
+        columns: ["email"],
+        predicate: null,
+      },
+    });
+  });
+
+  it("constraint edit maps CHECK contype to a check action with the definition", () => {
+    const p = initialCrudParams(
+      "constraint",
+      {
+        schema: "public",
+        table: "users",
+        name: "chk_age",
+        contype: "CHECK",
+        definition: "CHECK (age > 0)",
+        columns: ["age"],
+      },
+      "edit",
+    );
+    expect(p).toMatchObject({
+      schema: "public",
+      table: "users",
+      name: "chk_age",
+      action: { op: "check", expression: "CHECK (age > 0)" },
+    });
+  });
+
+  it("constraint edit maps UNIQUE contype to a unique action with columns", () => {
+    const p = initialCrudParams(
+      "constraint",
+      {
+        schema: "public",
+        table: "users",
+        name: "uniq_email",
+        contype: "UNIQUE",
+        definition: "UNIQUE (email)",
+        columns: ["email"],
+      },
+      "edit",
+    );
+    expect(p).toMatchObject({
+      name: "uniq_email",
+      action: { op: "unique", columns: ["email"] },
+    });
+  });
+
+  it("extension edit prefills the version from the item", () => {
+    const p = initialCrudParams(
+      "extension",
+      { schema: "public", name: "pgcrypto", version: "1.3" },
+      "edit",
+    );
+    expect(p).toMatchObject({
+      name: "pgcrypto",
+      action: { op: "create", version: "1.3" },
+    });
+  });
+
+  it("view edit marks materialized when the item is a materialized view", () => {
+    const p = initialCrudParams(
+      "view",
+      {
+        schema: "public",
+        name: "mv",
+        table_type: "MATERIALIZED VIEW",
+        definition: "SELECT 1",
+      },
+      "edit",
+    );
+    expect(p).toMatchObject({
+      name: "mv",
+      materialized: true,
+      action: { op: "create", definition: "SELECT 1" },
+    });
+  });
 });
 
 describe("dropCrudParams", () => {

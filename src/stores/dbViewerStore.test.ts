@@ -552,6 +552,34 @@ describe("openFormTab", () => {
     expect(st.tabs[1].tabType).toBe("objectForm");
   });
 
+  it("resolves an empty schema to the current schema", () => {
+    useDbViewerStore.setState({ currentSchema: "utils" });
+    useDbViewerStore
+      .getState()
+      .openFormTab({ ...createOpts("my_seq"), schema: "" });
+    const tab = useDbViewerStore.getState().tabs[0];
+    expect(tab.schema).toBe("utils");
+    // params stay untouched — the form owns them
+    expect(tab.form!.params.schema).toBe("public");
+  });
+
+  it("falls back to public when no schema and no currentSchema", () => {
+    useDbViewerStore
+      .getState()
+      .openFormTab({ ...createOpts("my_seq"), schema: "" });
+    const tab = useDbViewerStore.getState().tabs[0];
+    expect(tab.schema).toBe("public");
+  });
+
+  it("keeps an explicit schema even when currentSchema is set", () => {
+    useDbViewerStore.setState({ currentSchema: "utils" });
+    useDbViewerStore
+      .getState()
+      .openFormTab({ ...createOpts("my_seq"), schema: "public" });
+    const tab = useDbViewerStore.getState().tabs[0];
+    expect(tab.schema).toBe("public");
+  });
+
   it("updateFormTabParams updates params without touching title/description/mode/kind", () => {
     useDbViewerStore.getState().openFormTab(createOpts("my_seq"));
     const tabId = useDbViewerStore.getState().tabs[0].id;

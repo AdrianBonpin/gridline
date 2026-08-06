@@ -86,7 +86,10 @@ export function ObjectContextMenu({
     }`;
     useDbViewerStore.getState().openFormTab({
       kind,
-      schema: item.schema,
+      schema:
+        mode === "create"
+          ? useDbViewerStore.getState().currentSchema ?? item.schema ?? "public"
+          : item.schema,
       name: mode === "edit" ? item.name : "",
       title,
       description,

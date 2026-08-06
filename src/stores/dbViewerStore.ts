@@ -311,6 +311,12 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   openFormTab: ({ kind, schema, name, title, description, mode, params }) => {
     const { tabs } = get();
 
+    // Resolve the effective schema before building the tab: an explicit schema
+    // wins, otherwise fall back to the viewer's current schema, then "public".
+    // The form payload (params) is left untouched — the tab schema is used for
+    // dedup/identity only.
+    const effSchema = schema || get().currentSchema || "public";
+
     // Dedup key semantics:
     //   create -> `create:<kind>`              (one create form per kind;
     //   schema/name excluded because the user may rename while typing)
@@ -335,7 +341,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
 
     const tab: ViewerTab = {
       id: `tab-${++tabCounter}`,
-      schema,
+      schema: effSchema,
       table: title,
       page: 1,
       pageSize: get().defaultPageSize,

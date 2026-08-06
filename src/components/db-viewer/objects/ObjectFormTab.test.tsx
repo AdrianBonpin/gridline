@@ -131,4 +131,25 @@ describe("ObjectFormTab", () => {
     );
     expect(screen.getByRole("button", { name: /stage/i })).toBeDisabled();
   });
+
+  it("renders only the uppercase kicker, not a duplicate title heading", () => {
+    vi.mocked(objectCrud.buildObjectDdl).mockResolvedValue([]);
+    render(
+      <ObjectFormTab
+        connectionId={connectionId}
+        tab={{
+          ...baseTab,
+          table: "Create Function",
+          form: {
+            ...baseTab.form!,
+            kind: "function",
+            title: "Create Function",
+          },
+        }}
+      />,
+    );
+    // Kicker: lowercase DOM text uppercased by CSS
+    expect(screen.getByText("create function")).toBeInTheDocument();
+    expect(screen.queryByText("Create Function")).toBeNull();
+  });
 });

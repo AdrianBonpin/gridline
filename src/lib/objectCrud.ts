@@ -22,6 +22,8 @@ export type DdlParams = Record<string, unknown>;
 
 /// A browsable object row — the per-kind detail fields the CRUD helpers read.
 /// All fields beyond `schema`/`name` are optional per object kind.
+/// (The extra fields mirror the real per-kind shapes in `src/lib/types.ts`
+/// and are consumed by `initialCrudParams` on edit.)
 export interface CrudItem {
   schema: string;
   name: string;
@@ -32,6 +34,32 @@ export interface CrudItem {
   labels?: string[];
   definition?: string;
   argument_types?: string[];
+  // function / procedure (FunctionInfo)
+  return_type?: string | null;
+  argument_names?: string[];
+  argument_modes?: string[];
+  language?: string;
+  source?: string | null;
+  kind?: string;
+  // sequence (SequenceInfo)
+  start_value?: string;
+  min_value?: string;
+  max_value?: string;
+  increment?: string;
+  cycle?: boolean;
+  // trigger (TriggerInfo)
+  event_manipulation?: string;
+  action_timing?: string;
+  action_orientation?: string;
+  enabled?: string;
+  // extension (ExtensionInfo)
+  version?: string | null;
+  // index (IndexInfo)
+  is_unique?: boolean;
+  method?: string;
+  columns?: string[];
+  // constraint (ConstraintInfo)
+  contype?: "CHECK" | "UNIQUE" | "EXCLUSION";
 }
 
 /**
@@ -51,11 +79,14 @@ export function initialCrudParams(
         name: mode === "edit" ? item.name : "",
         action: {
           op: "create",
-          increment: "1",
-          min_value: "1",
-          max_value: "9223372036854775807",
-          start: "1",
-          cycle: false,
+          increment: mode === "edit" ? (item.increment ?? "1") : "1",
+          min_value: mode === "edit" ? (item.min_value ?? "1") : "1",
+          max_value:
+            mode === "edit"
+              ? (item.max_value ?? "9223372036854775807")
+              : "9223372036854775807",
+          start: mode === "edit" ? (item.start_value ?? "1") : "1",
+          cycle: mode === "edit" ? (item.cycle ?? false) : false,
         },
       };
     case "enum":
@@ -71,13 +102,19 @@ export function initialCrudParams(
       return {
         schema,
         name: mode === "edit" ? item.name : "",
-        action: { op: "create", version: null },
+        action: {
+          op: "create",
+          version: mode === "edit" ? (item.version ?? null) : null,
+        },
       };
     case "view":
       return {
         schema,
         name: mode === "edit" ? item.name : "",
-        materialized: false,
+        materialized:
+          mode === "edit"
+            ? item.table_type === "MATERIALIZED VIEW" || item.materialized === true
+            : false,
         action: {
           op: "create",
           definition: mode === "edit" ? (item.definition ?? "") : "",
@@ -87,15 +124,26 @@ export function initialCrudParams(
       return {
         schema,
         table: item.table ?? "",
-        name: "",
-        action: { op: "create", unique: false, method: "", columns: [], predicate: null },
+        name: mode === "edit" ? item.name : "",
+        action: {
+          op: "create",
+          unique: mode === "edit" ? (item.is_unique ?? false) : false,
+          method: mode === "edit" ? (item.method ?? "") : "",
+          columns: mode === "edit" ? (item.columns ?? []) : [],
+          predicate: null,
+        },
       };
     case "constraint":
       return {
         schema,
         table: item.table ?? "",
-        name: "",
-        action: { op: "check", expression: "" },
+        name: mode === "edit" ? item.name : "",
+        action:
+          mode === "edit"
+            ? item.contype === "UNIQUE"
+              ? { op: "unique", columns: item.columns ?? [] }
+              : { op: "check", expression: item.definition ?? "" }
+            : { op: "check", expression: "" },
       };
     case "function":
     case "procedure":
@@ -105,10 +153,17 @@ export function initialCrudParams(
         is_procedure: kind === "procedure",
         action: {
           op: "create_or_replace",
-          args: [],
-          return_type: null,
-          language: "plpgsql",
-          body: "",
+          args:
+            mode === "edit"
+              ? (item.argument_names ?? []).map((n, i) => ({
+                  mode: item.argument_modes?.[i] ?? "in",
+                  name: n,
+                  type: item.argument_types?.[i] ?? "",
+                }))
+              : [],
+          return_type: mode === "edit" ? (item.return_type ?? null) : null,
+          language: mode === "edit" ? (item.language ?? "plpgsql") : "plpgsql",
+          body: mode === "edit" ? (item.source ?? "") : "",
           volatility: null,
           strict: false,
         },
@@ -120,9 +175,19 @@ export function initialCrudParams(
         action: {
           op: "create",
           table: item.table_name ?? "",
-          timing: "BEFORE",
-          events: ["INSERT"],
-          orientation: "ROW",
+          timing:
+            mode === "edit" ? (item.action_timing ?? "BEFORE") : "BEFORE",
+          events:
+            mode === "edit"
+              ? (item.event_manipulation ?? "INSERT")
+                  .split(/[,|]|\s+OR\s+/i)
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+              : ["INSERT"],
+          orientation:
+            mode === "edit"
+              ? (item.action_orientation ?? "ROW").toUpperCase()
+              : "ROW",
           function_schema: schema,
           function_name: "",
           function_args: [],

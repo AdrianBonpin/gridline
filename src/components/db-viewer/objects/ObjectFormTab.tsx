@@ -15,7 +15,7 @@ export function ObjectFormTab({ connectionId, tab }: Props) {
   const form = tab.form;
   if (!form) return null;
 
-  const { kind, params, title, description, mode } = form;
+  const { kind, params, description, mode } = form;
 
   const [view, setView] = useState<"visual" | "sql">("visual");
   const [preview, setPreview] = useState("");
@@ -67,12 +67,9 @@ export function ObjectFormTab({ connectionId, tab }: Props) {
   return (
     <div className="flex h-full flex-col bg-transparent">
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-            {mode} {kind}
-          </span>
-          <h2 className="text-sm font-medium text-text">{title}</h2>
-        </div>
+        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+          {mode} {kind}
+        </span>
 
         <div className="flex items-center gap-2">
           <div className="flex rounded-md border border-border overflow-hidden">
