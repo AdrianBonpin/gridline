@@ -40,13 +40,13 @@ interface Props {
 
 const FK_ACTIONS = ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];
 
-function Section({ label, children }: { label: string; children: ReactNode }) {
+function Section({ label, children, flush = false }: { label: string; children: ReactNode; flush?: boolean }) {
   return (
     <div className="border-b border-border">
       <div className="border-b border-border px-4 py-2 text-[11px] font-semibold text-text-muted uppercase tracking-wider">
         {label}
       </div>
-      <div className="px-4 py-2">{children}</div>
+      <div className={flush ? "" : "px-4 py-2"}>{children}</div>
     </div>
   );
 }
@@ -277,26 +277,32 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
 
             {refSchema && refTable && (
               <>
-            <Section label={`Select columns from ${schema}.${tableLabel} to reference to`}>
-              <div className="grid grid-cols-2 divide-x divide-border text-xs text-text-muted">
-                <span className="truncate">{schema}.{tableLabel}</span>
-                <span className="truncate">{refSchema}.{refTable || "—"}</span>
+            <Section flush label={`Select columns from ${schema}.${tableLabel} to reference to`}>
+              <div className="grid grid-cols-2 text-xs text-text-muted">
+                <div className="border-r border-border py-1">
+                  <span className="truncate">{schema}.{tableLabel}</span>
+                </div>
+                <div className="py-1">
+                  <span className="truncate">{refSchema}.{refTable || "—"}</span>
+                </div>
               </div>
               {pairs.map((pair, i) => (
-                <div key={i} className="grid grid-cols-2 divide-x divide-border items-center">
-                  <select
-                    aria-label={`Local column ${i + 1}`}
-                    value={pair.localCol}
-                    onChange={(e) => setPair(i, "localCol", e.target.value)}
-                    className={panelSelect}
-                  >
-                    {localColumns.map((c) => (
-                      <option key={c.name} value={c.name}>
-                        {c.name} ({c.data_type})
-                      </option>
-                    ))}
-                  </select>
-                  <div className="flex items-center gap-1">
+                <div key={i} className="grid grid-cols-2 items-center">
+                  <div className="border-r border-border py-1">
+                    <select
+                      aria-label={`Local column ${i + 1}`}
+                      value={pair.localCol}
+                      onChange={(e) => setPair(i, "localCol", e.target.value)}
+                      className={panelSelect}
+                    >
+                      {localColumns.map((c) => (
+                        <option key={c.name} value={c.name}>
+                          {c.name} ({c.data_type})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-1 py-1">
                     <select
                       aria-label={`Referenced column ${i + 1}`}
                       value={pair.refCol}
