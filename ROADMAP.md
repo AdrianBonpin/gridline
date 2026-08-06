@@ -38,7 +38,7 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ## 🎯 Next up
 
-### Admin follow-up (0.7.8)
+### Admin follow-up (0.7.7)
 
 - **PostgreSQL users/roles + grants management** — create roles and set privileges from a UI (DB Pro has this at 0% on their roadmap — a differentiator to hold)
 - **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
