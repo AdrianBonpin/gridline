@@ -7,6 +7,7 @@ describe("dbCapabilities", () => {
     expect(c).toEqual<DbCapabilities>({
       explorer: true, queries: true, objects: true, visualizer: true,
       tools: true, editing: true, import: true, ddl: true, objectCrud: true,
+      maintenance: true, roles: true, tableManagement: true,
     });
   });
 
@@ -38,6 +39,7 @@ describe("dbCapabilities", () => {
     expect(DB_CAPABILITIES.redis).toEqual<DbCapabilities>({
       explorer: false, queries: false, objects: false, visualizer: false,
       tools: false, editing: false, import: false, ddl: false, objectCrud: false,
+      maintenance: false, roles: false, tableManagement: false,
     });
   });
 
@@ -68,5 +70,23 @@ describe("objectCrud capability", () => {
   });
   it("unknown types get objectCrud false", () => {
     expect(getCapabilities("oracle").objectCrud).toBe(false);
+  });
+});
+
+describe("v0.7.7 capabilities", () => {
+  it("postgresql has maintenance, roles, tableManagement", () => {
+    expect(DB_CAPABILITIES.postgresql.maintenance).toBe(true);
+    expect(DB_CAPABILITIES.postgresql.roles).toBe(true);
+    expect(DB_CAPABILITIES.postgresql.tableManagement).toBe(true);
+  });
+  it("mysql/sqlite/redis disable maintenance, roles, tableManagement", () => {
+    for (const t of ["mysql", "sqlite", "redis"] as const) {
+      expect(DB_CAPABILITIES[t].maintenance).toBe(false);
+      expect(DB_CAPABILITIES[t].roles).toBe(false);
+      expect(DB_CAPABILITIES[t].tableManagement).toBe(false);
+    }
+  });
+  it("getCapabilities is safe for unknown types", () => {
+    expect(getCapabilities("bogus").maintenance).toBe(false);
   });
 });

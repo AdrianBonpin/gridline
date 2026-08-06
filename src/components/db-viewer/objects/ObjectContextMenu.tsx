@@ -33,6 +33,8 @@ const DROP_TITLE: Record<ObjectKind, string> = {
   function: "function",
   procedure: "procedure",
   trigger: "trigger",
+  table: "table",
+  role: "role",
 };
 
 export function ObjectContextMenu({

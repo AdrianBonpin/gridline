@@ -8,6 +8,7 @@ import {
     Puzzle,
     SquareFunction,
     Tag,
+    Users,
 } from "lucide-react";
 import type {
     ObjectType,
@@ -29,6 +30,7 @@ export const TYPE_LABELS: Record<ObjectType, string> = {
     indexes: "Indexes",
     constraints: "Constraints",
     procedures: "Procedures",
+    roles: "Roles",
 };
 
 export const SINGULAR_LABELS: Record<ObjectType, string> = {
@@ -40,6 +42,7 @@ export const SINGULAR_LABELS: Record<ObjectType, string> = {
     indexes: "index",
     constraints: "constraint",
     procedures: "procedure",
+    roles: "role",
 };
 
 export const OBJECT_ICONS: Record<ObjectType, React.ReactNode> = {
@@ -53,6 +56,7 @@ export const OBJECT_ICONS: Record<ObjectType, React.ReactNode> = {
     indexes: <BookMarked size={14} className="text-text-muted shrink-0" />,
     constraints: <ListChecks size={14} className="text-text-muted shrink-0" />,
     procedures: <SquareFunction size={14} className="text-text-muted shrink-0" />,
+    roles: <Users size={14} className="text-text-muted shrink-0" />,
 };
 
 export type AnyObject =

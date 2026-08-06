@@ -19,6 +19,11 @@ import type {
   IndexInfo,
   ConstraintInfo,
   RecentConnection,
+  RoleInfo,
+  PrivilegeEntry,
+  RebuildReadiness,
+  MaintenanceResult,
+  ObjectType,
 } from "./types";
 
 describe("ActiveView", () => {
@@ -494,5 +499,32 @@ describe("v0.5.0 types", () => {
   it("Connection carries favorite", () => {
     const c = { favorite: true } as Connection;
     expectTypeOf(c.favorite).toEqualTypeOf<boolean>();
+  });
+});
+
+describe("v0.7.7 types", () => {
+  it("ObjectType includes roles", () => {
+    const t: ObjectType = "roles";
+    expect(t).toBe("roles");
+  });
+  it("ChangeItemType includes rebuild_table", () => {
+    const t: ChangeItemType = "rebuild_table";
+    expect(t).toBe("rebuild_table");
+  });
+  it("RoleInfo shape", () => {
+    const r: RoleInfo = {
+      name: "app", superuser: false, inherit: true, create_db: false, create_role: false,
+      can_login: true, replication: false, bypass_rls: false, connection_limit: -1,
+      valid_until: null, memberships: [],
+    };
+    expect(r.name).toBe("app");
+  });
+  it("PrivilegeEntry/RebuildReadiness/MaintenanceResult shapes", () => {
+    const pe: PrivilegeEntry = { object_class: "table", schema: "public", name: "users", privileges: ["SELECT"], grantable: false };
+    const rr: RebuildReadiness = { ok: true, reasons: [] };
+    const mr: MaintenanceResult = { duration_ms: 1, message: "ok" };
+    expect(pe.object_class).toBe("table");
+    expect(rr.ok).toBe(true);
+    expect(mr.duration_ms).toBe(1);
   });
 });

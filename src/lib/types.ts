@@ -202,6 +202,7 @@ export type ChangeItemType =
   | "drop_index"
   | "bulk_insert"
   | "empty_table"
+  | "rebuild_table"
   | "ddl";
 
 export interface ChangeItem {
@@ -324,7 +325,8 @@ export type ObjectType =
   | "extensions"
   | "indexes"
   | "constraints"
-  | "procedures";
+  | "procedures"
+  | "roles";
 
 export interface ObjectSearchHit {
   name: string;
@@ -350,6 +352,51 @@ export interface BackupJob {
   size_bytes: number | null;
   started_at: string;
   completed_at: string | null;
+}
+
+// ─── Roles / Privileges / Maintenance (v0.7.7) ──────────────────
+
+export interface RoleMembership {
+  role: string;
+  member: string;
+  grantor: string;
+  admin_option: boolean;
+}
+
+export interface RoleInfo {
+  name: string;
+  superuser: boolean;
+  inherit: boolean;
+  create_db: boolean;
+  create_role: boolean;
+  can_login: boolean;
+  replication: boolean;
+  bypass_rls: boolean;
+  connection_limit: number;
+  valid_until: string | null;
+  memberships: RoleMembership[];
+}
+
+export interface PrivilegeEntry {
+  object_class: "table" | "sequence" | "routine" | "schema" | "database";
+  schema: string | null;
+  name: string;
+  privileges: string[];
+  grantable: boolean;
+}
+
+export interface RebuildReadiness {
+  ok: boolean;
+  reasons: string[];
+}
+
+export interface MaintenanceResult {
+  duration_ms: number;
+  message: string;
+}
+
+export interface TablespaceInfo {
+  name: string;
 }
 
 // ─── Schema Visualizer Types ────────────────────────────────────

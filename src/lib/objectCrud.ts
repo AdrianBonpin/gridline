@@ -14,7 +14,9 @@ export type ObjectKind =
   | "constraint"
   | "function"
   | "procedure"
-  | "trigger";
+  | "trigger"
+  | "table"
+  | "role";
 
 /// Opaque payload for a build: `{ schema, name, action: { op, ... } }`.
 /// The concrete shape is validated server-side by each kind's params struct.
@@ -60,6 +62,18 @@ export interface CrudItem {
   columns?: string[];
   // constraint (ConstraintInfo)
   contype?: "CHECK" | "UNIQUE" | "EXCLUSION";
+  // table (columnMeta carries the snapshot for edit diffs)
+  columnMeta?: { name: string; type: string; nullable: boolean; is_pk: boolean; default: string | null }[];
+  // role (RoleInfo shape used for prefill)
+  superuser?: boolean;
+  inherit?: boolean;
+  create_db?: boolean;
+  create_role?: boolean;
+  can_login?: boolean;
+  replication?: boolean;
+  bypass_rls?: boolean;
+  connection_limit?: number;
+  valid_until?: string | null;
 }
 
 /**
@@ -194,6 +208,40 @@ export function initialCrudParams(
           when: null,
         },
       };
+    case "table":
+      return {
+        schema,
+        name: mode === "edit" ? item.name : "",
+        action: {
+          op: mode === "edit" ? "edit" : "create",
+          columns: mode === "edit"
+            ? (item.columnMeta ?? []).map((c) => ({
+                name: c.name, type: c.type, nullable: c.nullable,
+                default: c.default ?? null, is_pk: c.is_pk,
+              }))
+            : [],
+          old_columns: mode === "edit" ? (item.columnMeta ?? []) : undefined,
+        },
+      };
+    case "role":
+      return {
+        schema,
+        name: mode === "edit" ? item.name : "",
+        action: {
+          op: "create",
+          login: mode === "edit" ? (item.can_login ?? false) : false,
+          superuser: mode === "edit" ? (item.superuser ?? false) : false,
+          createdb: mode === "edit" ? (item.create_db ?? false) : false,
+          createrole: mode === "edit" ? (item.create_role ?? false) : false,
+          inherit: mode === "edit" ? (item.inherit ?? true) : true,
+          replication: mode === "edit" ? (item.replication ?? false) : false,
+          bypassrls: mode === "edit" ? (item.bypass_rls ?? false) : false,
+          connection_limit: mode === "edit" ? (item.connection_limit ?? -1) : -1,
+          valid_until: mode === "edit" ? (item.valid_until ?? "") : "",
+          password: "",
+          members: [],
+        },
+      };
   }
 }
 
@@ -203,6 +251,9 @@ export function initialCrudParams(
  */
 export function dropCrudParams(kind: ObjectKind, item: CrudItem): DdlParams {
   const base = { schema: item.schema, name: item.name };
+  if (kind === "table" || kind === "role") {
+    return { ...base, action: { op: "drop" } };
+  }
   if (kind === "trigger") {
     return {
       ...base,

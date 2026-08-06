@@ -76,6 +76,7 @@ function typeToDdlType(type: ObjectType): string {
         extensions: "extension",
         indexes: "index",
         constraints: "constraint",
+        roles: "role",
     };
     return map[type];
 }
