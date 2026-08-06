@@ -9,7 +9,7 @@ import type { SchemaGraph } from "../../../lib/types";
 
 // Panel selects: transparent, fill the available width (no surface bg like the grid).
 const panelSelect =
-  "w-full bg-transparent rounded px-2 py-1 font-heading text-xs text-text outline-none placeholder:text-text-muted cursor-pointer";
+  "w-full bg-transparent font-heading text-xs text-text outline-none placeholder:text-text-muted cursor-pointer";
 
 export interface FkColumn {
   name: string;
@@ -278,12 +278,12 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
             {refSchema && refTable && (
               <>
             <Section label={`Select columns from ${schema}.${tableLabel} to reference to`}>
-              <div className="grid grid-cols-2 divide-x divide-border mb-2 text-xs text-text-muted">
-                <span className="pr-3 truncate">{schema}.{tableLabel}</span>
-                <span className="pl-3 truncate">{refSchema}.{refTable || "—"}</span>
+              <div className="grid grid-cols-2 divide-x divide-border text-xs text-text-muted">
+                <span className="truncate">{schema}.{tableLabel}</span>
+                <span className="truncate">{refSchema}.{refTable || "—"}</span>
               </div>
               {pairs.map((pair, i) => (
-                <div key={i} className="grid grid-cols-2 divide-x divide-border mb-2 items-center">
+                <div key={i} className="grid grid-cols-2 divide-x divide-border items-center">
                   <select
                     aria-label={`Local column ${i + 1}`}
                     value={pair.localCol}
@@ -296,7 +296,7 @@ export function FkPanel({ connectionId, schema, table, column, localColumns, onC
                       </option>
                     ))}
                   </select>
-                  <div className="flex items-center gap-1 pl-1">
+                  <div className="flex items-center gap-1">
                     <select
                       aria-label={`Referenced column ${i + 1}`}
                       value={pair.refCol}
