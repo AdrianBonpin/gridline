@@ -1,22 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { ObjectContextMenu } from "./ObjectContextMenu";
+import { ObjectContextMenu, DROP_TITLE } from "./ObjectContextMenu";
 import * as objectCrud from "../../../lib/objectCrud";
 import { useDbViewerStore } from "../../../stores/dbViewerStore";
-
-vi.mock("../../../lib/objectCrud", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../lib/objectCrud")>();
-  return {
-    ...actual,
-    buildObjectDdl: vi.fn(),
-    getAvailableExtensions: vi.fn(),
-  };
-});
 
 describe("ObjectContextMenu", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useDbViewerStore.getState().reset();
+  });
+
+  it("DROP_TITLE covers the table and role kinds (exhaustiveness)", () => {
+    expect(DROP_TITLE.table).toBe("table");
+    expect(DROP_TITLE.role).toBe("role");
   });
 
   it("Edit on a sequence opens an objectForm tab with prefilled edit params", async () => {
@@ -59,7 +55,7 @@ describe("ObjectContextMenu", () => {
   });
 
   it("Drop fetches dependencies then stages the drop", async () => {
-    vi.mocked(objectCrud.buildObjectDdl).mockResolvedValue([
+    vi.spyOn(objectCrud, "buildObjectDdl").mockResolvedValue([
       'DROP SEQUENCE "public"."s"',
     ]);
     const addChange = vi.spyOn(useDbViewerStore.getState(), "addChange");

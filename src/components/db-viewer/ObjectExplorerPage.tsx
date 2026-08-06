@@ -59,7 +59,8 @@ function itemLabel(item: AnyObject): string {
 }
 
 function schemaOf(item: AnyObject): string {
-    return item.schema;
+    // Roles are cluster-scoped and carry no schema — default to "".
+    return (item as { schema?: string }).schema ?? "";
 }
 
 function objectName(item: AnyObject): string {
@@ -150,7 +151,10 @@ export function ObjectExplorerPage({
         setError(null);
         try {
             let result: AnyObject[];
-            if (type === "extensions") {
+            if (type === "roles") {
+                // Roles are cluster-scoped — no schema filter.
+                result = await cmd.getRoles(connectionId);
+            } else if (type === "extensions") {
                 result = await cmd.getExtensions(connectionId);
             } else if (type === "functions") {
                 result = (await cmd.getFunctions(
@@ -202,8 +206,14 @@ export function ObjectExplorerPage({
     }, [type, connectionId, currentSchema]);
 
     useEffect(() => {
-        // Only re-fetch if schema actually changed (or first load)
-        if (lastSchemaRef.current !== (currentSchema ?? undefined)) {
+        // Only re-fetch if schema actually changed (or first load). Roles are
+        // cluster-scoped — skip the refetch when the schema changes (the mount
+        // fetch still runs via lastSchemaRef === undefined).
+        const schema = currentSchema ?? undefined;
+        const schemaChanged = lastSchemaRef.current !== schema;
+        const skipForRoles =
+            schemaChanged && type === "roles" && lastSchemaRef.current !== undefined;
+        if (schemaChanged && !skipForRoles) {
             fetch();
         }
     }, [currentSchema, fetch]);
@@ -489,7 +499,7 @@ export function ObjectExplorerPage({
                                         sidebarMode
                                             ? openObjectTab(
                                                   type,
-                                                  item.schema,
+                                                  schemaOf(item),
                                                   item.name,
                                                   item,
                                               )
@@ -518,7 +528,10 @@ export function ObjectExplorerPage({
                                             objectType={
                                                 typeToDdlType(type) as ObjectKind
                                             }
-                                            item={item}
+                                            item={{
+                                                ...item,
+                                                schema: schemaOf(item),
+                                            }}
                                             onRefresh={fetch}
                                             open={openKey === key}
                                             onOpenChange={(o) =>
