@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, IndexInfo, ConstraintInfo, ObjectType } from "../lib/types";
+import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, IndexInfo, ConstraintInfo, ObjectType, RoleInfo } from "../lib/types";
 import { getDatabases, getSchemas, getTables } from "../lib/commands";
 import type { ObjectKind, DdlParams } from "../lib/objectCrud";
 
@@ -120,6 +120,7 @@ interface DbViewerState {
   indexes: IndexInfo[] | null;
   setSchemaTreeLoading: (loading: boolean) => void;
   constraints: ConstraintInfo[] | null;
+  roles: RoleInfo[];
 
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
@@ -182,6 +183,7 @@ interface DbViewerState {
   setExtensions: (extensions: ExtensionInfo[]) => void;
   setIndexes: (indexes: IndexInfo[]) => void;
   setConstraints: (constraints: ConstraintInfo[]) => void;
+  setRoles: (roles: RoleInfo[]) => void;
   stageCellEdit: (input: {
     tabId: string;
     schema: string;
@@ -223,6 +225,7 @@ const initialState = {
   extensions: null as ExtensionInfo[] | null,
   indexes: null as IndexInfo[] | null,
   constraints: null as ConstraintInfo[] | null,
+  roles: [] as RoleInfo[],
   schemaTreeLoading: false,
 };
 
@@ -577,6 +580,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setExtensions: (extensions) => set({ extensions }),
   setIndexes: (indexes) => set({ indexes }),
   setConstraints: (constraints) => set({ constraints }),
+  setRoles: (roles) => set({ roles }),
   setSchemaTreeLoading: (loading) => set({ schemaTreeLoading: loading }),
 
   stageCellEdit: (input) => {
