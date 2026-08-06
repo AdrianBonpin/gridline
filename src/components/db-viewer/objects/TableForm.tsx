@@ -257,22 +257,27 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
     };
   }, [params, action, op, isRebuild, connectionId, params.schema, params.name]);
 
-  const patchColumns = (cols: TableFormColumn[]) => {
-    // First column is always the PK in create mode.
-    let next = cols;
-    if (mode === "create" && next.length > 0 && !next[0].is_pk) {
-      next = next.map((c, i) => (i === 0 ? { ...c, is_pk: true } : c));
-    }
-    setParams({ ...params, action: { ...action, columns: next } });
-  };
+  const patchColumns = (cols: TableFormColumn[]) =>
+    setParams({ ...params, action: { ...action, columns: cols } });
 
-  const addColumn = () => patchColumns([...action.columns, emptyColumn()]);
+  const addColumn = () => {
+    const next = [...action.columns, emptyColumn()];
+    // The first column auto-starts as the PK.
+    if (next.length === 1) next[0].is_pk = true;
+    patchColumns(next);
+  };
 
   const removeColumn = (i: number) => patchColumns(action.columns.filter((_, j) => j !== i));
 
   const setCell = (i: number, key: keyof TableFormColumn, value: unknown) => {
     const next = [...action.columns];
     next[i] = { ...next[i], [key]: value } as TableFormColumn;
+    // Only one PK allowed — setting a new one clears the previous.
+    if (key === "is_pk" && value === true) {
+      next.forEach((c, j) => {
+        if (j !== i) c.is_pk = false;
+      });
+    }
     patchColumns(next);
   };
 
@@ -399,7 +404,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-y-auto">
         {refusal && (
           <div className="border-b border-border px-4 py-2">
             <p className="text-xs text-amber-400">
@@ -410,48 +415,6 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
 
         {view === "visual" ? (
           <>
-            <FormSectionHeader label="Columns" count={cols.length} />
-            <div className="border-b border-border flex items-stretch">
-              <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center justify-center" />
-              <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">#</div>
-              <div className="min-w-0 flex-1 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Name</div>
-              <div className="min-w-0 flex-1 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Type</div>
-              <div className="w-24 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Parameters</div>
-              <div className="min-w-0 flex-1 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Default Value</div>
-              <div className="min-w-0 flex-[1.5] border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Constraints</div>
-              <div className="w-24 shrink-0 px-3 py-1.5" />
-            </div>
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              modifiers={[restrictToVerticalAxis]}
-              onDragEnd={handleDragEnd}
-            >
-              <SortableContext items={cols.map((c) => c.rowId)} strategy={verticalListSortingStrategy}>
-                {cols.map((c, i) => (
-                  <ColumnRow
-                    key={c.rowId}
-                    c={c}
-                    index={i}
-                    mode={mode}
-                    setCell={setCell}
-                    onRemove={() => removeColumn(i)}
-                    onFk={() => setFkPanel({ open: true, column: c.name })}
-                  />
-                ))}
-              </SortableContext>
-            </DndContext>
-            <div className="border-b border-border px-4 h-max">
-              <button
-                type="button"
-                aria-label="Add column"
-                onClick={addColumn}
-                className="text-xs text-accent hover:text-accent-hover cursor-pointer"
-              >
-                <Plus size={12} className="inline" /> Add column
-              </button>
-            </div>
-
             {mode === "create" && (
               <FormRow label="Schema">
                 <input
@@ -466,11 +429,59 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
               <FormRow label="Name">
                 <input
                   className={inputClass}
+                  placeholder="Table name"
                   value={params.name}
                   onChange={(e) => setParams({ ...params, name: e.target.value })}
                 />
               </FormRow>
             )}
+
+            <FormSectionHeader label="Columns" count={cols.length} />
+            <div className="overflow-x-auto">
+              <div className="border-b border-border flex items-stretch w-max">
+                <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center justify-center" />
+                <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">#</div>
+                <div className="w-48 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Name</div>
+                <div className="w-40 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Type</div>
+                <div className="w-24 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Parameters</div>
+                <div className="w-44 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Default Value</div>
+                <div className="w-72 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Constraints</div>
+                <div className="w-max shrink-0 border-r border-border px-3 py-1.5 flex items-center justify-end gap-1 invisible">
+                  <Link size={12} />
+                  <X size={12} />
+                </div>
+              </div>
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                modifiers={[restrictToVerticalAxis]}
+                onDragEnd={handleDragEnd}
+              >
+                <SortableContext items={cols.map((c) => c.rowId)} strategy={verticalListSortingStrategy}>
+                  {cols.map((c, i) => (
+                    <ColumnRow
+                      key={c.rowId}
+                      c={c}
+                      index={i}
+                      mode={mode}
+                      setCell={setCell}
+                      onRemove={() => removeColumn(i)}
+                      onFk={() => setFkPanel({ open: true, column: c.name })}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
+              <div className="border-b border-border px-4 h-max">
+                <button
+                  type="button"
+                  aria-label="Add column"
+                  onClick={addColumn}
+                  className="text-xs text-accent hover:text-accent-hover cursor-pointer"
+                >
+                  <Plus size={12} className="inline" /> Add column
+                </button>
+              </div>
+            </div>
 
             <OptionsSection
               connectionId={connectionId}
@@ -540,13 +551,11 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
     isDragging,
   } = useSortable({ id: c.rowId });
 
-  const pkLocked = mode === "create" && index === 0;
-
   return (
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`border-b border-border flex items-stretch ${isDragging ? "opacity-60" : ""}`}
+      className={`border-b border-border flex items-stretch w-max ${isDragging ? "opacity-60" : ""}`}
     >
       <div className="w-8 shrink-0 border-r border-border px-2 py-2 flex items-center justify-center">
         <button
@@ -563,7 +572,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
       <div className="w-8 shrink-0 border-r border-border px-3 py-2 flex items-center text-xs font-mono text-text-muted">
         {index + 1}
       </div>
-      <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center">
+      <div className="w-48 shrink-0 border-r border-border px-3 py-2 flex items-center">
         <input
           className={cellInput}
           placeholder="name"
@@ -571,7 +580,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
           onChange={(e) => setCell(index, "name", e.target.value)}
         />
       </div>
-      <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center gap-1.5">
+      <div className="w-40 shrink-0 border-r border-border px-3 py-2 flex items-center gap-1.5">
         <DataTypeIcon dataType={c.type} size={12} />
         <select
           aria-label="type"
@@ -595,7 +604,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
           onChange={(e) => setCell(index, "params", e.target.value)}
         />
       </div>
-      <div className="min-w-0 flex-1 border-r border-border px-3 py-2 flex items-center gap-2">
+      <div className="w-44 shrink-0 border-r border-border px-3 py-2 flex items-center gap-2">
         <input
           type="checkbox"
           aria-label="Has default"
@@ -611,7 +620,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
           onChange={(e) => setCell(index, "default", e.target.value)}
         />
       </div>
-      <div className="min-w-0 flex-[1.5] border-r border-border px-3 py-2 flex items-center gap-3 flex-wrap">
+      <div className="w-72 shrink-0 border-r border-border px-3 py-2 flex items-center gap-3">
         {mode === "create" && (
           <>
             <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
@@ -638,13 +647,13 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
           <input
             type="checkbox"
             aria-label={mode === "edit" ? "PK (read-only)" : "PK"}
-            checked={c.is_pk || pkLocked}
-            disabled={mode === "edit" || pkLocked}
+            checked={c.is_pk}
+            disabled={mode === "edit"}
             onChange={(e) => setCell(index, "is_pk", e.target.checked)}
           />
           PK
         </label>
-        {!c.is_pk && !pkLocked && (
+        {!c.is_pk && (
           <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
             <input
               type="checkbox"
@@ -656,7 +665,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
           </label>
         )}
       </div>
-      <div className="w-24 shrink-0 px-3 py-2 flex items-center justify-end gap-1">
+      <div className="w-max shrink-0 px-3 py-2 flex items-center justify-end gap-1">
         <button
           type="button"
           aria-label="Set foreign key"

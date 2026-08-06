@@ -39,7 +39,7 @@ function seedFormTab(tab: any) {
 }
 
 describe("TableForm", () => {
-  it("add/remove rows and multi-column PK", () => {
+  it("add/remove rows; only one PK allowed at a time", () => {
     const tab = {
       id: "t1",
       form: {
@@ -55,14 +55,16 @@ describe("TableForm", () => {
     render(<TableForm connectionId="c1" tab={tab} />);
     fireEvent.click(screen.getByLabelText("Add column"));
     fireEvent.click(screen.getByLabelText("Add column"));
-    expect((useDbViewerStore.getState().tabs[0].form?.params.action as any).columns).toHaveLength(2);
-    // toggle PK on both → multi-col PK survives (both is_pk true)
+    const cols = () => (useDbViewerStore.getState().tabs[0].form?.params.action as any).columns;
+    expect(cols()).toHaveLength(2);
+    // the first added column auto-starts as the PK
+    expect(cols()[0].is_pk).toBe(true);
+    // marking a second column as PK clears the previous one
     const pks = screen.getAllByLabelText(/PK/i);
-    fireEvent.click(pks[0]);
     fireEvent.click(pks[1]);
-    expect(
-      (useDbViewerStore.getState().tabs[0].form?.params.action as any).columns.filter((c: any) => c.is_pk),
-    ).toHaveLength(2);
+    expect(cols().filter((c: any) => c.is_pk)).toHaveLength(1);
+    expect(cols()[1].is_pk).toBe(true);
+    expect(cols()[0].is_pk).toBe(false);
   });
 
   it("reorder triggers rebuild path and readiness refusal blocks staging", async () => {
