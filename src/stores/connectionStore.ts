@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { Connection, ConnectionInput, Folder, FolderInput, Tag, TagInput } from "../lib/types";
 import * as cmd from "../lib/commands";
+import { persistDbPassword } from "../lib/keychain";
 
 // In-memory passwords for connections with use_keychain=false (never persisted).
 const sessionPasswords = new Map<string, string>();
@@ -89,13 +90,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   createConnection: async (input) => {
     const conn = await cmd.createConnection(input);
     // Persist (or purge) the DB password according to the keychain toggle.
-    // use_keychain defaults to true (opt-out): ON = OS keychain; OFF = purge + session-only.
-    const useKc = input.use_keychain ?? true;
-    if (useKc && input.password) {
-      await cmd.saveConnectionPassword(conn.id, input.password);
-    } else if (!useKc) {
-      try { await cmd.deleteConnectionPassword(conn.id); } catch { /* purge; ignore missing */ }
-    }
+    await persistDbPassword(conn.id, input.use_keychain, input.password);
     // Persist SSH secrets to OS keychain (not SQLite): password for password
     // auth, passphrase for private-key auth.
     if (input.ssh_host && (input.ssh_auth_method ?? "password") === "password" && input.ssh_password) {

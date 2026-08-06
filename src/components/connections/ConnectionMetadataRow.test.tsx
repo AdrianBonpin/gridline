@@ -8,7 +8,7 @@ import type { ConnectionFormData } from "./connectionFormData";
 const BASE_FORM: ConnectionFormData = {
   name: "", environment: null, folder_id: null, tag_ids: [],
   connection_string: "", db_type: "postgresql", host: "", port: 5432,
-  username: null, password: null, database: null, use_keychain: false, ssh_password: null,
+  username: null, password: null, database: null, use_keychain: true, ssh_password: null,
 };
 
 describe("ConnectionMetadataRow", () => {

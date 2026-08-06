@@ -84,6 +84,9 @@ export function GeneralTab({ form, onChange, managedPreset }: GeneralTabProps) {
         <input type="checkbox" checked={form.use_keychain} onChange={(e) => onChange({ use_keychain: e.target.checked })} aria-label="Enable keychain" className="rounded border-border bg-surface text-accent focus:ring-accent" />
         Enable keychain
       </label>
+      <p className="text-xs text-text-muted -mt-1 mb-2">
+        Saves the DB password to the OS keychain (DB password only; SSH secrets always use the keychain). Uncheck to never persist the password — you'll re-enter it each session.
+      </p>
     </div>
   );
 }

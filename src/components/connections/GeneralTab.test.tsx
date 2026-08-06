@@ -7,7 +7,7 @@ const BASE_FORM: ConnectionFormData = {
   name: "My DB", environment: null, folder_id: null, tag_ids: [],
   connection_string: "postgresql://u:p@localhost:5432/db", db_type: "postgresql",
   host: "localhost", port: 5432, username: "u", password: "p", database: "db",
-  use_keychain: false, ssh_password: null,
+  use_keychain: true, ssh_password: null,
 };
 
 describe("GeneralTab", () => {
@@ -53,5 +53,16 @@ describe("GeneralTab", () => {
   it("shows an SSL hint when a managed-PG preset is active", () => {
     render(<GeneralTab form={{ ...BASE_FORM, db_type: "postgresql" }} managedPreset="supabase" onChange={() => {}} />);
     expect(screen.getByText(/requires ssl/i)).toBeInTheDocument();
+  });
+
+  it("defaults the keychain toggle to ON (opt-out)", () => {
+    render(<GeneralTab form={{ ...BASE_FORM, use_keychain: true }} onChange={() => {}} />);
+    const cb = screen.getByLabelText("Enable keychain") as HTMLInputElement;
+    expect(cb.checked).toBe(true);
+  });
+
+  it("shows the DB-password-only tooltip text", () => {
+    render(<GeneralTab form={{ ...BASE_FORM, use_keychain: true }} onChange={() => {}} />);
+    expect(screen.getByText(/DB password only/i)).toBeInTheDocument();
   });
 });

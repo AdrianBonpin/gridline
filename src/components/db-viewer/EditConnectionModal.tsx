@@ -4,7 +4,8 @@ import { Button } from "../ui/Button";
 import { DetailedConnectionForm } from "../connections/DetailedConnectionForm";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useNotificationStore } from "../../stores/notificationStore";
-import { updateConnection, testConnection, saveConnectionPassword, saveConnectionSshPassword, saveConnectionSshPassphrase } from "../../lib/commands";
+import { updateConnection, testConnection, saveConnectionSshPassword, saveConnectionSshPassphrase } from "../../lib/commands";
+import { persistDbPassword } from "../../lib/keychain";
 import { detectProviderFromHost } from "../../lib/connectionString";
 import type { Connection, ConnectionInput } from "../../lib/types";
 import type { ConnectionFormData } from "../connections/connectionFormData";
@@ -36,7 +37,7 @@ export function EditConnectionModal({
     username: connection.username,
     password: null,
     database: connection.database ?? null,
-    use_keychain: false,
+    use_keychain: connection.use_keychain ?? true,
     ssh_host: connection.ssh_host ?? null,
     ssh_port: connection.ssh_port ?? null,
     ssh_user: connection.ssh_user ?? null,
@@ -76,9 +77,7 @@ export function EditConnectionModal({
         ssh_passphrase: form.ssh_passphrase ?? null,
       };
       const updated = await updateConnection(connection.id, input);
-      if (form.password) {
-        await saveConnectionPassword(connection.id, form.password).catch(() => {});
-      }
+      await persistDbPassword(connection.id, form.use_keychain, form.password).catch(() => {});
       // Persist SSH secrets to the OS keychain (not SQLite)
       if (form.ssh_host && (form.ssh_auth_method ?? "password") === "password" && form.ssh_password) {
         await saveConnectionSshPassword(connection.id, form.ssh_password).catch(() => {});
