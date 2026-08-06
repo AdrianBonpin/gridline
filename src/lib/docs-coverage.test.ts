@@ -4,7 +4,7 @@ import { describe, it, expect } from "vitest";
 import agents from "../../AGENTS.md?raw";
 import readme from "../../README.md?raw";
 
-describe("v0.7.5 docs coverage", () => {
+describe("v0.7.6 docs coverage", () => {
   it("AGENTS.md marks inline cell editing complete", () => {
     expect(agents).toContain("Inline cell editing");
     expect(agents).toMatch(/Inline cell editing \| ✅/);
@@ -24,8 +24,8 @@ describe("v0.7.5 docs coverage", () => {
     expect(agents).toMatch(/Connection status indicator on cards \| ✅/);
     expect(agents).toMatch(/Move-to-folder bulk action \| ✅/);
   });
-  it("README declares v0.7.5", () => {
-    expect(readme).toContain("0.7.5");
+  it("README declares v0.7.6", () => {
+    expect(readme).toContain("0.7.6");
   });
   it("AGENTS.md marks schema CRUD complete", () => {
     expect(agents).toMatch(/Schema CRUD \| ✅/);
