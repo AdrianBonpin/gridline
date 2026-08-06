@@ -273,7 +273,8 @@ describe("TableForm", () => {
     expect(screen.getByText("Default Value")).toBeInTheDocument();
     expect(screen.getByText("Constraints")).toBeInTheDocument();
     expect(screen.getAllByLabelText("PK").length).toBe(2);
-    expect(screen.getAllByLabelText("Auto-Increment").length).toBe(2);
+    // Auto-Increment only renders for int-family types (id) — not text (sku)
+    expect(screen.getAllByLabelText("Auto-Increment").length).toBe(1);
     expect(screen.getAllByLabelText("Unique").length).toBe(2);
     // Nullable is hidden on the PK column (id) and shown on the non-PK one (sku)
     const nullableBoxes = screen.getAllByLabelText("Nullable");

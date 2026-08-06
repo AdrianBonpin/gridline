@@ -28,19 +28,19 @@ import { FormRow, FormSectionHeader, inputClass, controlClass } from "./formRow"
 import { DataTypeIcon } from "../../ui/DataTypeIcon";
 
 const PG_TYPES = [
-  "integer",
-  "bigint",
-  "smallint",
+  "int",
+  "int8",
+  "int2",
   "serial",
   "bigserial",
+  "smallserial",
   "text",
   "varchar",
   "char",
-  "boolean",
+  "bool",
   "numeric",
-  "decimal",
   "real",
-  "double precision",
+  "float8",
   "date",
   "time",
   "timestamp",
@@ -95,9 +95,9 @@ function toSqlColumn(c: TableFormColumn, mode: "create" | "edit"): SqlColumn {
   let type = c.type;
   const base = c.type.trim().toLowerCase();
   if (mode === "create" && c.auto_increment) {
-    if (base === "integer") type = "serial";
-    else if (base === "bigint") type = "bigserial";
-    else if (base === "smallint") type = "smallserial";
+    if (base === "integer" || base === "int" || base === "int4") type = "serial";
+    else if (base === "bigint" || base === "int8") type = "bigserial";
+    else if (base === "smallint" || base === "int2") type = "smallserial";
   }
   if (c.params && c.params.trim()) {
     type = `${type}(${c.params.trim()})`;
@@ -152,6 +152,16 @@ const restrictToVerticalAxis: Modifier = ({ transform }) => ({
   ...transform,
   x: 0,
 });
+
+// serial types only exist for the integer family (short + long forms).
+function supportsAutoIncrement(type: string): boolean {
+  const t = type.trim().toLowerCase();
+  return (
+    t === "integer" || t === "int" || t === "int4" ||
+    t === "bigint" || t === "int8" ||
+    t === "smallint" || t === "int2"
+  );
+}
 
 // Cell-local input styles for the columns grid — no horizontal padding so the
 // cell's px-3 supplies it (matches the data-grid cell look).
@@ -640,8 +650,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
         />
       </div>
       <div className="w-[360px] shrink-0 border-r border-border px-3 py-2 flex items-center gap-3">
-        {mode === "create" && (
-          <>
+        {mode === "create" && supportsAutoIncrement(c.type) && (
             <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
               <input
                 type="checkbox"
@@ -651,6 +660,8 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
               />
               Auto-Increment
             </label>
+          )}
+        {mode === "create" && (
             <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
               <input
                 type="checkbox"
@@ -660,7 +671,6 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
               />
               Unique
             </label>
-          </>
         )}
         <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
           <input
