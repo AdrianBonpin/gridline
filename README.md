@@ -83,7 +83,7 @@ Gridline is built for developers and small teams who manage multiple database en
 ## Recent Changes
 
 <details>
-<summary><b>Recent changes</b> — click to expand</summary>
+<summary>View the full changelog</summary>
 
 - **v0.7.7** — PostgreSQL **roles & grants** management (create/edit/drop roles with attributes + a per-role privilege explorer across tables/sequences/routines/schemas/databases — collapsible grouped lists with GRANT/REVOKE staging) and **table maintenance** (VACUUM / ANALYZE / REINDEX from the table menu). **Create Table / Edit Table** visual editor: columns grid with type dropdowns and drag-to-reorder, single + composite primary keys, column-diff staging (ADD / DROP / RENAME COLUMN, ALTER TYPE, SET | DROP DEFAULT, SET | DROP NOT NULL — one statement per queue item), atomic column-reorder table rebuild (single transaction, preserves constraints/indexes/FKs/grants/sequences, fail-closed for triggers/RLS/inheritance/partitioning). **FK management** — multi-column composer with cross-schema references and ON DELETE/UPDATE, inlined into CREATE TABLE; **table options** (tablespace, row-level security); changes queue auto-refreshes the object tree after schema-modifying commits; version bump.
 
@@ -105,8 +105,10 @@ Gridline is built for developers and small teams who manage multiple database en
 
 ---
 
+## Key Features
+
 <details>
-<summary><b>Key features</b> — click to expand</summary>
+<summary>View the full feature list</summary>
 
 ### Connections & Workspace
 
