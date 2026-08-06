@@ -83,7 +83,7 @@ Gridline is built for developers and small teams who manage multiple database en
 
 ## Recent Changes
 
-- **v0.7.7** — PostgreSQL roles/grants management (create/edit/drop roles + GRANT/REVOKE per object class) and table maintenance (VACUUM/ANALYZE/REINDEX); Create Table + Edit Table column-diff editor (ADD/DROP/RENAME/ALTER TYPE/SET|DROP DEFAULT/SET|DROP NOT NULL, staged one-per-queue-item); atomic column-reorder table rebuild (single transaction, preserves constraints/indexes/FKs/grants/sequences, fail-closed for triggers/RLS/inheritance/partitioning); FK create/edit/drop with cross-schema references + ON DELETE/UPDATE; table options (tablespace, row-level security); version bump.
+- **v0.7.7** — PostgreSQL **roles & grants** management (create/edit/drop roles with attributes + a per-role privilege explorer across tables/sequences/routines/schemas/databases — collapsible grouped lists with GRANT/REVOKE staging) and **table maintenance** (VACUUM / ANALYZE / REINDEX from the table menu). **Create Table / Edit Table** visual editor: columns grid with type dropdowns and drag-to-reorder, single + composite primary keys, column-diff staging (ADD / DROP / RENAME COLUMN, ALTER TYPE, SET | DROP DEFAULT, SET | DROP NOT NULL — one statement per queue item), atomic column-reorder table rebuild (single transaction, preserves constraints/indexes/FKs/grants/sequences, fail-closed for triggers/RLS/inheritance/partitioning). **FK management** — multi-column composer with cross-schema references and ON DELETE/UPDATE, inlined into CREATE TABLE; **table options** (tablespace, row-level security); changes queue auto-refreshes the object tree after schema-modifying commits; version bump.
 
 - **v0.7.6** — Full PostgreSQL object management (create/edit/drop for enums, functions, procedures, triggers, sequences, extensions, views, materialized views, indexes, constraints) staged through the changes queue with generated-SQL previews; Enable Keychain toggle wired (default ON, opt-out; OFF = session-only); Objects view upgraded to the shared tabbed workspace (object detail tabs with per-type icons, inline manual query + changes queue); ⌘K object search fixes; version bump.
 
@@ -124,6 +124,9 @@ Gridline is built for developers and small teams who manage multiple database en
 - **Copy as DDL** — `CREATE` DDL for every browsable object type.
 - **Object dependencies** — `pg_depend` "what depends on this?" view before destructive drops.
 - **Schema visualizer** — interactive ER diagram with auto-layout, cardinality legend, and collapsible columns.
+- **Table creator & editor** — build or alter tables from a visual columns grid: type dropdowns, drag-to-reorder, single/composite primary keys, defaults, nullability — with a live SQL preview and column-diff staging.
+- **FK management** — create/edit/drop foreign keys with cross-schema references and ON DELETE/UPDATE actions, inlined into CREATE TABLE.
+- **Table options** — tablespace and row-level security per table.
 
 ### Data Grid
 
@@ -152,6 +155,8 @@ Gridline is built for developers and small teams who manage multiple database en
 - **Visual Restore** — `pg_restore` wrapper with clean toggle and destructive confirmation.
 - **DB-to-DB Sync** — pipe `pg_dump` → `pg_restore` between two connections.
 - **Bundled client tools** — `pg_dump`/`pg_restore`/`psql` ship with the app; system tools are preferred when present, bundled tools are the fallback.
+- **Roles & grants** — create/edit/drop roles with attributes; a per-role privilege explorer grouped by object class (tables, sequences, routines, schemas, databases) with collapsible lists and GRANT/REVOKE staging.
+- **Table maintenance** — VACUUM, ANALYZE, and REINDEX from the table menu.
 
 ---
 

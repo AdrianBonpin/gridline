@@ -263,7 +263,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Export toolbar (JSON, CSV, SQL, Markdown) | ✅ | Client-side Blob download of visible rows |
 | Auto-refresh timer | ✅ | Configurable interval in settings |
 | Changes queue (INSERT, UPDATE, DELETE, bulk_insert, empty_table, drop_table) | ✅ | Stage → **Commit All**. Tab bar **Changes** button (amber border + count badge when pending) toggles a **popover** anchored to it: header with **Visual/SQL** toggle (cards showing op badge + table + description + per-change **Revert**, or a generated-SQL preview via `buildChangeSql`), footer **Clear All** + **Commit All (N)** with **⌘S/Ctrl+S** shortcut. Committed cards show a green ✓ (failed ✗); committing `drop_table` auto-closes open tabs of that table |
-| Auto schema-tree refresh | ✅ | Tree auto-refreshes after a successful schema-modifying query run (`CREATE`/`DROP`/`ALTER`/`TRUNCATE` via `isSchemaModifyingQuery`) and after committing `drop_table` via the queue — no manual refresh needed |
+| Auto schema-tree refresh | ✅ | Tree auto-refreshes after a successful schema-modifying query run (`CREATE`/`DROP`/`ALTER`/`TRUNCATE` via `isSchemaModifyingQuery`) and after committing schema-modifying queue changes — `drop_table`, schema-modifying `ddl` (e.g. `CREATE TABLE`), and `rebuild_table` — no manual refresh needed |
 | Data import (CSV/JSON) | ✅ | Table overflow menu → ImportDialog: file pick, parse, preview (first 100 rows), header→column mapping, caps 100k rows / 100 MB; stages a bulk_insert change through the queue → Commit All |
 | Table menu actions | ✅ | Copy table schema (DDL via pg_dump / sqlite_master), Empty Table (DELETE) / Delete Table (DROP) through the queue with confirm, export stubs wired (JSON/CSV/SQL/Markdown) |
 | Edit connection modal (from DB viewer) | ✅ | AnimatedModal with keychain password fetch on test |
@@ -275,6 +275,17 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Cell-level copy (right-click or Ctrl+C) | ✅ | CellContextMenu: Copy / Copy JSON (jsonb) / Edit / Set NULL / Open FK reference + **View Row** and **Select Row** items; right-click or Ctrl/Cmd+C on the focused cell; menu closes on outside click/Esc |
 | FK reference | ✅ | Small ↗ icon at the start of FK cells opens the FK preview popover (also via context menu Open FK reference); plain click on the cell selects/edits and does not open it |
 | Maintenance actions (VACUUM/ANALYZE/REINDEX) | ✅ | Right-click table → VACUUM / ANALYZE / REINDEX (v0.7.7) |
+
+### Table Editor & Roles (v0.7.7)
+| Feature | Status | Details |
+| :--- | :---: | :--- |
+| Create Table (visual editor) | ✅ | "Create Table…" workspace tab: columns grid (name / type dropdown / default / PK per row, drag-to-reorder, add/remove), single + composite PK (first column auto-PK), shorthand PG types (`int`/`int8`/`int2`/`float8`/`bool`), auto-increment gating, live Monaco SQL preview, transparent selects + form-row focus `amber-400/20` |
+| Edit Table (column diff) | ✅ | Same grid on existing tables; Stage diffs old vs new columns → one queue item per statement: `ADD COLUMN`, `DROP COLUMN`, `RENAME COLUMN`, `ALTER COLUMN … TYPE`, `SET|DROP DEFAULT`, `SET|DROP NOT NULL`; stale-write guard (re-fetches live columns, refuses if changed) |
+| Column reorder (atomic rebuild) | ✅ | Drag-to-reorder triggers a table rebuild: single transaction, preserves constraints/indexes/FKs/grants/sequences (copied DDL), fail-closed when triggers/RLS policies/inheritance/partitioning/generated columns are present (`get_table_rebuild_readiness`) |
+| FK management | ✅ | Multi-column FK composer (local col → ref col pairs, referenced PKs first, type-match preview `localType → refType`, auto-named constraints, ref-table picker with `name (type)` options); cross-schema references; ON DELETE / ON UPDATE actions; create mode inlines FKs into the single CREATE TABLE change, edit mode stages ALTERs; FK rows in the form with Edit/Remove (queued changes revert, DB FKs stage DROP CONSTRAINT) |
+| Table options | ✅ | Tablespace picker (non-system, from `pg_tablespace`) + row-level security toggle in the Options section |
+| Roles & grants management | ✅ | Objects → Roles: list non-system roles (attributes incl. connection limit — `rolconnlimit::int8` cast fix), role detail with attribute grid + memberships + privilege explorer; create/edit/drop roles staged through the queue |
+| Role privilege explorer | ✅ | Per-role privileges grouped by object class (tables/sequences/routines/schemas/databases) with collapsible sections — collapsed shows first 5 + fade, expand shows all, chevron hidden when ≤5; GRANT/REVOKE composer (object class + schema + name, WITH GRANT OPTION); aclexplode-based queries (`role_sequence_grants` removed in PG 15, `schema_privileges` never existed) |
 
 ### Object Explorer (non-table objects)
 | Feature | Status | Details |
