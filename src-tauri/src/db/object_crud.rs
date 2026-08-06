@@ -503,6 +503,127 @@ fn table_diff(q: &str, old: &[TableColumn], new: &[TableColumn]) -> Result<Vec<S
     Ok(out)
 }
 
+#[derive(Debug, Clone)]
+pub struct RebuildConstraint { pub name: String, pub definition: String }
+
+#[derive(Debug, Clone)]
+pub struct RebuildIndex { pub name: String, pub definition: String }
+
+#[derive(Debug, Clone)]
+pub struct RebuildFk { pub name: String, pub definition: String }
+
+#[derive(Debug, Clone)]
+pub struct RebuildFkIn {
+    pub name: String,
+    pub own_schema: String,
+    pub own_table: String,
+    pub definition: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RebuildGrant {
+    pub grantee: String,
+    pub privileges: Vec<String>,
+    pub grantable: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RebuildOwnedSequence {
+    pub seq_schema: String,
+    pub seq_name: String,
+    pub column: String,
+}
+
+/// Everything needed to reconstruct a table's metadata after a reorder-only rebuild.
+/// Rebuild is reorder-only: column names + types in `new_columns` must equal the live
+/// snapshot (validated by the Task 2.4 command). These structs are assembled in Rust
+/// from introspection rows, so they derive Clone/Debug only (no IPC Deserialize).
+#[derive(Debug, Clone)]
+pub struct RebuildInput {
+    pub schema: String,
+    pub name: String,
+    pub constraints: Vec<RebuildConstraint>,
+    pub indexes: Vec<RebuildIndex>,
+    pub fks_out: Vec<RebuildFk>,
+    pub fks_in: Vec<RebuildFkIn>,
+    pub grants: Vec<RebuildGrant>,
+    pub owned_sequences: Vec<RebuildOwnedSequence>,
+}
+
+/// Assemble the full rebuild script for a reorder-only table rebuild.
+///
+/// Order (transactional at the caller — the script itself is BEGIN-free):
+/// detach owned sequences → drop inbound FKs → create temp table in the new column
+/// order → INSERT..SELECT (cast-free: names/types unchanged) → DROP original → RENAME
+/// temp → recreate PK/unique/check constraints → recreate indexes → re-add outbound
+/// FKs → re-add inbound FKs → re-grant privileges → re-attach owned sequences.
+///
+/// The caller executes this via transactional `batch_execute` (Task 2.4), so the
+/// script must NOT contain BEGIN/COMMIT.
+pub fn rebuild_script(input: &RebuildInput, new_columns: &[TableColumn]) -> Result<String, String> {
+    validate_object_name(&input.schema)?;
+    validate_object_name(&input.name)?;
+    for c in new_columns {
+        validate_object_name(&c.name)?;
+        validate_type(&c.type_)?;
+    }
+    let q = qual(&input.schema, &input.name)?;
+    let tmp = qual(&input.schema, &format!("_gridline_rb_{}", input.name))?;
+    let mut s = String::new();
+    // 1. detach owned sequences (OWNED BY NONE keeps the sequence alive but decoupled)
+    for seq in &input.owned_sequences {
+        validate_object_name(&seq.seq_schema)?;
+        validate_object_name(&seq.seq_name)?;
+        s.push_str(&format!("ALTER SEQUENCE \"{}\".\"{}\" OWNED BY NONE;\n", seq.seq_schema, seq.seq_name));
+    }
+    // 2. drop FKs IN (from other tables) before DROP TABLE
+    for fk in &input.fks_in {
+        validate_object_name(&fk.own_schema)?;
+        validate_object_name(&fk.own_table)?;
+        validate_object_name(&fk.name)?;
+        s.push_str(&format!("ALTER TABLE \"{}\".\"{}\" DROP CONSTRAINT \"{}\";\n", fk.own_schema, fk.own_table, fk.name));
+    }
+    // 3. create temp table (new order, NOT NULL + DEFAULT only)
+    let defs: Vec<String> = new_columns.iter().map(col_def).collect::<Result<_, _>>()?;
+    s.push_str(&format!("CREATE TABLE {} (\n  {}\n);\n", tmp, defs.join(",\n  ")));
+    // 4. copy data (names unchanged = cast-free SELECT in new order)
+    let cols: Vec<String> = new_columns.iter().map(|c| quote_ident(&c.name)).collect();
+    s.push_str(&format!("INSERT INTO {} ({}) SELECT {} FROM {};\n", tmp, cols.join(", "), cols.join(", "), q));
+    // 5. drop old + 6. rename temp
+    s.push_str(&format!("DROP TABLE {};\n", q));
+    s.push_str(&format!("ALTER TABLE {} RENAME TO \"{}\";\n", tmp, input.name));
+    // 7. recreate constraints (PK/unique/check)
+    for c in &input.constraints {
+        validate_object_name(&c.name)?;
+        s.push_str(&format!("ALTER TABLE {} ADD CONSTRAINT \"{}\" {};\n", q, c.name, c.definition));
+    }
+    // 8. recreate indexes (pg_get_indexdef references schema.name = the renamed table)
+    for idx in &input.indexes {
+        s.push_str(&format!("{};\n", idx.definition));
+    }
+    // 9. recreate FKs OUT (this table's FKs)
+    for fk in &input.fks_out {
+        validate_object_name(&fk.name)?;
+        s.push_str(&format!("ALTER TABLE {} ADD CONSTRAINT \"{}\" {};\n", q, fk.name, fk.definition));
+    }
+    // 10. recreate FKs IN (other tables)
+    for fk in &input.fks_in {
+        s.push_str(&format!("ALTER TABLE \"{}\".\"{}\" ADD CONSTRAINT \"{}\" {};\n", fk.own_schema, fk.own_table, fk.name, fk.definition));
+    }
+    // 11. re-apply grants
+    for g in &input.grants {
+        validate_object_name(&g.grantee)?;
+        let opt = if g.grantable { " WITH GRANT OPTION" } else { "" };
+        s.push_str(&format!("GRANT {} ON {} TO {}{};\n", g.privileges.join(", "), q, quote_ident(&g.grantee), opt));
+    }
+    // 12. re-attach owned sequences
+    for seq in &input.owned_sequences {
+        validate_object_name(&seq.column)?;
+        s.push_str(&format!("ALTER SEQUENCE \"{}\".\"{}\" OWNED BY {}.\"{}\";\n", seq.seq_schema, seq.seq_name, q, seq.column));
+    }
+    Ok(s.trim_end().to_string())
+}
+
 #[derive(Deserialize)]
 pub struct RoleParams {
     pub schema: String,
@@ -1118,5 +1239,53 @@ mod tests {
             "action": { "op": "grant", "object_class": "table", "object_schema": "public", "object_name": "a; DROP",
                 "privileges": ["SELECT"], "grantee": "app", "grant_option": false } });
         assert!(build_ddl("role", p).is_err());
+    }
+
+    #[test]
+    fn rebuild_script_preserves_order_and_recreates_fk_index_grant() {
+        let input = RebuildInput {
+            schema: "public".into(), name: "users".into(),
+            constraints: vec![ RebuildConstraint { name: "users_pkey".into(), definition: "PRIMARY KEY (id)".into() } ],
+            indexes: vec![ RebuildIndex { name: "users_email_key".into(), definition: "CREATE UNIQUE INDEX users_email_key ON public.users (email)".into() } ],
+            fks_out: vec![],
+            fks_in: vec![ RebuildFkIn { name: "orders_user_fk".into(), own_schema: "public".into(), own_table: "orders".into(), definition: "FOREIGN KEY (user_id) REFERENCES public.users(id)".into() } ],
+            grants: vec![ RebuildGrant { grantee: "reader".into(), privileges: vec!["SELECT".into()], grantable: false } ],
+            owned_sequences: vec![],
+        };
+        let new = vec![ TableColumn { name: "id".into(), type_: "integer".into(), nullable: false, default: None, is_pk: false },
+                       TableColumn { name: "email".into(), type_: "text".into(), nullable: true, default: None, is_pk: false } ];
+        let script = rebuild_script(&input, &new).unwrap();
+        assert!(script.contains("ALTER TABLE \"public\".\"orders\" DROP CONSTRAINT \"orders_user_fk\""), "drop fks_in first; got: {script}");
+        assert!(script.contains("CREATE TABLE \"public\".\"_gridline_rb_users\" ("));
+        assert!(script.contains("INSERT INTO \"public\".\"_gridline_rb_users\" (\"id\", \"email\") SELECT \"id\", \"email\" FROM \"public\".\"users\""));
+        assert!(script.contains("DROP TABLE \"public\".\"users\""));
+        assert!(script.contains("ALTER TABLE \"public\".\"_gridline_rb_users\" RENAME TO \"users\""));
+        assert!(script.contains("ALTER TABLE \"public\".\"users\" ADD CONSTRAINT \"users_pkey\" PRIMARY KEY (id)"));
+        assert!(script.contains("CREATE UNIQUE INDEX users_email_key ON public.users (email)"));
+        assert!(script.contains("ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"orders_user_fk\" FOREIGN KEY (user_id) REFERENCES public.users(id)"));
+        assert!(script.contains("GRANT SELECT ON \"public\".\"users\" TO \"reader\""));
+        // ordering: drop fks_in before DROP TABLE; DROP before RENAME; RENAME before recreate
+        let d_fk = script.find("DROP CONSTRAINT \"orders_user_fk\"").unwrap();
+        let drop = script.find("DROP TABLE \"public\".\"users\"").unwrap();
+        let rename = script.find("RENAME TO \"users\"").unwrap();
+        let addcon = script.find("ADD CONSTRAINT \"users_pkey\"").unwrap();
+        assert!(d_fk < drop && drop < rename && rename < addcon, "ordering wrong; got: {script}");
+    }
+
+    #[test]
+    fn rebuild_script_detaches_and_reattaches_owned_sequence() {
+        let input = RebuildInput {
+            schema: "public".into(), name: "t".into(), constraints: vec![], indexes: vec![],
+            fks_out: vec![], fks_in: vec![], grants: vec![],
+            owned_sequences: vec![ RebuildOwnedSequence { seq_schema: "public".into(), seq_name: "t_id_seq".into(), column: "id".into() } ],
+        };
+        let new = vec![ TableColumn { name: "id".into(), type_: "integer".into(), nullable: false, default: Some(Some("nextval('t_id_seq'::regclass)".into())), is_pk: false } ];
+        let script = rebuild_script(&input, &new).unwrap();
+        assert!(script.contains("ALTER SEQUENCE \"public\".\"t_id_seq\" OWNED BY NONE"));
+        assert!(script.contains("ALTER SEQUENCE \"public\".\"t_id_seq\" OWNED BY \"public\".\"t\".\"id\""));
+        let detach = script.find("OWNED BY NONE").unwrap();
+        let drop = script.find("DROP TABLE").unwrap();
+        let attach = script.find("OWNED BY \"public\".\"t\".\"id\"").unwrap();
+        assert!(detach < drop && drop < attach, "detach before drop before reattach; got: {script}");
     }
 }

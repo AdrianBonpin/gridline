@@ -471,6 +471,45 @@ pub fn pg_rebuild_readiness_query() -> String {
         .to_string()
 }
 
+/// FKs owned by this table (contype='f'). Parameterized $1 schema, $2 table.
+pub fn pg_table_fk_out_query() -> String {
+    "SELECT c.conname, pg_get_constraintdef(c.oid) AS definition \
+     FROM pg_constraint c JOIN pg_class cl ON c.conrelid = cl.oid \
+     JOIN pg_namespace n ON cl.relnamespace = n.oid \
+     WHERE n.nspname = $1 AND cl.relname = $2 AND c.contype = 'f'".to_string()
+}
+
+/// FKs from other tables referencing this table. Parameterized $1 schema, $2 table.
+pub fn pg_table_fk_in_query() -> String {
+    "SELECT c.conname, cn.nspname AS own_schema, cl.relname AS own_table, \
+     pg_get_constraintdef(c.oid) AS definition \
+     FROM pg_constraint c JOIN pg_class cl ON c.conrelid = cl.oid \
+     JOIN pg_namespace cn ON cl.relnamespace = cn.oid \
+     JOIN pg_class r ON c.confrelid = r.oid \
+     JOIN pg_namespace rn ON r.relnamespace = rn.oid \
+     WHERE rn.nspname = $1 AND r.relname = $2 AND c.contype = 'f'".to_string()
+}
+
+/// Grants on this table (all grantees), grouped. Parameterized $1 schema, $2 table.
+pub fn pg_table_grants_query() -> String {
+    "SELECT grantee, array_agg(privilege_type) AS privileges, \
+     bool_or(is_grantable = 'YES') AS grantable \
+     FROM information_schema.table_privileges \
+     WHERE table_schema = $1 AND table_name = $2 AND grantee <> 'PUBLIC' \
+     GROUP BY grantee".to_string()
+}
+
+/// Sequences owned by this table's columns (via pg_depend). Parameterized $1 schema, $2 table.
+pub fn pg_table_owned_sequences_query() -> String {
+    "SELECT sn.nspname AS seq_schema, s.relname AS seq_name, a.attname AS column \
+     FROM pg_depend d JOIN pg_class s ON d.objid = s.oid \
+     JOIN pg_namespace sn ON s.relnamespace = sn.oid \
+     JOIN pg_class t ON d.refobjid = t.oid \
+     JOIN pg_namespace tn ON t.relnamespace = tn.oid \
+     JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid \
+     WHERE tn.nspname = $1 AND t.relname = $2 AND d.classid = 'pg_class'::regclass AND s.relkind = 'S'".to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -810,5 +849,37 @@ mod tests {
         let sql = pg_tablespaces_query();
         assert!(sql.contains("pg_tablespace"));
         assert!(sql.contains("spcname !~ '^pg_'"));
+    }
+
+    #[test]
+    fn pg_table_fk_out_query_uses_pg_constraint_f() {
+        let sql = pg_table_fk_out_query();
+        assert!(sql.contains("pg_constraint"));
+        assert!(sql.contains("contype = 'f'"));
+        assert!(sql.contains("$1") && sql.contains("$2"));
+    }
+
+    #[test]
+    fn pg_table_fk_in_query_finds_referencing_tables() {
+        let sql = pg_table_fk_in_query();
+        assert!(sql.contains("pg_constraint"));
+        assert!(sql.contains("confrel"));
+        assert!(sql.contains("$1") && sql.contains("$2"));
+    }
+
+    #[test]
+    fn pg_table_grants_query_uses_table_privileges() {
+        let sql = pg_table_grants_query();
+        assert!(sql.contains("information_schema.table_privileges"));
+        assert!(sql.contains("$1") && sql.contains("$2"));
+        assert!(sql.contains("array_agg"));
+    }
+
+    #[test]
+    fn pg_table_owned_sequences_query_uses_pg_depend() {
+        let sql = pg_table_owned_sequences_query();
+        assert!(sql.contains("pg_depend"));
+        assert!(sql.contains("pg_class"));
+        assert!(sql.contains("$1") && sql.contains("$2"));
     }
 }
