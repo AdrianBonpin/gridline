@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { RoleDetail } from "./RoleDetail";
 import { useDbViewerStore } from "../../../stores/dbViewerStore";
 import * as cmd from "../../../lib/commands";
