@@ -193,6 +193,94 @@ pub fn extension_ddl(p: &ExtensionParams) -> Result<Vec<String>, String> {
     }])
 }
 
+/// Quote a list of identifiers, joined with ", ".
+fn quoted_cols(v: &[String]) -> String {
+    v.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ")
+}
+
+#[derive(Deserialize)]
+pub struct IndexParams {
+    pub schema: String,
+    pub table: String,
+    pub name: String,
+    pub action: IndexAction,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum IndexAction {
+    Create { unique: bool, method: String, columns: Vec<String>, predicate: Option<String> },
+    Drop,
+}
+
+pub fn index_ddl(p: &IndexParams) -> Result<Vec<String>, String> {
+    validate_object_name(&p.schema)?;
+    validate_object_name(&p.table)?;
+    validate_object_name(&p.name)?;
+    let table = format!("{}.{}", quote_ident(&p.schema), quote_ident(&p.table));
+    let name = quote_ident(&p.name);
+    Ok(vec![match &p.action {
+        IndexAction::Create { unique, method, columns, predicate } => {
+            if columns.is_empty() { return Err("Index requires at least one column".into()); }
+            let cols = quoted_cols(columns);
+            let unique = if *unique { "UNIQUE " } else { "" };
+            let method = if method.trim().is_empty() { String::new() } else { format!(" USING {}", method.trim()) };
+            let pred = match predicate {
+                Some(p) if !p.trim().is_empty() => format!(" WHERE {}", validate_expression(p)?),
+                _ => String::new(),
+            };
+            format!("CREATE {}INDEX {} ON {}{} ({}){}", unique, name, table, method, cols, pred)
+        }
+        IndexAction::Drop => format!("DROP INDEX {}.{}", quote_ident(&p.schema), name),
+    }])
+}
+
+#[derive(Deserialize)]
+pub struct ConstraintParams {
+    pub schema: String,
+    pub table: String,
+    pub name: String,
+    pub action: ConstraintAction,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ConstraintAction {
+    Check { expression: String },
+    Unique { columns: Vec<String> },
+    PrimaryKey { columns: Vec<String> },
+    ForeignKey { columns: Vec<String>, ref_schema: String, ref_table: String, ref_columns: Vec<String> },
+    Drop,
+}
+
+pub fn constraint_ddl(p: &ConstraintParams) -> Result<Vec<String>, String> {
+    validate_object_name(&p.schema)?;
+    validate_object_name(&p.table)?;
+    validate_object_name(&p.name)?;
+    let table = format!("{}.{}", quote_ident(&p.schema), quote_ident(&p.table));
+    let name = quote_ident(&p.name);
+    Ok(vec![match &p.action {
+        ConstraintAction::Check { expression } =>
+            format!("ALTER TABLE {} ADD CONSTRAINT {} CHECK ({})", table, name, validate_expression(expression)?),
+        ConstraintAction::Unique { columns } => {
+            if columns.is_empty() { return Err("UNIQUE constraint requires a column".into()); }
+            format!("ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({})", table, name, quoted_cols(columns))
+        }
+        ConstraintAction::PrimaryKey { columns } => {
+            if columns.is_empty() { return Err("PRIMARY KEY requires a column".into()); }
+            format!("ALTER TABLE {} ADD CONSTRAINT {} PRIMARY KEY ({})", table, name, quoted_cols(columns))
+        }
+        ConstraintAction::ForeignKey { columns, ref_schema, ref_table, ref_columns } => {
+            if columns.is_empty() || ref_columns.is_empty() { return Err("FOREIGN KEY requires source and referenced columns".into()); }
+            validate_object_name(ref_schema)?;
+            validate_object_name(ref_table)?;
+            let refq = format!("{}.{}", quote_ident(ref_schema), quote_ident(ref_table));
+            format!("ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})", table, name, quoted_cols(columns), refq, quoted_cols(ref_columns))
+        }
+        ConstraintAction::Drop => format!("ALTER TABLE {} DROP CONSTRAINT {}", table, name),
+    }])
+}
+
 /// Dispatch a DDL build by kind. `params` is the JSON payload from the frontend.
 /// Returns one or more single SQL statements.
 pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, String> {
@@ -212,6 +300,14 @@ pub fn build_ddl(kind: &str, params: serde_json::Value) -> Result<Vec<String>, S
         "extension" => {
             let p: ExtensionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
             extension_ddl(&p)
+        }
+        "index" => {
+            let p: IndexParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            index_ddl(&p)
+        }
+        "constraint" => {
+            let p: ConstraintParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            constraint_ddl(&p)
         }
         other => Err(format!("Unsupported object kind: {other}")),
     }
@@ -384,5 +480,75 @@ mod tests {
     fn extension_drop() {
         let p = serde_json::json!({ "schema": "public", "name": "pgcrypto", "action": { "op": "drop" } });
         assert_eq!(build_ddl("extension", p).unwrap(), vec!["DROP EXTENSION \"pgcrypto\""]);
+    }
+
+    #[test]
+    fn index_create_unique_btree_with_predicate() {
+        let p = serde_json::json!({
+            "schema": "public", "table": "users", "name": "users_email_key",
+            "action": { "op": "create", "unique": true, "method": "btree", "columns": ["email"], "predicate": "email IS NOT NULL" }
+        });
+        assert_eq!(build_ddl("index", p).unwrap(),
+            vec!["CREATE UNIQUE INDEX \"users_email_key\" ON \"public\".\"users\" USING btree (\"email\") WHERE email IS NOT NULL"]);
+    }
+
+    #[test]
+    fn index_create_no_method_no_predicate() {
+        let p = serde_json::json!({
+            "schema": "public", "table": "users", "name": "i_name",
+            "action": { "op": "create", "unique": false, "method": "", "columns": ["a", "b"], "predicate": null }
+        });
+        assert_eq!(build_ddl("index", p).unwrap(),
+            vec!["CREATE INDEX \"i_name\" ON \"public\".\"users\" (\"a\", \"b\")"]);
+    }
+
+    #[test]
+    fn index_drop() {
+        let p = serde_json::json!({ "schema": "public", "table": "users", "name": "i_name", "action": { "op": "drop" } });
+        assert_eq!(build_ddl("index", p).unwrap(), vec!["DROP INDEX \"public\".\"i_name\""]);
+    }
+
+    #[test]
+    fn index_create_rejects_empty_columns() {
+        let p = serde_json::json!({ "schema": "public", "table": "users", "name": "i", "action": { "op": "create", "unique": false, "method": "", "columns": [], "predicate": null } });
+        assert!(build_ddl("index", p).is_err());
+    }
+
+    #[test]
+    fn constraint_check() {
+        let p = serde_json::json!({ "schema": "public", "table": "orders", "name": "ck_pos", "action": { "op": "check", "expression": "amount > 0" } });
+        assert_eq!(build_ddl("constraint", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"ck_pos\" CHECK (amount > 0)"]);
+    }
+
+    #[test]
+    fn constraint_unique() {
+        let p = serde_json::json!({ "schema": "public", "table": "users", "name": "u_email", "action": { "op": "unique", "columns": ["email"] } });
+        assert_eq!(build_ddl("constraint", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"users\" ADD CONSTRAINT \"u_email\" UNIQUE (\"email\")"]);
+    }
+
+    #[test]
+    fn constraint_primary_key() {
+        let p = serde_json::json!({ "schema": "public", "table": "users", "name": "pk_users", "action": { "op": "primary_key", "columns": ["id"] } });
+        assert_eq!(build_ddl("constraint", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"users\" ADD CONSTRAINT \"pk_users\" PRIMARY KEY (\"id\")"]);
+    }
+
+    #[test]
+    fn constraint_foreign_key() {
+        let p = serde_json::json!({
+            "schema": "public", "table": "orders", "name": "fk_user",
+            "action": { "op": "foreign_key", "columns": ["user_id"], "ref_schema": "public", "ref_table": "users", "ref_columns": ["id"] }
+        });
+        assert_eq!(build_ddl("constraint", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"fk_user\" FOREIGN KEY (\"user_id\") REFERENCES \"public\".\"users\" (\"id\")"]);
+    }
+
+    #[test]
+    fn constraint_drop() {
+        let p = serde_json::json!({ "schema": "public", "table": "orders", "name": "ck_pos", "action": { "op": "drop" } });
+        assert_eq!(build_ddl("constraint", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"orders\" DROP CONSTRAINT \"ck_pos\""]);
     }
 }
