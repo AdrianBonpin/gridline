@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo } from "./types";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 import type { ChangePayload } from "./changePayload";
 
@@ -319,4 +319,28 @@ export async function getObjectDdl(connectionId: string, schema: string, objectT
 }
 export async function getObjectDependencies(connectionId: string, schema: string, objectType: string, name: string): Promise<DependencyInfo[]> {
   return invoke<DependencyInfo[]>("get_object_dependencies", { connectionId, schema, objectType, name });
+}
+
+// ─── v0.7.7: Roles / privileges / rebuild / maintenance ──────────
+
+export async function getRoles(connectionId: string): Promise<RoleInfo[]> {
+  return invoke<RoleInfo[]>("get_roles", { connectionId });
+}
+export async function getRolePrivileges(connectionId: string, role: string): Promise<PrivilegeEntry[]> {
+  return invoke<PrivilegeEntry[]>("get_role_privileges", { connectionId, role });
+}
+export async function getTableColumns(connectionId: string, schema: string, table: string): Promise<ColumnInfo[]> {
+  return invoke<ColumnInfo[]>("get_table_columns", { connectionId, schema, table });
+}
+export async function getTableRebuildReadiness(connectionId: string, schema: string, table: string): Promise<RebuildReadiness> {
+  return invoke<RebuildReadiness>("get_table_rebuild_readiness", { connectionId, schema, table });
+}
+export async function runMaintenance(connectionId: string, schema: string, table: string, action: "vacuum" | "analyze" | "reindex"): Promise<MaintenanceResult> {
+  return invoke<MaintenanceResult>("run_maintenance", { connectionId, schema, table, action });
+}
+export async function getTablespaces(connectionId: string): Promise<TablespaceInfo[]> {
+  return invoke<TablespaceInfo[]>("get_tablespaces", { connectionId });
+}
+export async function buildRebuildScript<C extends { name: string; type: string; nullable: boolean; default: string | null; is_pk: boolean }[]>(connectionId: string, schema: string, table: string, newColumns: C): Promise<string> {
+  return invoke<string>("build_rebuild_script", { connectionId, schema, table, newColumns });
 }

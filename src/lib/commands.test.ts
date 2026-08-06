@@ -7,6 +7,13 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { invoke } from "@tauri-apps/api/core";
 import {
   testConnection,
+  getRoles,
+  getRolePrivileges,
+  getTableColumns,
+  getTableRebuildReadiness,
+  runMaintenance,
+  getTablespaces,
+  buildRebuildScript,
   dbConnect,
   dbDisconnect,
   getDatabases,
@@ -331,5 +338,89 @@ describe("object management commands (v0.7.5)", () => {
     vi.mocked(invoke).mockResolvedValueOnce([]);
     await getObjectDependencies("c1", "public", "table", "orders");
     expect(invoke).toHaveBeenCalledWith("get_object_dependencies", { connectionId: "c1", schema: "public", objectType: "table", name: "orders" });
+  });
+});
+
+describe("v0.7.7 command wrappers", () => {
+  it("getRoles calls get_roles", async () => {
+    const mockRoles = [
+      {
+        name: "postgres",
+        superuser: true,
+        inherit: true,
+        create_db: true,
+        create_role: true,
+        can_login: true,
+        replication: true,
+        bypass_rls: false,
+        connection_limit: -1,
+        valid_until: null,
+        memberships: [],
+      },
+    ];
+    vi.mocked(invoke).mockResolvedValueOnce(mockRoles);
+
+    const result = await getRoles("c1");
+
+    expect(invoke).toHaveBeenCalledWith("get_roles", { connectionId: "c1" });
+    expect(result).toEqual(mockRoles);
+  });
+
+  it("getRolePrivileges calls get_role_privileges with role", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([]);
+
+    const result = await getRolePrivileges("c1", "app");
+
+    expect(invoke).toHaveBeenCalledWith("get_role_privileges", { connectionId: "c1", role: "app" });
+    expect(result).toEqual([]);
+  });
+
+  it("getTableColumns calls get_table_columns", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([]);
+
+    const result = await getTableColumns("c1", "public", "users");
+
+    expect(invoke).toHaveBeenCalledWith("get_table_columns", { connectionId: "c1", schema: "public", table: "users" });
+    expect(result).toEqual([]);
+  });
+
+  it("getTableRebuildReadiness calls get_table_rebuild_readiness", async () => {
+    const mockReadiness = { ok: true, reasons: [] };
+    vi.mocked(invoke).mockResolvedValueOnce(mockReadiness);
+
+    const result = await getTableRebuildReadiness("c1", "public", "users");
+
+    expect(invoke).toHaveBeenCalledWith("get_table_rebuild_readiness", { connectionId: "c1", schema: "public", table: "users" });
+    expect(result).toEqual(mockReadiness);
+  });
+
+  it("runMaintenance calls run_maintenance with action", async () => {
+    const mockResult = { duration_ms: 5, message: "ok" };
+    vi.mocked(invoke).mockResolvedValueOnce(mockResult);
+
+    const result = await runMaintenance("c1", "public", "users", "vacuum");
+
+    expect(invoke).toHaveBeenCalledWith("run_maintenance", { connectionId: "c1", schema: "public", table: "users", action: "vacuum" });
+    expect(result).toEqual(mockResult);
+  });
+
+  it("getTablespaces calls get_tablespaces", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([]);
+
+    const result = await getTablespaces("c1");
+
+    expect(invoke).toHaveBeenCalledWith("get_tablespaces", { connectionId: "c1" });
+    expect(result).toEqual([]);
+  });
+
+  it("buildRebuildScript calls build_rebuild_script with newColumns", async () => {
+    const mockScript = "CREATE TABLE _t();";
+    const cols = [{ name: "id", type: "int", nullable: false, default: null, is_pk: true }];
+    vi.mocked(invoke).mockResolvedValueOnce(mockScript);
+
+    const result = await buildRebuildScript("c1", "public", "users", cols);
+
+    expect(invoke).toHaveBeenCalledWith("build_rebuild_script", { connectionId: "c1", schema: "public", table: "users", newColumns: cols });
+    expect(result).toEqual(mockScript);
   });
 });
