@@ -312,7 +312,7 @@ describe("TableForm", () => {
       expect((useDbViewerStore.getState().tabs[0].form?.params.action as any).columns[0].auto_increment).toBe(true);
     });
     fireEvent.click(screen.getByLabelText("Column settings")); // close menu
-    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Table" }));
     await waitFor(() => expect(cmd.buildObjectDdl).toHaveBeenCalled());
     const calls = (cmd.buildObjectDdl as any).mock.calls;
     const stageCall = calls.find((call: any) => call[2].action.columns.some((c: any) => c.type === "serial"));
@@ -352,7 +352,7 @@ describe("TableForm", () => {
       expect((useDbViewerStore.getState().tabs[0].form?.params.action as any).columns[1].unique).toBe(true);
     });
     fireEvent.click(screen.getAllByLabelText("Column settings")[1]); // close menu
-    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Table" }));
     await waitFor(() => expect(cmd.buildObjectDdl).toHaveBeenCalled());
     const calls = (cmd.buildObjectDdl as any).mock.calls;
     const stageCall = calls.find((call: any) => call[2].action.columns.some((c: any) => c.name === "sku" && c.unique === true));
@@ -435,7 +435,7 @@ describe("TableForm", () => {
     });
     // the FK is staged inline into the CREATE TABLE (single change), not as a separate ALTER
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Table" }));
     await waitFor(() => {
       const stageCall = (cmd.buildObjectDdl as any).mock.calls.find((call: any) =>
         call[1] === "table" &&

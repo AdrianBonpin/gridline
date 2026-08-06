@@ -434,6 +434,8 @@ export function TableForm({
                 useDbViewerStore.getState().addChange({
                     type: "rebuild_table",
                     sql,
+                    schema: params.schema,
+                    table: params.name,
                     description: `Rebuild table ${params.schema}.${params.name}`,
                 });
                 useDbViewerStore.getState().closeTab(tab.id);
@@ -473,6 +475,8 @@ export function TableForm({
                 useDbViewerStore.getState().addChange({
                     type: "ddl",
                     sql,
+                    schema: params.schema,
+                    table: params.name,
                     description:
                         sqls.length > 1
                             ? `${form.description} (${i + 1}/${sqls.length})`
@@ -557,7 +561,7 @@ export function TableForm({
                         }
                         className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                     >
-                        Stage
+                        {mode === "create" ? "Create Table" : "Stage"}
                     </button>
                 </div>
             </div>

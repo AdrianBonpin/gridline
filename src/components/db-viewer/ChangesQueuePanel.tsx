@@ -5,6 +5,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import * as cmd from "../../lib/commands";
 import { buildChangePayload, buildChangeSql } from "../../lib/changePayload";
+import { isSchemaModifyingQuery } from "../../lib/utils";
 import type { QueueItem, QueueStatus } from "../../stores/dbViewerStore";
 
 const statusBg: Record<QueueStatus, string> = {
@@ -101,6 +102,11 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
           treeDirty = true;
           const st = useDbViewerStore.getState();
           st.closeTabsForTable(change.schema ?? "", change.table ?? "");
+        } else if (
+          change.type === "rebuild_table" ||
+          (change.type === "ddl" && change.sql && isSchemaModifyingQuery(change.sql))
+        ) {
+          treeDirty = true;
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
