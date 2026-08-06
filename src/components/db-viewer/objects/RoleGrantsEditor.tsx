@@ -135,11 +135,13 @@ export function RoleGrantsEditor({ connectionId, role }: Props) {
                 <span className="text-[11px] text-text-muted tabular-nums">
                   {list.length}
                 </span>
-                <ChevronDown
-                  className={`h-3.5 w-3.5 text-text-muted transition-transform duration-150 ${
-                    isExpanded ? "-rotate-180" : ""
-                  }`}
-                />
+                {hasMore && (
+                  <ChevronDown
+                    className={`h-3.5 w-3.5 text-text-muted transition-transform duration-150 ${
+                      isExpanded ? "-rotate-180" : ""
+                    }`}
+                  />
+                )}
               </span>
             </button>
             <div className="relative overflow-hidden">
