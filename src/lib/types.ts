@@ -46,6 +46,8 @@ export interface Connection {
   environment?: string | null;
   // Favorite flag (v0.5.0 — pinned connection)
   favorite: boolean;
+  // Whether to save the password to the OS keychain (opt-out, default ON)
+  use_keychain?: boolean;
 }
 
 export type NewConnectionMode = "simple" | "detailed";

@@ -53,6 +53,7 @@ fn demo_connection_input(db_path: &Path) -> ConnectionInput {
         database: None,
         folder_id: None,
         tag_ids: vec![],
+        use_keychain: true,
         environment: Some("development".to_string()),
         ssh_host: None,
         ssh_port: None,

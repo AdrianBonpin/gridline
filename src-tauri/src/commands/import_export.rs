@@ -102,6 +102,7 @@ pub fn import_connections_inner(
             ssl_key_path: None,
             environment: None,
             tag_ids: rec.tag_ids.clone().unwrap_or_default(),
+            use_keychain: true,
         };
         match store.create_connection(input) {
             Ok(_) => imported += 1,
@@ -214,6 +215,7 @@ mod tests {
             ssl_key_path: None,
             environment: None,
             tag_ids: vec![],
+            use_keychain: true,
         });
         let json = export_connections_inner(&st).unwrap();
         assert!(json.contains("\"name\""));

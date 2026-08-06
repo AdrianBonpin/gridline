@@ -223,6 +223,7 @@ mod tests {
             ssl_cert_path: None,
             ssl_key_path: None,
             tag_ids: vec![],
+            use_keychain: true,
         };
         let result = create_connection_inner(&st, input.clone()).unwrap();
         assert_eq!(result.name, "Prod");
@@ -254,6 +255,7 @@ mod tests {
             ssl_cert_path: None,
             ssl_key_path: None,
             tag_ids: vec![],
+            use_keychain: true,
         };
         assert!(create_connection_inner(&st, input).is_err());
     }
@@ -283,6 +285,7 @@ mod tests {
             ssl_cert_path: None,
             ssl_key_path: None,
             tag_ids: vec![],
+            use_keychain: true,
         };
         let conn = create_connection_inner(&st, input).unwrap();
         delete_connection_inner(&st, &conn.id).unwrap();
@@ -300,6 +303,7 @@ mod tests {
             username: None,
             folder_id: None,
             tag_ids: vec![],
+            use_keychain: true,
             password: None,
             database: None,
             environment: None,
@@ -331,6 +335,7 @@ mod tests {
             username: None,
             folder_id: None,
             tag_ids: vec![],
+            use_keychain: true,
             password: None,
             database: None,
             environment: None,
