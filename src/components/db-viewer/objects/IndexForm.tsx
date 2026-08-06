@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { DdlParams } from "../../../lib/objectCrud";
 import * as cmd from "../../../lib/commands";
 import type { SchemaGraph } from "../../../lib/types";
+import { ColumnPicker } from "./ColumnPicker";
 
 interface Props {
   connectionId: string;
@@ -81,28 +82,17 @@ export function IndexForm({ connectionId, params, onChange }: Props) {
         ))}
       </select>
       <div className="text-xs text-text-muted">Columns</div>
-      <div className="flex flex-wrap gap-1">
-        {cols.map((c) => (
-          <button
-            key={c}
-            type="button"
-            onClick={() =>
-              setAction({
-                columns: selected.includes(c)
-                  ? selected.filter((x) => x !== c)
-                  : [...selected, c],
-              })
-            }
-            className={`text-xs px-2 py-1 rounded-lg border ${
-              selected.includes(c)
-                ? "bg-accent text-white border-accent"
-                : "border-border text-text"
-            }`}
-          >
-            {c}
-          </button>
-        ))}
-      </div>
+      <ColumnPicker
+        cols={cols}
+        selected={selected}
+        onToggle={(c) =>
+          setAction({
+            columns: selected.includes(c)
+              ? selected.filter((x) => x !== c)
+              : [...selected, c],
+          })
+        }
+      />
       <input
         type="text"
         placeholder="WHERE predicate (optional)"
