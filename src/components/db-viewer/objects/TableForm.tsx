@@ -180,6 +180,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
     (s) => s.connections.find((c) => c.id === connectionId)?.db_type,
   );
   const capabilities = getCapabilities(dbType ?? "postgresql");
+  const schemas = useDbViewerStore((s) => s.schemas);
 
   if (!capabilities.tableManagement) {
     return (
@@ -417,11 +418,29 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
           <>
             {mode === "create" && (
               <FormRow label="Schema">
-                <input
-                  className={inputClass}
-                  value={params.schema}
-                  onChange={(e) => setParams({ ...params, schema: e.target.value })}
-                />
+                {schemas && schemas.length > 0 ? (
+                  <select
+                    aria-label="Schema"
+                    value={params.schema}
+                    onChange={(e) => setParams({ ...params, schema: e.target.value })}
+                    className={controlClass}
+                  >
+                    {params.schema !== "" && !schemas.includes(params.schema) && (
+                      <option value={params.schema}>{params.schema}</option>
+                    )}
+                    {schemas.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className={inputClass}
+                    value={params.schema}
+                    onChange={(e) => setParams({ ...params, schema: e.target.value })}
+                  />
+                )}
               </FormRow>
             )}
 
@@ -471,14 +490,14 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                   ))}
                 </SortableContext>
               </DndContext>
-              <div className="border-b border-border px-4 h-max py-2">
+              <div className="border-b border-border px-4 h-max">
                 <button
                   type="button"
                   aria-label="Add column"
                   onClick={addColumn}
-                  className="text-xs text-accent hover:text-accent-hover cursor-pointer"
+                  className="text-xs text-accent hover:text-accent-hover cursor-pointer py-2 flex items-center gap-1"
                 >
-                  <Plus size={12} className="inline" /> Add column
+                  <Plus size={12} /> Add column
                 </button>
               </div>
             </div>

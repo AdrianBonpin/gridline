@@ -355,6 +355,31 @@ describe("TableForm", () => {
     );
   });
 
+  it("schema select auto-selects the current schema in create mode", () => {
+    useDbViewerStore.setState({ schemas: ["public", "audit"] });
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "audit",
+          name: "",
+          action: { op: "create", columns: [] },
+        },
+        title: "Create Table",
+        description: "Create Table",
+        mode: "create",
+      },
+      title: "Create Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+    const sel = screen.getByLabelText("Schema") as HTMLSelectElement;
+    expect(sel.value).toBe("audit");
+    fireEvent.change(sel, { target: { value: "public" } });
+    expect((useDbViewerStore.getState().tabs[0].form?.params as any).schema).toBe("public");
+  });
+
   it("opens the FK panel with the column preselected", async () => {
     (cmd.getSchemaGraph as any).mockResolvedValue({
       tables: [
