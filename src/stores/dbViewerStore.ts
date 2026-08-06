@@ -52,8 +52,10 @@ export interface ViewerTab {
   sortRules: SortRule[];
   hiddenColumns: string[];
   smartSortApplied: boolean;
-  tabType: "table" | "query";
+  tabType: "table" | "query" | "object";
   query?: string;
+  objectType?: ObjectType | null;
+  objectItem?: unknown;
 }
 
 // ─── Auto-increment counters ───────────────────────────────────
@@ -110,6 +112,7 @@ interface DbViewerState {
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
   openQueryTab: () => void;
+  openObjectTab: (objectType: ObjectType, schema: string, name: string, item?: unknown) => void;
   setDefaultPageSize: (size: number) => void;
   closeTab: (tabId: string) => void;
   reorderTab: (fromIndex: number, toIndex: number) => void;
@@ -242,6 +245,43 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       smartSortApplied: false,
       tabType: "query",
       query: "",
+    };
+    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+  },
+
+  openObjectTab: (objectType, schema, name, item) => {
+    const { tabs } = get();
+
+    // Dedup on the object's identity (objectType + schema + name); an object
+    // tab is distinct from a table tab of the same name.
+    const existing = tabs.find(
+      (t) =>
+        t.tabType === "object" &&
+        t.objectType === objectType &&
+        t.schema === schema &&
+        t.table === name,
+    );
+    if (existing) {
+      set({ activeTabId: existing.id });
+      return;
+    }
+
+    const tab: ViewerTab = {
+      id: `tab-${++tabCounter}`,
+      schema,
+      table: name,
+      page: 1,
+      pageSize: get().defaultPageSize,
+      loading: false,
+      error: null,
+      data: null,
+      filterRules: [],
+      sortRules: [],
+      hiddenColumns: [],
+      smartSortApplied: false,
+      tabType: "object",
+      objectType,
+      objectItem: item,
     };
     set({ tabs: [...tabs, tab], activeTabId: tab.id });
   },

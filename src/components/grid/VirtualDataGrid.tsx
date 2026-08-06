@@ -7,7 +7,7 @@ import { FkPreviewPopover } from "../db-viewer/FkPreviewPopover";
 import { JsonCellPopover, jsonPreview } from "../db-viewer/JsonCellPopover";
 import { CellEditor, type FkOption } from "./CellEditor";
 import { CellContextMenu } from "./CellContextMenu";
-import { cellToUpdateChange, isCellEditable } from "./gridEditability";
+import { cellToUpdateChange, isCellEditable, type TabKind } from "./gridEditability";
 import { nextCell, type CellPos } from "./keyboardNav";
 
 interface VirtualDataGridProps {
@@ -21,7 +21,7 @@ interface VirtualDataGridProps {
   onToggleRow: (rowIndex: number) => void;
   onToggleAll: () => void;
   dbType?: string;
-  tabType?: "table" | "query";
+  tabType?: TabKind;
   onStageEdit?: (payload: {
     type: "update";
     schema: string;

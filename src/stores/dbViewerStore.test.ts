@@ -440,3 +440,32 @@ describe("tabType discriminator", () => {
     expect(tab.tabType).toBe("table");
   });
 });
+describe("openObjectTab", () => {
+  beforeEach(() => useDbViewerStore.getState().reset());
+
+  it("opens an object tab carrying the per-type identity + item", () => {
+    useDbViewerStore.getState().openObjectTab("functions", "public", "add", { name: "add", schema: "public" });
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.tabs[0]).toMatchObject({ tabType: "object", objectType: "functions", schema: "public", table: "add" });
+    expect(st.tabs[0].objectItem).toEqual({ name: "add", schema: "public" });
+    expect(st.activeTabId).toBe(st.tabs[0].id);
+  });
+
+  it("dedups: re-clicking the same object focuses the existing tab", () => {
+    useDbViewerStore.getState().openObjectTab("enums", "public", "role", { name: "role" });
+    const first = useDbViewerStore.getState().tabs[0];
+    useDbViewerStore.getState().openObjectTab("enums", "public", "role", { name: "role" });
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.activeTabId).toBe(first.id);
+  });
+
+  it("does not collide with a table tab of the same name", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openObjectTab("functions", "public", "users", { name: "users" });
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(2);
+    expect(st.tabs.find((t) => t.tabType === "object")).toBeDefined();
+  });
+});
