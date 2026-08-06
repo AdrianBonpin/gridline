@@ -1439,6 +1439,7 @@ const onQueriesPanelResizeStart = useCallback(
                                     setCurrentSchema={setCurrentSchema}
                                     onEdit={() => setEditModalOpen(true)}
                                     connectionId={connectionId}
+                                    dbType={currentConnection?.db_type}
                                     searchQuery={searchQuery}
                                     onSearchChange={setSearchQuery}
                                 />
@@ -1446,7 +1447,7 @@ const onQueriesPanelResizeStart = useCallback(
                                     className="flex-1 overflow-y-auto"
                                     style={{ overscrollBehavior: "none" }}
                                 >
-                                    <TableTree searchQuery={searchQuery} />
+                                    <TableTree searchQuery={searchQuery} dbType={currentConnection?.db_type} />
                                 </div>
                             </div>
                             {/* panel resize handle */}

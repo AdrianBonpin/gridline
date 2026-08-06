@@ -7,7 +7,7 @@ import { abbreviateType } from "../../lib/utils";
 import type { ColumnInfo } from "../../lib/types";
 import * as cmd from "../../lib/commands";
 
-export function TableTree({ searchQuery }: { searchQuery?: string }) {
+export function TableTree({ searchQuery, dbType }: { searchQuery?: string; dbType?: string }) {
     const tables = useDbViewerStore((s) => s.tables);
     const currentSchema = useDbViewerStore((s) => s.currentSchema);
     const schemaTreeLoading = useDbViewerStore((s) => s.schemaTreeLoading);
@@ -113,6 +113,7 @@ export function TableTree({ searchQuery }: { searchQuery?: string }) {
                                     schema={table.schema}
                                     table={table.name}
                                     connectionId={connectionId ?? undefined}
+                                    dbType={dbType}
                                     columns={cols}
                                     onOpenTab={handleOpenTab}
                                 />

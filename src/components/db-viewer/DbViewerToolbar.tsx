@@ -13,6 +13,8 @@ import { Tooltip } from "../ui/Tooltip";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import * as cmd from "../../lib/commands";
 import { SchemaMenu } from "./SchemaMenu";
+import { getCapabilities } from "../../lib/dbCapabilities";
+import type { DbType } from "../../lib/types";
 
 export function DbViewerToolbar({
     databases,
@@ -23,6 +25,7 @@ export function DbViewerToolbar({
     setCurrentSchema,
     onEdit,
     connectionId,
+    dbType,
     searchQuery,
     onSearchChange,
 }: {
@@ -34,6 +37,7 @@ export function DbViewerToolbar({
     setCurrentSchema: (schema: string | null) => void;
     onEdit?: () => void;
     connectionId?: string;
+    dbType?: DbType;
     searchQuery: string;
     onSearchChange: (q: string) => void;
 }) {
@@ -77,6 +81,21 @@ export function DbViewerToolbar({
             if (resultTimer.current) clearTimeout(resultTimer.current);
         };
     }, []);
+
+    const handleCreateTable = useCallback(() => {
+        const schema = currentSchema ?? "public";
+        useDbViewerStore.getState().openFormTab({
+            kind: "table",
+            schema,
+            name: "",
+            title: "Create Table",
+            description: "Create Table",
+            mode: "create",
+            params: { schema, name: "", action: { op: "create", columns: [] } },
+        });
+    }, [currentSchema]);
+
+    const showCreateTable = getCapabilities(dbType ?? "postgresql").tableManagement;
 
     const handleRefresh = useCallback(async () => {
         if (!connectionId || refreshing) return;
@@ -147,14 +166,17 @@ export function DbViewerToolbar({
                             )}
                         </button>
                     </Tooltip>
-                    <Tooltip content="Create Table" side="bottom">
-                        <button
-                            aria-label="Create Table"
-                            className="w-7 h-7 rounded-md flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised cursor-pointer opacity-50"
-                        >
-                            <Plus size={14} />
-                        </button>
-                    </Tooltip>
+                    {showCreateTable && (
+                        <Tooltip content="Create Table" side="bottom">
+                            <button
+                                aria-label="Create Table"
+                                onClick={handleCreateTable}
+                                className="w-7 h-7 rounded-md flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised cursor-pointer"
+                            >
+                                <Plus size={14} />
+                            </button>
+                        </Tooltip>
+                    )}
                     <Tooltip content="Search Tables" side="bottom">
                         <button
                             aria-label="Search Tables"

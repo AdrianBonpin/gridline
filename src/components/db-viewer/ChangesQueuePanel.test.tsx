@@ -222,4 +222,18 @@ describe("ChangesQueuePanel", () => {
       expect(tabs.some((t) => t.table === "posts")).toBe(true);
     });
   });
+
+  it("renders a rebuild_table change with an amber REBUILD badge and SQL preview", () => {
+    useDbViewerStore.getState().addChange({
+      type: "rebuild_table",
+      schema: "public",
+      table: "users",
+      sql: "BEGIN; ALTER TABLE \"public\".\"users\" ...; COMMIT;",
+      description: "Rebuild public.users",
+    } as any);
+    render(<ChangesQueuePanel />);
+    expect(screen.getByText("REBUILD")).toBeInTheDocument();
+    expect(screen.getByText(/rebuild public\.users/i)).toBeInTheDocument();
+    expect(screen.getByText(/BEGIN;/)).toBeInTheDocument();
+  });
 });
