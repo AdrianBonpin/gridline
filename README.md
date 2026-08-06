@@ -1,16 +1,15 @@
 <p align="center">
   <img src="./screenshots/data-grid.png" alt="Gridline data grid with FK preview" width="92%" style="border-radius: 14px;" />
 </p>
+<p>
+  <sub><b>Data Grid & FK Preview</b> — browse 50+ real demo orders and inspect related rows in one click.</sub>
+</p>
 
 <h1>Gridline</h1>
 
 <p>
   <i>A lightweight, open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis.</i><br />
   Unlimited connections, tabs, and saved queries — with first-class <code>pg_dump</code>, <code>pg_restore</code>, and DB-to-DB sync.
-</p>
-
-<p>
-  <sub><b>Data Grid & FK Preview</b> — browse 50+ real demo orders and inspect related rows in one click.</sub>
 </p>
 
 <p>
@@ -33,14 +32,14 @@
 
 Grab the installer for your OS from the [latest release](https://github.com/AdrianBonpin/gridline/releases/latest) — the links below point at the current release (**v0.7.7**):
 
-| OS | Architecture | Download |
-| :--- | :--- | :--- |
-| **macOS** | Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.7.7_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_aarch64.dmg) |
-| **macOS** | Intel | [Gridline_0.7.7_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_x64.dmg) |
-| **Windows** | x64 | [Gridline_0.7.7_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_x64-setup.exe) |
-| **Debian / Ubuntu** | amd64 | [Gridline_0.7.7_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_amd64.deb) |
-| **Fedora / RHEL / openSUSE** | x86_64 | [Gridline-0.7.7-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline-0.7.7-1.x86_64.rpm) |
-| **Other Linux** | amd64 | [Gridline_0.7.7_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_amd64.AppImage) |
+| OS                           | Architecture                 | Download                                                                                                                         |
+| :--------------------------- | :--------------------------- | :------------------------------------------------------------------------------------------------------------------------------- |
+| **macOS**                    | Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.7.7_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_aarch64.dmg)       |
+| **macOS**                    | Intel                        | [Gridline_0.7.7_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_x64.dmg)               |
+| **Windows**                  | x64                          | [Gridline_0.7.7_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_x64-setup.exe)   |
+| **Debian / Ubuntu**          | amd64                        | [Gridline_0.7.7_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_amd64.deb)           |
+| **Fedora / RHEL / openSUSE** | x86_64                       | [Gridline-0.7.7-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline-0.7.7-1.x86_64.rpm)     |
+| **Other Linux**              | amd64                        | [Gridline_0.7.7_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_amd64.AppImage) |
 
 > Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below. All installers are **unsigned** — see the [notes](#which-file-should-i-download) on first-launch warnings.
 
@@ -215,41 +214,41 @@ Gridline is built for developers and small teams who manage multiple database en
 
 Capabilities below are fact-checked against each vendor's official docs and pricing (May 2026).
 
-| Capability                     |        DB Pro (Free)         |        Beekeeper (Free)         |      TablePlus (Free)       |                          Gridline                          |
-| :----------------------------- | :--------------------------: | :-----------------------------: | :-------------------------: | :--------------------------------------------------------: |
-| Open tabs                      |              3               |           Unlimited             |              2              |                      **Unlimited**                         |
-| Saved connections              |              2               |           Unlimited             |          Unlimited          |                      **Unlimited**                         |
-| Saved queries                  |              5               |           Unlimited             |          Unlimited          |                      **Unlimited**                         |
-| Data export (CSV, JSON, SQL)   |     ✅ (unlimited = paid)     |         Basic only              |             ✅              |              **JSON, CSV, SQL, Markdown**                  |
-| `pg_dump` / `pg_restore` GUI   |              ❌              |        ❌ paid only             |             ✅              |                   **First-class UI**                       |
-| DB-to-DB sync                  |              ❌              |                ❌                |             ❌              |                 **Built-in pipe sync**                     |
+| Capability                     |         DB Pro (Free)         |         Beekeeper (Free)          |           TablePlus (Free)           |                              Gridline                               |
+| :----------------------------- | :---------------------------: | :-------------------------------: | :----------------------------------: | :-----------------------------------------------------------------: |
+| Open tabs                      |               3               |             Unlimited             |                  2                   |                            **Unlimited**                            |
+| Saved connections              |               2               |             Unlimited             |              Unlimited               |                            **Unlimited**                            |
+| Saved queries                  |               5               |             Unlimited             |              Unlimited               |                            **Unlimited**                            |
+| Data export (CSV, JSON, SQL)   |     ✅ (unlimited = paid)     |            Basic only             |                  ✅                  |                    **JSON, CSV, SQL, Markdown**                     |
+| `pg_dump` / `pg_restore` GUI   |              ❌               |           ❌ paid only            |                  ✅                  |                         **First-class UI**                          |
+| DB-to-DB sync                  |              ❌               |                ❌                 |                  ❌                  |                       **Built-in pipe sync**                        |
 | Object explorer depth          | Tables, views, indexes, enums | Tables, views, routines, triggers | Tables, views, functions, procedures | **Functions, Triggers, Sequences, Enums, Extensions + full detail** |
-| ER diagram / schema visualizer |        ✅ view-only          |        ❌ paid only             |             ❌              |                **✅ React Flow + dagre**                   |
-| SSH tunneling                  |        ❌ paid only          |                ✅                |             ✅              |        **✅ Password + key auth, keychain**                |
-| OS credential vault            |              ✅              |                ✅                |             ✅              |   **Keychain / Secret Service / Credential Manager**       |
-| Workspace / folder hierarchy   |  ✅ query/dash folders + tags |     ✅ (5.7+, local)             |             ❌              |              **Multi-level tree + tags**                   |
-| Changes queue (stage → commit) |              ❌              |        ✅ Apply/Discard          |         ✅ Safe mode         |              **✅ Queue → Commit All**                     |
-| Desktop shell size             |           Electron            |      Electron (~250 MB)         |           Native            |                 **Tauri 2.0 (~40 MB)**                     |
-| Open source                    |              ❌              |          ✅ GPLv3                |             ❌              |                     **✅ Apache 2.0**                      |
+| ER diagram / schema visualizer |         ✅ view-only          |           ❌ paid only            |                  ❌                  |                      **✅ React Flow + dagre**                      |
+| SSH tunneling                  |         ❌ paid only          |                ✅                 |                  ✅                  |                **✅ Password + key auth, keychain**                 |
+| OS credential vault            |              ✅               |                ✅                 |                  ✅                  |         **Keychain / Secret Service / Credential Manager**          |
+| Workspace / folder hierarchy   | ✅ query/dash folders + tags  |         ✅ (5.7+, local)          |                  ❌                  |                     **Multi-level tree + tags**                     |
+| Changes queue (stage → commit) |              ❌               |         ✅ Apply/Discard          |             ✅ Safe mode             |                      **✅ Queue → Commit All**                      |
+| Desktop shell size             |           Electron            |        Electron (~250 MB)         |                Native                |                       **Tauri 2.0 (~40 MB)**                        |
+| Open source                    |              ❌               |             ✅ GPLv3              |                  ❌                  |                          **✅ Apache 2.0**                          |
 
-*Notes: DB Pro is an Electron app (launched Nov 2025) whose marketing copy overclaims — its free plan caps connections/tabs/saved queries (FAQ inconsistently claims "unlimited local connections") and gates data imports + SSH tunneling to paid, though CSV/JSON export does work on the free tier; Beekeeper's free Community edition genuinely offers unlimited tabs/connections/queries but gates backup/restore, file import, multi-table export, ERD, AI, and premium DB connectors behind paid tiers; TablePlus's free tier includes every feature but caps you at 2 open tabs / 2 windows / 2 advanced filters.*
+_Notes: DB Pro is an Electron app (launched Nov 2025) whose marketing copy overclaims — its free plan caps connections/tabs/saved queries (FAQ inconsistently claims "unlimited local connections") and gates data imports + SSH tunneling to paid, though CSV/JSON export does work on the free tier; Beekeeper's free Community edition genuinely offers unlimited tabs/connections/queries but gates backup/restore, file import, multi-table export, ERD, AI, and premium DB connectors behind paid tiers; TablePlus's free tier includes every feature but caps you at 2 open tabs / 2 windows / 2 advanced filters._
 
 ---
 
 ## Tech Stack
 
-| Layer               | Technology                                                                                                | Role                                             |
-| :------------------ | :-------------------------------------------------------------------------------------------------------- | :----------------------------------------------- |
-| **Desktop shell**   | [Tauri 2.0](https://tauri.app)                                                                            | Native webview container (~40 MB baseline)       |
-| **Backend**         | Rust + [tokio](https://tokio.rs)                                                                          | Async runtime, connection pooling, CLI execution |
+| Layer               | Technology                                                                                                | Role                                                               |
+| :------------------ | :-------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------- |
+| **Desktop shell**   | [Tauri 2.0](https://tauri.app)                                                                            | Native webview container (~40 MB baseline)                         |
+| **Backend**         | Rust + [tokio](https://tokio.rs)                                                                          | Async runtime, connection pooling, CLI execution                   |
 | **DB drivers**      | [sqlx](https://github.com/launchbadge/sqlx) / [tokio-postgres](https://github.com/sfackler/rust-postgres) | PostgreSQL via tokio-postgres; MySQL via sqlx; SQLite via rusqlite |
-| **CLI integration** | `std::process::Command`                                                                                   | Wraps bundled or system `pg_dump` / `pg_restore` |
-| **Frontend**        | [React 19](https://react.dev) + [TypeScript](https://www.typescriptlang.org)                              | Component-based UI                               |
-| **Styling**         | [Tailwind CSS](https://tailwindcss.com)                                                                   | Utility-first, dark mode, glassmorphic design    |
-| **State**           | [Zustand](https://zustand.docs.pmnd.rs) / Jotai                                                           | Domain stores                                    |
-| **Editor**          | [Monaco Editor](https://microsoft.github.io/monaco-editor/)                                               | IDE-grade SQL editing                            |
-| **Data grid**       | [TanStack Virtual](https://tanstack.com/virtual)                                                          | 100k+ row virtualization                         |
-| **Local store**     | SQLite via [rusqlite](https://github.com/rusqlite/rusqlite)                                               | Settings, saved queries, workspace state         |
+| **CLI integration** | `std::process::Command`                                                                                   | Wraps bundled or system `pg_dump` / `pg_restore`                   |
+| **Frontend**        | [React 19](https://react.dev) + [TypeScript](https://www.typescriptlang.org)                              | Component-based UI                                                 |
+| **Styling**         | [Tailwind CSS](https://tailwindcss.com)                                                                   | Utility-first, dark mode, glassmorphic design                      |
+| **State**           | [Zustand](https://zustand.docs.pmnd.rs) / Jotai                                                           | Domain stores                                                      |
+| **Editor**          | [Monaco Editor](https://microsoft.github.io/monaco-editor/)                                               | IDE-grade SQL editing                                              |
+| **Data grid**       | [TanStack Virtual](https://tanstack.com/virtual)                                                          | 100k+ row virtualization                                           |
+| **Local store**     | SQLite via [rusqlite](https://github.com/rusqlite/rusqlite)                                               | Settings, saved queries, workspace state                           |
 
 ---
 
@@ -275,14 +274,14 @@ Code signing **will be added in the future** (Apple Developer Program + a Window
 
 Each release contains **one file per platform** — you only need the one that matches your computer. The links below point at the current release (**v0.7.7**):
 
-| Your system | Download this | Notes |
-| :--- | :--- | :--- |
-| macOS **Apple Silicon** (M1/M2/M3/M4…) | [Gridline_0.7.7_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_aarch64.dmg) | `aarch64` = Apple's own chip |
-| macOS **Intel** | [Gridline_0.7.7_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_x64.dmg) | `x64` = Intel/AMD |
-| **Windows** (most PCs) | [Gridline_0.7.7_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_x64-setup.exe) | The `.msi` is an alternate installer (for enterprises/IT admins) |
-| **Debian / Ubuntu** | [Gridline_0.7.7_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_amd64.deb) | Install: `sudo apt install ./Gridline_0.7.7_amd64.deb` |
-| **Fedora / RHEL / openSUSE** | [Gridline-0.7.7-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline-0.7.7-1.x86_64.rpm) | Install: `sudo dnf install Gridline-0.7.7-1.x86_64.rpm` |
-| **Any other Linux** | [Gridline_0.7.7_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_amd64.AppImage) | Works on every distro: `chmod +x` the file, then double-click it |
+| Your system                            | Download this                                                                                                                    | Notes                                                            |
+| :------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------- |
+| macOS **Apple Silicon** (M1/M2/M3/M4…) | [Gridline_0.7.7_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_aarch64.dmg)       | `aarch64` = Apple's own chip                                     |
+| macOS **Intel**                        | [Gridline_0.7.7_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_x64.dmg)               | `x64` = Intel/AMD                                                |
+| **Windows** (most PCs)                 | [Gridline_0.7.7_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_x64-setup.exe)   | The `.msi` is an alternate installer (for enterprises/IT admins) |
+| **Debian / Ubuntu**                    | [Gridline_0.7.7_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_amd64.deb)           | Install: `sudo apt install ./Gridline_0.7.7_amd64.deb`           |
+| **Fedora / RHEL / openSUSE**           | [Gridline-0.7.7-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline-0.7.7-1.x86_64.rpm)     | Install: `sudo dnf install Gridline-0.7.7-1.x86_64.rpm`          |
+| **Any other Linux**                    | [Gridline_0.7.7_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.7/Gridline_0.7.7_amd64.AppImage) | Works on every distro: `chmod +x` the file, then double-click it |
 
 **Not sure if your Mac is Intel or Apple Silicon?** Click the **Apple menu** → **About This Mac**. If it shows "Apple M1/M2/M3/M4…" download the `aarch64` file; if it shows an Intel chip, download `x64`. Downloading the wrong one won't run.
 
