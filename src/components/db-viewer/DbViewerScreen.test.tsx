@@ -899,6 +899,23 @@ describe("DbViewerScreen", () => {
         ).toBeInTheDocument();
     });
 
+    it("objects view renders the sidebar + the tabbed workspace (New query + Changes)", () => {
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /objects/i }));
+        expect(
+            screen.getByRole("button", { name: /new query/i }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Changes queue" }),
+        ).toBeInTheDocument();
+    });
+
     it("guards the Objects view for MySQL (capability false)", () => {
         useConnectionStore.setState({
             connections: [

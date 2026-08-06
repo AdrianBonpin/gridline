@@ -1441,7 +1441,20 @@ const onQueriesPanelResizeStart = useCallback(
                             {renderQueryWorkspace()}
                         </div>
                     ) : currentView === "objects" ? (
-                        <ObjectExplorerPage connectionId={connectionId} />
+                        <div className="flex flex-1 min-h-0 overflow-hidden">
+                            <div
+                                className="border-r border-border flex flex-col shrink-0"
+                                style={{ width: tablePanelWidth }}
+                            >
+                                <ObjectExplorerPage connectionId={connectionId} sidebarMode />
+                            </div>
+                            <div
+                                className="w-1 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0 border-r border-border"
+                                onMouseDown={onPanelResizeStart}
+                                onDoubleClick={() => setTablePanelWidth(280)}
+                            />
+                            {renderQueryWorkspace()}
+                        </div>
                     ) : currentView === "tools" ? (
                         <ToolsPage connectionId={connectionId} />
                     ) : currentView === "queries" ? (

@@ -294,6 +294,56 @@ describe("ObjectExplorerPage", () => {
     await waitFor(() => expect(getFunctions).toHaveBeenCalledTimes(2));
   });
 
+  it("sidebarMode: clicking a list row opens an object tab instead of an inline detail", async () => {
+    vi.spyOn(commands, "getFunctions").mockResolvedValue([
+      {
+        name: "add",
+        schema: "public",
+        return_type: "int",
+        argument_types: [],
+        argument_names: [],
+        argument_modes: [],
+        language: "plpgsql",
+        source: "BEGIN RETURN 1; END",
+        kind: "f",
+      },
+    ]);
+    render(<ObjectExplorerPage connectionId="c1" sidebarMode />);
+    await waitFor(() =>
+      expect(screen.getByText("add")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText("add"));
+    const st = useDbViewerStore.getState();
+    expect(
+      st.tabs.some(
+        (t) => t.tabType === "object" && t.table === "add",
+      ),
+    ).toBe(true);
+  });
+
+  it("sidebarMode: does not render the inline detail pane", async () => {
+    vi.spyOn(commands, "getEnums").mockResolvedValue([
+      { name: "role", schema: "public", labels: ["admin"] },
+    ]);
+    render(<ObjectExplorerPage connectionId="c1" sidebarMode />);
+    fireEvent.click(screen.getByLabelText("Object type"));
+    fireEvent.click(screen.getByText("Enums"));
+    await waitFor(() =>
+      expect(screen.getByText("role")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText("role"));
+    // clicking opened an object tab (no inline detail selected)
+    expect(
+      useDbViewerStore
+        .getState()
+        .tabs.some((t) => t.tabType === "object"),
+    ).toBe(true);
+    // detail pane is gone; only the list remains
+    expect(
+      screen.queryByText("Select an enum to view details"),
+    ).not.toBeInTheDocument();
+  });
+
   it("preselects type from store on mount", () => {
     useDbViewerStore.setState({ selectedObjectType: "sequences" });
     render(<ObjectExplorerPage connectionId="c1" />);

@@ -20,6 +20,7 @@ import type { ObjectType, DependencyInfo } from "../../lib/types";
 
 interface ObjectExplorerPageProps {
     connectionId: string;
+    sidebarMode?: boolean;
 }
 
 const OBJECT_TYPE_OPTIONS = (Object.keys(TYPE_LABELS) as ObjectType[]).map(
@@ -80,7 +81,10 @@ function typeToDdlType(type: ObjectType): string {
     return map[type];
 }
 
-export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
+export function ObjectExplorerPage({
+    connectionId,
+    sidebarMode = false,
+}: ObjectExplorerPageProps) {
     const selectedObjectType = useDbViewerStore((s) => s.selectedObjectType);
     const [type, setType] = useState<ObjectType>(selectedObjectType ?? "functions");
     const [panelWidth, setPanelWidth] = useState(280);
@@ -118,6 +122,7 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
     const currentSchema = useDbViewerStore((s) => s.currentSchema);
     const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
     const changesQueue = useDbViewerStore((s) => s.changesQueue);
+    const openObjectTab = useDbViewerStore((s) => s.openObjectTab);
     const refreshTree = useDbViewerStore((s) => s.refreshTree);
 
     // Use store for persistence, but allow re-fetching when schema changes
@@ -293,8 +298,12 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
         <div className="flex flex-1 min-h-0 overflow-hidden">
             {/* Left panel: toolbar + object list */}
             <div
-                className="border-r border-border flex flex-col shrink-0"
-                style={{ width: panelWidth }}
+                className={
+                    sidebarMode
+                        ? "flex flex-col flex-1 min-h-0 overflow-hidden"
+                        : "border-r border-border flex flex-col shrink-0"
+                }
+                style={sidebarMode ? undefined : { width: panelWidth }}
             >
                 <div className="p-3 border-b border-border space-y-2">
                     <div className="flex items-center justify-between">
@@ -471,7 +480,16 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                             return (
                                 <div
                                     key={key}
-                                    onClick={() => setSelectedItem(item)}
+                                    onClick={() =>
+                                        sidebarMode
+                                            ? openObjectTab(
+                                                  type,
+                                                  item.schema,
+                                                  item.name,
+                                                  item,
+                                              )
+                                            : setSelectedItem(item)
+                                    }
                                     onContextMenu={(e) => {
                                         e.preventDefault();
                                         setOpenKey(key);
@@ -528,56 +546,60 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
                 </div>
             </div>
 
-            {/* Panel resize handle */}
-            <div
-                className="w-1 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0 border-r border-border"
-                onMouseDown={onPanelResizeStart}
-                onDoubleClick={() => setPanelWidth(280)}
-            />
+            {!sidebarMode && (
+                <>
+                    {/* Panel resize handle */}
+                    <div
+                        className="w-1 cursor-col-resize bg-border/20 hover:bg-accent/30 active:bg-accent/50 shrink-0 border-r border-border"
+                        onMouseDown={onPanelResizeStart}
+                        onDoubleClick={() => setPanelWidth(280)}
+                    />
 
-            {/* Right panel: detail view */}
-            <div className="flex-1 w-0 flex flex-col min-w-0 overflow-y-auto overflow-x-hidden">
-                {selectedItem ? (
-                    <>
-                        {/* Header */}
-                        <div className="px-4 py-2 flex flex-row items-center justify-between border-b border-border">
-                            <h2 className="text-lg font-semibold text-text font-mono">
-                                {itemLabel(selectedItem)}
-                            </h2>
-                            <p className="text-xs text-text-muted capitalize">
-                                {singular}
-                                {"schema" in selectedItem
-                                    ? ` · ${(selectedItem as any).schema}`
-                                    : ""}
-                            </p>
-                        </div>
+                    {/* Right panel: detail view */}
+                    <div className="flex-1 w-0 flex flex-col min-w-0 overflow-y-auto overflow-x-hidden">
+                        {selectedItem ? (
+                            <>
+                                {/* Header */}
+                                <div className="px-4 py-2 flex flex-row items-center justify-between border-b border-border">
+                                    <h2 className="text-lg font-semibold text-text font-mono">
+                                        {itemLabel(selectedItem)}
+                                    </h2>
+                                    <p className="text-xs text-text-muted capitalize">
+                                        {singular}
+                                        {"schema" in selectedItem
+                                            ? ` · ${(selectedItem as any).schema}`
+                                            : ""}
+                                    </p>
+                                </div>
 
-                        {/* Detail content */}
-                        <div style={{ overflowX: "auto", width: "100%" }}>
-                            <ObjectDetail
-                                connectionId={connectionId}
-                                type={type}
-                                item={selectedItem}
-                            />
-                        </div>
-                    </>
-                ) : (
-                    <div className="flex items-center justify-center h-full text-text-muted">
-                        <div className="text-center space-y-2">
-                            <div className="flex justify-center">
-                                {cloneElement(icon as React.ReactElement<{ size?: number }>, { size: 20 })}
+                                {/* Detail content */}
+                                <div style={{ overflowX: "auto", width: "100%" }}>
+                                    <ObjectDetail
+                                        connectionId={connectionId}
+                                        type={type}
+                                        item={selectedItem}
+                                    />
+                                </div>
+                            </>
+                        ) : (
+                            <div className="flex items-center justify-center h-full text-text-muted">
+                                <div className="text-center space-y-2">
+                                    <div className="flex justify-center">
+                                        {cloneElement(icon as React.ReactElement<{ size?: number }>, { size: 20 })}
+                                    </div>
+                                    <p className="text-sm">
+                                        Select a {singular} to view details
+                                    </p>
+                                    <p className="text-xs text-text-subtle">
+                                        {filtered.length} {label.toLowerCase()}{" "}
+                                        available
+                                    </p>
+                                </div>
                             </div>
-                            <p className="text-sm">
-                                Select a {singular} to view details
-                            </p>
-                            <p className="text-xs text-text-subtle">
-                                {filtered.length} {label.toLowerCase()}{" "}
-                                available
-                            </p>
-                        </div>
+                        )}
                     </div>
-                )}
-            </div>
+                </>
+            )}
 
             <DependencyDialog
                 open={depOpen}
