@@ -1074,6 +1074,8 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
     const schemas = useDbViewerStore((s) => s.schemas);
     const currentSchema = useDbViewerStore((s) => s.currentSchema);
     const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
+    const changesQueue = useDbViewerStore((s) => s.changesQueue);
+    const refreshTree = useDbViewerStore((s) => s.refreshTree);
 
     // Use store for persistence, but allow re-fetching when schema changes
     const [items, setItems] = useState<AnyObject[] | null>(null);
@@ -1090,6 +1092,9 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
 
     // Track last-fetched-schema so we know when to re-fetch
     const lastSchemaRef = useRef<string | undefined>(undefined);
+    // Track the last committed ddl change so a commit triggers exactly one
+    // refetch (no duplicate refetches across re-renders).
+    const lastCommittedDdlRef = useRef<string>("");
 
     // Fetch on mount and when schema changes
     const fetch = useCallback(async () => {
@@ -1154,6 +1159,21 @@ export function ObjectExplorerPage({ connectionId }: ObjectExplorerPageProps) {
             fetch();
         }
     }, [currentSchema, fetch]);
+
+    // After a commit containing ddl items succeeds, refetch the current
+    // object-type list + refresh the schema tree so newly created/dropped
+    // objects show up without a manual refresh.
+    useEffect(() => {
+        const committedDdl = changesQueue.filter(
+            (c) => c.type === "ddl" && c.status === "committed",
+        );
+        const lastCommitted = committedDdl[committedDdl.length - 1];
+        if (lastCommitted && lastCommitted.id !== lastCommittedDdlRef.current) {
+            lastCommittedDdlRef.current = lastCommitted.id;
+            fetch();
+            void refreshTree(connectionId, currentSchema ?? undefined);
+        }
+    }, [changesQueue, connectionId, currentSchema, fetch, refreshTree]);
 
     // Search toggle handling
     useEffect(() => {

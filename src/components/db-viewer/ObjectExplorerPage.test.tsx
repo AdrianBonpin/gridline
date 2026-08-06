@@ -237,6 +237,21 @@ describe("ObjectExplorerPage", () => {
     await waitFor(() => expect(screen.getByText("v")).toBeTruthy());
   });
 
+  it("refetches the current object list after a ddl commit succeeds", async () => {
+    const getFunctions = vi
+      .spyOn(commands, "getFunctions")
+      .mockResolvedValue([]);
+    render(<ObjectExplorerPage connectionId="c1" />);
+    await waitFor(() => expect(getFunctions).toHaveBeenCalledTimes(1));
+    useDbViewerStore.getState().addChange({
+      type: "ddl",
+      sql: "DROP INDEX public.i",
+      description: "Drop index i",
+    } as any);
+    useDbViewerStore.getState().markChangeCommitted("ch-1");
+    await waitFor(() => expect(getFunctions).toHaveBeenCalledTimes(2));
+  });
+
   it("preselects type from store on mount", () => {
     useDbViewerStore.setState({ selectedObjectType: "sequences" });
     render(<ObjectExplorerPage connectionId="c1" />);
