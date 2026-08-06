@@ -457,13 +457,13 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
 
             <FormSectionHeader label="Columns" count={cols.length} />
             <div className="overflow-x-auto" style={{ overscrollBehavior: "none" }}>
-              <div className="border-b border-border flex items-stretch w-max">
+              <div className="border-b border-border flex items-stretch w-full min-w-max">
                 <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center justify-center" />
                 <div className="w-8 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">#</div>
-                <div className="w-48 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Name</div>
-                <div className="w-40 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Type</div>
+                <div className="flex-1 min-w-48 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Name</div>
+                <div className="flex-1 min-w-40 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Type</div>
                 <div className="w-24 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Parameters</div>
-                <div className="w-44 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Default Value</div>
+                <div className="flex-1 min-w-44 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Default Value</div>
                 <div className="w-[360px] shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Constraints</div>
                 <div className="w-max shrink-0 border-r border-border px-3 py-1.5 flex items-center justify-end gap-1 invisible">
                   <Link size={12} />
@@ -574,7 +574,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`border-b border-border flex items-stretch w-max ${isDragging ? "opacity-60" : ""}`}
+      className={`border-b border-border flex items-stretch w-full min-w-max ${isDragging ? "opacity-60" : ""}`}
     >
       <div className="w-8 shrink-0 border-r border-border px-2 py-2 flex items-center justify-center">
         <button
@@ -591,7 +591,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
       <div className="w-8 shrink-0 border-r border-border px-3 py-2 flex items-center text-xs font-mono text-text-muted">
         {index + 1}
       </div>
-      <div className="w-48 shrink-0 border-r border-border px-3 py-2 flex items-center">
+      <div className="flex-1 min-w-48 border-r border-border px-3 py-2 flex items-center">
         <input
           className={cellInput}
           placeholder="name"
@@ -599,7 +599,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
           onChange={(e) => setCell(index, "name", e.target.value)}
         />
       </div>
-      <div className="w-40 shrink-0 border-r border-border px-3 py-2 flex items-center gap-1.5">
+      <div className="flex-1 min-w-40 border-r border-border px-3 py-2 flex items-center gap-1.5">
         <DataTypeIcon dataType={c.type} size={12} />
         <select
           aria-label="type"
@@ -623,7 +623,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
           onChange={(e) => setCell(index, "params", e.target.value)}
         />
       </div>
-      <div className="w-44 shrink-0 border-r border-border px-3 py-2 flex items-center gap-2">
+      <div className="flex-1 min-w-44 border-r border-border px-3 py-2 flex items-center gap-2">
         <input
           type="checkbox"
           aria-label="Has default"
