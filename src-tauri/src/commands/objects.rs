@@ -334,6 +334,128 @@ pub async fn build_rebuild_script(
         .await
 }
 
+// ---------------------------------------------------------------------------
+// Roles, privileges, rebuild readiness, tablespaces
+// ---------------------------------------------------------------------------
+
+/// List non-system roles with all attributes, memberships grouped by member role.
+pub(crate) async fn get_roles_inner(pm: &tokio::sync::Mutex<ConnectionPoolManager>, connection_id: &str) -> Result<Vec<crate::models::RoleInfo>, String> {
+    let mut pm = pm.lock().await;
+    let client = match pm.get(connection_id) {
+        Some(DbHandle::Postgresql(c, _)) => c,
+        Some(_) => return Err("Roles are PostgreSQL-only".into()),
+        None => return Err("Connection not found".into()),
+    };
+    let roles = client.query(&crate::db::introspection::pg_roles_query(), &[]).await
+        .map_err(|e| sanitize(&e.to_string()))?;
+    let mems = client.query(&crate::db::introspection::pg_role_memberships_query(), &[]).await
+        .map_err(|e| sanitize(&e.to_string()))?;
+    let mut by_name: std::collections::HashMap<String, crate::models::RoleInfo> = std::collections::HashMap::new();
+    for r in roles {
+        let name: String = r.get("rolname");
+        by_name.insert(name.clone(), crate::models::RoleInfo {
+            name, superuser: r.get("rolsuper"), inherit: r.get("rolinherit"),
+            create_db: r.get("rolcreatedb"), create_role: r.get("rolcreaterole"),
+            can_login: r.get("rolcanlogin"), replication: r.get("rolreplication"),
+            bypass_rls: r.get("rolbypassrls"), connection_limit: r.get("rolconnlimit"),
+            valid_until: { let v: String = r.get("rolvaliduntil"); if v.is_empty() { None } else { Some(v) } },
+            memberships: vec![],
+        });
+    }
+    for m in mems {
+        let member: String = m.get("member");
+        if let Some(ri) = by_name.get_mut(&member) {
+            ri.memberships.push(crate::models::RoleMembership {
+                role: m.get("role"), member, grantor: m.get("grantor"), admin_option: m.get("admin_option"),
+            });
+        }
+    }
+    Ok(by_name.into_values().collect())
+}
+
+#[tauri::command]
+pub async fn get_roles(connection_id: String, state: State<'_, crate::AppState>) -> Result<Vec<crate::models::RoleInfo>, String> {
+    get_roles_inner(&state.pool_manager, &connection_id).await
+}
+
+/// All privilege grants for a role across tables, sequences, routines, schemas, and databases.
+pub(crate) async fn get_role_privileges_inner(pm: &tokio::sync::Mutex<ConnectionPoolManager>, connection_id: &str, role: &str) -> Result<Vec<crate::models::PrivilegeEntry>, String> {
+    let mut pm = pm.lock().await;
+    let client = match pm.get(connection_id) {
+        Some(DbHandle::Postgresql(c, _)) => c,
+        Some(_) => return Err("Privileges are PostgreSQL-only".into()),
+        None => return Err("Connection not found".into()),
+    };
+    validate_object_name(role)?; // role is interpolated into the privilege queries
+    let mut out: Vec<crate::models::PrivilegeEntry> = Vec::new();
+    let push = |out: &mut Vec<crate::models::PrivilegeEntry>, class: &str, schema: Option<String>, name: String, privileges: Vec<String>, grantable: bool| {
+        out.push(crate::models::PrivilegeEntry { object_class: class.into(), schema, name, privileges, grantable });
+    };
+    for row in client.query(&crate::db::introspection::pg_table_privileges_query(role), &[]).await.map_err(|e| sanitize(&e.to_string()))? {
+        push(&mut out, "table", Some(row.get("schema")), row.get("name"), row.get("privileges"), row.get("grantable"));
+    }
+    for row in client.query(&crate::db::introspection::pg_sequence_privileges_query(role), &[]).await.map_err(|e| sanitize(&e.to_string()))? {
+        push(&mut out, "sequence", Some(row.get("schema")), row.get("name"), row.get("privileges"), row.get("grantable"));
+    }
+    for row in client.query(&crate::db::introspection::pg_routine_privileges_query(role), &[]).await.map_err(|e| sanitize(&e.to_string()))? {
+        push(&mut out, "routine", Some(row.get("schema")), row.get("name"), row.get("privileges"), row.get("grantable"));
+    }
+    for row in client.query(&crate::db::introspection::pg_schema_privileges_query(role), &[]).await.map_err(|e| sanitize(&e.to_string()))? {
+        push(&mut out, "schema", None, row.get("name"), row.get("privileges"), row.get("grantable"));
+    }
+    for row in client.query(&crate::db::introspection::pg_database_privileges_query(role), &[]).await.map_err(|e| sanitize(&e.to_string()))? {
+        push(&mut out, "database", None, row.get("name"), row.get("privileges"), row.get("grantable"));
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn get_role_privileges(connection_id: String, role: String, state: State<'_, crate::AppState>) -> Result<Vec<crate::models::PrivilegeEntry>, String> {
+    get_role_privileges_inner(&state.pool_manager, &connection_id, &role).await
+}
+
+/// Check whether a table can be rebuilt (no triggers, policies, inheritance, partitioning, generated columns).
+pub(crate) async fn get_table_rebuild_readiness_inner(pm: &tokio::sync::Mutex<ConnectionPoolManager>, connection_id: &str, schema: &str, table: &str) -> Result<crate::models::RebuildReadiness, String> {
+    let mut pm = pm.lock().await;
+    let client = match pm.get(connection_id) {
+        Some(DbHandle::Postgresql(c, _)) => c,
+        Some(_) => return Err("Rebuild is PostgreSQL-only".into()),
+        None => return Err("Connection not found".into()),
+    };
+    let row = client.query_one(&crate::db::introspection::pg_rebuild_readiness_query(), &[&schema, &table]).await
+        .map_err(|e| sanitize(&e.to_string()))?;
+    let mut reasons = Vec::new();
+    if row.get::<_, bool>("has_triggers") { reasons.push("table has triggers".into()); }
+    if row.get::<_, bool>("has_policies") { reasons.push("table has RLS policies".into()); }
+    if row.get::<_, bool>("is_inherits") { reasons.push("table participates in inheritance".into()); }
+    if row.get::<_, bool>("is_partitioned") { reasons.push("table is partitioned".into()); }
+    if row.get::<_, bool>("has_generated") { reasons.push("table has generated/identity columns".into()); }
+    Ok(crate::models::RebuildReadiness { ok: reasons.is_empty(), reasons })
+}
+
+#[tauri::command]
+pub async fn get_table_rebuild_readiness(connection_id: String, schema: String, table: String, state: State<'_, crate::AppState>) -> Result<crate::models::RebuildReadiness, String> {
+    get_table_rebuild_readiness_inner(&state.pool_manager, &connection_id, &schema, &table).await
+}
+
+/// List non-system tablespaces for the table-options picker.
+pub(crate) async fn get_tablespaces_inner(pm: &tokio::sync::Mutex<ConnectionPoolManager>, connection_id: &str) -> Result<Vec<crate::models::TablespaceInfo>, String> {
+    let mut pm = pm.lock().await;
+    let client = match pm.get(connection_id) {
+        Some(DbHandle::Postgresql(c, _)) => c,
+        Some(_) => return Err("Tablespaces are PostgreSQL-only".into()),
+        None => return Err("Connection not found".into()),
+    };
+    let rows = client.query(&crate::db::introspection::pg_tablespaces_query(), &[]).await
+        .map_err(|e| sanitize(&e.to_string()))?;
+    Ok(rows.into_iter().map(|r| crate::models::TablespaceInfo { name: r.get("spcname") }).collect())
+}
+
+#[tauri::command]
+pub async fn get_tablespaces(connection_id: String, state: State<'_, crate::AppState>) -> Result<Vec<crate::models::TablespaceInfo>, String> {
+    get_tablespaces_inner(&state.pool_manager, &connection_id).await
+}
+
 #[cfg(test)]
 #[path = "objects.test.rs"]
 mod tests;

@@ -118,6 +118,14 @@ async fn object_dependencies_for_table_includes_view() {
 
 #[tokio::test]
 #[ignore]
+async fn get_roles_returns_current_role_and_memberships() {
+    let (pm, id) = pool().await;
+    let roles = crate::commands::objects::get_roles_inner(&pm, &id).await.unwrap();
+    assert!(roles.iter().any(|r| r.can_login), "at least one login role (the test user)");
+}
+
+#[tokio::test]
+#[ignore]
 async fn rebuild_table_rolls_back_on_failure() {
     let (pm, id) = pool().await;
     // setup: a table with a PK + one row

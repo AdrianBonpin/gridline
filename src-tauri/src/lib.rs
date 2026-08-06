@@ -20,7 +20,7 @@ pub struct AppState {
 }
 
 use commands::{
-    backup, connections, db_viewer, demo, folders, import_export, keychain, objects, query,
+    backup, connections, db_viewer, demo, folders, import_export, keychain, maintenance, objects, query,
     schema_graph, settings, tags,
 };
 
@@ -126,6 +126,8 @@ pub fn run() {
             objects::build_object_ddl,
             objects::build_rebuild_script,
             objects::get_available_extensions,
+            objects::get_roles, objects::get_role_privileges, objects::get_table_rebuild_readiness, objects::get_tablespaces,
+            maintenance::run_maintenance,
             keychain::save_connection_password,
             keychain::get_connection_password,
             keychain::delete_connection_password,

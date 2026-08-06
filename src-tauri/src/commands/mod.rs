@@ -5,6 +5,7 @@ pub mod demo;
 pub mod folders;
 pub mod import_export;
 pub mod keychain;
+pub mod maintenance;
 pub mod objects;
 pub mod query;
 pub mod schema_graph;
