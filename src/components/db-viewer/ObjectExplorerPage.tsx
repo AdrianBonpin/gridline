@@ -3,8 +3,7 @@ import { ChevronRight, Plus, Search, X, RefreshCw } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { SelectDropdown } from "../ui/SelectDropdown";
 import { DependencyDialog } from "./DependencyDialog";
-import { ObjectContextMenu, ObjectFormFields } from "./objects/ObjectContextMenu";
-import { ObjectCrudDialog } from "./objects/ObjectCrudDialog";
+import { ObjectContextMenu } from "./objects/ObjectContextMenu";
 import {
     ObjectDetail,
     OBJECT_ICONS,
@@ -12,7 +11,7 @@ import {
     SINGULAR_LABELS,
     type AnyObject,
 } from "./objects/ObjectDetail";
-import { initialCrudParams, type DdlParams, type ObjectKind } from "../../lib/objectCrud";
+import { initialCrudParams, type ObjectKind } from "../../lib/objectCrud";
 import * as cmd from "../../lib/commands";
 import type { ObjectType, DependencyInfo } from "../../lib/types";
 
@@ -133,8 +132,6 @@ export function ObjectExplorerPage({
     const [openKey, setOpenKey] = useState<string | null>(null);
     const [depOpen, setDepOpen] = useState(false);
     const [depDeps, setDepDeps] = useState<DependencyInfo[]>([]);
-    const [crudOpen, setCrudOpen] = useState(false);
-    const [crudParams, setCrudParams] = useState<DdlParams>({});
     const [searchOpen, setSearchOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
     const searchInputRef = useRef<HTMLInputElement>(null);
@@ -262,13 +259,20 @@ export function ObjectExplorerPage({
     const label = TYPE_LABELS[type];
     const singular = SINGULAR_LABELS[type];
 
-    // Header create button: open the CRUD dialog prefilled with create state for the current type.
+    // Header create button: open an objectForm tab prefilled with create state for the current type.
     const openCreate = useCallback(() => {
         const kind = typeToDdlType(type) as ObjectKind;
-        setCrudParams(
-            initialCrudParams(kind, { schema: currentSchema ?? "public", name: "" }, "create"),
-        );
-        setCrudOpen(true);
+        const schema = currentSchema ?? "public";
+        const singular = SINGULAR_LABELS[type];
+        useDbViewerStore.getState().openFormTab({
+            kind,
+            schema,
+            name: "",
+            title: `Create ${singular}`,
+            description: `Create ${singular}`,
+            mode: "create",
+            params: initialCrudParams(kind, { schema, name: "" }, "create"),
+        });
     }, [type, currentSchema]);
 
     // Switching object type: reset selection/search, clear the stale list so
@@ -608,22 +612,6 @@ export function ObjectExplorerPage({
                 onCancel={() => setDepOpen(false)}
             />
 
-            <ObjectCrudDialog
-                open={crudOpen}
-                connectionId={connectionId}
-                kind={typeToDdlType(type) as ObjectKind}
-                title={`Create ${typeToDdlType(type)}`}
-                params={crudParams}
-                description={`Create ${typeToDdlType(type)}`}
-                onClose={() => setCrudOpen(false)}
-            >
-                <ObjectFormFields
-                    connectionId={connectionId}
-                    kind={typeToDdlType(type) as ObjectKind}
-                    params={crudParams}
-                    onChange={setCrudParams}
-                />
-            </ObjectCrudDialog>
-        </div>
+            </div>
     );
 }

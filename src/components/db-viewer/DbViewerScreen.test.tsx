@@ -929,7 +929,36 @@ describe("DbViewerScreen", () => {
         expect(screen.getByText("admin")).toBeInTheDocument();
     });
 
-    it("guards the Objects view for MySQL (capability false)", () => {
+    it("renders an objectForm tab with the Visual/SQL toggle in the objects view", async () => {
+    vi.spyOn(commands, "executeQuery").mockResolvedValue({ columns: [], rows: [], total_rows: 0, page: 1, page_size: 50 } as any);
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    vi.spyOn(commands, "getDatabases").mockResolvedValue(["mydb"]);
+    vi.spyOn(commands, "getTables").mockResolvedValue([] as any);
+    useDbViewerStore.getState().openFormTab({
+      kind: "sequence",
+      schema: "public",
+      name: "",
+      title: "Create sequence",
+      description: "Create sequence",
+      mode: "create",
+      params: { schema: "public", name: "", action: { op: "create" } },
+    });
+    render(
+      <DbViewerScreen
+        connectionId="c1"
+        onHome={() => {}}
+        onSettings={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /objects/i }));
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Sequence name")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "Visual" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SQL" })).toBeInTheDocument();
+  });
+
+  it("guards the Objects view for MySQL (capability false)", () => {
         useConnectionStore.setState({
             connections: [
                 {

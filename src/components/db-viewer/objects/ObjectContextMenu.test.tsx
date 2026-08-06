@@ -19,11 +19,7 @@ describe("ObjectContextMenu", () => {
     useDbViewerStore.getState().reset();
   });
 
-  it("Edit on a sequence opens the dialog and stages on confirm", async () => {
-    vi.mocked(objectCrud.buildObjectDdl).mockResolvedValue([
-      'ALTER SEQUENCE "public"."s"\n  INCREMENT BY 2',
-    ]);
-    const addChange = vi.spyOn(useDbViewerStore.getState(), "addChange");
+  it("Edit on a sequence opens an objectForm tab with prefilled edit params", async () => {
     render(
       <ObjectContextMenu
         connectionId="c1"
@@ -34,15 +30,32 @@ describe("ObjectContextMenu", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /actions/i }));
     fireEvent.click(screen.getByText("Edit…"));
-    expect(
-      await screen.findByText(/ALTER SEQUENCE "public"."s"/),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /stage/i }));
-    await waitFor(() =>
-      expect(addChange).toHaveBeenCalledWith(
-        expect.objectContaining({ type: "ddl" }),
-      ),
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.tabs[0].tabType).toBe("objectForm");
+    expect(st.tabs[0].form?.mode).toBe("edit");
+    expect(st.tabs[0].form?.kind).toBe("sequence");
+    expect(st.tabs[0].form?.params?.name).toBe("s");
+    expect(st.tabs[0].form?.params?.schema).toBe("public");
+  });
+
+  it("Create on a sequence opens an objectForm tab in create mode", async () => {
+    render(
+      <ObjectContextMenu
+        connectionId="c1"
+        objectType="sequence"
+        item={{ schema: "public", name: "s" }}
+        onRefresh={() => {}}
+      />,
     );
+    fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+    fireEvent.click(screen.getByText("Create…"));
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.tabs[0].tabType).toBe("objectForm");
+    expect(st.tabs[0].form?.mode).toBe("create");
+    expect(st.tabs[0].form?.kind).toBe("sequence");
+    expect(st.tabs[0].form?.params?.name).toBe("");
   });
 
   it("Drop fetches dependencies then stages the drop", async () => {

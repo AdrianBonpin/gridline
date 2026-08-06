@@ -16,6 +16,7 @@ const DestructiveQueryDialog = lazy(() =>
 import { TableTree } from "./TableTree";
 import { ObjectExplorerPage } from "./ObjectExplorerPage";
 import { ObjectDetail, type AnyObject } from "./objects/ObjectDetail";
+import { ObjectFormTab } from "./objects/ObjectFormTab";
 import { TabBar } from "./TabBar";
 import { VirtualDataGrid } from "../grid/VirtualDataGrid";
 import { RowDetailDrawer } from "../grid/RowDetailDrawer";
@@ -1000,6 +1001,11 @@ const onQueriesPanelResizeStart = useCallback(
                                                   : "Select a table from the tree to browse its data, or open a new query tab"}
                                         </span>
                                     </div>
+                                ) : activeTab?.tabType === "objectForm" ? (
+                                    <ObjectFormTab
+                                        connectionId={connectionId}
+                                        tab={activeTab}
+                                    />
                                 ) : activeTab?.tabType === "object" ? (
                                     <ObjectDetail
                                         connectionId={connectionId}

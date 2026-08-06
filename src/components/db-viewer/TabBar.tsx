@@ -16,7 +16,7 @@ import {
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ListChecks, Play, Table2, Layers, Eye, Terminal, X } from "lucide-react";
+import { ListChecks, Play, Table2, Layers, Eye, Terminal, X, Plus, Pencil } from "lucide-react";
 import { useDbViewerStore, type ViewerTab } from "../../stores/dbViewerStore";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
 import { OBJECT_ICONS } from "./objects/ObjectDetail";
@@ -203,6 +203,18 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
                           },
                       )}
                     </span>
+                  ) : tab.tabType === "objectForm" ? (
+                    tab.form?.mode === "create" ? (
+                      <Plus
+                        data-testid="tab-icon-form-create"
+                        className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
+                      />
+                    ) : (
+                      <Pencil
+                        data-testid="tab-icon-form-edit"
+                        className="mr-1.5 inline h-3.5 w-3.5 -mt-0.5 text-current"
+                      />
+                    )
                   ) : objectType === "VIEW" ? (
                     <Eye
                       data-testid="tab-icon-view"

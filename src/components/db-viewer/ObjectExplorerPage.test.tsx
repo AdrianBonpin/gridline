@@ -237,7 +237,7 @@ describe("ObjectExplorerPage", () => {
     await waitFor(() => expect(screen.getByText("v")).toBeTruthy());
   });
 
-  it("per-item menu offers Create…/Edit…/Drop… and Edit opens the dialog", async () => {
+  it("per-item menu offers Create…/Edit…/Drop… and Edit opens an objectForm tab", async () => {
     vi.spyOn(commands, "getEnums").mockResolvedValue([
       { name: "role", schema: "public", labels: ["admin"] },
     ]);
@@ -250,7 +250,10 @@ describe("ObjectExplorerPage", () => {
     expect(screen.getByText("Edit…")).toBeInTheDocument();
     expect(screen.getByText("Drop…")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Edit…"));
-    expect(screen.getByText("Edit enum")).toBeInTheDocument();
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.tabs[0].tabType).toBe("objectForm");
+    expect(st.tabs[0].form?.mode).toBe("edit");
   });
 
   it("right-click on a list row opens the context menu", async () => {
@@ -266,7 +269,7 @@ describe("ObjectExplorerPage", () => {
     expect(screen.getByText("Edit…")).toBeInTheDocument();
   });
 
-  it("header + create button opens the create dialog for the current type", async () => {
+  it("header + create button opens an objectForm create tab for the current type", async () => {
     vi.spyOn(commands, "getEnums").mockResolvedValue([
       { name: "role", schema: "public", labels: ["admin"] },
     ]);
@@ -275,8 +278,12 @@ describe("ObjectExplorerPage", () => {
     fireEvent.click(screen.getByText("Enums"));
     await waitFor(() => screen.getByText("role"));
     fireEvent.click(screen.getByRole("button", { name: /create enum/i }));
-    expect(screen.getByText("Create enum")).toBeInTheDocument();
-    expect(screen.getByText(/SQL preview/i)).toBeInTheDocument();
+    const st = useDbViewerStore.getState();
+    expect(st.tabs).toHaveLength(1);
+    expect(st.tabs[0].tabType).toBe("objectForm");
+    expect(st.tabs[0].form?.mode).toBe("create");
+    expect(st.tabs[0].form?.kind).toBe("enum");
+    expect(st.tabs[0].form?.params?.schema).toBe("public");
   });
 
   it("refetches the current object list after a ddl commit succeeds", async () => {

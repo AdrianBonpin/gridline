@@ -111,6 +111,35 @@ describe("TabBar", () => {
     expect(screen.queryByTestId("tab-icon-table")).not.toBeInTheDocument();
   });
 
+  it("renders a create icon and title on an objectForm create tab", () => {
+    useDbViewerStore.getState().openFormTab({
+      kind: "sequence",
+      schema: "public",
+      name: "",
+      title: "Create sequence",
+      description: "Create sequence",
+      mode: "create",
+      params: { schema: "public", name: "", action: { op: "create" } },
+    });
+    render(<TabBar />);
+    expect(screen.getByTestId("tab-icon-form-create")).toBeInTheDocument();
+    expect(screen.getByText("Create sequence")).toBeInTheDocument();
+  });
+
+  it("renders an edit icon on an objectForm edit tab", () => {
+    useDbViewerStore.getState().openFormTab({
+      kind: "sequence",
+      schema: "public",
+      name: "s",
+      title: "Edit sequence",
+      description: "Edit sequence",
+      mode: "edit",
+      params: { schema: "public", name: "s", action: { op: "alter" } },
+    });
+    render(<TabBar />);
+    expect(screen.getByTestId("tab-icon-form-edit")).toBeInTheDocument();
+  });
+
   it("renders a layers icon on materialized view tabs", () => {
     useDbViewerStore.getState().openTab("public", "mv_products");
     useDbViewerStore.setState({

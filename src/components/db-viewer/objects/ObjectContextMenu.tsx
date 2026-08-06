@@ -1,20 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ObjectCrudDialog } from "./ObjectCrudDialog";
-import { SequenceForm } from "./SequenceForm";
-import { EnumForm } from "./EnumForm";
-import { ExtensionForm } from "./ExtensionForm";
-import { ViewForm } from "./ViewForm";
-import { IndexForm } from "./IndexForm";
-import { ConstraintForm } from "./ConstraintForm";
-import { FunctionForm } from "./FunctionForm";
-import { TriggerForm } from "./TriggerForm";
 import { DependencyDialog } from "../DependencyDialog";
 import {
   buildObjectDdl,
   dropCrudParams,
   initialCrudParams,
   type CrudItem,
-  type DdlParams,
   type ObjectKind,
 } from "../../../lib/objectCrud";
 import { getObjectDependencies } from "../../../lib/commands";
@@ -45,63 +35,6 @@ const DROP_TITLE: Record<ObjectKind, string> = {
   trigger: "trigger",
 };
 
-/** Renders the matching CRUD form for a kind (shared by the context menu and header create button). */
-export function ObjectFormFields({
-  connectionId,
-  kind,
-  params,
-  onChange,
-}: {
-  connectionId: string;
-  kind: ObjectKind;
-  params: DdlParams;
-  onChange: (p: DdlParams) => void;
-}) {
-  switch (kind) {
-    case "sequence":
-      return <SequenceForm params={params} onChange={onChange} />;
-    case "enum":
-      return <EnumForm params={params} onChange={onChange} />;
-    case "extension":
-      return (
-        <ExtensionForm
-          connectionId={connectionId}
-          params={params}
-          onChange={onChange}
-        />
-      );
-    case "view":
-      return <ViewForm params={params} onChange={onChange} />;
-    case "index":
-      return (
-        <IndexForm
-          connectionId={connectionId}
-          params={params}
-          onChange={onChange}
-        />
-      );
-    case "constraint":
-      return (
-        <ConstraintForm
-          connectionId={connectionId}
-          params={params}
-          onChange={onChange}
-        />
-      );
-    case "function":
-    case "procedure":
-      return <FunctionForm kind={kind} params={params} onChange={onChange} />;
-    case "trigger":
-      return (
-        <TriggerForm
-          connectionId={connectionId}
-          params={params}
-          onChange={onChange}
-        />
-      );
-  }
-}
-
 export function ObjectContextMenu({
   connectionId,
   objectType,
@@ -112,8 +45,6 @@ export function ObjectContextMenu({
   extraItems,
 }: Props) {
   const [internalOpen, setInternalOpen] = useState(false);
-  const [mode, setMode] = useState<"edit" | "create" | null>(null);
-  const [params, setParams] = useState<DdlParams>({});
   const [deps, setDeps] = useState<DependencyInfo[] | null>(null);
   const addChange = useDbViewerStore((s) => s.addChange);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -147,21 +78,24 @@ export function ObjectContextMenu({
   }, []);
 
   const kind = objectType;
-  const title = `${mode === "create" ? "Create" : "Edit"} ${kind}`;
-  const description = `${mode === "create" ? "Create" : "Edit"} ${
-    item.name || kind
-  }`;
 
-  const openEdit = () => {
-    setMode("edit");
-    setParams(initialCrudParams(kind, item, "edit"));
+  const openFormTab = (mode: "create" | "edit") => {
+    const title = `${mode === "create" ? "Create" : "Edit"} ${kind}`;
+    const description = `${mode === "create" ? "Create" : "Edit"} ${
+      item.name || kind
+    }`;
+    useDbViewerStore.getState().openFormTab({
+      kind,
+      schema: item.schema,
+      name: mode === "edit" ? item.name : "",
+      title,
+      description,
+      mode,
+      params: initialCrudParams(kind, item, mode),
+    });
     setOpen(false);
   };
-  const openCreate = () => {
-    setMode("create");
-    setParams(initialCrudParams(kind, item, "create"));
-    setOpen(false);
-  };
+
   const startDrop = async () => {
     setOpen(false);
     let d: DependencyInfo[] = [];
@@ -201,13 +135,13 @@ export function ObjectContextMenu({
       {isOpen && (
         <div className="absolute right-0 top-6 z-20 w-40 rounded-lg border border-border bg-surface py-1 text-sm text-text shadow-lg">
           <button
-            onClick={openCreate}
+            onClick={() => openFormTab("create")}
             className="block w-full text-left px-3 py-1.5 hover:bg-border/30 cursor-pointer"
           >
             Create…
           </button>
           <button
-            onClick={openEdit}
+            onClick={() => openFormTab("edit")}
             className="block w-full text-left px-3 py-1.5 hover:bg-border/30 cursor-pointer"
           >
             Edit…
@@ -240,22 +174,6 @@ export function ObjectContextMenu({
           )}
         </div>
       )}
-      <ObjectCrudDialog
-        open={!!mode}
-        connectionId={connectionId}
-        kind={kind}
-        title={title}
-        params={params}
-        description={description}
-        onClose={() => setMode(null)}
-      >
-        <ObjectFormFields
-          connectionId={connectionId}
-          kind={kind}
-          params={params}
-          onChange={setParams}
-        />
-      </ObjectCrudDialog>
       <DependencyDialog
         open={!!deps}
         deps={deps ?? []}
