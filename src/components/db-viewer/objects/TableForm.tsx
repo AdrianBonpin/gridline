@@ -404,7 +404,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto overscroll-y-none">
         {refusal && (
           <div className="border-b border-border px-4 py-2">
             <p className="text-xs text-amber-400">
@@ -445,7 +445,7 @@ export function TableForm({ connectionId, tab }: { connectionId: string; tab: Vi
                 <div className="w-40 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Type</div>
                 <div className="w-24 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Parameters</div>
                 <div className="w-44 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Default Value</div>
-                <div className="w-72 shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Constraints</div>
+                <div className="w-[360px] shrink-0 border-r border-border px-3 py-1.5 flex items-center text-[11px] font-semibold text-text-muted uppercase tracking-wider">Constraints</div>
                 <div className="w-max shrink-0 border-r border-border px-3 py-1.5 flex items-center justify-end gap-1 invisible">
                   <Link size={12} />
                   <X size={12} />
@@ -620,7 +620,7 @@ function ColumnRow({ c, index, mode, setCell, onRemove, onFk }: ColumnRowProps) 
           onChange={(e) => setCell(index, "default", e.target.value)}
         />
       </div>
-      <div className="w-72 shrink-0 border-r border-border px-3 py-2 flex items-center gap-3">
+      <div className="w-[360px] shrink-0 border-r border-border px-3 py-2 flex items-center gap-3">
         {mode === "create" && (
           <>
             <label className="flex items-center gap-1 text-xs text-text-muted whitespace-nowrap">
