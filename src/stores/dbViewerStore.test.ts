@@ -551,4 +551,22 @@ describe("openFormTab", () => {
     expect(st.tabs[0].tabType).toBe("table");
     expect(st.tabs[1].tabType).toBe("objectForm");
   });
+
+  it("updateFormTabParams updates params without touching title/description/mode/kind", () => {
+    useDbViewerStore.getState().openFormTab(createOpts("my_seq"));
+    const tabId = useDbViewerStore.getState().tabs[0].id;
+    const before = useDbViewerStore.getState().tabs[0].form;
+    expect(before).toBeDefined();
+
+    useDbViewerStore
+      .getState()
+      .updateFormTabParams(tabId, { schema: "other", name: "renamed", action: { op: "create" } });
+
+    const after = useDbViewerStore.getState().tabs[0].form;
+    expect(after?.params).toEqual({ schema: "other", name: "renamed", action: { op: "create" } });
+    expect(after?.title).toBe(before?.title);
+    expect(after?.description).toBe(before?.description);
+    expect(after?.mode).toBe(before?.mode);
+    expect(after?.kind).toBe(before?.kind);
+  });
 });

@@ -134,6 +134,7 @@ interface DbViewerState {
     mode: "create" | "edit";
     params: DdlParams;
   }) => void;
+  updateFormTabParams: (tabId: string, params: DdlParams) => void;
   setDefaultPageSize: (size: number) => void;
   closeTab: (tabId: string) => void;
   reorderTab: (fromIndex: number, toIndex: number) => void;
@@ -351,6 +352,15 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     };
     set({ tabs: [...tabs, tab], activeTabId: tab.id });
   },
+
+  updateFormTabParams: (tabId, params) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId && t.tabType === "objectForm" && t.form
+          ? { ...t, form: { ...t.form, params } }
+          : t,
+      ),
+    })),
 
   setDefaultPageSize: (size) => set({ defaultPageSize: size }),
 
