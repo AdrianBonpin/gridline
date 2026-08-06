@@ -11,9 +11,11 @@ export interface FormRowProps {
   label: string;
   children: ReactNode;
   className?: string;
+  /** When false, the row shows no amber focus outline (e.g. Monaco rows). */
+  outline?: boolean;
 }
 
-export function FormRow({ label, children, className }: FormRowProps) {
+export function FormRow({ label, children, className, outline = true }: FormRowProps) {
   return (
     <div
       className={[
@@ -26,7 +28,14 @@ export function FormRow({ label, children, className }: FormRowProps) {
           {label}
         </span>
       </div>
-      <div className="flex-1 min-w-0 flex flex-row items-center focus-within:outline focus-within:outline-2 focus-within:outline-amber-400 focus-within:outline-offset-[-2px]">
+      <div
+        className={[
+          "flex-1 min-w-0 flex flex-row items-center",
+          outline
+            ? "focus-within:outline focus-within:outline-2 focus-within:outline-amber-400 focus-within:outline-offset-[-2px]"
+            : "",
+        ].join(" ")}
+      >
         {children}
       </div>
     </div>

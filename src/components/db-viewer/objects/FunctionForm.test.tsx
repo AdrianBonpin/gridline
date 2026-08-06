@@ -10,6 +10,35 @@ vi.mock("../../editor/SqlEditorField", () => ({
 }));
 
 describe("FunctionForm", () => {
+  it("regression: Body row opts out of focus-within outline; normal rows keep it", async () => {
+    const params: DdlParams = {
+      schema: "public",
+      name: "add",
+      is_procedure: false,
+      action: {
+        op: "create_or_replace",
+        args: [],
+        return_type: "int",
+        language: "plpgsql",
+        body: "",
+        volatility: null,
+        strict: false,
+      },
+    };
+    render(<FunctionForm kind="function" params={params} onChange={() => {}} />);
+
+    // Monaco rows must NOT get the amber in-cell-editing outline.
+    const editor = await screen.findByTestId("sql-editor");
+    const bodyRow = editor.closest("div.flex.flex-row");
+    expect(bodyRow?.className ?? "").not.toContain("focus-within:outline");
+
+    // Normal rows still carry the outline — the opt-out must be scoped.
+    const operationRow = screen
+      .getByLabelText("Operation")
+      .closest("div.flex.flex-row");
+    expect(operationRow?.className ?? "").toContain("focus-within:outline");
+  });
+
   it("function: renders args grid + return type; emits body", async () => {
     const onChange = vi.fn();
     const params: DdlParams = {

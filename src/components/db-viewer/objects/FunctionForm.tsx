@@ -227,7 +227,7 @@ export function FunctionForm({ kind, params, schemas, onChange }: Props) {
               <span>STRICT (RETURNS NULL ON NULL INPUT)</span>
             </label>
           </FormRow>
-          <FormRow label="Body" className="items-stretch">
+          <FormRow label="Body" className="items-stretch" outline={false}>
             <div className="min-w-0 flex-1 py-2" style={{ minHeight: 140 }}>
               <Suspense
                 fallback={

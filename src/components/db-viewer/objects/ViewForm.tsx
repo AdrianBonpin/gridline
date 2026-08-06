@@ -84,7 +84,7 @@ export function ViewForm({ params, schemas, onChange }: Props) {
           </p>
         </div>
       )}
-      <FormRow label={isMat ? "Definition" : "Body"} className="items-stretch">
+      <FormRow label={isMat ? "Definition" : "Body"} className="items-stretch" outline={false}>
         <div className="min-w-0 flex-1 py-2" style={{ minHeight: 140 }}>
           <Suspense
             fallback={
