@@ -83,6 +83,9 @@ Gridline is built for developers and small teams who manage multiple database en
 
 ## Recent Changes
 
+<details>
+<summary><b>Recent changes</b> — click to expand</summary>
+
 - **v0.7.7** — PostgreSQL **roles & grants** management (create/edit/drop roles with attributes + a per-role privilege explorer across tables/sequences/routines/schemas/databases — collapsible grouped lists with GRANT/REVOKE staging) and **table maintenance** (VACUUM / ANALYZE / REINDEX from the table menu). **Create Table / Edit Table** visual editor: columns grid with type dropdowns and drag-to-reorder, single + composite primary keys, column-diff staging (ADD / DROP / RENAME COLUMN, ALTER TYPE, SET | DROP DEFAULT, SET | DROP NOT NULL — one statement per queue item), atomic column-reorder table rebuild (single transaction, preserves constraints/indexes/FKs/grants/sequences, fail-closed for triggers/RLS/inheritance/partitioning). **FK management** — multi-column composer with cross-schema references and ON DELETE/UPDATE, inlined into CREATE TABLE; **table options** (tablespace, row-level security); changes queue auto-refreshes the object tree after schema-modifying commits; version bump.
 
 - **v0.7.6** — Full PostgreSQL object management (create/edit/drop for enums, functions, procedures, triggers, sequences, extensions, views, materialized views, indexes, constraints) staged through the changes queue with generated-SQL previews; Enable Keychain toggle wired (default ON, opt-out; OFF = session-only); Objects view upgraded to the shared tabbed workspace (object detail tabs with per-type icons, inline manual query + changes queue); ⌘K object search fixes; version bump.
@@ -99,9 +102,12 @@ Gridline is built for developers and small teams who manage multiple database en
 
 > See the full history in the [roadmap](#roadmap) below or the [git log](./commits).
 
+</details>
+
 ---
 
-## Key Features
+<details>
+<summary><b>Key features</b> — click to expand</summary>
 
 ### Connections & Workspace
 
@@ -157,6 +163,8 @@ Gridline is built for developers and small teams who manage multiple database en
 - **Bundled client tools** — `pg_dump`/`pg_restore`/`psql` ship with the app; system tools are preferred when present, bundled tools are the fallback.
 - **Roles & grants** — create/edit/drop roles with attributes; a per-role privilege explorer grouped by object class (tables, sequences, routines, schemas, databases) with collapsible lists and GRANT/REVOKE staging.
 - **Table maintenance** — VACUUM, ANALYZE, and REINDEX from the table menu.
+
+</details>
 
 ---
 
