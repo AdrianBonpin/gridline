@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { RoleGrantsEditor } from "./RoleGrantsEditor";
 import { useDbViewerStore } from "../../../stores/dbViewerStore";
 import * as cmd from "../../../lib/commands";
+import type { PrivilegeEntry } from "../../../lib/types";
 
 beforeEach(() => {
   useDbViewerStore.getState().reset();
@@ -27,12 +28,38 @@ describe("RoleGrantsEditor", () => {
     });
   });
 
-  it("renders current privileges grouped by object class", async () => {
+  it("renders current privileges grouped by object class (collapsed by default, expands on click)", async () => {
     vi.spyOn(cmd, "getRolePrivileges").mockResolvedValue([
       { object_class: "table", schema: "public", name: "users", privileges: ["SELECT"], grantable: false },
     ]);
     render(<RoleGrantsEditor connectionId="c1" role="app" />);
+    // Collapsed by default — entry not visible until the section is expanded.
+    expect(screen.queryByText("public.users")).not.toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByRole("button", { name: /toggle table privileges/i }),
+    );
     expect(await screen.findByText("public.users")).toBeInTheDocument();
     expect((await screen.findAllByText("SELECT")).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("truncates long sections to 5 entries with a fade and Show more", async () => {
+    const entries: PrivilegeEntry[] = Array.from({ length: 7 }, (_, i) => ({
+      object_class: "table",
+      schema: "public",
+      name: `t${i + 1}`,
+      privileges: ["SELECT"],
+      grantable: false,
+    }));
+    vi.spyOn(cmd, "getRolePrivileges").mockResolvedValue(entries);
+    render(<RoleGrantsEditor connectionId="c1" role="app" />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /toggle table privileges/i }),
+    );
+    expect(await screen.findByText("public.t1")).toBeInTheDocument();
+    expect(screen.getByText("public.t5")).toBeInTheDocument();
+    expect(screen.queryByText("public.t6")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /show 2 more/i }));
+    expect(await screen.findByText("public.t6")).toBeInTheDocument();
+    expect(screen.getByText("public.t7")).toBeInTheDocument();
   });
 });
