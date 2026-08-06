@@ -249,7 +249,7 @@ pub enum ConstraintAction {
     Check { expression: String },
     Unique { columns: Vec<String> },
     PrimaryKey { columns: Vec<String> },
-    ForeignKey { columns: Vec<String>, ref_schema: String, ref_table: String, ref_columns: Vec<String> },
+    ForeignKey { columns: Vec<String>, ref_schema: String, ref_table: String, ref_columns: Vec<String>, on_delete: Option<String>, on_update: Option<String>, deferrable: Option<bool>, initially_deferred: Option<bool> },
     Drop,
 }
 
@@ -270,12 +270,20 @@ pub fn constraint_ddl(p: &ConstraintParams) -> Result<Vec<String>, String> {
             if columns.is_empty() { return Err("PRIMARY KEY requires a column".into()); }
             format!("ALTER TABLE {} ADD CONSTRAINT {} PRIMARY KEY ({})", table, name, quoted_cols(columns))
         }
-        ConstraintAction::ForeignKey { columns, ref_schema, ref_table, ref_columns } => {
+        ConstraintAction::ForeignKey { columns, ref_schema, ref_table, ref_columns, on_delete, on_update, deferrable, initially_deferred } => {
             if columns.is_empty() || ref_columns.is_empty() { return Err("FOREIGN KEY requires source and referenced columns".into()); }
             validate_object_name(ref_schema)?;
             validate_object_name(ref_table)?;
             let refq = format!("{}.{}", quote_ident(ref_schema), quote_ident(ref_table));
-            format!("ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})", table, name, quoted_cols(columns), refq, quoted_cols(ref_columns))
+            let mut sql = format!("ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})", table, name, quoted_cols(columns), refq, quoted_cols(ref_columns));
+            if let Some(d) = on_delete { sql.push_str(&format!(" ON DELETE {}", d)); }
+            if let Some(u) = on_update { sql.push_str(&format!(" ON UPDATE {}", u)); }
+            match (deferrable, initially_deferred) {
+                (Some(true), Some(true)) => sql.push_str(" DEFERRABLE INITIALLY DEFERRED"),
+                (Some(true), _) => sql.push_str(" DEFERRABLE INITIALLY IMMEDIATE"),
+                _ => {}
+            }
+            sql
         }
         ConstraintAction::Drop => format!("ALTER TABLE {} DROP CONSTRAINT {}", table, name),
     }])
@@ -999,6 +1007,26 @@ mod tests {
         });
         assert_eq!(build_ddl("constraint", p).unwrap(),
             vec!["ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"fk_user\" FOREIGN KEY (\"user_id\") REFERENCES \"public\".\"users\" (\"id\")"]);
+    }
+
+    #[test]
+    fn constraint_foreign_key_with_actions() {
+        let p = serde_json::json!({
+            "schema": "public", "table": "orders", "name": "fk_user",
+            "action": {
+                "op": "foreign_key",
+                "columns": ["user_id"],
+                "ref_schema": "public",
+                "ref_table": "users",
+                "ref_columns": ["id"],
+                "on_delete": "CASCADE",
+                "on_update": "SET NULL",
+                "deferrable": true,
+                "initially_deferred": true
+            }
+        });
+        assert_eq!(build_ddl("constraint", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"fk_user\" FOREIGN KEY (\"user_id\") REFERENCES \"public\".\"users\" (\"id\") ON DELETE CASCADE ON UPDATE SET NULL DEFERRABLE INITIALLY DEFERRED"]);
     }
 
     #[test]
