@@ -90,8 +90,11 @@ describe("TabBar", () => {
     expect(icon).toBeInTheDocument();
     // Regression: the icon must stay inline with the tab name. Tailwind preflight
     // ships svg{display:block}, so the wrapper needs an explicit inline-level
-    // container (inline-flex) or the icon stacks above the name.
+    // container (inline-flex) or the icon stacks above the name. The -mt-0.5
+    // nudge optically centers the 14px icon with the text (same as the other
+    // tab icons).
     expect(icon.className).toContain("inline-flex");
+    expect(icon.className).toContain("-mt-0.5");
     expect(screen.getByText("add")).toBeInTheDocument();
   });
 

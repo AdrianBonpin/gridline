@@ -185,7 +185,7 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
                   ) : tab.tabType === "object" ? (
                     <span
                         aria-label={`object icon: ${tab.objectType}`}
-                        className="mr-1.5 inline-flex shrink-0 items-center"
+                        className="mr-1.5 inline-flex shrink-0 items-center -mt-0.5"
                     >
                       {OBJECT_ICONS[tab.objectType!]}
                     </span>
