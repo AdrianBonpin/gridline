@@ -2159,6 +2159,10 @@ pub async fn execute_change(
                     client.execute(sql, &[]).await.map_err(|e| e.to_string())?;
                     return Ok(());
                 }
+                Change::RebuildTable { sql, .. } => {
+                    client.execute(sql, &[]).await.map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
                 Change::BulkInsert {
                     schema,
                     table,
@@ -2254,6 +2258,9 @@ pub async fn execute_change(
                 Change::Ddl { .. } => {
                     return Err("Object management is PostgreSQL-only".to_string());
                 }
+                Change::RebuildTable { .. } => {
+                    return Err("Object management is PostgreSQL-only".to_string());
+                }
                 Change::BulkInsert {
                     table,
                     columns,
@@ -2327,6 +2334,9 @@ pub async fn execute_change(
                     return Ok(());
                 }
                 Change::Ddl { .. } => {
+                    return Err("Object management is PostgreSQL-only".to_string());
+                }
+                Change::RebuildTable { .. } => {
                     return Err("Object management is PostgreSQL-only".to_string());
                 }
                 Change::BulkInsert {

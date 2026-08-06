@@ -147,6 +147,55 @@ pub struct DependencyInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleMembership {
+    pub role: String,
+    pub member: String,
+    pub grantor: String,
+    pub admin_option: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleInfo {
+    pub name: String,
+    pub superuser: bool,
+    pub inherit: bool,
+    pub create_db: bool,
+    pub create_role: bool,
+    pub can_login: bool,
+    pub replication: bool,
+    pub bypass_rls: bool,
+    pub connection_limit: i64,
+    pub valid_until: Option<String>,
+    pub memberships: Vec<RoleMembership>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrivilegeEntry {
+    pub object_class: String, // "table" | "sequence" | "routine" | "schema" | "database"
+    pub schema: Option<String>,
+    pub name: String,
+    pub privileges: Vec<String>,
+    pub grantable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RebuildReadiness {
+    pub ok: bool,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaintenanceResult {
+    pub duration_ms: i64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TablespaceInfo {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
     Update {
@@ -197,6 +246,10 @@ pub enum Change {
         id: String,
         sql: String,
     },
+    RebuildTable {
+        id: String,
+        sql: String,
+    },
 }
 
 impl Change {
@@ -209,7 +262,8 @@ impl Change {
             | Change::BulkInsert { id, .. }
             | Change::DropTable { id, .. }
             | Change::EmptyTable { id, .. }
-            | Change::Ddl { id, .. } => id,
+            | Change::Ddl { id, .. }
+            | Change::RebuildTable { id, .. } => id,
         }
     }
 }
@@ -618,5 +672,62 @@ mod tests {
         let json = serde_json::to_string(&d).unwrap();
         assert!(json.contains("\"deptype\":\"n\""));
         assert!(json.contains("v_users"));
+    }
+
+    #[test]
+    fn change_rebuild_table_serializes_with_snake_case_tag() {
+        let change = Change::RebuildTable {
+            id: "chg-rb1".to_string(),
+            sql: "CREATE TABLE _t ...".to_string(),
+        };
+        let json = serde_json::to_string(&change).unwrap();
+        assert!(
+            json.contains(r#""type":"rebuild_table""#),
+            "RebuildTable should serialize with tag 'rebuild_table'; got: {json}"
+        );
+        assert_eq!(change.id(), "chg-rb1");
+    }
+
+    #[test]
+    fn change_rebuild_table_roundtrip() {
+        let json = serde_json::json!({
+            "type": "rebuild_table", "id": "rb", "sql": "SELECT 1"
+        });
+        let c: Change = serde_json::from_value(json).unwrap();
+        match c {
+            Change::RebuildTable { sql, .. } => assert_eq!(sql, "SELECT 1"),
+            _ => panic!("expected RebuildTable"),
+        }
+    }
+
+    #[test]
+    fn role_info_roundtrip() {
+        let r = RoleInfo {
+            name: "app".into(), superuser: false, inherit: true, create_db: false,
+            create_role: false, can_login: true, replication: false, bypass_rls: false,
+            connection_limit: -1, valid_until: None, memberships: vec![RoleMembership {
+                role: "parent".into(), member: "app".into(), grantor: "admin".into(), admin_option: false,
+            }],
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains(r#""name":"app""#));
+        assert!(json.contains(r#""can_login":true"#));
+        let back: RoleInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.memberships.len(), 1);
+    }
+
+    #[test]
+    fn privilege_entry_and_readiness_roundtrip() {
+        let pe = PrivilegeEntry {
+            object_class: "table".into(), schema: Some("public".into()), name: "users".into(),
+            privileges: vec!["SELECT".into(), "INSERT".into()], grantable: false,
+        };
+        assert!(serde_json::to_string(&pe).unwrap().contains(r#""object_class":"table""#));
+        let rr = RebuildReadiness { ok: false, reasons: vec!["has triggers".into()] };
+        assert!(serde_json::to_string(&rr).unwrap().contains(r#""ok":false"#));
+        let mr = MaintenanceResult { duration_ms: 42, message: "ok".into() };
+        assert!(serde_json::to_string(&mr).unwrap().contains(r#""duration_ms":42"#));
+        let ts = TablespaceInfo { name: "pg_default".into() };
+        assert!(serde_json::to_string(&ts).unwrap().contains("pg_default"));
     }
 }
