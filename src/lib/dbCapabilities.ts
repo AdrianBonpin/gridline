@@ -35,8 +35,8 @@ const ALL_FALSE: DbCapabilities = {
 
 export const DB_CAPABILITIES: Record<DbType, DbCapabilities> = {
   postgresql: { ...ALL_FALSE, explorer: true, queries: true, objects: true, visualizer: true, tools: true, editing: true, import: true, ddl: true, objectCrud: true, maintenance: true, roles: true, tableManagement: true },
-  mysql:      { ...ALL_FALSE, explorer: true, queries: true, editing: true, import: true, ddl: true },
-  sqlite:     { ...ALL_FALSE, explorer: true, queries: true, visualizer: true, editing: true, import: true, ddl: true },
+  mysql:      { ...ALL_FALSE, explorer: true, queries: true, editing: true, import: true, ddl: true, tools: true },
+  sqlite:     { ...ALL_FALSE, explorer: true, queries: true, visualizer: true, editing: true, import: true, ddl: true, tools: true, tableManagement: true },
   redis:      { ...ALL_FALSE },
 };
 

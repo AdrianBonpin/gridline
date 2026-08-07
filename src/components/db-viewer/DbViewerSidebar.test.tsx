@@ -83,7 +83,7 @@ describe("DbViewerSidebar", () => {
     expect(screen.getByLabelText(/tools/i)).toBeInTheDocument();
   });
 
-  it("hides Objects and Tools for SQLite", () => {
+  it("shows Tools but hides Objects for SQLite", () => {
     render(
       <TooltipProvider>
         <DbViewerSidebar currentView="db-viewer" onNavigate={() => {}} capabilities={DB_CAPABILITIES.sqlite} />
@@ -92,11 +92,11 @@ describe("DbViewerSidebar", () => {
     expect(screen.getByLabelText(/explorer/i)).toBeInTheDocument();
     expect(screen.getByLabelText("Queries")).toBeInTheDocument();
     expect(screen.getByLabelText(/schema visualizer/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/tools/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/objects/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/tools/i)).not.toBeInTheDocument();
   });
 
-  it("hides Objects, Visualizer, and Tools for MySQL", () => {
+  it("shows Tools but hides Objects and Visualizer for MySQL", () => {
     render(
       <TooltipProvider>
         <DbViewerSidebar currentView="db-viewer" onNavigate={() => {}} capabilities={DB_CAPABILITIES.mysql} />
@@ -104,9 +104,9 @@ describe("DbViewerSidebar", () => {
     );
     expect(screen.getByLabelText(/explorer/i)).toBeInTheDocument();
     expect(screen.getByLabelText("Queries")).toBeInTheDocument();
+    expect(screen.getByLabelText(/tools/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/schema visualizer/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/objects/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/tools/i)).not.toBeInTheDocument();
   });
 
   it("shows no top nav items for Redis (unsupported browsing)", () => {

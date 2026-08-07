@@ -11,19 +11,19 @@ describe("dbCapabilities", () => {
     });
   });
 
-  it("gives MySQL explorer/queries/editing/import/ddl but not objects/visualizer/tools", () => {
+  it("gives MySQL explorer/queries/editing/import/ddl/tools but not objects/visualizer", () => {
     const c = DB_CAPABILITIES.mysql;
     expect(c.explorer).toBe(true);
     expect(c.queries).toBe(true);
     expect(c.editing).toBe(true);
     expect(c.import).toBe(true);
     expect(c.ddl).toBe(true);
+    expect(c.tools).toBe(true);
     expect(c.objects).toBe(false);
     expect(c.visualizer).toBe(false);
-    expect(c.tools).toBe(false);
   });
 
-  it("gives SQLite explorer/queries/visualizer/editing/import/ddl but not objects/tools", () => {
+  it("gives SQLite explorer/queries/visualizer/editing/import/ddl/tools/tableManagement but not objects", () => {
     const c = DB_CAPABILITIES.sqlite;
     expect(c.explorer).toBe(true);
     expect(c.queries).toBe(true);
@@ -31,8 +31,9 @@ describe("dbCapabilities", () => {
     expect(c.editing).toBe(true);
     expect(c.import).toBe(true);
     expect(c.ddl).toBe(true);
+    expect(c.tools).toBe(true);
+    expect(c.tableManagement).toBe(true);
     expect(c.objects).toBe(false);
-    expect(c.tools).toBe(false);
   });
 
   it("gives Redis nothing (connection+test only)", () => {
@@ -79,14 +80,37 @@ describe("v0.7.7 capabilities", () => {
     expect(DB_CAPABILITIES.postgresql.roles).toBe(true);
     expect(DB_CAPABILITIES.postgresql.tableManagement).toBe(true);
   });
-  it("mysql/sqlite/redis disable maintenance, roles, tableManagement", () => {
+  it("mysql/sqlite/redis disable maintenance and roles; only sqlite also gets tableManagement", () => {
     for (const t of ["mysql", "sqlite", "redis"] as const) {
       expect(DB_CAPABILITIES[t].maintenance).toBe(false);
       expect(DB_CAPABILITIES[t].roles).toBe(false);
-      expect(DB_CAPABILITIES[t].tableManagement).toBe(false);
     }
+    expect(DB_CAPABILITIES.sqlite.tableManagement).toBe(true);
+    expect(DB_CAPABILITIES.mysql.tableManagement).toBe(false);
+    expect(DB_CAPABILITIES.redis.tableManagement).toBe(false);
   });
   it("getCapabilities is safe for unknown types", () => {
     expect(getCapabilities("bogus").maintenance).toBe(false);
+  });
+});
+
+describe("dbCapabilities v0.7.8", () => {
+  it("enables tools for mysql and sqlite", () => {
+    expect(DB_CAPABILITIES.mysql.tools).toBe(true);
+    expect(DB_CAPABILITIES.sqlite.tools).toBe(true);
+    expect(DB_CAPABILITIES.postgresql.tools).toBe(true);
+  });
+
+  it("enables tableManagement for sqlite", () => {
+    expect(DB_CAPABILITIES.sqlite.tableManagement).toBe(true);
+    expect(DB_CAPABILITIES.mysql.tableManagement).toBe(false);
+  });
+
+  it("still reports editing/import/ddl for mysql and sqlite", () => {
+    expect(DB_CAPABILITIES.mysql.editing).toBe(true);
+    expect(DB_CAPABILITIES.mysql.import).toBe(true);
+    expect(DB_CAPABILITIES.mysql.ddl).toBe(true);
+    expect(DB_CAPABILITIES.sqlite.editing).toBe(true);
+    expect(DB_CAPABILITIES.sqlite.objects).toBe(false);
   });
 });
