@@ -221,9 +221,17 @@ jobs:
             macos-latest|macos-15-intel)
               git clone --depth 1 --branch "mariadb-${MARIADB_VER}" https://github.com/MariaDB/server.git /tmp/mariadb-server
               cd /tmp/mariadb-server
-              # The in-tree Connector C probes GnuTLS on Unix regardless of
-              # WITH_SSL; brew gnutls satisfies it at build time.
-              brew install gnutls
+              # macOS connects the in-tree Connector C against brew OpenSSL
+              # (proven to build+run on the runners); the Linux-only GnuTLS
+              # probe does not fire here. Absolute brew paths are rewritten to
+              # @loader_path below so user machines resolve them from the
+              # resource dir.
+              if [ "$(uname -m)" = arm64 ]; then
+                SSL_DIR="/opt/homebrew/opt/openssl"
+              else
+                SSL_DIR="/usr/local/opt/openssl"
+              fi
+              [ -d "$SSL_DIR" ] || brew install openssl
               cmake -DCMAKE_BUILD_TYPE=Release \
                 -DWITHOUT_SERVER=ON \
                 -DWITHOUT_TOKUDB=1 \
@@ -232,7 +240,7 @@ jobs:
                 -DWITHOUT_SPIDER=1 \
                 -DWITHOUT_SEQUENCE=1 \
                 -DWITH_UNIT_TESTS=OFF \
-                -DWITH_SSL=bundled \
+                -DWITH_SSL="$SSL_DIR" \
                 -DWITH_ZLIB=bundled .
               make -j"$(sysctl -n hw.ncpu)" mariadb-dump mariadb
               for b in mariadb-dump mariadb; do
@@ -242,10 +250,11 @@ jobs:
                 cp "$src" "$OUT"/
               done
               # Rewrite absolute Homebrew dylib deps to @loader_path so the
-              # bundled clients (and GnuTLS's own deps: p11-kit, tasn1, idn2,
-              # nettle, ...) resolve from the resource dir on user machines.
-              # Fixed-point loop: each pass copies newly-seen dylibs and
-              # rewrites their parents' references until nothing new appears.
+              # bundled clients (and OpenSSL + their own deps) resolve from the
+              # resource dir on user machines. Fixed-point loop: each pass
+              # copies newly-seen dylibs and rewrites their parents' refs.
+              # Ad-hoc re-sign after each edit — arm64 dyld refuses to load a
+              # dylib whose (Homebrew) code signature was invalidated.
               for pass in 1 2 3 4 5 6; do
                 for dylib in "$OUT"/*.dylib "$OUT"/mariadb-dump "$OUT"/mariadb; do
                   [ -f "$dylib" ] || continue
@@ -254,6 +263,7 @@ jobs:
                     if [ ! -f "$OUT/$base" ]; then cp "$lib" "$OUT/$base" 2>/dev/null || true; fi
                     install_name_tool -change "$lib" "@loader_path/$base" "$dylib" 2>/dev/null || true
                   done
+                  codesign --force --sign - "$dylib" 2>/dev/null || true
                 done
               done
               ;;
