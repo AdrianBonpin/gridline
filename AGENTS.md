@@ -157,7 +157,7 @@ cargo test               # Rust tests
 2. Commit and push the feature branch
 3. Open a PR into `prod` and merge it there
 
-Direct pushes to `prod` will be bypassed only in emergencies; prefer the PR path so changes are reviewed.
+Direct pushes to `prod` will be bypassed only in emergencies; prefer the PR path so changes land through the PR gate.
 
 ### Releases
 
