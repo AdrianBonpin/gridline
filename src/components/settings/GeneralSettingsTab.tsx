@@ -7,8 +7,10 @@ import { AccentPicker } from "../ui/AccentPicker";
 import { SettingsRow } from "../ui/SettingsRow";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import * as cmd from "../../lib/commands";
+import { validateSettingsExport } from "../../lib/settingsImport";
 import type { FontSize } from "../../lib/types";
 import { useState } from "react";
+import { save, open } from "@tauri-apps/plugin-dialog";
 
 const FONT_SIZE_OPTIONS: { value: FontSize; label: string }[] = [
   { value: "small", label: "Small" },
@@ -69,6 +71,53 @@ export function GeneralSettingsTab() {
       notify(e instanceof Error ? e.message : String(e), "error");
     } finally {
       setRegenerating(false);
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      const json = await cmd.exportSettings();
+      const path = await save({
+        defaultPath: "gridline-settings.json",
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) return;
+      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+      await writeTextFile(path, json);
+      notify("Settings exported", "success");
+    } catch (e) {
+      notify(e instanceof Error ? e.message : String(e), "error");
+    }
+  };
+
+  const handleImport = async () => {
+    try {
+      const p = await open({
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!p || Array.isArray(p)) return;
+      const { readTextFile } = await import("@tauri-apps/plugin-fs");
+      const text = await readTextFile(p);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        notify("Invalid settings: file is not valid JSON", "error");
+        return;
+      }
+      const r = validateSettingsExport(parsed);
+      if (!r.ok) {
+        notify(
+          `Invalid settings: ${r.errors.map((e) => e.field).join(", ")}`,
+          "error",
+        );
+        return;
+      }
+      await cmd.importSettings(text);
+      await load();
+      notify("Settings imported", "success");
+    } catch (e) {
+      notify(e instanceof Error ? e.message : String(e), "error");
     }
   };
 
@@ -144,6 +193,36 @@ export function GeneralSettingsTab() {
               options={PAGE_SIZE_OPTIONS}
               label="Rows per page"
             />
+          </SettingsRow>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-sm font-medium text-text mb-3">Data</h2>
+        <div className="flex flex-col gap-4">
+          <SettingsRow
+            title="Export settings"
+            description="Save your settings to a JSON file."
+          >
+            <button
+              type="button"
+              onClick={handleExport}
+              className="rounded-lg border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-raised transition-colors"
+            >
+              Export settings
+            </button>
+          </SettingsRow>
+          <SettingsRow
+            title="Import settings"
+            description="Restore settings from a previously exported JSON file."
+          >
+            <button
+              type="button"
+              onClick={handleImport}
+              className="rounded-lg border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-raised transition-colors"
+            >
+              Import settings
+            </button>
           </SettingsRow>
         </div>
       </section>
