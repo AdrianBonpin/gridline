@@ -30,6 +30,7 @@ import type {
     ColumnInfo,
     ConstraintInfo,
     TablespaceInfo,
+    DbType,
 } from "../../../lib/types";
 import { getCapabilities } from "../../../lib/dbCapabilities";
 import { FkPanel, type FkDefinition } from "./FkPanel";
@@ -75,6 +76,8 @@ const PG_TYPES = [
     "money",
 ];
 
+const SQLITE_TYPES = ["integer", "real", "text", "blob", "numeric"];
+
 interface TableFormColumn {
     rowId: string;
     name: string;
@@ -96,6 +99,7 @@ interface SqlColumn {
     default: string | null;
     is_pk: boolean;
     unique?: boolean;
+    auto_increment?: boolean;
 }
 
 interface TableFormAction {
@@ -112,10 +116,14 @@ interface TableFormParams {
     action: TableFormAction;
 }
 
-function toSqlColumn(c: TableFormColumn, mode: "create" | "edit"): SqlColumn {
+function toSqlColumn(
+    c: TableFormColumn,
+    mode: "create" | "edit",
+    dbType: DbType | undefined,
+): SqlColumn {
     let type = c.type;
     const base = c.type.trim().toLowerCase();
-    if (mode === "create" && c.auto_increment) {
+    if (mode === "create" && c.auto_increment && dbType !== "sqlite") {
         if (base === "integer" || base === "int" || base === "int4")
             type = "serial";
         else if (base === "bigint" || base === "int8") type = "bigserial";
@@ -124,7 +132,7 @@ function toSqlColumn(c: TableFormColumn, mode: "create" | "edit"): SqlColumn {
     if (c.params && c.params.trim()) {
         type = `${type}(${c.params.trim()})`;
     }
-    return {
+    const out: SqlColumn = {
         name: c.name,
         type,
         nullable: c.nullable,
@@ -132,6 +140,10 @@ function toSqlColumn(c: TableFormColumn, mode: "create" | "edit"): SqlColumn {
         is_pk: c.is_pk,
         unique: c.unique ?? undefined,
     };
+    if (dbType === "sqlite" && c.auto_increment) {
+        out.auto_increment = true;
+    }
+    return out;
 }
 
 function sameColumns(a: TableFormColumn[], b: TableFormColumn[]): boolean {
@@ -175,6 +187,10 @@ const restrictToVerticalAxis: Modifier = ({ transform }) => ({
     x: 0,
 });
 
+function pickTypeList(dbType: DbType | undefined): string[] {
+    return dbType === "sqlite" ? SQLITE_TYPES : PG_TYPES;
+}
+
 // serial types only exist for the integer family (short + long forms).
 function supportsAutoIncrement(type: string): boolean {
     const t = type.trim().toLowerCase();
@@ -203,9 +219,12 @@ function buildTablePayload(
     params: TableFormParams,
     op: "create" | "edit" | "rebuild",
     foreignKeys: FkDefinition[] = [],
+    dbType: DbType | undefined,
 ): Record<string, unknown> {
     const action = params.action;
-    const sqlColumns = action.columns.map((c) => toSqlColumn(c, action.op));
+    const sqlColumns = action.columns.map((c) =>
+        toSqlColumn(c, action.op, dbType),
+    );
     return {
         ...params,
         action: {
@@ -283,6 +302,13 @@ export function TableForm({
             );
     };
 
+    // SQLite has a single schema.
+    useEffect(() => {
+        if (dbType === "sqlite" && params.schema !== "main") {
+            setParams({ ...params, schema: "main" });
+        }
+    }, [dbType, params.schema]);
+
     // Rebuild readiness check
     useEffect(() => {
         if (!isRebuild) {
@@ -343,7 +369,7 @@ export function TableForm({
             : cmd.buildObjectDdl(
                   connectionId,
                   "table",
-                  buildTablePayload(params, op, createFks),
+                  buildTablePayload(params, op, createFks, dbType),
               );
         promise
             .then((sqls: string[] | string) => {
@@ -469,7 +495,7 @@ export function TableForm({
             const sqls = await cmd.buildObjectDdl(
                 connectionId,
                 "table",
-                buildTablePayload(params, op, createFks),
+                buildTablePayload(params, op, createFks, dbType),
             );
             sqls.forEach((sql, i) =>
                 useDbViewerStore.getState().addChange({
@@ -581,7 +607,7 @@ export function TableForm({
 
                 {view === "visual" ? (
                     <>
-                        {mode === "create" && (
+                        {mode === "create" && dbType !== "sqlite" && (
                             <FormRow label="Schema">
                                 {schemas && schemas.length > 0 ? (
                                     <select
@@ -697,6 +723,7 @@ export function TableForm({
                                                     column: c.name,
                                                 })
                                             }
+                                            dbType={dbType}
                                         />
                                     ))}
                                 </SortableContext>
@@ -806,6 +833,7 @@ interface ColumnRowProps {
     onRemove: () => void;
     onFk: () => void;
     hasFk: boolean;
+    dbType: DbType | undefined;
 }
 
 function ColumnRow({
@@ -816,6 +844,7 @@ function ColumnRow({
     onRemove,
     onFk,
     hasFk,
+    dbType,
 }: ColumnRowProps) {
     const {
         attributes,
@@ -872,7 +901,9 @@ function ColumnRow({
                               Primary key
                           </label>
                           {mode === "create" &&
-                              supportsAutoIncrement(c.type) && (
+                              (dbType === "sqlite"
+                                  ? supportsAutoIncrement(c.type) && c.is_pk
+                                  : supportsAutoIncrement(c.type)) && (
                                   <label className="flex items-center gap-2 px-2 py-1 text-xs text-text whitespace-nowrap cursor-pointer">
                                       <input
                                           type="checkbox"
@@ -982,10 +1013,10 @@ function ColumnRow({
                     onChange={(e) => setCell(index, "type", e.target.value)}
                     className="min-w-0 flex-1 bg-transparent font-mono text-xs text-text outline-none cursor-pointer"
                 >
-                    {c.type !== "" && !PG_TYPES.includes(c.type) && (
+                    {c.type !== "" && !pickTypeList(dbType).includes(c.type) && (
                         <option value={c.type}>{c.type}</option>
                     )}
-                    {PG_TYPES.map((t) => (
+                    {pickTypeList(dbType).map((t) => (
                         <option key={t} value={t}>
                             {t}
                         </option>

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { TableForm } from "./TableForm";
 import { useDbViewerStore } from "../../../stores/dbViewerStore";
+import { useConnectionStore } from "../../../stores/connectionStore";
 import * as cmd from "../../../lib/commands";
 import * as objectCrud from "../../../lib/objectCrud";
 
@@ -512,5 +513,119 @@ describe("TableForm", () => {
     expect(await screen.findByText("Foreign key")).toBeInTheDocument();
     const local = (await screen.findByLabelText("Local column 1")) as HTMLSelectElement;
     expect(local.value).toBe("category_id");
+  });
+});
+
+describe("TableForm SQLite mode", () => {
+  beforeEach(() => {
+    useConnectionStore.setState({
+      connections: [
+        {
+          id: "c1",
+          db_type: "sqlite",
+          name: "SQLite",
+          host: "",
+          port: null,
+          username: null,
+          database: null,
+          folder_id: null,
+          keychain_ref: null,
+          tag_ids: [],
+          created_at: "",
+          updated_at: "",
+          favorite: false,
+        } as any,
+      ],
+    });
+  });
+
+  afterEach(() => {
+    useConnectionStore.setState({ connections: [] });
+  });
+
+  it("shows SQLite types in the dropdown and not serial", () => {
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "main",
+          name: "products",
+          action: {
+            op: "create",
+            columns: [{ name: "id", type: "integer", nullable: false, default: null, is_pk: true }],
+          },
+        },
+        title: "Create Table",
+        description: "Create Table",
+        mode: "create",
+      },
+      title: "Create Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+    const typeSel = screen.getByLabelText("type") as HTMLSelectElement;
+    const values = Array.from(typeSel.options).map((o) => o.value);
+    expect(values).toContain("integer");
+    expect(values).toContain("text");
+    expect(values).toContain("real");
+    expect(values).toContain("blob");
+    expect(values).not.toContain("serial");
+  });
+
+  it("shows INTEGER PRIMARY KEY AUTOINCREMENT in the SQL preview", async () => {
+    (cmd.buildObjectDdl as any).mockResolvedValue([
+      'CREATE TABLE "main"."t" ("id" INTEGER PRIMARY KEY AUTOINCREMENT)',
+    ]);
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "main",
+          name: "t",
+          action: {
+            op: "create",
+            columns: [{ name: "id", type: "integer", nullable: false, default: null, is_pk: true }],
+          },
+        },
+        title: "Create Table",
+        description: "Create Table",
+        mode: "create",
+      },
+      title: "Create Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+    fireEvent.click(screen.getByLabelText("Column settings"));
+    fireEvent.click(screen.getByLabelText("Auto-Increment"));
+    fireEvent.click(screen.getByLabelText("SQL"));
+    expect(
+      await screen.findByText('CREATE TABLE "main"."t" ("id" INTEGER PRIMARY KEY AUTOINCREMENT)'),
+    ).toBeInTheDocument();
+  });
+
+  it("fixes schema to main and hides the schema picker", async () => {
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "public",
+          name: "t",
+          action: { op: "create", columns: [] },
+        },
+        title: "Create Table",
+        description: "Create Table",
+        mode: "create",
+      },
+      title: "Create Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+    expect(screen.queryByLabelText("Schema")).toBeNull();
+    await waitFor(() => {
+      expect((useDbViewerStore.getState().tabs[0].form?.params as any).schema).toBe("main");
+    });
   });
 });
