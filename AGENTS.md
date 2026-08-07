@@ -149,9 +149,19 @@ cargo build              # Rust backend only (from src-tauri/)
 cargo test               # Rust tests
 ```
 
+### Branch & PR workflow
+
+**Never commit or push directly to `prod`** — `prod` is protected (branch rules require a pull request). Always:
+
+1. Branch out first — `git checkout -b feat/<short-name>` (or `fix/…`, `docs/…`) from `prod`
+2. Commit and push the feature branch
+3. Open a PR into `prod` and merge it there
+
+Direct pushes to `prod` will be bypassed only in emergencies; prefer the PR path so changes are reviewed.
+
 ### Releases
 
-Cut a release from the **`prod`** branch (never feature branches) by tagging it — `git tag vN.M.N && git push origin vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub).
+Cut a release by tagging the **`prod`** branch once the PR is merged — `git tag vN.M.N && git push origin vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub).
 
 **Before tagging**, keep everything in sync:
 - Version number across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`
