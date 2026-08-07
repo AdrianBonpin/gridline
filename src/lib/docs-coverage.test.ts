@@ -4,7 +4,7 @@ import { describe, it, expect } from "vitest";
 import agents from "../../AGENTS.md?raw";
 import readme from "../../README.md?raw";
 
-describe("v0.7.7 docs coverage", () => {
+describe("v0.7.8 docs coverage", () => {
   it("AGENTS.md marks inline cell editing complete", () => {
     expect(agents).toContain("Inline cell editing");
     expect(agents).toMatch(/Inline cell editing \| ✅/);
@@ -24,8 +24,8 @@ describe("v0.7.7 docs coverage", () => {
     expect(agents).toMatch(/Connection status indicator on cards \| ✅/);
     expect(agents).toMatch(/Move-to-folder bulk action \| ✅/);
   });
-  it("README declares v0.7.7", () => {
-    expect(readme).toContain("0.7.7");
+  it("README declares v0.7.8", () => {
+    expect(readme).toContain("0.7.8");
   });
   it("AGENTS.md marks schema CRUD complete", () => {
     expect(agents).toMatch(/Schema CRUD \| ✅/);
@@ -59,9 +59,14 @@ describe("v0.7.7 docs coverage", () => {
   it("AGENTS.md marks the Objects view tabbed workspace complete", () => {
     expect(agents).toMatch(/Objects view tabbed workspace \| ✅/);
   });
-  it("README links to v0.7.7 assets in both download tables", () => {
-    expect(readme).toContain("releases/download/v0.7.7/");
-    expect(readme).toContain("Gridline_0.7.7_aarch64.dmg");
-    expect(readme).toContain("Gridline-0.7.7-1.x86_64.rpm");
+  it("AGENTS.md marks xlsx/SQLite-dump/cancel/settings-import complete", () => {
+    expect(agents).toMatch(/Excel \(\.xlsx\) export \| ✅/);
+    expect(agents).toMatch(/Cancel long-running queries \| ✅/);
+    expect(agents).toMatch(/Settings export\/import \| ✅/);
+  });
+  it("README links to v0.7.8 assets in both download tables", () => {
+    expect(readme).toContain("releases/download/v0.7.8/");
+    expect(readme).toContain("Gridline_0.7.8_aarch64.dmg");
+    expect(readme).toContain("Gridline-0.7.8-1.x86_64.rpm");
   });
 });

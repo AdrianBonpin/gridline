@@ -166,7 +166,7 @@ Cut a release by tagging the **`prod`** branch once the PR is merged — `git ta
 **Before tagging**, keep everything in sync:
 - Version number across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`
 - `src/lib/version.test.ts` and `src/lib/docs-coverage.test.ts` if they assert the version
-- **README download links are static (versioned)** — both download tables (top **Download** section + **Which file should I download?**) link directly to the release-tag assets (`releases/download/v0.7.7/<file>`). tauri-action uses default versioned asset names (`Gridline_<ver>_aarch64.dmg`, `Gridline-<ver>-1.x86_64.rpm`, etc.) — update BOTH tables to the new names on every release (see the MAINTENANCE comment in README.md).
+- **README download links are static (versioned)** — both download tables (top **Download** section + **Which file should I download?**) link directly to the release-tag assets (`releases/download/v0.7.8/<file>`). tauri-action uses default versioned asset names (`Gridline_<ver>_aarch64.dmg`, `Gridline-<ver>-1.x86_64.rpm`, etc.) — update BOTH tables to the new names on every release (see the MAINTENANCE comment in README.md).
 - **Bundled pg tools:** `tauri.conf.json` `bundle.resources` lists `resources/pg_tools/*`; the `release.yml` matrix builds/downloads + checksum-verifies the static binaries before the Tauri build step.
 
 ### Adding a Tauri Command
@@ -270,7 +270,8 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Column show/hide | ✅ | Toggle visibility per column |
 | Column resize (drag handle) | ✅ | Double-click to auto-fit |
 | Row selection (checkboxes + select all) | ✅ | Bulk copy (JSON/CSV/SQL) and delete |
-| Export toolbar (JSON, CSV, SQL, Markdown) | ✅ | Client-side Blob download of visible rows |
+| Export toolbar (JSON, CSV, SQL, Markdown, Excel (.xlsx)) | ✅ | Client-side Blob download of visible rows; Excel (.xlsx) via client-side workbook generation (v0.7.8) |
+| Excel (.xlsx) export | ✅ | Client-side .xlsx export of visible rows alongside JSON/CSV/SQL/Markdown (v0.7.8) |
 | Auto-refresh timer | ✅ | Configurable interval in settings |
 | Changes queue (INSERT, UPDATE, DELETE, bulk_insert, empty_table, drop_table) | ✅ | Stage → **Commit All**. Tab bar **Changes** button (amber border + count badge when pending) toggles a **popover** anchored to it: header with **Visual/SQL** toggle (cards showing op badge + table + description + per-change **Revert**, or a generated-SQL preview via `buildChangeSql`), footer **Clear All** + **Commit All (N)** with **⌘S/Ctrl+S** shortcut. Committed cards show a green ✓ (failed ✗); committing `drop_table` auto-closes open tabs of that table |
 | Auto schema-tree refresh | ✅ | Tree auto-refreshes after a successful schema-modifying query run (`CREATE`/`DROP`/`ALTER`/`TRUNCATE` via `isSchemaModifyingQuery`) and after committing schema-modifying queue changes — `drop_table`, schema-modifying `ddl` (e.g. `CREATE TABLE`), and `rebuild_table` — no manual refresh needed |
@@ -296,6 +297,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Table options | ✅ | Tablespace picker (non-system, from `pg_tablespace`) + row-level security toggle in the Options section |
 | Roles & grants management | ✅ | Objects → Roles: list non-system roles (attributes incl. connection limit — `rolconnlimit::int8` cast fix), role detail with attribute grid + memberships + privilege explorer; create/edit/drop roles staged through the queue |
 | Role privilege explorer | ✅ | Per-role privileges grouped by object class (tables/sequences/routines/schemas/databases) with collapsible sections — collapsed shows first 5 + fade, expand shows all, chevron hidden when ≤5; GRANT/REVOKE composer (object class + schema + name, WITH GRANT OPTION); aclexplode-based queries (`role_sequence_grants` removed in PG 15, `schema_privileges` never existed) |
+| SQLite table editor (Create/Edit Table) | ✅ | Visual Create Table / Edit Table extended to SQLite: SQLite-aware type mapping (`INTEGER PRIMARY KEY AUTOINCREMENT` instead of `serial`, `TEXT`/`REAL`/`BLOB`) and ALTER TABLE limits respected (v0.7.8) |
 
 ### Object Explorer (non-table objects)
 | Feature | Status | Details |
@@ -329,6 +331,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Query history / recent queries | ✅ | v5 `query_history` table + v6 `favorite` column; consecutive-identical dedup + retention pruning (500/connection); `get_query_history`/`clear_query_history`/`set_history_favorite` commands; **QueryHistoryDropdown** in the query toolbar (load / run / favorite / clear, lazy fetch, loading + error states) |
 | SQL autocomplete (keywords, tables, columns) | ✅ | Completion provider in `src/lib/monacoSetup.ts` backed by `src/lib/sqlCompletion.ts` (pure, unit-tested): keywords (~60) + table names from the active schema; typing `table.` or `schema.table.` suggests that table's columns (introspected via `get_schema_graph`, cached per schema in memory, `incomplete: true` warm-up on first use) |
 | Multiple result sets | ❌ | |
+| Cancel long-running queries | ✅ | Per-connection cancel from the query toolbar (`pg_cancel_backend` / MySQL `KILL` / SQLite interruption) instead of waiting or killing the app (v0.7.8) |
 | Saved queries (named, organized) | ✅ | v6 `queries` table (nullable `connection_id` for global queries, `folder` field, `ON DELETE CASCADE`); `save_query`/`get_saved_queries`/`update_saved_query`/`delete_saved_query` commands with validation (name ≤200, folder ≤100, text ≤1MB); **SaveQueryDialog** (name + folder, empty-name guard); managed in the Queries view Saved tab |
 | Query favorites / pinning | ✅ | Star toggle per history entry via `set_history_favorite`; favorites-only filter in the Queries view History tab |
 | Queries view | ✅ | Two-pane layout following Explorer: left sidebar (Explorer-styled header — Queries title, History/Saved dropdown, favorites/clear/search icons, animated search) scoped to the **current connection**, right side reuses the shared tabbed query workspace (TabBar + toolbar + editor + results); clicking a history/saved row loads it into the editor |
@@ -344,7 +347,8 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | DB-to-DB sync | ✅ | In-page view: source/target connection pickers, schema dropdown, pipe-based pg_dump → pg_restore. **pg_restore side passes `--clean --if-exists`**, so sync works into a non-empty target (UI already requires destructive-overwrite confirmation). Core logic in headless-testable `run_db_sync` |
 | Unified Tools view | ✅ | Backup / Restore / DB Sync merged into a single **Tools** nav item; operation-switcher dropdown in the view toolbar, existing forms rendered below |
 | Bundled PostgreSQL client tools | ✅ | Static pg_dump/pg_restore/psql shipped as Tauri resources; system-first, bundled-fallback resolution via resource_dir (v0.7.5) |
-| SQLite .dump | ❌ | |
+| SQLite .dump (backup/restore) | ✅ | Backup a SQLite database to a portable SQL dump and restore it back, matching the pg_dump UX (v0.7.8) |
+| Backup / Restore / Sync for MySQL & SQLite | ✅ | MySQL backup/restore via mysqldump (system-first); DB-to-DB sync extended beyond PostgreSQL (v0.7.8) |
 | Table structure export (DDL) | ❌ | |
 
 ### Settings
@@ -352,6 +356,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | :--- | :---: | :--- |
 | Settings screen (redesigned) | ✅ | DB-viewer-styled shell: icon+text sidebar (Back on top, accent background), header shows the active tab, border-sharp sections with gap-spaced rows (no cards), Back returns to the view it was opened from (push/pop in `uiStore`) |
 | Theme (dark/light/system) | ✅ | Applied live via a `.light` class on the document root (dark-first base palette); "system" follows the OS via `matchMedia` and live-updates; native window chrome synced through Tauri `setTheme`/`setBackgroundColor` with a macOS **Overlay** titlebar (in-flow drag strip) |
+| Windows/Linux title bar fix | ✅ | macOS-only overlay drag strip (`h-7` in `App.tsx`) gated to macOS; Windows/Linux use the native title bar for dragging (v0.7.8) |
 | Font size | ✅ | rem scale via `data-font-size` on the root (`small`/`medium`/`large`) |
 | Accent color | ✅ | 10-preset circle palette in General → Appearance; applied via `--color-accent` on the root; hover/muted shades derive from it via `color-mix` |
 | Default folder for new connections | ✅ | Honored on startup — Home opens into `default_folder_id` unless the user has already navigated |
@@ -364,7 +369,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | More keyboard shortcuts | ❌ | Only 2 configurable actions |
 | Editor settings | ✅ | Five options wired to the settings store + live Monaco `updateOptions` |
 | SSH key management | ❌ | Only path inputs, no key file reading |
-| Settings export/import | ❌ | |
+| Settings export/import | ✅ | Export/import settings (theme, accent, editor options, page sizes, defaults) as a JSON file (v0.7.8) |
 
 ### Demo & Onboarding
 | Feature | Status | Details |
