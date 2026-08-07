@@ -2,6 +2,7 @@
 // of runtime usage, producing expected dead_code/unused warnings during development.
 #![allow(dead_code)]
 
+mod cancel;
 mod commands;
 mod db;
 mod models;
