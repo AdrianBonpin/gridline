@@ -5,6 +5,7 @@ import {
   ChevronDown, FileJson, FileText, Terminal,
 } from "lucide-react";
 import { useDbViewerStore, type FilterRule, type SortRule } from "../../stores/dbViewerStore";
+import { useNotificationStore } from "../../stores/notificationStore";
 import { FilterBuilder } from "./FilterBuilder";
 import { Tooltip } from "../ui/Tooltip";
 import { exportData } from "../../lib/exportData";
@@ -431,6 +432,7 @@ export function TableControls({
   variant = "table",
 }: TableControlsProps) {
   const isQuery = variant === "query";
+  const notify = useNotificationStore((s) => s.notify);
   const tabs = useDbViewerStore((s) => s.tabs);
   const activeTabId = useDbViewerStore((s) => s.activeTabId);
   const setPage = useDbViewerStore((s) => s.setPage);
@@ -496,7 +498,20 @@ export function TableControls({
   };
 
   const handleExport = (format: string) => {
-    exportData(rows, columns, format, table);
+    const label =
+      EXPORT_FORMATS.find((f) => f.ext === format)?.label ?? format.toUpperCase();
+    try {
+      exportData(rows, columns, format, table);
+      notify(
+        `Exported ${rows.length} row${rows.length === 1 ? "" : "s"} as ${label}`,
+        "success",
+      );
+    } catch (e) {
+      notify(
+        `Export failed: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+    }
     setExportOpen(false);
   };
 

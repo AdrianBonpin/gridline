@@ -4,6 +4,8 @@ import type { ComponentProps } from "react";
 import { TableControls, formatDuration } from "./TableControls";
 import { TooltipProvider } from "../ui/Tooltip";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useNotificationStore } from "../../stores/notificationStore";
+import * as exportData from "../../lib/exportData";
 import type { ViewerTab } from "../../stores/dbViewerStore";
 
 const columns = [
@@ -341,5 +343,18 @@ describe("TableControls", () => {
     expect(screen.getByText("SQL")).toBeInTheDocument();
     expect(screen.getByText("Markdown")).toBeInTheDocument();
     expect(screen.getByText("Excel")).toBeInTheDocument();
+  });
+
+  it("notifies after a successful export", () => {
+    seed([makeTab()], "tab-1");
+    useNotificationStore.getState().notifications.length = 0;
+    vi.spyOn(exportData, "exportData").mockImplementation(() => {});
+    renderControls();
+    fireEvent.click(screen.getByLabelText(/export/i));
+    fireEvent.click(screen.getByText("Excel"));
+    const st = useNotificationStore.getState();
+    expect(
+      st.notifications.some((n) => n.message.toLowerCase().includes("exported")),
+    ).toBe(true);
   });
 });

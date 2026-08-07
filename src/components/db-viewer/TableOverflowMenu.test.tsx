@@ -119,6 +119,19 @@ describe("TableOverflowMenu", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "csv", "public.t"));
   });
 
+  it("Excel export calls exportData and notifies", async () => {
+    const spy = vi.spyOn(exportData, "exportData").mockImplementation(() => {});
+    const { useNotificationStore } = await import("../../stores/notificationStore");
+    useNotificationStore.getState().notifications.length = 0;
+    const columns = [{ name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false }];
+    render(<TableOverflowMenu schema="public" table="t" onOpenTab={() => "tab-1"} columns={columns} rows={[[1]]} />);
+    fireEvent.click(screen.getByLabelText(/table options/i));
+    fireEvent.click(screen.getByText(/export data \(excel\)/i));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "xlsx", "public.t"));
+    const st = useNotificationStore.getState();
+    expect(st.notifications.some((n) => n.message.toLowerCase().includes("exported"))).toBe(true);
+  });
+
   it("maintenance items are gated by capability and run via confirm", async () => {
     vi.spyOn(commands, "runMaintenance").mockResolvedValue({ duration_ms: 3, message: "VACUUM completed" });
     render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => ""} connectionId="c1" />);

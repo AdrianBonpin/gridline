@@ -133,10 +133,30 @@ export function TableOverflowMenu({
       case "export-csv":
       case "export-json":
       case "export-sql":
-      case "export-md": {
+      case "export-md":
+      case "export-xlsx": {
         const format = id.replace("export-", "");
+        const label =
+          format === "xlsx"
+            ? "Excel"
+            : format === "md"
+              ? "Markdown"
+              : format.toUpperCase();
         if (rows && rows.length > 0 && columns && columns.length > 0) {
-          exportData(rows, columns, format, `${schema}.${table}`);
+          try {
+            exportData(rows, columns, format, `${schema}.${table}`);
+            notify(
+              `Exported ${rows.length} row${rows.length === 1 ? "" : "s"} as ${label}`,
+              "success",
+            );
+          } catch (e) {
+            notify(
+              `Export failed: ${e instanceof Error ? e.message : String(e)}`,
+              "error",
+            );
+          }
+        } else {
+          notify("Nothing to export", "info");
         }
         setOpen(false);
         break;
