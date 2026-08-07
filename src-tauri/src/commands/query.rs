@@ -18,6 +18,30 @@ use tauri::State;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
+// Cancel-error classification
+// ---------------------------------------------------------------------------
+// The wrapped→raw fallback exists for queries that can't be wrapped (CTEs,
+// multi-statement, non-SELECT). A USER CANCELLATION is NOT a wrapping failure:
+// swallowing it would re-run the very query the user just cancelled — and for
+// SQLite the interrupt flag is consumed by the aborted step, so the re-run
+// runs completely free. These helpers let the fallbacks propagate cancellations.
+
+fn is_sqlite_cancel_error(e: &rusqlite::Error) -> bool {
+    e.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted)
+}
+
+fn is_pg_cancel_error(e: &tokio_postgres::Error) -> bool {
+    e.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED)
+}
+
+fn is_mysql_cancel_error(e: &sqlx::Error) -> bool {
+    match e.as_database_error().and_then(|d| d.code()) {
+        Some(code) if code == "1317" => true, // ER_QUERY_INTERRUPTED (KILL QUERY)
+        _ => e.to_string().to_lowercase().contains("interrupted"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // QueryHistoryEntry
 // ---------------------------------------------------------------------------
 
@@ -87,6 +111,7 @@ impl From<crate::store::SavedQueryRow> for SavedQueryCommand {
 pub(crate) async fn execute_query_inner(
     pool_manager: &mut crate::db::pool::ConnectionPoolManager,
     db_store: &std::sync::Mutex<crate::store::Store>,
+    cancel_registry: &crate::cancel::CancelRegistry,
     connection_id: &str,
     query: &str,
     page: i64,
@@ -101,7 +126,25 @@ pub(crate) async fn execute_query_inner(
             execute_pg_query(client, query, page, page_size).await
         }
         Some(DbHandle::Sqlite(conn)) => execute_sqlite_query(conn, query, page, page_size),
-        Some(DbHandle::MySql(pool)) => execute_mysql_query(pool, query, page, page_size).await,
+        Some(DbHandle::MySql(pool)) => {
+            // Run on a dedicated pooled connection so the query's MySQL
+            // CONNECTION_ID can be tracked for cancellation (`KILL QUERY ?`).
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
+            // CAST to SIGNED: MySQL returns CONNECTION_ID() as BIGINT UNSIGNED,
+            // which sqlx refuses to decode into i64 (ColumnDecode error) — a
+            // silent unwrap_or(-1) here would make KILL QUERY -1 fail.
+            let conn_id: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap_or(-1);
+            cancel_registry.set_mysql_conn_id(connection_id, Some(conn_id));
+            let result = execute_mysql_query_on(&mut *conn, query, page, page_size).await;
+            cancel_registry.set_mysql_conn_id(connection_id, None);
+            result
+        }
         None => {
             let elapsed = start.elapsed().as_millis() as i64;
             let err = "Connection not found".to_string();
@@ -210,6 +253,7 @@ async fn execute_pg_query(
     // Try the wrapped count query first — if this fails we fall back to raw.
     let total_rows: i64 = match client.query_one(&wrapped_count, &[]).await {
         Ok(row) => row.get::<_, i64>(0),
+        Err(e) if is_pg_cancel_error(&e) => return Err("Query cancelled".to_string()),
         Err(_) => {
             // Wrapping failed — fall back to raw execution.
             return execute_pg_raw(client, trimmed, page, page_size, off).await;
@@ -219,6 +263,7 @@ async fn execute_pg_query(
     // Now execute the wrapped data query.
     let data_rows = match client.query(&wrapped_data, &[&page_size, &off]).await {
         Ok(rows) => rows,
+        Err(e) if is_pg_cancel_error(&e) => return Err("Query cancelled".to_string()),
         Err(_) => {
             return execute_pg_raw(client, trimmed, page, page_size, off).await;
         }
@@ -381,6 +426,7 @@ fn execute_sqlite_query(
     // Try the wrapped count query first.
     let total_rows: i64 = match conn.query_row(&wrapped_count, [], |row| row.get::<_, i64>(0)) {
         Ok(n) => n,
+        Err(e) if is_sqlite_cancel_error(&e) => return Err("Query cancelled".to_string()),
         Err(_) => {
             // Wrapping failed — fall back to raw execution.
             return execute_sqlite_raw(conn, trimmed, page, page_size, off);
@@ -390,6 +436,11 @@ fn execute_sqlite_query(
     // Execute the wrapped data query.
     let (columns, all_rows) = match execute_sqlite_with_query(conn, &wrapped_data) {
         Ok(result) => result,
+        // The data-step error is already a String (mapped inside
+        // execute_sqlite_with_query); classify by the interrupt message.
+        Err(e) if e.to_lowercase().contains("interrupted") => {
+            return Err("Query cancelled".to_string());
+        }
         Err(_) => {
             return execute_sqlite_raw(conn, trimmed, page, page_size, off);
         }
@@ -533,8 +584,8 @@ pub(crate) fn mysql_cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde
     serde_json::Value::Null
 }
 
-async fn execute_mysql_query(
-    pool: &sqlx::MySqlPool,
+async fn execute_mysql_query_on(
+    conn: &mut sqlx::mysql::MySqlConnection,
     query: &str,
     page: i64,
     page_size: i64,
@@ -547,21 +598,23 @@ async fn execute_mysql_query(
 
     // Try the wrapped count first; fall back to raw on failure.
     let total_rows: i64 = match sqlx::query_scalar::<_, i64>(&mysql_wrap_count(trimmed))
-        .fetch_one(pool)
+        .fetch_one(&mut *conn)
         .await
     {
         Ok(n) => n,
-        Err(_) => return execute_mysql_raw(pool, trimmed, page, page_size, off).await,
+        Err(e) if is_mysql_cancel_error(&e) => return Err("Query cancelled".to_string()),
+        Err(_) => return execute_mysql_raw(&mut *conn, trimmed, page, page_size, off).await,
     };
 
     let data_rows = match sqlx::query(&mysql_wrap_data(trimmed))
         .bind(page_size)
         .bind(off)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
     {
         Ok(rows) => rows,
-        Err(_) => return execute_mysql_raw(pool, trimmed, page, page_size, off).await,
+        Err(e) if is_mysql_cancel_error(&e) => return Err("Query cancelled".to_string()),
+        Err(_) => return execute_mysql_raw(&mut *conn, trimmed, page, page_size, off).await,
     };
 
     let columns: Vec<ColumnInfo> = match data_rows.first() {
@@ -580,7 +633,7 @@ async fn execute_mysql_query(
                 is_generated: false,
             })
             .collect(),
-        None => return execute_mysql_raw(pool, trimmed, page, page_size, off).await,
+        None => return execute_mysql_raw(&mut *conn, trimmed, page, page_size, off).await,
     };
 
     let rows: Vec<Vec<serde_json::Value>> = data_rows
@@ -602,14 +655,14 @@ async fn execute_mysql_query(
 /// mirroring the PG `simple_query` raw path. Used when wrapping fails
 /// (e.g., multi-statement or non-selectable SQL).
 async fn execute_mysql_raw(
-    pool: &sqlx::MySqlPool,
+    conn: &mut sqlx::mysql::MySqlConnection,
     query: &str,
     page: i64,
     page_size: i64,
     off: i64,
 ) -> Result<QueryResult, String> {
     let rows = sqlx::query(query)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
 
@@ -748,7 +801,70 @@ pub async fn execute_query(
     let p = page.unwrap_or(1);
     let ps = page_size.unwrap_or(50);
     let mut pm = state.pool_manager.lock().await;
-    execute_query_inner(&mut pm, &state.db_store, &connection_id, &query, p, ps).await
+    execute_query_inner(
+        &mut pm,
+        &state.db_store,
+        &state.cancel_registry,
+        &connection_id,
+        &query,
+        p,
+        ps,
+    )
+    .await
+}
+
+/// Cancel a query currently running on the given connection.
+///
+/// - PostgreSQL: opens a short-lived cancel connection (reusing the exact TLS
+///   decision/config from connect) and sends a cancel request keyed to the
+///   original backend.
+/// - MySQL: opens a fresh connection and runs `KILL QUERY <conn_id>` for the
+///   connection currently running the query (registered per-query).
+/// - SQLite: signals the per-connection `InterruptHandle` (thread-safe).
+#[tauri::command]
+pub async fn cancel_query(
+    connection_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    use sqlx::ConnectOptions;
+    match state.cancel_registry.get(&connection_id) {
+        Some(crate::cancel::CancelHandle::Pg(pg)) => {
+            // A Verify/Require decision always carries a built rustls config,
+            // so the unwrap on the non-Disable branch is safe by construction.
+            match pg.tls_decision {
+                crate::db::tls::TlsDecision::Disable => {
+                    pg.cancel_token.cancel_query(tokio_postgres::NoTls).await
+                }
+                _ => {
+                    let connector = tokio_postgres_rustls::MakeRustlsConnect::new(
+                        (*pg.tls_config.expect("tls config for non-disable decision")).clone(),
+                    );
+                    pg.cancel_token.cancel_query(connector).await
+                }
+            }
+            .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))
+        }
+        Some(crate::cancel::CancelHandle::MySql(m)) => {
+            let id = m
+                .conn_id
+                .ok_or_else(|| "No active query on this connection".to_string())?;
+            let mut c = m
+                .connect_options
+                .connect()
+                .await
+                .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
+            sqlx::query(&format!("KILL QUERY {id}"))
+                .execute(&mut c)
+                .await
+                .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
+            Ok(())
+        }
+        Some(crate::cancel::CancelHandle::Sqlite(s)) => {
+            s.interrupt();
+            Ok(())
+        }
+        None => Err("No active cancel handle for this connection".into()),
+    }
 }
 
 #[tauri::command]
@@ -1137,5 +1253,128 @@ mod tests {
     fn mysql_wrapped_count_shape_uses_subquery_alias() {
         let q = mysql_wrap_count("SELECT * FROM t");
         assert_eq!(q, "SELECT COUNT(*) FROM (SELECT * FROM t) AS _gridline_cnt");
+    }
+
+    // ------------------------------------------------------------------
+    // Cancel propagation (v0.7.8 bugfix): a user cancel must NOT be swallowed
+    // by the wrapped→raw fallback (which would re-run the cancelled query).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn is_sqlite_cancel_error_classifies_interrupt() {
+        let interrupted = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+            Some("interrupted".to_string()),
+        );
+        assert!(is_sqlite_cancel_error(&interrupted));
+
+        let other = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+            Some("SQL logic error".to_string()),
+        );
+        assert!(!is_sqlite_cancel_error(&other));
+    }
+
+    #[test]
+    fn sqlite_cancel_aborts_wrapped_query_without_rerun() {
+        use std::sync::mpsc;
+        // A slow query whose wrapped COUNT step takes seconds — interrupt() must
+        // abort it and surface "Query cancelled" instead of falling back to the
+        // raw re-run (which would consume the interrupt flag and run to
+        // completion, hiding the cancellation).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let handle = conn.get_interrupt_handle();
+        let slow = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c LIMIT 50000000) SELECT count(*) AS n FROM c";
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let res = execute_sqlite_query(&conn, slow, 1, 50);
+            let cancelled = match &res {
+                Err(msg) => msg.contains("Query cancelled"),
+                Ok(_) => false,
+            };
+            let _ = tx.send(cancelled);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        handle.interrupt();
+        let cancelled = rx
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .expect("query thread must finish");
+        assert!(cancelled, "cancel must abort the wrapped query with 'Query cancelled' instead of re-running it");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn pg_cancel_aborts_wrapped_query_without_rerun() {
+        let h = std::env::var("GRIDLINE_TEST_PG_HOST").expect("set GRIDLINE_TEST_PG_HOST");
+        let p: u16 = std::env::var("GRIDLINE_TEST_PG_PORT")
+            .unwrap_or_else(|_| "5432".into())
+            .parse()
+            .unwrap();
+        let u = std::env::var("GRIDLINE_TEST_PG_USER").expect("set GRIDLINE_TEST_PG_USER");
+        let d = std::env::var("GRIDLINE_TEST_PG_DB").expect("set GRIDLINE_TEST_PG_DB");
+        let pw = std::env::var("GRIDLINE_TEST_PG_PASSWORD").unwrap_or_default();
+        let (client, conn) = tokio_postgres::connect(
+            &format!("host={h} port={p} user={u} dbname={d} password={pw}"),
+            tokio_postgres::NoTls,
+        )
+        .await
+        .expect("connect to test PG");
+        let handle = tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let token = client.cancel_token();
+        let run = tokio::spawn(async move {
+            execute_pg_query(&client, "SELECT pg_sleep(3)", 1, 50).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        token
+            .cancel_query(tokio_postgres::NoTls)
+            .await
+            .expect("cancel request");
+        let res = run.await.expect("query task");
+        assert!(res.is_err(), "pg_sleep must be cancelled, not re-run; got {res:?}");
+        assert!(res.unwrap_err().contains("Query cancelled"));
+        let _ = handle;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn mysql_cancel_aborts_wrapped_query_without_rerun() {
+        use sqlx::ConnectOptions;
+        let h = std::env::var("GRIDLINE_TEST_MYSQL_HOST").expect("set GRIDLINE_TEST_MYSQL_HOST");
+        let p: u16 = std::env::var("GRIDLINE_TEST_MYSQL_PORT")
+            .unwrap_or_else(|_| "3306".into())
+            .parse()
+            .unwrap();
+        let u = std::env::var("GRIDLINE_TEST_MYSQL_USER").expect("set GRIDLINE_TEST_MYSQL_USER");
+        let pw = std::env::var("GRIDLINE_TEST_MYSQL_PASS").unwrap_or_default();
+        let db = std::env::var("GRIDLINE_TEST_MYSQL_DB").unwrap_or_default();
+        let opts = sqlx::mysql::MySqlConnectOptions::new()
+            .host(&h)
+            .port(p)
+            .username(&u)
+            .password(&pw)
+            .database(&db);
+        let pool = sqlx::mysql::MySqlPoolOptions::new()
+            .connect_with(opts.clone())
+            .await
+            .expect("connect to test MySQL");
+        let mut conn = pool.acquire().await.expect("acquire");
+        let conn_id: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        let run = tokio::spawn(async move {
+            execute_mysql_query_on(&mut *conn, "SELECT SLEEP(3)", 1, 50).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let mut killer = opts.connect().await.expect("killer connect");
+        sqlx::query(&format!("KILL QUERY {conn_id}"))
+            .execute(&mut killer)
+            .await
+            .expect("kill");
+        let res = run.await.expect("query task");
+        assert!(res.is_err(), "SLEEP(3) must be killed, not re-run; got {res:?}");
+        assert!(res.unwrap_err().contains("Query cancelled"));
     }
 }

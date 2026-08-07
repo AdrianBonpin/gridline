@@ -147,13 +147,120 @@ pub async fn get_object_dependencies(connection_id: String, schema: String, obje
     get_object_dependencies_inner(&state.pool_manager, &connection_id, &schema, &object_type, &name).await
 }
 
+/// Introspect the live columns of a SQLite table (for the edit/rebuild diff).
+/// Mirrors the `PRAGMA table_info` + `PRAGMA index_list`/`index_info` reads used
+/// elsewhere in db_viewer; `auto_increment` requires an INTEGER PK whose stored
+/// DDL (sqlite_master) actually says AUTOINCREMENT, and `unique` means a
+/// single-column unique index (excluding the PK autoindex).
+fn sqlite_live_columns(conn: &rusqlite::Connection, table: &str) -> Result<Vec<SqliteColumn>, String> {
+    let pragma_query = format!("PRAGMA table_info('{}')", table);
+    let mut stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
+    let col_meta: Vec<(String, String, bool, bool, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,         // name
+                row.get::<_, String>(2)?,         // type
+                row.get::<_, bool>(3)?,           // notnull
+                row.get::<_, bool>(5)?,           // pk
+                row.get::<_, Option<String>>(4)?, // dflt_value
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    // AUTOINCREMENT only appears in the stored DDL of an INTEGER PK table.
+    let autoinc = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |row| row.get::<_, String>(0),
+        )
+        .map(|sql| sql.to_uppercase().contains("AUTOINCREMENT"))
+        .unwrap_or(false);
+    // Columns covered by a single-column unique index (origin != 'pk').
+    let mut unique_cols: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Ok(mut idx_stmt) = conn.prepare(&format!("PRAGMA index_list('{}')", table)) {
+        let indexes: Vec<(String, bool, String)> = idx_stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?, // name
+                    row.get::<_, bool>(2)?,   // unique
+                    row.get::<_, String>(3)?, // origin
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        for (idx_name, is_unique, origin) in indexes {
+            if !is_unique || origin == "pk" {
+                continue;
+            }
+            if let Ok(mut info_stmt) =
+                conn.prepare(&format!("PRAGMA index_info('{}')", idx_name.replace('\'', "''")))
+            {
+                let cols: Vec<String> = info_stmt
+                    .query_map([], |row| row.get::<_, String>(2))
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                if cols.len() == 1 {
+                    unique_cols.insert(cols[0].clone());
+                }
+            }
+        }
+    }
+    Ok(col_meta
+        .iter()
+        .map(|(name, dtype, notnull, is_pk, default)| SqliteColumn {
+            name: name.clone(),
+            type_: dtype.clone(),
+            nullable: !notnull,
+            default: default.clone(),
+            is_pk: *is_pk,
+            auto_increment: autoinc && *is_pk && dtype.trim().eq_ignore_ascii_case("INTEGER"),
+            unique: unique_cols.contains(name),
+        })
+        .collect())
+}
+
 /// Build SQL for an object CRUD operation. The pool is resolved only to enforce
 /// PostgreSQL-only / present-connection; the SQL itself is built by the pure
 /// `crate::db::object_crud::build_ddl` dispatcher (one statement per String).
+/// SQLite routes through the table-editor builders in `crate::db::object_ddl`
+/// (create / edit / rebuild ops on the `table` kind).
 pub(crate) async fn build_object_ddl_inner(pm: &tokio::sync::Mutex<ConnectionPoolManager>, connection_id: &str, kind: &str, params: serde_json::Value) -> Result<Vec<String>, String> {
     let mut pm = pm.lock().await;
     match pm.get(connection_id) {
         Some(DbHandle::Postgresql(_, _)) => build_ddl(kind, params),
+        Some(DbHandle::Sqlite(conn)) => {
+            // params: { schema, name, action: { op, columns: [...] } }
+            let action = params.get("action").ok_or("missing action")?;
+            let op = action
+                .get("op")
+                .and_then(|v| v.as_str())
+                .ok_or("missing op")?;
+            let cols: Vec<SqliteColumn> = match action.get("columns") {
+                Some(v) => serde_json::from_value(v.clone()).map_err(|e| e.to_string())?,
+                None => vec![],
+            };
+            let table = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or("missing name")?
+                .to_string();
+            match op {
+                "create" => Ok(vec![sqlite_create_table_sql(&table, &cols, &[])?]),
+                "edit" => {
+                    let old = sqlite_live_columns(conn, &table)?;
+                    sqlite_column_diff_sql(&table, &old, &cols)
+                }
+                "rebuild" => {
+                    let old = sqlite_live_columns(conn, &table)?;
+                    sqlite_rebuild_script(&table, &old, &cols)
+                }
+                _ => Err(format!("unknown op {op}")),
+            }
+        }
         Some(_) => Err("Object management is PostgreSQL-only".into()),
         None => Err("Connection not found".into()),
     }
@@ -201,125 +308,136 @@ pub(crate) async fn build_rebuild_script_inner(
     new_columns: serde_json::Value,
 ) -> Result<String, String> {
     let mut pm = pm.lock().await;
-    let client = match pm.get(connection_id) {
-        Some(DbHandle::Postgresql(c, _)) => c,
+    match pm.get(connection_id) {
+        Some(DbHandle::Sqlite(conn)) => {
+            let new_cols: Vec<SqliteColumn> =
+                serde_json::from_value(new_columns).map_err(|e| e.to_string())?;
+            let live = sqlite_live_columns(conn, table)?;
+            if let Some(reason) = sqlite_rebuild_refusal(&live) {
+                return Err(reason);
+            }
+            return Ok(sqlite_rebuild_script(table, &live, &new_cols)?.join(";\n"));
+        }
+        Some(DbHandle::Postgresql(client, _)) => {
+            let new_cols: Vec<TableColumn> =
+                serde_json::from_value(new_columns).map_err(|e| e.to_string())?;
+
+            // 1. live columns — validate reorder-only: the (name,type) multiset must be
+            //    unchanged (attribute edits belong in the diff path, not the rebuild).
+            let live = client
+                .query(&crate::db::introspection::pg_columns_query(schema, table), &[])
+                .await
+                .map_err(|e| sanitize(&e.to_string()))?;
+            let mut live_pairs: Vec<(String, String)> = live
+                .iter()
+                .map(|r| (r.get::<_, String>(0), r.get::<_, String>(1).trim().to_string()))
+                .collect();
+            let mut new_pairs: Vec<(String, String)> = new_cols
+                .iter()
+                .map(|c| (c.name.clone(), c.type_.trim().to_string()))
+                .collect();
+            live_pairs.sort();
+            new_pairs.sort();
+            if live_pairs != new_pairs {
+                return Err(
+                    "Reorder must preserve column names and types; undo attribute changes or stage a diff"
+                        .into(),
+                );
+            }
+        
+            // 2. assemble RebuildInput from live introspection (one client, all sub-queries).
+            let fk_out_rows = client
+                .query(&crate::db::introspection::pg_table_fk_out_query(), &[&schema, &table])
+                .await
+                .map_err(|e| sanitize(&e.to_string()))?;
+            let fk_in_rows = client
+                .query(&crate::db::introspection::pg_table_fk_in_query(), &[&schema, &table])
+                .await
+                .map_err(|e| sanitize(&e.to_string()))?;
+            let grant_rows = client
+                .query(&crate::db::introspection::pg_table_grants_query(), &[&schema, &table])
+                .await
+                .map_err(|e| sanitize(&e.to_string()))?;
+            let seq_rows = client
+                .query(&crate::db::introspection::pg_table_owned_sequences_query(), &[&schema, &table])
+                .await
+                .map_err(|e| sanitize(&e.to_string()))?;
+            let index_rows = client
+                .query(&crate::db::introspection::pg_indexes_query(schema), &[&schema])
+                .await
+                .map_err(|e| sanitize(&e.to_string()))?;
+            // PK/UNIQUE/CHECK (contype p/u/c) scoped to this table; FKs are carried
+            // separately as fks_out/fks_in so they are not double-applied.
+            let constraint_rows = client
+                .query(
+                    "SELECT c.conname AS name, ns.nspname AS schema, cl.relname AS table_name, \
+                     c.contype::text, pg_get_constraintdef(c.oid) AS definition \
+                     FROM pg_constraint c \
+                     JOIN pg_class cl ON c.conrelid = cl.oid \
+                     JOIN pg_namespace ns ON cl.relnamespace = ns.oid \
+                     WHERE ns.nspname = $1 AND cl.relname = $2 AND c.contype IN ('p','u','c') \
+                     ORDER BY c.conname",
+                    &[&schema, &table],
+                )
+                .await
+                .map_err(|e| sanitize(&e.to_string()))?;
+        
+            let input = RebuildInput {
+                schema: schema.to_string(),
+                name: table.to_string(),
+                constraints: constraint_rows
+                    .iter()
+                    .map(|r| RebuildConstraint {
+                        name: r.get(0),
+                        definition: r.get(4),
+                    })
+                    .collect(),
+                indexes: index_rows
+                    .iter()
+                    .filter(|r| r.get::<_, String>(2) == table)
+                    .map(|r| RebuildIndex {
+                        name: r.get(0),
+                        definition: r.get(3),
+                    })
+                    .collect(),
+                fks_out: fk_out_rows
+                    .iter()
+                    .map(|r| RebuildFk {
+                        name: r.get(0),
+                        definition: r.get(1),
+                    })
+                    .collect(),
+                fks_in: fk_in_rows
+                    .iter()
+                    .map(|r| RebuildFkIn {
+                        name: r.get(0),
+                        own_schema: r.get(1),
+                        own_table: r.get(2),
+                        definition: r.get(3),
+                    })
+                    .collect(),
+                grants: grant_rows
+                    .iter()
+                    .map(|r| RebuildGrant {
+                        grantee: r.get(0),
+                        privileges: r.get(1),
+                        grantable: r.get(2),
+                    })
+                    .collect(),
+                owned_sequences: seq_rows
+                    .iter()
+                    .map(|r| RebuildOwnedSequence {
+                        seq_schema: r.get(0),
+                        seq_name: r.get(1),
+                        column: r.get(2),
+                    })
+                    .collect(),
+            };
+            rebuild_script(&input, &new_cols)
+        }
         Some(_) => return Err("Rebuild is PostgreSQL-only".into()),
         None => return Err("Connection not found".into()),
-    };
-    let new_cols: Vec<TableColumn> = serde_json::from_value(new_columns).map_err(|e| e.to_string())?;
-
-    // 1. live columns — validate reorder-only: the (name,type) multiset must be
-    //    unchanged (attribute edits belong in the diff path, not the rebuild).
-    let live = client
-        .query(&crate::db::introspection::pg_columns_query(schema, table), &[])
-        .await
-        .map_err(|e| sanitize(&e.to_string()))?;
-    let mut live_pairs: Vec<(String, String)> = live
-        .iter()
-        .map(|r| (r.get::<_, String>(0), r.get::<_, String>(1).trim().to_string()))
-        .collect();
-    let mut new_pairs: Vec<(String, String)> = new_cols
-        .iter()
-        .map(|c| (c.name.clone(), c.type_.trim().to_string()))
-        .collect();
-    live_pairs.sort();
-    new_pairs.sort();
-    if live_pairs != new_pairs {
-        return Err(
-            "Reorder must preserve column names and types; undo attribute changes or stage a diff"
-                .into(),
-        );
     }
-
-    // 2. assemble RebuildInput from live introspection (one client, all sub-queries).
-    let fk_out_rows = client
-        .query(&crate::db::introspection::pg_table_fk_out_query(), &[&schema, &table])
-        .await
-        .map_err(|e| sanitize(&e.to_string()))?;
-    let fk_in_rows = client
-        .query(&crate::db::introspection::pg_table_fk_in_query(), &[&schema, &table])
-        .await
-        .map_err(|e| sanitize(&e.to_string()))?;
-    let grant_rows = client
-        .query(&crate::db::introspection::pg_table_grants_query(), &[&schema, &table])
-        .await
-        .map_err(|e| sanitize(&e.to_string()))?;
-    let seq_rows = client
-        .query(&crate::db::introspection::pg_table_owned_sequences_query(), &[&schema, &table])
-        .await
-        .map_err(|e| sanitize(&e.to_string()))?;
-    let index_rows = client
-        .query(&crate::db::introspection::pg_indexes_query(schema), &[&schema])
-        .await
-        .map_err(|e| sanitize(&e.to_string()))?;
-    // PK/UNIQUE/CHECK (contype p/u/c) scoped to this table; FKs are carried
-    // separately as fks_out/fks_in so they are not double-applied.
-    let constraint_rows = client
-        .query(
-            "SELECT c.conname AS name, ns.nspname AS schema, cl.relname AS table_name, \
-             c.contype::text, pg_get_constraintdef(c.oid) AS definition \
-             FROM pg_constraint c \
-             JOIN pg_class cl ON c.conrelid = cl.oid \
-             JOIN pg_namespace ns ON cl.relnamespace = ns.oid \
-             WHERE ns.nspname = $1 AND cl.relname = $2 AND c.contype IN ('p','u','c') \
-             ORDER BY c.conname",
-            &[&schema, &table],
-        )
-        .await
-        .map_err(|e| sanitize(&e.to_string()))?;
-
-    let input = RebuildInput {
-        schema: schema.to_string(),
-        name: table.to_string(),
-        constraints: constraint_rows
-            .iter()
-            .map(|r| RebuildConstraint {
-                name: r.get(0),
-                definition: r.get(4),
-            })
-            .collect(),
-        indexes: index_rows
-            .iter()
-            .filter(|r| r.get::<_, String>(2) == table)
-            .map(|r| RebuildIndex {
-                name: r.get(0),
-                definition: r.get(3),
-            })
-            .collect(),
-        fks_out: fk_out_rows
-            .iter()
-            .map(|r| RebuildFk {
-                name: r.get(0),
-                definition: r.get(1),
-            })
-            .collect(),
-        fks_in: fk_in_rows
-            .iter()
-            .map(|r| RebuildFkIn {
-                name: r.get(0),
-                own_schema: r.get(1),
-                own_table: r.get(2),
-                definition: r.get(3),
-            })
-            .collect(),
-        grants: grant_rows
-            .iter()
-            .map(|r| RebuildGrant {
-                grantee: r.get(0),
-                privileges: r.get(1),
-                grantable: r.get(2),
-            })
-            .collect(),
-        owned_sequences: seq_rows
-            .iter()
-            .map(|r| RebuildOwnedSequence {
-                seq_schema: r.get(0),
-                seq_name: r.get(1),
-                column: r.get(2),
-            })
-            .collect(),
-    };
-    rebuild_script(&input, &new_cols)
 }
 
 #[tauri::command]
@@ -417,20 +535,28 @@ pub async fn get_role_privileges(connection_id: String, role: String, state: Sta
 /// Check whether a table can be rebuilt (no triggers, policies, inheritance, partitioning, generated columns).
 pub(crate) async fn get_table_rebuild_readiness_inner(pm: &tokio::sync::Mutex<ConnectionPoolManager>, connection_id: &str, schema: &str, table: &str) -> Result<crate::models::RebuildReadiness, String> {
     let mut pm = pm.lock().await;
-    let client = match pm.get(connection_id) {
-        Some(DbHandle::Postgresql(c, _)) => c,
+    match pm.get(connection_id) {
+        Some(DbHandle::Sqlite(conn)) => {
+            let live = sqlite_live_columns(conn, table)?;
+            Ok(match sqlite_rebuild_refusal(&live) {
+                Some(reason) => crate::models::RebuildReadiness { ok: false, reasons: vec![reason] },
+                None => crate::models::RebuildReadiness { ok: true, reasons: vec![] },
+            })
+        }
+        Some(DbHandle::Postgresql(client, _)) => {
+            let row = client.query_one(&crate::db::introspection::pg_rebuild_readiness_query(), &[&schema, &table]).await
+                .map_err(|e| sanitize(&e.to_string()))?;
+            let mut reasons = Vec::new();
+            if row.get::<_, bool>("has_triggers") { reasons.push("table has triggers".into()); }
+            if row.get::<_, bool>("has_policies") { reasons.push("table has RLS policies".into()); }
+            if row.get::<_, bool>("is_inherits") { reasons.push("table participates in inheritance".into()); }
+            if row.get::<_, bool>("is_partitioned") { reasons.push("table is partitioned".into()); }
+            if row.get::<_, bool>("has_generated") { reasons.push("table has generated/identity columns".into()); }
+            Ok(crate::models::RebuildReadiness { ok: reasons.is_empty(), reasons })
+        }
         Some(_) => return Err("Rebuild is PostgreSQL-only".into()),
         None => return Err("Connection not found".into()),
-    };
-    let row = client.query_one(&crate::db::introspection::pg_rebuild_readiness_query(), &[&schema, &table]).await
-        .map_err(|e| sanitize(&e.to_string()))?;
-    let mut reasons = Vec::new();
-    if row.get::<_, bool>("has_triggers") { reasons.push("table has triggers".into()); }
-    if row.get::<_, bool>("has_policies") { reasons.push("table has RLS policies".into()); }
-    if row.get::<_, bool>("is_inherits") { reasons.push("table participates in inheritance".into()); }
-    if row.get::<_, bool>("is_partitioned") { reasons.push("table is partitioned".into()); }
-    if row.get::<_, bool>("has_generated") { reasons.push("table has generated/identity columns".into()); }
-    Ok(crate::models::RebuildReadiness { ok: reasons.is_empty(), reasons })
+    }
 }
 
 #[tauri::command]

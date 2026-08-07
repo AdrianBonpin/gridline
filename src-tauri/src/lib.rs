@@ -2,6 +2,7 @@
 // of runtime usage, producing expected dead_code/unused warnings during development.
 #![allow(dead_code)]
 
+mod cancel;
 mod commands;
 mod db;
 mod models;
@@ -17,6 +18,7 @@ pub struct AppState {
     pub db_store: StdMutex<Store>,
     pub pool_manager: tokio::sync::Mutex<ConnectionPoolManager>,
     pub ssh_manager: StdMutex<SshTunnelManager>,
+    pub cancel_registry: crate::cancel::CancelRegistry,
 }
 
 use commands::{
@@ -48,6 +50,7 @@ pub fn run() {
             db_store: store_ref,
             pool_manager: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
             ssh_manager: StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend))),
+            cancel_registry: crate::cancel::CancelRegistry::default(),
         })
         .setup(move |app| {
             let state = app.state::<AppState>();
@@ -69,6 +72,9 @@ pub fn run() {
                         if let Ok(mut mgr) = s.ssh_manager.lock() {
                             mgr.close_tunnel(id);
                         }
+                        // Drop the cancel handles for the evicted connection
+                        // (tokens/interrupts outlive the pool otherwise).
+                        s.cancel_registry.remove(id);
                     }
                 }));
 
@@ -143,8 +149,18 @@ pub fn run() {
             backup::pg_dump,
             backup::pg_restore,
             backup::db_sync,
+            backup::detect_mysql_tools,
+            backup::mysql_dump,
+            backup::mysql_restore,
+            backup::mysql_sync,
+            backup::sqlite_dump,
+            backup::sqlite_restore,
+            backup::sqlite_sync,
+            settings::export_settings,
+            settings::import_settings,
             schema_graph::get_schema_graph,
             query::execute_query,
+            query::cancel_query,
             query::get_query_history,
             query::clear_query_history,
             query::set_history_favorite,

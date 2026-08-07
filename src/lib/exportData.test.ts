@@ -26,4 +26,26 @@ describe("exportData", () => {
     exportData([[1, "a"]], columns, "json", "t");
     expect(click).toHaveBeenCalled();
   });
+
+  it("xlsx produces a Blob with the xlsx MIME and extension download", () => {
+    const origCreateObjectURL = URL.createObjectURL;
+    const origRevokeObjectURL = URL.revokeObjectURL;
+    globalThis.URL.createObjectURL = vi.fn(() => "blob:x") as any;
+    globalThis.URL.revokeObjectURL = vi.fn() as any;
+    const a = { click: vi.fn(), href: "", download: "" };
+    vi.spyOn(document, "createElement").mockReturnValue(a as any);
+    const rows = [[1]];
+    const cols: ColumnInfo[] = [
+      { name: "id", data_type: "integer", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    ];
+    try {
+      exportData(rows, cols, "xlsx", "t");
+      expect(a.download).toBe("t.xlsx");
+      expect((URL.createObjectURL as any).mock.calls[0][0] instanceof Blob).toBe(true);
+      expect((URL.createObjectURL as any).mock.calls[0][0].type).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    } finally {
+      globalThis.URL.createObjectURL = origCreateObjectURL;
+      globalThis.URL.revokeObjectURL = origRevokeObjectURL;
+    }
+  });
 });

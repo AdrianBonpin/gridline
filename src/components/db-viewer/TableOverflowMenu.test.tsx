@@ -56,6 +56,7 @@ describe("TableOverflowMenu", () => {
     expect(screen.getByText("Open in new tab")).toBeInTheDocument();
     expect(screen.getByText("Copy table schema")).toBeInTheDocument();
     expect(screen.getByText("Export data (CSV)")).toBeInTheDocument();
+    expect(screen.getByText("Export data (Excel)")).toBeInTheDocument();
   });
 
   it("fires onOpenTab when menu item clicked", async () => {
@@ -116,6 +117,41 @@ describe("TableOverflowMenu", () => {
     fireEvent.click(screen.getByLabelText(/table options/i));
     fireEvent.click(screen.getByText(/export data \(csv\)/i));
     await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "csv", "public.t"));
+  });
+
+  it("Excel export calls exportData and notifies", async () => {
+    const spy = vi.spyOn(exportData, "exportData").mockImplementation(() => {});
+    const { useNotificationStore } = await import("../../stores/notificationStore");
+    useNotificationStore.getState().notifications.length = 0;
+    const columns = [{ name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false }];
+    render(<TableOverflowMenu schema="public" table="t" onOpenTab={() => "tab-1"} columns={columns} rows={[[1]]} />);
+    fireEvent.click(screen.getByLabelText(/table options/i));
+    fireEvent.click(screen.getByText(/export data \(excel\)/i));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "xlsx", "public.t"));
+    const st = useNotificationStore.getState();
+    expect(st.notifications.some((n) => n.message.toLowerCase().includes("exported"))).toBe(true);
+  });
+
+  it("tree kebab export fetches table data when rows are absent", async () => {
+    const spy = vi.spyOn(exportData, "exportData").mockImplementation(() => {});
+    const getSpy = vi.spyOn(commands, "getTableData").mockResolvedValue({
+      columns: [{ name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false }],
+      rows: [[42]],
+      total_rows: 1,
+      page: 1,
+      page_size: 1000,
+    });
+    const { useNotificationStore } = await import("../../stores/notificationStore");
+    useNotificationStore.getState().notifications.length = 0;
+    render(<TableOverflowMenu schema="public" table="t" onOpenTab={() => "tab-1"} connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText(/table options/i));
+    fireEvent.click(screen.getByText(/export data \(excel\)/i));
+    await waitFor(() =>
+      expect(getSpy).toHaveBeenCalledWith("c1", "public", "t", 1, 1000),
+    );
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    const st = useNotificationStore.getState();
+    expect(st.notifications.some((n) => n.message.includes("Exported"))).toBe(true);
   });
 
   it("maintenance items are gated by capability and run via confirm", async () => {

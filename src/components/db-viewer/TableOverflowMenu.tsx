@@ -133,10 +133,47 @@ export function TableOverflowMenu({
       case "export-csv":
       case "export-json":
       case "export-sql":
-      case "export-md": {
+      case "export-md":
+      case "export-xlsx": {
         const format = id.replace("export-", "");
-        if (rows && rows.length > 0 && columns && columns.length > 0) {
-          exportData(rows, columns, format, `${schema}.${table}`);
+        const label =
+          format === "xlsx"
+            ? "Excel"
+            : format === "md"
+              ? "Markdown"
+              : format.toUpperCase();
+        try {
+          if (rows && rows.length > 0 && columns && columns.length > 0) {
+            exportData(rows, columns, format, `${schema}.${table}`);
+            notify(
+              `Exported ${rows.length} row${rows.length === 1 ? "" : "s"} as ${label}`,
+              "success",
+            );
+          } else if (connectionId) {
+            // Tree kebab: no rows are loaded here — fetch the table data
+            // first, then export (capped at 1000 rows per fetch).
+            const result = await cmd.getTableData(connectionId, schema, table, 1, 1000);
+            if (!result.rows.length) {
+              notify("Nothing to export", "info");
+            } else {
+              exportData(result.rows, result.columns, format, `${schema}.${table}`);
+              const truncated =
+                result.total_rows > result.rows.length
+                  ? ` (first ${result.rows.length} of ${result.total_rows})`
+                  : "";
+              notify(
+                `Exported ${result.rows.length} row${result.rows.length === 1 ? "" : "s"} as ${label}${truncated}`,
+                "success",
+              );
+            }
+          } else {
+            notify("Nothing to export", "info");
+          }
+        } catch (e) {
+          notify(
+            `Export failed: ${e instanceof Error ? e.message : String(e)}`,
+            "error",
+          );
         }
         setOpen(false);
         break;
@@ -233,6 +270,7 @@ export function TableOverflowMenu({
     { id: "export-json", label: "Export data (JSON)" },
     { id: "export-sql", label: "Export data (SQL)" },
     { id: "export-md", label: "Export data (Markdown)" },
+    { id: "export-xlsx", label: "Export data (Excel)" },
     { id: "import", label: "Import data (CSV/JSON)" },
     { id: "create_index", label: "Create Index…" },
     { id: "create_constraint", label: "Create Constraint…" },

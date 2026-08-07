@@ -1,7 +1,7 @@
 {
     "name": "gridline",
     "private": true,
-    "version": "0.7.7",
+    "version": "0.7.8",
     "description": "An open-source, high-performance database GUI client for PostgreSQL and beyond",
     "type": "module",
     "scripts": {
@@ -28,6 +28,7 @@
         "@tauri-apps/plugin-opener": "^2",
         "@xyflow/react": "^12.11.2",
         "dagre": "^0.8.5",
+        "fflate": "^0.8.3",
         "html-to-image": "^1.11.13",
         "lucide-react": "^1.26.0",
         "monaco-editor": "^0.56.0",

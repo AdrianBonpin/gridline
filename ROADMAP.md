@@ -6,9 +6,11 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ---
 
-## 🎯 Next up (0.7.8) — Quick wins
+## 🎯 Next up (0.7.9) — TBD
 
-Scope: small, individually shippable items that round out tooling gaps. Picked to follow the v0.7.7 features milestone; tag **v0.7.8** when done.
+Scope to be determined.
+
+## ✅ Shipped (0.7.8)
 
 - **SQLite `.dump` support** — match the pg_dump UX for SQLite (backup a SQLite database to a portable SQL dump, restore it back)
 - **Backup / Restore / Sync for MySQL & SQLite** — extend the pg-only tooling today: SQLite backup/restore + MySQL via `mysqldump` (system-first; decide bundling)
@@ -17,6 +19,7 @@ Scope: small, individually shippable items that round out tooling gaps. Picked t
 - **Settings export / import** — share theme, accent, editor options, page sizes, and defaults across machines (JSON file)
 - **Windows/Linux title bar fix** — the macOS "Overlay" drag strip (`h-7` in `App.tsx`) renders on every Tauri platform, so Windows/Linux show a blank grabbable bar between the native title bar and the page; gate the strip to macOS only (native title bar already handles dragging elsewhere)
 - **SQLite table editor (Create/Edit Table)** — the visual Create Table / Edit Table flow is PostgreSQL-only today (`tableManagement` capability + PG-flavored SQL gen in `TableForm`); extend to SQLite: SQLite-aware type mapping (no `serial` — `INTEGER PRIMARY KEY AUTOINCREMENT` instead), `TEXT`/`REAL`/`BLOB`, and ALTER TABLE limits (`ADD COLUMN` can't add PK/UNIQUE, `DROP COLUMN` needs SQLite ≥3.35)
+- **Version bump** 0.7.7 → **0.7.8**.
 
 ## 📋 In the queue
 
@@ -46,17 +49,14 @@ Supabase and NeonDB presets shipped in v0.7.0. Remaining candidates:
 ### Query Workbench Upgrades
 
 - **Multiple result sets** — one query, multiple result tabs (stacked/scrollable) instead of only the last result *(deferred from 0.7.0)*
-- **Cancel long-running queries** — per-connection cancel button (`pg_cancel_backend` and equivalents) instead of waiting or killing the app
 - **Result streaming to file** — export 500k+ rows without loading them all into memory
 - **Visual query builder** — drag-and-drop tables/joins/filters that generate SQL (TablePlus has one; DB Pro plans one)
 
 ### Schema & Data Tooling
 
-- **SQLite `.dump` support** — match the pg_dump UX for SQLite
 - **Schema diff / compare** — two-database structure diff that pairs naturally with DB-to-DB sync
 - **MySQL Objects view + schema visualizer** — functions/triggers/sequences/enums/extensions browsing and ER diagram for MySQL *(deferred from 0.7.0 and out of scope for the object-management release — PostgreSQL-only for now)*
-- **Backup/Restore/Sync for MySQL & SQLite** — pg_dump tooling is PostgreSQL-only today *(deferred from 0.7.0)*
-- **More export formats** — Excel (.xlsx), JSONL, Parquet alongside CSV/JSON/SQL/Markdown
+- **More export formats** — JSONL, Parquet alongside CSV/JSON/SQL/Markdown/Excel
 
 ## 🔮 Planned
 

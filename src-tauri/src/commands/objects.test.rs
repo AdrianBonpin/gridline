@@ -58,19 +58,62 @@ async fn object_ddl_for_sequence_enum_function() {
 }
 
 #[tokio::test]
-async fn build_object_ddl_inner_guards_postgresql_only() {
+async fn build_object_ddl_inner_guards_missing_connection_and_rejects_unknown_op() {
     let pm = tokio::sync::Mutex::new(ConnectionPoolManager::new());
     // Missing connection -> Connection not found
     let err = build_object_ddl_inner(&pm, "missing", "sequence", serde_json::json!({
         "schema": "public", "name": "s", "action": { "op": "drop" }
     })).await.unwrap_err();
     assert!(err.contains("Connection not found"), "{err}");
-    // Non-PostgreSQL handle -> PostgreSQL-only error
+    // SQLite now dispatches to the SQLite table builders; non-table ops are rejected.
     pm.lock().await.register("sqlite", DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()));
     let err = build_object_ddl_inner(&pm, "sqlite", "sequence", serde_json::json!({
         "schema": "public", "name": "s", "action": { "op": "drop" }
     })).await.unwrap_err();
-    assert!(err.contains("PostgreSQL-only"), "{err}");
+    assert!(err.contains("unknown op"), "{err}");
+}
+
+/// In-memory SQLite pool registered under id "c" (no Tauri, no live PG).
+fn fresh_pool_with_sqlite() -> ConnectionPoolManager {
+    let mut pm = ConnectionPoolManager::new();
+    pm.register("c", DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()));
+    pm
+}
+
+#[tokio::test]
+async fn build_object_ddl_sqlite_create_yields_sqlite_sql() {
+    let pm = fresh_pool_with_sqlite();
+    let params = serde_json::json!({
+        "schema": "main", "name": "users",
+        "action": { "op": "create", "columns": [
+            { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true, "auto_increment": true, "unique": false },
+            { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
+        ] }
+    });
+    let sqls = build_object_ddl_inner(&tokio::sync::Mutex::new(pm), "c", "table", params).await.unwrap();
+    assert!(sqls.iter().any(|s| s.contains("INTEGER PRIMARY KEY AUTOINCREMENT")), "{sqls:?}");
+    assert!(sqls.iter().all(|s| !s.contains("serial")), "{sqls:?}");
+}
+
+#[tokio::test]
+async fn execute_change_sqlite_ddl_runs_create() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    let change = crate::models::db_viewer::Change::Ddl { id: "x".into(), sql: "CREATE TABLE u(id INTEGER)".into() };
+    let r = crate::commands::db_viewer::execute_change_inner(&pm, "c", change).await;
+    assert!(r.is_ok(), "{r:?}");
+    // the table really landed on the live connection
+    {
+        let mut g = pm.lock().await;
+        match g.get("c").unwrap() {
+            crate::db::pool::DbHandle::Sqlite(conn) => {
+                let n: i64 = conn
+                    .query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='u'", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(n, 1);
+            }
+            _ => panic!("expected a sqlite handle"),
+        }
+    }
 }
 
 #[tokio::test]

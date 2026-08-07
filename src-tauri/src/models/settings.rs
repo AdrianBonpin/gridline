@@ -20,3 +20,10 @@ pub struct Settings {
     pub editor_minimap: bool,
     pub editor_tab_size: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsExport {
+    pub schema_version: u32,
+    pub settings: Settings,
+}

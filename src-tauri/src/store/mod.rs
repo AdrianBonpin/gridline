@@ -575,6 +575,21 @@ impl Store {
         Ok(())
     }
 
+    /// Bulk-write settings keys in one transaction (used by settings import).
+    pub fn apply_settings(&self, map: &std::collections::HashMap<String, String>) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+        for (k, v) in map.iter() {
+            conn.execute(
+                "INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                rusqlite::params![k, v],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Insert a row into the `query_history` table.
     /// Dedups consecutive identical queries per connection (UPDATE the last row
     /// instead of INSERTing a new one) and prunes to at most 500 rows per connection.

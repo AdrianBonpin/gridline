@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreOptions, SqliteBackupOptions, SqliteRestoreOptions, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo } from "./types";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 import type { ChangePayload } from "./changePayload";
 import { buildObjectDdl as buildObjectDdlImpl, type ObjectKind, type DdlParams } from "./objectCrud";
@@ -160,6 +160,48 @@ export async function pgRestore(connectionId: string, options: RestoreOptions): 
 
 export async function dbSync(options: SyncOptions): Promise<string> {
   return invoke<string>("db_sync", { options });
+}
+
+// ─── v0.7.8: Cancel / MySQL / SQLite / Settings export-import ────
+
+export async function cancelQuery(connectionId: string): Promise<void> {
+  return invoke<void>("cancel_query", { connectionId });
+}
+
+export async function detectMysqlTools(): Promise<MySqlToolStatus> {
+  return invoke<MySqlToolStatus>("detect_mysql_tools");
+}
+
+export async function mysqlDump(connectionId: string, options: MySqlBackupOptions): Promise<string> {
+  return invoke<string>("mysql_dump", { connectionId, options });
+}
+
+export async function mysqlRestore(connectionId: string, options: MySqlRestoreOptions): Promise<string> {
+  return invoke<string>("mysql_restore", { connectionId, options });
+}
+
+export async function mysqlSync(options: SyncOptions): Promise<string> {
+  return invoke<string>("mysql_sync", { options });
+}
+
+export async function sqliteDump(connectionId: string, options: SqliteBackupOptions): Promise<string> {
+  return invoke<string>("sqlite_dump", { connectionId, options });
+}
+
+export async function sqliteRestore(connectionId: string, options: SqliteRestoreOptions): Promise<string> {
+  return invoke<string>("sqlite_restore", { connectionId, options });
+}
+
+export async function sqliteSync(options: SyncOptions): Promise<string> {
+  return invoke<string>("sqlite_sync", { options });
+}
+
+export async function exportSettings(): Promise<string> {
+  return invoke<string>("export_settings");
+}
+
+export async function importSettings(json: string): Promise<void> {
+  return invoke<void>("import_settings", { json });
 }
 
 // ─── Object Explorer (Functions, Triggers, Sequences, Enums, Extensions) ────

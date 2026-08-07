@@ -1,6 +1,20 @@
 //! Pure builders for schema DDL, cross-object search, pg_depend lookups,
 //! and synthesized object DDL. No DB I/O — deterministic string builders.
+use serde::{Deserialize, Serialize};
 use crate::models::db_viewer::{SequenceInfo, EnumInfo, ExtensionInfo, ConstraintInfo};
+
+/// Column model for the SQLite table editor. Mirrors the frontend payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SqliteColumn {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub nullable: bool,
+    pub default: Option<String>,
+    pub is_pk: bool,
+    pub auto_increment: bool,
+    pub unique: bool,
+}
 
 /// Double-quote an identifier, doubling embedded quotes.
 pub fn quote_ident(name: &str) -> String {
@@ -123,6 +137,98 @@ pub fn matview_ddl(schema: &str, name: &str, selectdef: &str) -> String {
 pub fn constraint_ddl(c: &ConstraintInfo) -> String {
     format!("ALTER TABLE {}.{} ADD CONSTRAINT {} {}",
         quote_ident(&c.schema), quote_ident(&c.table), quote_ident(&c.name), c.definition)
+}
+
+// --- SQLite table editor ---
+
+fn validate_type_fragment(t: &str) -> Result<(), String> {
+    let l = t.trim().to_lowercase();
+    if l.is_empty() { return Err("column type is required".into()); }
+    if l.contains(';') || l.contains("--") || l.contains("/*") { return Err("invalid characters in type".into()); }
+    Ok(())
+}
+
+/// CREATE TABLE for SQLite. PK inline for AUTOINCREMENT; single non-AUTOINCREMENT
+/// PKs get a table-level PRIMARY KEY clause; FKs appended inline (SQLite grammar).
+pub fn sqlite_create_table_sql(table: &str, cols: &[SqliteColumn], fks: &[(&str, &str)]) -> Result<String, String> {
+    validate_object_name(table)?;
+    let mut defs: Vec<String> = vec![];
+    let mut pk_cols: Vec<String> = vec![];
+    for c in cols {
+        validate_object_name(&c.name)?;
+        validate_type_fragment(&c.type_)?;
+        let mut d = format!("{} {}", quote_ident(&c.name), c.type_.trim());
+        if c.auto_increment && c.is_pk && c.type_.trim().eq_ignore_ascii_case("INTEGER") {
+            d = format!("{} INTEGER PRIMARY KEY AUTOINCREMENT", quote_ident(&c.name));
+        } else {
+            if !c.nullable { d.push_str(" NOT NULL"); }
+            if let Some(def) = &c.default { d.push_str(&format!(" DEFAULT {def}")); }
+            if c.unique && !c.is_pk { d.push_str(" UNIQUE"); }
+            if c.is_pk { pk_cols.push(quote_ident(&c.name)); }
+        }
+        defs.push(d);
+    }
+    // Always emit a table-level PRIMARY KEY when there are non-AUTOINCREMENT PK
+    // columns (single or composite) — the plan draft's `len > 1` condition would
+    // silently drop a single-column PK constraint.
+    if !pk_cols.is_empty() {
+        defs.push(format!("PRIMARY KEY ({})", pk_cols.join(", ")));
+    }
+    for (lc, refc) in fks {
+        defs.push(format!("FOREIGN KEY ({}) REFERENCES {}", quote_ident(lc), refc));
+    }
+    Ok(format!("CREATE TABLE \"main\".{} ({})", quote_ident(table), defs.join(", ")))
+}
+
+/// Emit one statement per needed edit; falls back to a rebuild script (multi-stmt)
+/// for edits SQLite's ALTER TABLE can't express.
+pub fn sqlite_column_diff_sql(table: &str, old: &[SqliteColumn], new: &[SqliteColumn]) -> Result<Vec<String>, String> {
+    // rename detection: same position+type+nullable+default, name changed
+    for (i, n) in new.iter().enumerate() {
+        if let Some(o) = old.get(i) {
+            if o.name != n.name && o.type_ == n.type_ && o.default == n.default && o.nullable == n.nullable {
+                return Ok(vec![format!("ALTER TABLE \"main\".{} RENAME COLUMN {} TO {}", quote_ident(table), quote_ident(&o.name), quote_ident(&n.name))]);
+            }
+        }
+    }
+    // add column (new tail column, safe only if nullable or defaulted)
+    if new.len() > old.len() {
+        if let Some(c) = new.last() {
+            if c.nullable || c.default.is_some() {
+                validate_object_name(&c.name)?;
+                validate_type_fragment(&c.type_)?;
+                let mut d = format!("ALTER TABLE \"main\".{} ADD COLUMN {} {}", quote_ident(table), quote_ident(&c.name), c.type_.trim());
+                if !c.nullable {
+                    d.push_str(&format!(" DEFAULT {}", c.default.as_deref().unwrap_or("''")));
+                }
+                return Ok(vec![d]);
+            }
+        }
+    }
+    // otherwise: full rebuild (type change, NOT NULL, drop, PK/UNIQUE/FK add, reorder)
+    sqlite_rebuild_script(table, old, new)
+}
+
+pub fn sqlite_rebuild_script(table: &str, _old: &[SqliteColumn], new: &[SqliteColumn]) -> Result<Vec<String>, String> {
+    validate_object_name(table)?;
+    let tmp = format!("_gl_{}_tmp", table);
+    let create = sqlite_create_table_sql(&tmp, new, &[])?;
+    let cols = new.iter().map(|c| quote_ident(&c.name)).collect::<Vec<_>>().join(", ");
+    Ok(vec![
+        create,
+        format!("INSERT INTO \"main\".{} ({}) SELECT * FROM \"main\".{}", quote_ident(&tmp), cols, quote_ident(table)),
+        format!("DROP TABLE \"main\".{}", quote_ident(table)),
+        format!("ALTER TABLE \"main\".{} RENAME TO {}", quote_ident(&tmp), quote_ident(table)),
+    ])
+}
+
+/// Fail-closed readiness reason, or None if rebuild is safe.
+/// AUTOINCREMENT tables are refused in v0.7.8 (rowid counter would be lost).
+pub fn sqlite_rebuild_refusal(old: &[SqliteColumn]) -> Option<String> {
+    if old.iter().any(|c| c.auto_increment) {
+        return Some("rebuild is not supported for AUTOINCREMENT tables in v0.7.8 (rowid counter would be lost)".into());
+    }
+    None
 }
 
 #[cfg(test)]
@@ -257,5 +363,51 @@ mod tests {
             contype: "CHECK".into(), definition: "CHECK (amount > 0)".into(), deferrable: false, validated: true, columns: vec!["amount".into()] };
         let ddl = constraint_ddl(&c);
         assert_eq!(ddl, "ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"ck_pos\" CHECK (amount > 0)");
+    }
+
+    #[test]
+    fn sqlite_create_with_autoincrement_pk() {
+        let cols = vec![
+            SqliteColumn { name: "id".into(), type_: "INTEGER".into(), nullable: false, default: None, is_pk: true, auto_increment: true, unique: false },
+            SqliteColumn { name: "name".into(), type_: "TEXT".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false },
+        ];
+        let sql = sqlite_create_table_sql("users", &cols, &[]).unwrap();
+        assert!(sql.contains("\"id\" INTEGER PRIMARY KEY AUTOINCREMENT"));
+        assert!(sql.contains("\"name\" TEXT"));
+        assert!(sql.starts_with("CREATE TABLE \"main\".\"users\""));
+    }
+
+    #[test]
+    fn sqlite_create_rejects_bad_identifier() {
+        let cols = vec![SqliteColumn { name: "a;b".into(), type_: "INTEGER".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false }];
+        assert!(sqlite_create_table_sql("bad name", &cols, &[]).is_err());
+    }
+
+    #[test]
+    fn sqlite_edit_add_column_when_safe() {
+        let old = vec![SqliteColumn { name: "id".into(), type_: "INTEGER".into(), nullable: false, default: None, is_pk: true, auto_increment: true, unique: false }];
+        let new = vec![
+            old[0].clone(),
+            SqliteColumn { name: "email".into(), type_: "TEXT".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false },
+        ];
+        let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
+        assert_eq!(stmts.len(), 1);
+        assert!(stmts[0].contains("ALTER TABLE \"main\".\"users\" ADD COLUMN \"email\" TEXT"));
+    }
+
+    #[test]
+    fn sqlite_edit_rename_column() {
+        let old = vec![SqliteColumn { name: "id".into(), type_: "INTEGER".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false }];
+        let new = vec![SqliteColumn { name: "id2".into(), type_: "INTEGER".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false }];
+        let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
+        assert!(stmts.iter().any(|s| s.contains("RENAME COLUMN \"id\" TO \"id2\"")));
+    }
+
+    #[test]
+    fn sqlite_edit_typechange_requires_rebuild() {
+        let old = vec![SqliteColumn { name: "v".into(), type_: "TEXT".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false }];
+        let new = vec![SqliteColumn { name: "v".into(), type_: "INTEGER".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false }];
+        let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
+        assert!(stmts.iter().any(|s| s.contains("CREATE TABLE \"main\".\"_gl_t_tmp\"")), "type change must rebuild; got {stmts:?}");
     }
 }

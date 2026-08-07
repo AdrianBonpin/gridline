@@ -418,3 +418,117 @@ fn bundled_bin_name_appends_exe_on_windows() {
     let name = bundled_bin_name("pg_dump");
     if cfg!(windows) { assert_eq!(name, "pg_dump.exe"); } else { assert_eq!(name, "pg_dump"); }
 }
+
+// ------------------------------------------------------------------
+// SQLite .dump / restore / sync core (Task 2.2)
+// ------------------------------------------------------------------
+
+use rusqlite::Connection;
+use std::io::Cursor;
+
+fn seed_sqlite() -> Connection {
+    let c = Connection::open_in_memory().unwrap();
+    c.execute_batch(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);
+         CREATE INDEX users_name ON users(name);
+         INSERT INTO users (name) VALUES ('Alice'),('Bob');
+         CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB);
+         INSERT INTO blobs VALUES (1, x'010203');",
+    )
+    .unwrap();
+    c
+}
+
+#[test]
+fn sqlite_dump_and_restore_roundtrip() {
+    let src = seed_sqlite();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut cur = std::io::Cursor::new(&mut buf);
+    dump_sqlite_to(&src, &mut cur, |_| {}).unwrap();
+    let text = String::from_utf8(buf).unwrap();
+    assert!(text.contains("PRAGMA foreign_keys=OFF"));
+    assert!(text.contains("BEGIN TRANSACTION"));
+    assert!(text.contains("CREATE TABLE users"));
+    assert!(text.contains("INSERT INTO \"users\""));
+    assert!(text.contains("X'010203'"), "BLOB must be hex-literal");
+    assert!(text.contains("CREATE INDEX users_name"));
+
+    let dst = Connection::open_in_memory().unwrap();
+    restore_sqlite(&dst, &text, false).unwrap();
+    let n: i64 = dst.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 2);
+    let blobs: i64 = dst.query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0)).unwrap();
+    assert_eq!(blobs, 1);
+}
+
+#[test]
+fn sqlite_dump_preserves_autoincrement_sequence() {
+    let src = Connection::open_in_memory().unwrap();
+    src.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT); INSERT INTO t(v) VALUES ('a'),('b');").unwrap();
+    let mut buf = Vec::new();
+    dump_sqlite_to(&src, &mut Cursor::new(&mut buf), |_| {}).unwrap();
+    let text = String::from_utf8(buf).unwrap();
+    let dst = Connection::open_in_memory().unwrap();
+    restore_sqlite(&dst, &text, false).unwrap();
+    dst.execute("INSERT INTO t(v) VALUES ('c')", []).unwrap();
+    let id: i64 = dst.query_row("SELECT id FROM t WHERE v='c'", [], |r| r.get(0)).unwrap();
+    assert_eq!(id, 3);
+}
+
+#[test]
+fn sqlite_dump_fail_closed_for_virtual_tables() {
+    let src = Connection::open_in_memory().unwrap();
+    src.execute_batch("CREATE VIRTUAL TABLE ft USING fts4(content)").unwrap();
+    let mut buf = Vec::new();
+    let err = dump_sqlite_to(&src, &mut Cursor::new(&mut buf), |_| {}).unwrap_err();
+    assert!(err.to_lowercase().contains("virtual table"), "got: {err}");
+}
+
+#[test]
+fn sqlite_restore_clean_drops_existing() {
+    let src = seed_sqlite();
+    let mut buf = Vec::new();
+    dump_sqlite_to(&src, &mut Cursor::new(&mut buf), |_| {}).unwrap();
+    let text = String::from_utf8(buf).unwrap();
+    let dst = Connection::open_in_memory().unwrap();
+    dst.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users VALUES (99,'old');").unwrap();
+    restore_sqlite(&dst, &text, true).unwrap();
+    let names: Vec<String> = dst.prepare("SELECT name FROM users ORDER BY id").unwrap().query_map([], |r| r.get::<_, String>(0)).unwrap().filter_map(|r| r.ok()).collect();
+    assert_eq!(names, vec!["Alice".to_string(), "Bob".to_string()]);
+}
+
+// ------------------------------------------------------------------
+// MySQL dump / restore / sync arg building (Task 2.3)
+// ------------------------------------------------------------------
+
+#[test]
+fn mysql_dump_args_single_transaction_no_data_routines() {
+    let opts = MySqlBackupOptions {
+        database: "shop".into(), file_path: "/tmp/d.sql".into(),
+        single_transaction: true, no_data: true, routines: true, triggers: false, events: false,
+    };
+    let args = build_mysql_dump_args(&MySqlConnParams::new("h".into(), 3306, "u".into(), "shop".into(), "p".into()), &opts);
+    assert!(args.iter().any(|a| a == "--single-transaction"));
+    assert!(args.iter().any(|a| a == "--no-data"));
+    assert!(args.iter().any(|a| a == "--routines"));
+    assert!(args.iter().any(|a| a == "--databases=shop"));
+    assert!(args.iter().any(|a| a == "--result-file=/tmp/d.sql"));
+    // no --password on the command line (uses MYSQL_PWD env)
+    assert!(args.iter().all(|a| !a.starts_with("--password")));
+}
+
+#[test]
+fn mysql_restore_args_no_clean_flags() {
+    let opts = MySqlRestoreOptions { database: "shop".into(), file_path: "/tmp/d.sql".into(), clean: false };
+    let args = build_mysql_restore_args(&MySqlConnParams::new("h".into(), 3306, "u".into(), "shop".into(), "p".into()), &opts);
+    assert!(args.iter().any(|a| a == "--database=shop"));
+    assert!(args.iter().any(|a| a == "--host=h"));
+    assert!(args.iter().all(|a| a != "--force"));
+}
+
+#[test]
+fn mysql_env_uses_mysql_pwd_not_password_arg() {
+    let opts = MySqlBackupOptions { database: "db".into(), file_path: "/tmp/x.sql".into(), single_transaction: false, no_data: false, routines: false, triggers: false, events: false };
+    let args = build_mysql_dump_args(&MySqlConnParams::new("h".into(), 3306, "u".into(), "db".into(), "p".into()), &opts);
+    assert!(args.iter().all(|a| !a.starts_with("--password")));
+}

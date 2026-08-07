@@ -167,6 +167,114 @@ jobs:
             "$OUT/${b}${BIN_EXT}" --version >/dev/null 2>&1 || { echo "$b failed to run from resource dir"; exit 1; }
           done
 
+      - name: Build MariaDB client tools (bundled)
+        shell: bash
+        run: |
+          set -euo pipefail
+          MARIADB_VER="11.4.5"
+          OUT="${GITHUB_WORKSPACE}/src-tauri/resources/mysql_tools"
+          mkdir -p "$OUT"
+          case "${{ matrix.platform }}" in
+            ubuntu-22.04)
+              sudo apt-get update -y
+              sudo apt-get install -y cmake build-essential libssl-dev libzstd-dev pkg-config
+              git clone --depth 1 --branch "mariadb-${MARIADB_VER}" https://github.com/MariaDB/server.git /tmp/mariadb-server
+              cd /tmp/mariadb-server
+              # Client-only build: wolfSSL + zlib are vendored, so the bundled
+              # clients need no system OpenSSL on the user's machine.
+              cmake -DCMAKE_BUILD_TYPE=Release \
+                -DWITHOUT_SERVER=ON \
+                -DWITHOUT_TOKUDB=1 \
+                -DWITHOUT_ROCKSDB=1 \
+                -DWITHOUT_MROONGA=1 \
+                -DWITHOUT_SPIDER=1 \
+                -DWITHOUT_SEQUENCE=1 \
+                -DWITH_UNIT_TESTS=OFF \
+                -DWITH_SSL=bundled \
+                -DWITH_ZLIB=bundled .
+              make -j"$(nproc)" mariadb-dump mariadb
+              # Clients build into client/ (stable across MariaDB 10.x/11.x);
+              # fall back to a broad search if a future version moves them.
+              for b in mariadb-dump mariadb; do
+                src=$(find client -maxdepth 1 -type f -name "$b" -print -quit 2>/dev/null || true)
+                test -n "$src" || src=$(find . -type f -name "$b" -print -quit || true)
+                test -n "$src" || { echo "build produced no $b binary"; exit 1; }
+                cp "$src" "$OUT"/
+              done
+              # Print the clients' shared-library deps for the first CI run.
+              # TODO(RELEASE): if the --version smoke check below fails with a
+              # shared-library error, the clients linked a shared libmariadb/
+              # libedit — copy it into "$OUT" and patchelf --set-rpath '$ORIGIN'
+              # exactly like the pg_tools step does for libpq.
+              ldd "$OUT"/mariadb-dump || true
+              ;;
+            macos-latest|macos-15-intel)
+              git clone --depth 1 --branch "mariadb-${MARIADB_VER}" https://github.com/MariaDB/server.git /tmp/mariadb-server
+              cd /tmp/mariadb-server
+              if [ "$(uname -m)" = arm64 ]; then
+                SSL_DIR="/opt/homebrew/opt/openssl"
+              else
+                SSL_DIR="/usr/local/opt/openssl"
+              fi
+              [ -d "$SSL_DIR" ] || brew install openssl
+              cmake -DCMAKE_BUILD_TYPE=Release \
+                -DWITHOUT_SERVER=ON \
+                -DWITHOUT_TOKUDB=1 \
+                -DWITHOUT_ROCKSDB=1 \
+                -DWITHOUT_MROONGA=1 \
+                -DWITHOUT_SPIDER=1 \
+                -DWITHOUT_SEQUENCE=1 \
+                -DWITH_UNIT_TESTS=OFF \
+                -DWITH_SSL="$SSL_DIR" \
+                -DWITH_ZLIB=bundled .
+              make -j"$(sysctl -n hw.ncpu)" mariadb-dump mariadb
+              for b in mariadb-dump mariadb; do
+                src=$(find client -maxdepth 1 -type f -name "$b" -print -quit 2>/dev/null || true)
+                test -n "$src" || src=$(find . -type f -name "$b" -print -quit || true)
+                test -n "$src" || { echo "build produced no $b binary"; exit 1; }
+                cp "$src" "$OUT"/
+              done
+              # TODO(RELEASE): if the --version smoke check below fails with a
+              # dyld error, rewrite the lib dependency to @loader_path like the
+              # pg_tools step does for libpq (see also the Linux shared-lib note).
+              otool -L "$OUT"/mariadb-dump || true
+              ;;
+            windows-latest)
+              URL="https://archive.mariadb.org/mariadb-${MARIADB_VER}/winx64-packages/mariadb-${MARIADB_VER}-winx64.zip"
+              curl -fsSL "$URL" -o /tmp/mariadb.zip
+              # TODO(RELEASE): pin the sha256 printed on the first CI run, then
+              # uncomment the check so later releases verify the download.
+              # EXPECTED="<sha256 of mariadb-${MARIADB_VER}-winx64.zip>"
+              # echo "$EXPECTED  /tmp/mariadb.zip" | sha256sum -c -
+              sha256sum /tmp/mariadb.zip
+              unzip -o /tmp/mariadb.zip -d /tmp/mariadb
+              WINROOT="/tmp/mariadb/mariadb-${MARIADB_VER}-winx64"
+              cp "$WINROOT"/bin/mariadb-dump.exe "$WINROOT"/bin/mariadb.exe "$OUT"/
+              # The clients' only runtime dependency is the client library
+              # (lib/libmariadb.dll); the winx64 package statically links
+              # wolfSSL, so there are no OpenSSL DLLs to bundle. bin/*.dll is
+              # just the embedded server.dll, which the client tools don't need.
+              cp "$WINROOT"/lib/libmariadb.dll "$OUT"/
+              ;;
+          esac
+          (cd "$OUT" && sha256sum * | tee checksums.txt)
+          # Resolve the per-platform binary suffix WITHOUT a command
+          # substitution (see the pg_tools step for why).
+          if [ "${{ matrix.platform }}" = windows-latest ]; then
+            BIN_EXT=".exe"
+          else
+            BIN_EXT=""
+          fi
+          for b in mariadb-dump mariadb; do
+            f="$OUT/${b}${BIN_EXT}"
+            test -f "$f" || { echo "missing $f"; exit 1; }
+          done
+          # Sanity: every tool must run (loader path is correct) — this catches
+          # a missing shared library before we ship a broken bundle.
+          for b in mariadb-dump mariadb; do
+            "$OUT/${b}${BIN_EXT}" --version >/dev/null 2>&1 || { echo "$b failed to run from resource dir"; exit 1; }
+          done
+
       - name: Build and upload to GitHub Release
         uses: tauri-apps/tauri-action@v0
         env:
