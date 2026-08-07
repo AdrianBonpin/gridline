@@ -9,7 +9,7 @@
 
 <p>
   <i>A lightweight, open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis.</i><br />
-  Unlimited connections, tabs, and saved queries — with first-class <code>pg_dump</code>, <code>pg_restore</code>, and DB-to-DB sync.
+  Unlimited connections, tabs, and saved queries — with first-class backup, restore, and DB-to-DB sync for PostgreSQL, MySQL, and SQLite.
 </p>
 
 <p>
@@ -61,6 +61,10 @@ Gridline is a modern, open-source database GUI client built with [Tauri 2.0](htt
 
 - **No caps** on connections, tabs, or saved queries.
 - **Deep PostgreSQL tooling** — visual `pg_dump`, `pg_restore`, and DB-to-DB sync.
+- **Backup, restore & sync for every database** — PostgreSQL, MySQL (`mysqldump` / bundled MariaDB clients), and SQLite (`.dump`), with direct DB-to-DB sync between live connections.
+- **Excel export** — CSV, JSON, SQL, Markdown, and `.xlsx` from any data grid.
+- **Cancel long-running queries** — a per-connection cancel button instead of waiting it out or killing the app.
+- **SQLite table editor** — the visual Create Table / Edit Table flow now works on SQLite too (`INTEGER PRIMARY KEY AUTOINCREMENT` instead of `serial`).
 - **Full MySQL + SQLite browsing** — connect, browse, query, and edit MySQL and SQLite the same way you do PostgreSQL.
 - **Full object explorer** — not just tables, but functions, triggers, sequences, enums, extensions, materialized views, and procedures.
 - **Interactive ER diagram** — explore relationships visually with crow's-foot cardinality notation.
@@ -180,12 +184,15 @@ Gridline is built for developers and small teams who manage multiple database en
 <details>
 <summary>Show features</summary>
 
-- **Visual Backup** — `pg_dump` wrapper with format selector, schema filter, no-owner toggle, real-time progress.
-- **Visual Restore** — `pg_restore` wrapper with clean toggle and destructive confirmation.
-- **DB-to-DB Sync** — pipe `pg_dump` → `pg_restore` between two connections.
-- **Bundled client tools** — `pg_dump`/`pg_restore`/`psql` ship with the app; system tools are preferred when present, bundled tools are the fallback.
+- **Visual Backup** — `pg_dump` (format selector, schema filter, no-owner), `mysqldump`, and SQLite `.dump` wrappers with real-time progress.
+- **Visual Restore** — `pg_restore` / `mysql` / SQLite restore with clean toggle and destructive confirmation.
+- **DB-to-DB Sync** — pipe dump → restore between two live connections (PostgreSQL, MySQL, and SQLite).
+- **Bundled client tools** — `pg_dump`/`pg_restore`/`psql` plus `mariadb-dump`/`mariadb` ship with the app; system tools are preferred when present, bundled tools are the fallback.
 - **Roles & grants** — create/edit/drop roles with attributes; a per-role privilege explorer grouped by object class (tables, sequences, routines, schemas, databases) with collapsible lists and GRANT/REVOKE staging.
 - **Table maintenance** — VACUUM, ANALYZE, and REINDEX from the table menu.
+- **Excel export** — hand-rolled `.xlsx` writer (inline strings, formula-injection safe) alongside CSV/JSON/SQL/Markdown in the grid toolbar and table menu.
+- **Cancel long-running queries** — PG cancel request / MySQL `KILL QUERY` / SQLite interrupt, wired to the toolbar Cancel button.
+- **Settings export / import** — share theme, accent, editor options, page sizes, and shortcuts across machines (JSON).
 
 </details>
 
