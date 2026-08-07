@@ -538,27 +538,53 @@ pub fn resolve_mysql_tool_paths(app: &AppHandle) -> MySqlToolPaths {
     MySqlToolPaths { mysqldump: d, mysql: m }
 }
 
-/// Headless core: spawn dump with MYSQL_PWD env. (Live behavior = #[ignore] integration test.)
-pub fn run_mysql_dump(conn: &MySqlConnParams, options: &MySqlBackupOptions, tools: &MySqlToolPaths) -> Result<(), String> {
-    let args = build_mysql_dump_args(conn, options);
+/// Headless core: spawn dump with MYSQL_PWD env. `tls_mode` (e.g. `REQUIRED`)
+/// is appended as `--ssl-mode=` when routing through an SSH tunnel. (Live
+/// behavior = #[ignore] integration test.)
+pub fn run_mysql_dump(
+    conn: &MySqlConnParams,
+    options: &MySqlBackupOptions,
+    tools: &MySqlToolPaths,
+    tls_mode: Option<&str>,
+) -> Result<(), String> {
+    let mut args = build_mysql_dump_args(conn, options);
+    if let Some(m) = tls_mode {
+        args.push(format!("--ssl-mode={m}"));
+    }
     let out = Command::new(&tools.mysqldump).env("MYSQL_PWD", &conn.password).args(&args).output()
         .map_err(|e| e.to_string())?;
     if out.status.success() { Ok(()) } else { Err(sanitize_error(&String::from_utf8_lossy(&out.stderr))) }
 }
 
-pub fn run_mysql_restore(conn: &MySqlConnParams, options: &MySqlRestoreOptions, tools: &MySqlToolPaths) -> Result<(), String> {
-    let args = build_mysql_restore_args(conn, options);
+pub fn run_mysql_restore(
+    conn: &MySqlConnParams,
+    options: &MySqlRestoreOptions,
+    tools: &MySqlToolPaths,
+    tls_mode: Option<&str>,
+) -> Result<(), String> {
+    let mut args = build_mysql_restore_args(conn, options);
+    if let Some(m) = tls_mode {
+        args.push(format!("--ssl-mode={m}"));
+    }
     let file = std::fs::File::open(&options.file_path).map_err(|e| format!("open dump: {e}"))?;
     let out = Command::new(&tools.mysql).env("MYSQL_PWD", &conn.password).args(&args).stdin(Stdio::from(file)).output()
         .map_err(|e| e.to_string())?;
     if out.status.success() { Ok(()) } else { Err(sanitize_error(&String::from_utf8_lossy(&out.stderr))) }
 }
 
-pub fn run_mysql_sync(source: &MySqlConnParams, target: &MySqlConnParams, tools: &MySqlToolPaths) -> Result<(), String> {
+pub fn run_mysql_sync(
+    source: &MySqlConnParams,
+    target: &MySqlConnParams,
+    tools: &MySqlToolPaths,
+    tls_mode: Option<&str>,
+) -> Result<(), String> {
     let mut dump_args = base_mysql_args(source);
     dump_args.push("--single-transaction".into());
     dump_args.push("--add-drop-table".into());
     dump_args.push(format!("--databases={}", source.database));
+    if let Some(m) = tls_mode {
+        dump_args.push(format!("--ssl-mode={m}"));
+    }
     let mut dump = Command::new(&tools.mysqldump).env("MYSQL_PWD", &source.password).args(&dump_args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("dump: {e}"))?;
     let stdout = dump.stdout.take().unwrap();
     let mut restore_args = base_mysql_args(target);
@@ -769,6 +795,346 @@ pub async fn db_sync(
 
     tokio::task::spawn_blocking(move || {
         let result = run_db_sync(&source, &target, schema.as_deref(), tables.as_deref(), &tools);
+        emit_result(&app_handle_clone, &job_id_clone, result);
+    });
+
+    Ok(job_id)
+}
+
+// ---------------------------------------------------------------------------
+// MySQL dump / restore / sync commands (v0.7.8)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn detect_mysql_tools(app_handle: AppHandle) -> MySqlToolStatus {
+    let (d, ds) = resolve_mysql_tool(&app_handle, "mariadb-dump");
+    let (m, ms) = resolve_mysql_tool(&app_handle, "mariadb");
+    MySqlToolStatus {
+        mysqldump_found: Command::new(&d).arg("--version").output().is_ok(),
+        mysql_found: Command::new(&m).arg("--version").output().is_ok(),
+        mysqldump_version: get_version(&d),
+        mysql_version: get_version(&m),
+        mysqldump_source: ds,
+        mysql_source: ms,
+    }
+}
+
+/// Resolve (host, port, via_tunnel) for a MySQL connection, routing through the
+/// SSH tunnel endpoint when present.
+fn mysql_endpoint(
+    state: &crate::AppState,
+    connection_id: &str,
+    conn: &crate::models::Connection,
+) -> (String, i64, bool) {
+    let via_tunnel = state.ssh_manager.lock().unwrap().get_local_port(connection_id);
+    if let Some(port) = via_tunnel {
+        return ("127.0.0.1".into(), port as i64, true);
+    }
+    (conn.host.clone(), conn.port.unwrap_or(3306), false)
+}
+
+#[tauri::command]
+pub async fn mysql_dump(
+    connection_id: String,
+    options: MySqlBackupOptions,
+    state: State<'_, crate::AppState>,
+    app_handle: AppHandle,
+) -> Result<String, String> {
+    let job_id = uuid::Uuid::new_v4().to_string();
+
+    let conn = {
+        let store = state.db_store.lock().map_err(|e| e.to_string())?;
+        let connections = store.get_connections().map_err(|e| e.to_string())?;
+        connections
+            .into_iter()
+            .find(|c| c.id == connection_id)
+            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
+    };
+
+    let password =
+        crate::commands::keychain::get_connection_password_internal(&app_handle, &connection_id)
+            .unwrap_or_default()
+            .unwrap_or_default();
+
+    let (host, port, via_tunnel) = mysql_endpoint(&state, &connection_id, &conn);
+    let params = MySqlConnParams::new(
+        host,
+        port,
+        conn.username.clone().unwrap_or_else(|| "root".into()),
+        options.database.clone(),
+        password,
+    );
+    let tools = resolve_mysql_tool_paths(&app_handle);
+    let tls = if via_tunnel { Some("REQUIRED") } else { None };
+
+    let job_id_clone = job_id.clone();
+    let app_handle_clone = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = run_mysql_dump(&params, &options, &tools, tls);
+        emit_result(&app_handle_clone, &job_id_clone, result);
+    });
+
+    Ok(job_id)
+}
+
+#[tauri::command]
+pub async fn mysql_restore(
+    connection_id: String,
+    options: MySqlRestoreOptions,
+    state: State<'_, crate::AppState>,
+    app_handle: AppHandle,
+) -> Result<String, String> {
+    let job_id = uuid::Uuid::new_v4().to_string();
+
+    let conn = {
+        let store = state.db_store.lock().map_err(|e| e.to_string())?;
+        let connections = store.get_connections().map_err(|e| e.to_string())?;
+        connections
+            .into_iter()
+            .find(|c| c.id == connection_id)
+            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
+    };
+
+    let password =
+        crate::commands::keychain::get_connection_password_internal(&app_handle, &connection_id)
+            .unwrap_or_default()
+            .unwrap_or_default();
+
+    let (host, port, via_tunnel) = mysql_endpoint(&state, &connection_id, &conn);
+    let params = MySqlConnParams::new(
+        host,
+        port,
+        conn.username.clone().unwrap_or_else(|| "root".into()),
+        options.database.clone(),
+        password,
+    );
+    let tools = resolve_mysql_tool_paths(&app_handle);
+    let tls = if via_tunnel { Some("REQUIRED") } else { None };
+
+    let job_id_clone = job_id.clone();
+    let app_handle_clone = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = run_mysql_restore(&params, &options, &tools, tls);
+        emit_result(&app_handle_clone, &job_id_clone, result);
+    });
+
+    Ok(job_id)
+}
+
+#[tauri::command]
+pub async fn mysql_sync(
+    options: SyncOptions,
+    state: State<'_, crate::AppState>,
+    app_handle: AppHandle,
+) -> Result<String, String> {
+    let job_id = uuid::Uuid::new_v4().to_string();
+
+    // Get both connections from store
+    let (source_conn, target_conn) = {
+        let store = state.db_store.lock().map_err(|e| e.to_string())?;
+        let connections = store.get_connections().map_err(|e| e.to_string())?;
+
+        let src = connections
+            .iter()
+            .find(|c| c.id == options.source_connection_id)
+            .ok_or_else(|| {
+                format!(
+                    "Source connection not found: {}",
+                    options.source_connection_id
+                )
+            })?
+            .clone();
+
+        let tgt = connections
+            .iter()
+            .find(|c| c.id == options.target_connection_id)
+            .ok_or_else(|| {
+                format!(
+                    "Target connection not found: {}",
+                    options.target_connection_id
+                )
+            })?
+            .clone();
+
+        (src, tgt)
+    };
+
+    let src_password =
+        crate::commands::keychain::get_connection_password_internal(&app_handle, &source_conn.id)
+            .unwrap_or_default()
+            .unwrap_or_default();
+    let tgt_password =
+        crate::commands::keychain::get_connection_password_internal(&app_handle, &target_conn.id)
+            .unwrap_or_default()
+            .unwrap_or_default();
+
+    let (src_host, src_port, src_via_tunnel) = mysql_endpoint(&state, &source_conn.id, &source_conn);
+    let (tgt_host, tgt_port, tgt_via_tunnel) = mysql_endpoint(&state, &target_conn.id, &target_conn);
+
+    let source = MySqlConnParams::new(
+        src_host,
+        src_port,
+        source_conn
+            .username
+            .clone()
+            .unwrap_or_else(|| "root".into()),
+        source_conn
+            .database
+            .clone()
+            .unwrap_or_else(|| "mysql".into()),
+        src_password,
+    );
+    let target = MySqlConnParams::new(
+        tgt_host,
+        tgt_port,
+        target_conn
+            .username
+            .clone()
+            .unwrap_or_else(|| "root".into()),
+        target_conn
+            .database
+            .clone()
+            .unwrap_or_else(|| "mysql".into()),
+        tgt_password,
+    );
+
+    let tools = resolve_mysql_tool_paths(&app_handle);
+    // Through a tunnel the peer is loopback, so force encrypt-only `REQUIRED`
+    // (mirrors how the app degrades verify-ca/verify-full through tunnels).
+    let tls = if src_via_tunnel || tgt_via_tunnel {
+        Some("REQUIRED")
+    } else {
+        None
+    };
+
+    let job_id_clone = job_id.clone();
+    let app_handle_clone = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = run_mysql_sync(&source, &target, &tools, tls);
+        emit_result(&app_handle_clone, &job_id_clone, result);
+    });
+
+    Ok(job_id)
+}
+
+// ---------------------------------------------------------------------------
+// SQLite dump / restore / sync commands (v0.7.8) — the stored `conn.host` IS
+// the SQLite file path; each command opens its own connection in the blocking
+// task (the pool's SQLite handle is never touched).
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn sqlite_dump(
+    connection_id: String,
+    options: SqliteBackupOptions,
+    state: State<'_, crate::AppState>,
+    app_handle: AppHandle,
+) -> Result<String, String> {
+    let job_id = uuid::Uuid::new_v4().to_string();
+
+    let conn = {
+        let store = state.db_store.lock().map_err(|e| e.to_string())?;
+        let connections = store.get_connections().map_err(|e| e.to_string())?;
+        connections
+            .into_iter()
+            .find(|c| c.id == connection_id)
+            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
+    };
+
+    let path = conn.host.clone();
+    let out_path = options.file_path.clone();
+    let job_id_clone = job_id.clone();
+    let app_handle_clone = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = (|| -> Result<(), String> {
+            let src = Connection::open(&path).map_err(|e| format!("open source: {e}"))?;
+            let mut out =
+                std::fs::File::create(&out_path).map_err(|e| format!("create dump file: {e}"))?;
+            dump_sqlite_to(&src, &mut out, |_| {})
+        })();
+        emit_result(&app_handle_clone, &job_id_clone, result);
+    });
+
+    Ok(job_id)
+}
+
+#[tauri::command]
+pub async fn sqlite_restore(
+    connection_id: String,
+    options: SqliteRestoreOptions,
+    state: State<'_, crate::AppState>,
+    app_handle: AppHandle,
+) -> Result<String, String> {
+    let job_id = uuid::Uuid::new_v4().to_string();
+
+    let conn = {
+        let store = state.db_store.lock().map_err(|e| e.to_string())?;
+        let connections = store.get_connections().map_err(|e| e.to_string())?;
+        connections
+            .into_iter()
+            .find(|c| c.id == connection_id)
+            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
+    };
+
+    let path = conn.host.clone();
+    let in_path = options.file_path.clone();
+    let clean = options.clean;
+    let job_id_clone = job_id.clone();
+    let app_handle_clone = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = (|| -> Result<(), String> {
+            let dst = Connection::open(&path).map_err(|e| format!("open target: {e}"))?;
+            let text =
+                std::fs::read_to_string(&in_path).map_err(|e| format!("read dump: {e}"))?;
+            restore_sqlite(&dst, &text, clean)
+        })();
+        emit_result(&app_handle_clone, &job_id_clone, result);
+    });
+
+    Ok(job_id)
+}
+
+#[tauri::command]
+pub async fn sqlite_sync(
+    options: SyncOptions,
+    state: State<'_, crate::AppState>,
+    app_handle: AppHandle,
+) -> Result<String, String> {
+    let job_id = uuid::Uuid::new_v4().to_string();
+
+    let (source_path, target_path) = {
+        let store = state.db_store.lock().map_err(|e| e.to_string())?;
+        let connections = store.get_connections().map_err(|e| e.to_string())?;
+
+        let src = connections
+            .iter()
+            .find(|c| c.id == options.source_connection_id)
+            .ok_or_else(|| {
+                format!(
+                    "Source connection not found: {}",
+                    options.source_connection_id
+                )
+            })?
+            .clone();
+
+        let tgt = connections
+            .iter()
+            .find(|c| c.id == options.target_connection_id)
+            .ok_or_else(|| {
+                format!(
+                    "Target connection not found: {}",
+                    options.target_connection_id
+                )
+            })?
+            .clone();
+
+        (src.host, tgt.host)
+    };
+
+    let job_id_clone = job_id.clone();
+    let app_handle_clone = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = run_sqlite_sync(&source_path, &target_path);
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 

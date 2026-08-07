@@ -44,6 +44,7 @@ import {
   getObjectDdl,
   getObjectDependencies,
 } from "./commands";
+import * as cmd from "./commands";
 import type { SchemaGraph } from "./types";
 import type { QueryHistoryEntry } from "./commands";
 
@@ -422,5 +423,13 @@ describe("v0.7.7 command wrappers", () => {
 
     expect(invoke).toHaveBeenCalledWith("build_rebuild_script", { connectionId: "c1", schema: "public", table: "users", newColumns: cols });
     expect(result).toEqual(mockScript);
+  });
+});
+
+describe("v0.7.8 command wrappers exist", () => {
+  it("exports the backup/cancel/settings wrappers", () => {
+    for (const name of ["cancelQuery","mysqlDump","mysqlRestore","mysqlSync","detectMysqlTools","sqliteDump","sqliteRestore","sqliteSync","exportSettings","importSettings"]) {
+      expect(typeof (cmd as Record<string, unknown>)[name]).toBe("function");
+    }
   });
 });

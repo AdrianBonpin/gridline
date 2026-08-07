@@ -1,5 +1,6 @@
 use crate::models::Settings;
 use crate::store::Store;
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub fn get_settings_inner(state: &Mutex<Store>) -> Result<Settings, String> {
@@ -24,6 +25,68 @@ pub fn update_setting(
     value: String,
 ) -> Result<(), String> {
     update_setting_inner(&state.db_store, &key, &value)
+}
+
+// ---------------------------------------------------------------------------
+// Settings export / import (v0.7.8)
+// ---------------------------------------------------------------------------
+
+/// Flatten a `Settings` struct into the store's key/value map. Keys and value
+/// formats must round-trip through `Store::get_settings` (e.g. a `None`
+/// `default_folder_id` is stored as the literal `"null"` sentinel, which
+/// `get_settings` filters back to `None`).
+fn settings_to_kv(s: &crate::models::Settings) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    m.insert("confirm_before_delete".into(), s.confirm_before_delete.to_string());
+    if let Some(f) = &s.default_folder_id {
+        m.insert("default_folder_id".into(), f.clone());
+    } else {
+        m.insert("default_folder_id".into(), "null".into());
+    }
+    m.insert("theme".into(), s.theme.clone());
+    m.insert("font_size".into(), s.font_size.clone());
+    m.insert("accent_color".into(), s.accent_color.clone());
+    m.insert("table_refresh_rate".into(), s.table_refresh_rate.to_string());
+    m.insert("table_page_size".into(), s.table_page_size.to_string());
+    m.insert("editor_font_size".into(), s.editor_font_size.to_string());
+    m.insert("editor_font_family".into(), s.editor_font_family.clone());
+    m.insert("editor_word_wrap".into(), s.editor_word_wrap.clone());
+    m.insert("editor_minimap".into(), s.editor_minimap.to_string());
+    m.insert("editor_tab_size".into(), s.editor_tab_size.to_string());
+    if let Some(o) = &s.tag_order {
+        m.insert("tag_order".into(), o.clone());
+    }
+    m.insert(
+        "default_ports".into(),
+        serde_json::to_string(&s.default_ports).unwrap_or_default(),
+    );
+    m.insert(
+        "shortcuts".into(),
+        serde_json::to_string(&s.shortcuts).unwrap_or_default(),
+    );
+    m
+}
+
+#[tauri::command]
+pub fn export_settings(state: tauri::State<crate::AppState>) -> Result<String, String> {
+    let s = get_settings_inner(&state.db_store)?;
+    serde_json::to_string(&crate::models::settings::SettingsExport {
+        schema_version: 1,
+        settings: s,
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn import_settings(
+    json: String,
+    state: tauri::State<crate::AppState>,
+) -> Result<(), String> {
+    let env: crate::models::settings::SettingsExport =
+        serde_json::from_str(&json).map_err(|e| format!("invalid settings file: {e}"))?;
+    let map = settings_to_kv(&env.settings);
+    let store = state.db_store.lock().map_err(|e| e.to_string())?;
+    store.apply_settings(&map)
 }
 
 #[cfg(test)]

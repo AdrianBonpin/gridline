@@ -313,6 +313,49 @@ export interface PgToolStatus {
   pg_restore_source: string | null;
 }
 
+// ─── Backup Types: MySQL / SQLite / Settings (v0.7.8) ───────────
+// NOTE: the Rust `MySqlToolStatus` model is `#[serde(rename_all = "camelCase")]`,
+// so these interfaces use camelCase keys to match the actual IPC payloads.
+
+export interface MySqlToolStatus {
+  mysqldumpFound: boolean;
+  mysqlFound: boolean;
+  mysqldumpVersion: string | null;
+  mysqlVersion: string | null;
+  mysqldumpSource: string | null;
+  mysqlSource: string | null;
+}
+
+export interface MySqlBackupOptions {
+  database: string;
+  filePath: string;
+  singleTransaction: boolean;
+  noData: boolean;
+  routines: boolean;
+  triggers: boolean;
+  events: boolean;
+}
+
+export interface MySqlRestoreOptions {
+  database: string;
+  filePath: string;
+  clean: boolean;
+}
+
+export interface SqliteBackupOptions {
+  filePath: string;
+}
+
+export interface SqliteRestoreOptions {
+  filePath: string;
+  clean: boolean;
+}
+
+export interface SettingsExport {
+  schemaVersion: number;
+  settings: Settings;
+}
+
 export type PgObjectType =
   | "table" | "view" | "materialized view" | "function" | "procedure"
   | "trigger" | "sequence" | "enum" | "extension" | "index" | "constraint";
