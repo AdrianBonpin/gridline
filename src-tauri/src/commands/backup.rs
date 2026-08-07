@@ -1,3 +1,5 @@
+use rusqlite::{types::ValueRef, Connection};
+use std::io::Write;
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -315,6 +317,176 @@ pub fn run_db_sync(
         )),
         Err(e) => Err(format!("pg_restore failed: {e}")),
     }
+}
+
+// ---------------------------------------------------------------------------
+// SQLite dump / restore / sync (headless-testable core)
+// ---------------------------------------------------------------------------
+
+/// Quote a SQLite identifier with double quotes (preserving the spec's no-injection rule).
+fn sqlite_quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// SQL literal for a rusqlite value (mirrors sqlite3 .dump output).
+fn sqlite_literal(v: ValueRef) -> String {
+    match v {
+        ValueRef::Null => "NULL".to_string(),
+        ValueRef::Integer(i) => i.to_string(),
+        ValueRef::Real(r) => r.to_string(),
+        ValueRef::Text(t) => format!("'{}'", String::from_utf8_lossy(t).replace('\'', "''")),
+        ValueRef::Blob(b) => {
+            format!("X'{}'", b.iter().map(|x| format!("{:02x}", x)).collect::<String>())
+        }
+    }
+}
+
+/// Generate a `.dump`-format SQL script from `conn`, streaming to `out`. Calls
+/// `on_progress(table_name)` per table. Fails closed on virtual tables.
+pub fn dump_sqlite_to<W: Write, F: FnMut(&str)>(
+    conn: &Connection,
+    out: &mut W,
+    mut on_progress: F,
+) -> Result<(), String> {
+    writeln!(out, "PRAGMA foreign_keys=OFF;").map_err(|e| e.to_string())?;
+    writeln!(out, "BEGIN TRANSACTION;").map_err(|e| e.to_string())?;
+
+    // 1. Tables (schema + data), fail-closed on virtual tables.
+    let table_names: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY name")
+        .map_err(|e| e.to_string())?
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for name in &table_names {
+        let create_sql: String = conn
+            .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name=?1", [name], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(|e| e.to_string())?;
+        if create_sql.to_lowercase().contains("create virtual table") {
+            return Err(format!(
+                "SQLite virtual tables are not supported for .dump in v0.7.8 (table: {name})"
+            ));
+        }
+        writeln!(out, "{create_sql};").map_err(|e| e.to_string())?;
+        on_progress(name);
+
+        // Columns excluding generated/hidden (hidden != 0) via pragma_table_xinfo.
+        let xinfo: Vec<(String, i64)> = conn
+            .prepare(&format!(
+                "SELECT name, hidden FROM pragma_table_xinfo(\"{}\")",
+                name.replace('"', "\"\"")
+            ))
+            .map_err(|e| e.to_string())?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        let emitted: Vec<String> = xinfo.iter().filter(|(_, h)| *h == 0).map(|(n, _)| n.clone()).collect();
+        let col_list = emitted.iter().map(|n| sqlite_quote_ident(n)).collect::<Vec<_>>().join(", ");
+        // Emit one INSERT per row (faithful to .dump).
+        let select = format!(
+            "SELECT {} FROM \"{}\"",
+            emitted.iter().map(|n| sqlite_quote_ident(n)).collect::<Vec<_>>().join(", "),
+            name.replace('"', "\"\"")
+        );
+        let mut stmt = conn.prepare(&select).map_err(|e| e.to_string())?;
+        let nrows = stmt
+            .query_map([], |row| {
+                let vals: Vec<String> = (0..emitted.len())
+                    .map(|i| sqlite_literal(row.get_ref(i).unwrap_or(ValueRef::Null)))
+                    .collect();
+                Ok(format!(
+                    "INSERT INTO {} ({}) VALUES ({});",
+                    sqlite_quote_ident(name),
+                    col_list,
+                    vals.join(", ")
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for r in nrows.filter_map(|r| r.ok()) {
+            writeln!(out, "{r}").map_err(|e| e.to_string())?;
+        }
+    }
+
+    // 2. Indexes, triggers, views (sql not null).
+    for ty in ["index", "trigger", "view"] {
+        let sqls: Vec<String> = conn
+            .prepare("SELECT sql FROM sqlite_master WHERE type=?1 AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY name")
+            .map_err(|e| e.to_string())?
+            .query_map([ty], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        for s in sqls {
+            writeln!(out, "{s};").map_err(|e| e.to_string())?;
+        }
+    }
+
+    // 3. sqlite_sequence (AUTOINCREMENT counters) if it exists.
+    if conn
+        .prepare("SELECT name FROM sqlite_master WHERE name='sqlite_sequence'")
+        .map_err(|e| e.to_string())?
+        .exists([])
+        .unwrap_or(false)
+    {
+        writeln!(out, "DELETE FROM sqlite_sequence;").map_err(|e| e.to_string())?;
+        let rows: Vec<(String, i64)> = conn
+            .prepare("SELECT name, seq FROM sqlite_sequence")
+            .map_err(|e| e.to_string())?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        for (t, seq) in rows {
+            writeln!(
+                out,
+                "INSERT INTO sqlite_sequence VALUES ('{}', {});",
+                t.replace('\'', "''"),
+                seq
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    writeln!(out, "COMMIT;").map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Restore a `.dump` SQL script into `conn`. `clean` drops existing
+/// user tables/views/indexes/triggers first.
+pub fn restore_sqlite(conn: &Connection, dump_text: &str, clean: bool) -> Result<(), String> {
+    if clean {
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type DESC")
+            .map_err(|e| e.to_string())?
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        conn.execute_batch("PRAGMA foreign_keys=OFF;").map_err(|e| e.to_string())?;
+        for n in names {
+            let _ = conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", n.replace('"', "\"\"")), []);
+            let _ = conn.execute(&format!("DROP VIEW IF EXISTS \"{}\"", n.replace('"', "\"\"")), []);
+            let _ = conn.execute(&format!("DROP INDEX IF EXISTS \"{}\"", n.replace('"', "\"\"")), []);
+            let _ = conn.execute(&format!("DROP TRIGGER IF EXISTS \"{}\"", n.replace('"', "\"\"")), []);
+        }
+    }
+    // The dump text already wraps in PRAGMA foreign_keys=OFF + BEGIN/COMMIT.
+    conn.execute_batch(dump_text).map_err(|e| format!("restore failed: {e}"))
+}
+
+/// Dump `source_path` and restore into `target_path` (one-shot).
+pub fn run_sqlite_sync(source_path: &str, target_path: &str) -> Result<(), String> {
+    let src = Connection::open(source_path).map_err(|e| format!("open source: {e}"))?;
+    let mut buf: Vec<u8> = Vec::new();
+    dump_sqlite_to(&src, &mut std::io::Cursor::new(&mut buf), |_| {})?;
+    let text = String::from_utf8(buf).map_err(|e| e.to_string())?;
+    let dst = Connection::open(target_path).map_err(|e| format!("open target: {e}"))?;
+    restore_sqlite(&dst, &text, true)
 }
 
 // ---------------------------------------------------------------------------
