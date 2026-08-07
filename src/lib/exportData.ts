@@ -1,3 +1,4 @@
+import { buildXlsx } from "./xlsx";
 import type { ColumnInfo } from "./types";
 
 export function exportData(
@@ -11,6 +12,17 @@ export function exportData(
   let mime: string;
 
   switch (format) {
+    case "xlsx": {
+      const bytes = buildXlsx(rows, columns);
+      const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${tableName}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
     case "json": {
       const jsonRows = rows.map((row) => {
         const obj: Record<string, unknown> = {};

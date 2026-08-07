@@ -56,6 +56,7 @@ describe("TableOverflowMenu", () => {
     expect(screen.getByText("Open in new tab")).toBeInTheDocument();
     expect(screen.getByText("Copy table schema")).toBeInTheDocument();
     expect(screen.getByText("Export data (CSV)")).toBeInTheDocument();
+    expect(screen.getByText("Export data (Excel)")).toBeInTheDocument();
   });
 
   it("fires onOpenTab when menu item clicked", async () => {

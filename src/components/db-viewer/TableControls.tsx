@@ -26,6 +26,7 @@ const EXPORT_FORMATS = [
   { label: "CSV", ext: "csv" },
   { label: "SQL", ext: "sql" },
   { label: "Markdown", ext: "md" },
+  { label: "Excel", ext: "xlsx" },
 ] as const;
 
 // ─── helpers ────────────────────────────────────────────

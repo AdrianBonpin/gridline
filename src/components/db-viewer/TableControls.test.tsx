@@ -331,4 +331,15 @@ describe("TableControls", () => {
       screen.getByText("Drop columns here to add filters"),
     ).toBeInTheDocument();
   });
+
+  it("export dropdown includes the Excel option", () => {
+    seed([makeTab()], "tab-1");
+    renderControls();
+    fireEvent.click(screen.getByLabelText(/export/i));
+    expect(screen.getByText("JSON")).toBeInTheDocument();
+    expect(screen.getByText("CSV")).toBeInTheDocument();
+    expect(screen.getByText("SQL")).toBeInTheDocument();
+    expect(screen.getByText("Markdown")).toBeInTheDocument();
+    expect(screen.getByText("Excel")).toBeInTheDocument();
+  });
 });

@@ -233,6 +233,7 @@ export function TableOverflowMenu({
     { id: "export-json", label: "Export data (JSON)" },
     { id: "export-sql", label: "Export data (SQL)" },
     { id: "export-md", label: "Export data (Markdown)" },
+    { id: "export-xlsx", label: "Export data (Excel)" },
     { id: "import", label: "Import data (CSV/JSON)" },
     { id: "create_index", label: "Create Index…" },
     { id: "create_constraint", label: "Create Constraint…" },
