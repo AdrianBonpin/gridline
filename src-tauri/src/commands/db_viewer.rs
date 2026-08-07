@@ -2357,11 +2357,15 @@ pub(crate) async fn execute_change_inner(
                     conn.execute(sql, []).map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-                Change::Ddl { .. } => {
-                    return Err("Object management is PostgreSQL-only".to_string());
+                Change::Ddl { sql, .. } => {
+                    // Object DDL can be multi-statement; run as a batch.
+                    conn.execute_batch(sql).map_err(|e| e.to_string())?;
+                    return Ok(());
                 }
-                Change::RebuildTable { .. } => {
-                    return Err("Object management is PostgreSQL-only".to_string());
+                Change::RebuildTable { sql, .. } => {
+                    // Rebuild script (create tmp / copy / drop / rename).
+                    conn.execute_batch(sql).map_err(|e| e.to_string())?;
+                    return Ok(());
                 }
                 Change::BulkInsert {
                     table,

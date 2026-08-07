@@ -1,11 +1,13 @@
 //! Pure builders for schema DDL, cross-object search, pg_depend lookups,
 //! and synthesized object DDL. No DB I/O — deterministic string builders.
+use serde::{Deserialize, Serialize};
 use crate::models::db_viewer::{SequenceInfo, EnumInfo, ExtensionInfo, ConstraintInfo};
 
 /// Column model for the SQLite table editor. Mirrors the frontend payload.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SqliteColumn {
     pub name: String,
+    #[serde(rename = "type")]
     pub type_: String,
     pub nullable: bool,
     pub default: Option<String>,
