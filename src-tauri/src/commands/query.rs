@@ -87,6 +87,7 @@ impl From<crate::store::SavedQueryRow> for SavedQueryCommand {
 pub(crate) async fn execute_query_inner(
     pool_manager: &mut crate::db::pool::ConnectionPoolManager,
     db_store: &std::sync::Mutex<crate::store::Store>,
+    cancel_registry: &crate::cancel::CancelRegistry,
     connection_id: &str,
     query: &str,
     page: i64,
@@ -101,7 +102,22 @@ pub(crate) async fn execute_query_inner(
             execute_pg_query(client, query, page, page_size).await
         }
         Some(DbHandle::Sqlite(conn)) => execute_sqlite_query(conn, query, page, page_size),
-        Some(DbHandle::MySql(pool)) => execute_mysql_query(pool, query, page, page_size).await,
+        Some(DbHandle::MySql(pool)) => {
+            // Run on a dedicated pooled connection so the query's MySQL
+            // CONNECTION_ID can be tracked for cancellation (`KILL QUERY ?`).
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
+            let conn_id: i64 = sqlx::query_scalar("SELECT CONNECTION_ID()")
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap_or(-1);
+            cancel_registry.set_mysql_conn_id(connection_id, Some(conn_id));
+            let result = execute_mysql_query_on(&mut *conn, query, page, page_size).await;
+            cancel_registry.set_mysql_conn_id(connection_id, None);
+            result
+        }
         None => {
             let elapsed = start.elapsed().as_millis() as i64;
             let err = "Connection not found".to_string();
@@ -533,8 +549,8 @@ pub(crate) fn mysql_cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde
     serde_json::Value::Null
 }
 
-async fn execute_mysql_query(
-    pool: &sqlx::MySqlPool,
+async fn execute_mysql_query_on(
+    conn: &mut sqlx::mysql::MySqlConnection,
     query: &str,
     page: i64,
     page_size: i64,
@@ -547,21 +563,21 @@ async fn execute_mysql_query(
 
     // Try the wrapped count first; fall back to raw on failure.
     let total_rows: i64 = match sqlx::query_scalar::<_, i64>(&mysql_wrap_count(trimmed))
-        .fetch_one(pool)
+        .fetch_one(&mut *conn)
         .await
     {
         Ok(n) => n,
-        Err(_) => return execute_mysql_raw(pool, trimmed, page, page_size, off).await,
+        Err(_) => return execute_mysql_raw(&mut *conn, trimmed, page, page_size, off).await,
     };
 
     let data_rows = match sqlx::query(&mysql_wrap_data(trimmed))
         .bind(page_size)
         .bind(off)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
     {
         Ok(rows) => rows,
-        Err(_) => return execute_mysql_raw(pool, trimmed, page, page_size, off).await,
+        Err(_) => return execute_mysql_raw(&mut *conn, trimmed, page, page_size, off).await,
     };
 
     let columns: Vec<ColumnInfo> = match data_rows.first() {
@@ -580,7 +596,7 @@ async fn execute_mysql_query(
                 is_generated: false,
             })
             .collect(),
-        None => return execute_mysql_raw(pool, trimmed, page, page_size, off).await,
+        None => return execute_mysql_raw(&mut *conn, trimmed, page, page_size, off).await,
     };
 
     let rows: Vec<Vec<serde_json::Value>> = data_rows
@@ -602,14 +618,14 @@ async fn execute_mysql_query(
 /// mirroring the PG `simple_query` raw path. Used when wrapping fails
 /// (e.g., multi-statement or non-selectable SQL).
 async fn execute_mysql_raw(
-    pool: &sqlx::MySqlPool,
+    conn: &mut sqlx::mysql::MySqlConnection,
     query: &str,
     page: i64,
     page_size: i64,
     off: i64,
 ) -> Result<QueryResult, String> {
     let rows = sqlx::query(query)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
 
@@ -748,7 +764,70 @@ pub async fn execute_query(
     let p = page.unwrap_or(1);
     let ps = page_size.unwrap_or(50);
     let mut pm = state.pool_manager.lock().await;
-    execute_query_inner(&mut pm, &state.db_store, &connection_id, &query, p, ps).await
+    execute_query_inner(
+        &mut pm,
+        &state.db_store,
+        &state.cancel_registry,
+        &connection_id,
+        &query,
+        p,
+        ps,
+    )
+    .await
+}
+
+/// Cancel a query currently running on the given connection.
+///
+/// - PostgreSQL: opens a short-lived cancel connection (reusing the exact TLS
+///   decision/config from connect) and sends a cancel request keyed to the
+///   original backend.
+/// - MySQL: opens a fresh connection and runs `KILL QUERY <conn_id>` for the
+///   connection currently running the query (registered per-query).
+/// - SQLite: signals the per-connection `InterruptHandle` (thread-safe).
+#[tauri::command]
+pub async fn cancel_query(
+    connection_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    use sqlx::ConnectOptions;
+    match state.cancel_registry.get(&connection_id) {
+        Some(crate::cancel::CancelHandle::Pg(pg)) => {
+            // A Verify/Require decision always carries a built rustls config,
+            // so the unwrap on the non-Disable branch is safe by construction.
+            match pg.tls_decision {
+                crate::db::tls::TlsDecision::Disable => {
+                    pg.cancel_token.cancel_query(tokio_postgres::NoTls).await
+                }
+                _ => {
+                    let connector = tokio_postgres_rustls::MakeRustlsConnect::new(
+                        (*pg.tls_config.expect("tls config for non-disable decision")).clone(),
+                    );
+                    pg.cancel_token.cancel_query(connector).await
+                }
+            }
+            .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))
+        }
+        Some(crate::cancel::CancelHandle::MySql(m)) => {
+            let id = m
+                .conn_id
+                .ok_or_else(|| "No active query on this connection".to_string())?;
+            let mut c = m
+                .connect_options
+                .connect()
+                .await
+                .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
+            sqlx::query(&format!("KILL QUERY {id}"))
+                .execute(&mut c)
+                .await
+                .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
+            Ok(())
+        }
+        Some(crate::cancel::CancelHandle::Sqlite(s)) => {
+            s.interrupt();
+            Ok(())
+        }
+        None => Err("No active cancel handle for this connection".into()),
+    }
 }
 
 #[tauri::command]

@@ -108,6 +108,45 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_interrupt_aborts_running_query() {
+        use std::sync::{Arc, Mutex};
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t(n); INSERT INTO t VALUES (0);")
+            .unwrap();
+        let handle = conn.get_interrupt_handle();
+        let conn2 = Arc::new(Mutex::new(conn));
+        let c = conn2.clone();
+        let done = Arc::new(Mutex::new(None::<Result<usize, String>>));
+        let d = done.clone();
+        let worker = std::thread::spawn(move || {
+            let l = c.lock().unwrap();
+            // `query()` binds params only — the first sqlite3_step (where the
+            // interrupt lands) happens in `rs.next()`, so errors must be
+            // propagated with `?` rather than swallowed by `is_ok()`.
+            let r = l
+                .prepare("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c LIMIT 200000000) SELECT count(*) FROM c")
+                .unwrap()
+                .query([])
+                .and_then(|mut rs| {
+                    let mut n = 0;
+                    while rs.next()?.is_some() {
+                        n += 1;
+                    }
+                    Ok(n)
+                });
+            *d.lock().unwrap() = Some(r.map_err(|e| e.to_string()));
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        handle.interrupt();
+        worker.join().unwrap();
+        let outcome = done.lock().unwrap().clone();
+        assert!(
+            matches!(&outcome, Some(Err(e)) if e.to_lowercase().contains("interrupted")),
+            "cancelled query must report interrupted; got {outcome:?}"
+        );
+    }
+
+    #[test]
     fn mysql_overwrites_single_active_slot() {
         let reg = CancelRegistry::new();
         reg.set_mysql("c1", MySqlCancel { conn_id: Some(1), connect_options: fake_opts() });

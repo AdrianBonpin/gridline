@@ -72,6 +72,9 @@ pub fn run() {
                         if let Ok(mut mgr) = s.ssh_manager.lock() {
                             mgr.close_tunnel(id);
                         }
+                        // Drop the cancel handles for the evicted connection
+                        // (tokens/interrupts outlive the pool otherwise).
+                        s.cancel_registry.remove(id);
                     }
                 }));
 
@@ -157,6 +160,7 @@ pub fn run() {
             settings::import_settings,
             schema_graph::get_schema_graph,
             query::execute_query,
+            query::cancel_query,
             query::get_query_history,
             query::clear_query_history,
             query::set_history_favorite,

@@ -891,6 +891,7 @@ pub(crate) async fn run_mysql_connect(
     config: &crate::db::pool::DbConfig,
     ssh_manager: &std::sync::Mutex<crate::commands::ssh::SshTunnelManager>,
     pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    cancel_registry: &crate::cancel::CancelRegistry,
 ) -> Result<(), String> {
     use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
     if config.host.trim().is_empty() {
@@ -968,6 +969,10 @@ pub(crate) async fn run_mysql_connect(
         }
     }
 
+    // Clone the (already final) options before `connect_with` consumes them so
+    // `cancel_query` can open its own connection to run `KILL QUERY ?`.
+    let cancel_opts = opts.clone();
+
     match MySqlPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(std::time::Duration::from_secs(10))
@@ -979,6 +984,13 @@ pub(crate) async fn run_mysql_connect(
                 .lock()
                 .await
                 .register(connection_id, crate::db::pool::DbHandle::MySql(pool));
+            cancel_registry.set_mysql(
+                connection_id,
+                crate::cancel::MySqlCancel {
+                    conn_id: None,
+                    connect_options: cancel_opts,
+                },
+            );
             Ok(())
         }
         Err(e) => {
@@ -1023,6 +1035,8 @@ pub async fn db_connect(
             config.ssl_key_path.as_deref(),
         )
         .map_err(|e| sanitize_error(&e))?;
+        // Snapshot before `match tls` consumes the Option below.
+        let cancel_cfg = tls.clone();
 
         // SSH tunnel: if configured, open a loopback tunnel to the remote DB
         // and connect through it. The blocking ssh2 handshake runs in
@@ -1080,6 +1094,18 @@ pub async fn db_connect(
 
         match result {
             Ok((client, handle)) => {
+                // Capture a cancel token + the exact TLS decision/config used to
+                // build the connection so `cancel_query` can open an identical
+                // (short-lived) cancel connection later.
+                let pgtoken = client.cancel_token();
+                state.cancel_registry.set_pg(
+                    &connection_id,
+                    crate::cancel::PgCancel {
+                        cancel_token: pgtoken,
+                        tls_decision: decision,
+                        tls_config: cancel_cfg,
+                    },
+                );
                 let mut pm = state.pool_manager.lock().await;
                 pm.register(
                     &connection_id,
@@ -1101,8 +1127,14 @@ pub async fn db_connect(
     } else if config.db_type == "sqlite" {
         match rusqlite::Connection::open(&config.host) {
             Ok(conn) => {
+                // Capture the per-connection interrupt handle so `cancel_query`
+                // can abort a running SQLite query from another thread.
+                let interrupt = conn.get_interrupt_handle();
                 let mut pm = state.pool_manager.lock().await;
                 pm.register(&connection_id, crate::db::pool::DbHandle::Sqlite(conn));
+                state
+                    .cancel_registry
+                    .set_sqlite(&connection_id, crate::cancel::SqliteCancel::new(interrupt));
                 Ok(())
             }
             Err(e) => Err(format!("Connection failed: {}", e)),
@@ -1113,6 +1145,7 @@ pub async fn db_connect(
             &config,
             &state.ssh_manager,
             &state.pool_manager,
+            &state.cancel_registry,
         )
         .await
     } else {
@@ -1130,6 +1163,7 @@ pub async fn db_disconnect(
 ) -> Result<(), String> {
     let mut pm = state.pool_manager.lock().await;
     pm.remove(&connection_id);
+    state.cancel_registry.remove(&connection_id);
     Ok(())
 }
 
@@ -3309,8 +3343,9 @@ mod tests {
         };
         let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
         let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
         let id = "mysql-empty-host";
-        let res = run_mysql_connect(id, &cfg, &ssh, &pm).await;
+        let res = run_mysql_connect(id, &cfg, &ssh, &pm, &reg).await;
         assert!(res.is_err(), "empty host must fail before any network call");
         let mut pmg = pm.lock().await;
         assert!(pmg.get(id).is_none(), "no handle registered on failure");
@@ -3369,8 +3404,9 @@ mod tests {
         };
         let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
         let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
         let id = "mysql-unreachable";
-        let res = run_mysql_connect(id, &cfg, &ssh, &pm).await;
+        let res = run_mysql_connect(id, &cfg, &ssh, &pm, &reg).await;
         assert!(
             res.is_err(),
             "port 1 should refuse; must be a clean Err, not panic"
@@ -3419,8 +3455,9 @@ mod tests {
         };
         let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
         let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
         let id = format!("mysql-it-{}", uuid::Uuid::new_v4());
-        run_mysql_connect(&id, &cfg, &ssh, &pm).await.expect("connect");
+        run_mysql_connect(&id, &cfg, &ssh, &pm, &reg).await.expect("connect");
         let tables = get_tables_inner(&pm, &id, Some(&db)).await.expect("tables");
         assert!(!tables.is_empty(), "test DB must contain at least one table");
         let first = &tables[0];
