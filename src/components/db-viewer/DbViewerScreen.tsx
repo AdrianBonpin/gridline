@@ -5,7 +5,7 @@ import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar, NAV_CAPABILITY_KEY } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { isDestructiveQuery, isSchemaModifyingQuery } from "../../lib/utils";
-import { executeQuery } from "../../lib/commands";
+import { executeQuery, cancelQuery } from "../../lib/commands";
 import { getCapabilities } from "../../lib/dbCapabilities";
 
 const QueryEditor = lazy(() => import("../editor/QueryEditor").then((m) => ({ default: m.QueryEditor })));
@@ -27,6 +27,7 @@ import { useDbConnection } from "../../hooks/useDbConnection";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useNotificationStore } from "../../stores/notificationStore";
 import { useShortcut } from "../../hooks/useShortcut";
 import { ConnectionDropBanner } from "./ConnectionDropBanner";
 import { ToolsPage } from "./ToolsPage";
@@ -184,6 +185,7 @@ export function DbViewerScreen({
     const viewCapabilityKey = NAV_CAPABILITY_KEY[currentView] ?? "explorer";
     const viewSupported = capabilities[viewCapabilityKey];
     const settings = useSettingsStore((s) => s.settings);
+    const notify = useNotificationStore((s) => s.notify);
     const setDefaultPageSize = useDbViewerStore((s) => s.setDefaultPageSize);
     const clearColumnFilter = useDbViewerStore((s) => s.clearColumnFilter);
     const setFilterRules = useDbViewerStore((s) => s.setFilterRules);
@@ -229,6 +231,8 @@ export function DbViewerScreen({
     const changesQueue = useDbViewerStore((s) => s.changesQueue);
     const tables = useDbViewerStore((s) => s.tables);
     const stageCellEdit = useDbViewerStore((s) => s.stageCellEdit);
+
+    const isRunning = activeTab?.tabType === "query" && !!activeTab?.loading;
 
     const isMatview =
         activeTab && activeTab.tabType === "table"
@@ -1028,6 +1032,11 @@ const onQueriesPanelResizeStart = useCallback(
                                                 onRestore={handleRestoreSql}
                                                 onRunFromHistory={handleRunFromHistory}
                                                 dbType={currentConnection?.db_type}
+                                                isRunning={isRunning}
+                                                onCancel={() => {
+                                                    notify("Query cancelled", "info");
+                                                    void cancelQuery(connectionId);
+                                                }}
                                             />
                                             <div className="flex-1 min-h-0 overflow-hidden">
                                                 <QueryEditor

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Play, Wand2, Save } from "lucide-react";
+import { Play, Square, Wand2, Save } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
 import { QueryHistoryDropdown } from "./QueryHistoryDropdown";
 import { SaveQueryDialog } from "./SaveQueryDialog";
@@ -36,6 +36,8 @@ interface QueryToolbarProps {
   onRunFromHistory: (sql: string) => void;
   dbType?: DbType;
   readOnly?: boolean;
+  isRunning?: boolean;
+  onCancel?: () => void;
 }
 
 export function QueryToolbar({
@@ -46,10 +48,13 @@ export function QueryToolbar({
   onRunFromHistory,
   dbType,
   readOnly = false,
+  isRunning: isRunningProp,
+  onCancel,
 }: QueryToolbarProps) {
   const tabs = useDbViewerStore((s) => s.tabs);
   const activeTabId = useDbViewerStore((s) => s.activeTabId);
-  const isRunning = tabs.find((t) => t.id === activeTabId)?.loading ?? false;
+  const isRunning =
+    isRunningProp ?? tabs.find((t) => t.id === activeTabId)?.loading ?? false;
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
@@ -99,6 +104,21 @@ export function QueryToolbar({
             <span>Run Query</span>
           </button>
         </Tooltip>
+
+        {/* Cancel Query */}
+        {isRunning && onCancel && (
+          <Tooltip content="Cancel running query" side="bottom">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="flex items-center gap-1.5 rounded-md border border-red-500/50 bg-red-500/10 px-2.5 py-1 font-medium text-red-400 transition-colors hover:bg-red-500/20 cursor-pointer"
+              aria-label="Cancel query"
+            >
+              <Square className="h-3 w-3 fill-current" />
+              <span>Cancel</span>
+            </button>
+          </Tooltip>
+        )}
 
         {/* History dropdown */}
         <QueryHistoryDropdown

@@ -78,6 +78,32 @@ describe("QueryToolbar", () => {
     useDbViewerStore.getState().reset();
   });
 
+  const baseProps = {
+    onRun: () => {},
+    onFormat: () => {},
+    connectionId: "conn-1",
+    onRestore: () => {},
+    onRunFromHistory: () => {},
+  };
+
+  it("shows a Cancel button when isRunning is true", () => {
+    render(
+      <TooltipProvider>
+        <QueryToolbar {...baseProps} isRunning={true} onCancel={() => {}} />
+      </TooltipProvider>,
+    );
+    expect(screen.getByRole("button", { name: /cancel/i })).toBeTruthy();
+  });
+
+  it("hides the Cancel button when not running", () => {
+    render(
+      <TooltipProvider>
+        <QueryToolbar {...baseProps} isRunning={false} onCancel={() => {}} />
+      </TooltipProvider>,
+    );
+    expect(screen.queryByRole("button", { name: /cancel/i })).toBeNull();
+  });
+
   it("renders Run Query and the format icon button", () => {
     renderToolbar({});
     expect(
