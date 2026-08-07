@@ -6,51 +6,6 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ---
 
-## ✅ Shipped (0.7.7)
-
-### Admin follow-up
-
-- **PostgreSQL users/roles + grants management** — create/edit/drop roles with attributes; a per-role **privilege explorer** grouped by object class (tables, sequences, routines, schemas, databases) with collapsible sections (5-entry preview + fade, expand to show all) and GRANT/REVOKE staging through the changes queue (DB Pro has this at 0% on their roadmap — a differentiator to hold)
-- **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
-
-### Table & relationship management
-
-- **Create table** — a "Create Table…" tab in the workspace using the same Visual ⇄ SQL flow as object create/edit: a columns grid (name / type / nullable / default / PK per row, type dropdowns with shorthand PG types, drag-to-reorder, add/remove rows) with a live Monaco SQL preview; multi-column PRIMARY KEY on create
-- **Edit table (robust column diff)** — open an existing table's columns in the same grid; on Stage, diff old vs new columns and emit the right statements, one per queue item: `ADD COLUMN`, `DROP COLUMN`, `RENAME COLUMN`, `ALTER COLUMN … TYPE`, `ALTER COLUMN … SET|DROP DEFAULT`, `SET|DROP NOT NULL`
-- **FK management** — multi-column FK composer (local column → referenced column pairs, referenced PKs first, type-match preview) with cross-schema references and ON DELETE / ON UPDATE actions; inlined into CREATE TABLE in create mode, separate ALTER staging in edit mode; FK rows in the form with Edit/Remove
-- **Related niceties** — column reordering via atomic table rebuild (single transaction, preserves constraints/indexes/FKs/grants/sequences, fail-closed for triggers/RLS/inheritance/partitioning), table options (tablespace, row-level security), changes queue auto-refreshes the object tree after schema-modifying commits
-- **Version bump** 0.7.6 → **0.7.7**.
-
-## ✅ Shipped (0.7.6)
-
-- **Full Object Management (PostgreSQL)** — create/edit/drop for every PostgreSQL object type (enums, functions, procedures, triggers, sequences, extensions, views, materialized views, indexes, constraints), staged through the changes queue with generated-SQL previews.
-- **Enable Keychain toggle** — wired end-to-end (default ON, opt-out): OFF = don't persist the DB password (session-only, re-prompt on connect) + purge the existing keychain entry; SSH secrets stay keychain-only.
-- **Objects view tabbed workspace** — object details open as tabs in the shared tabbed workspace (per-type icons), with an inline manual query tab and the changes queue reachable from the tab bar.
-- **⌘K object-search fixes** — clicking a result now switches to the Objects view / opens the table tab; arrow-key navigation + Enter to pick.
-- **Version bump** 0.7.5 → **0.7.6**.
-
-## ✅ Shipped (0.7.5)
-
-- **Bundled PG client tools** — static `pg_dump`/`pg_restore`/`psql` ship with the app (system-first, bundled fallback) so backup/restore/sync work with no separate install.
-- **Schema CRUD** — create/rename/drop schemas from the object tree; CASCADE drop with typed-name confirm + dependency warning.
-- **Global object search** — Cmd+K palette in the DB viewer, current-schema scope, all object types; results open a table tab or jump to the Objects view.
-- **Copy as DDL for any object** — `CREATE` DDL for every browsable type (tables via pg_dump; pg_get_*def passthrough; sequences/enums/extensions/views synthesized).
-- **Object dependencies** — `pg_depend` "what depends on this?" view, shown before destructive drops (table drop, schema drop).
-- **Version bump** 0.7.0 → **0.7.5**.
-
-## ✅ Shipped (0.7.0)
-
-- **New Connection screen revamp** — a single progressive flow: connection-string input + 2-column provider tab grid → expands into the full configuration form (label, tags/env/folder, General + SSH·SSL tabs). Removes the simple/detailed toggle.
-- **Full MySQL DB viewer support** — connect (incl. SSL + SSH), browse databases/tables/columns/FKs, run queries, paginate, inline cell editing + changes queue (insert/update/delete/bulk/empty/drop), DDL copy (`SHOW CREATE TABLE`), CSV/JSON import.
-- **DB viewer capability gating** — pure `dbCapabilities.ts` matrix per DB type; unsupported views show a clean "not supported" state instead of broken UI. Redis browsing explicitly gated off.
-- **Supabase & NeonDB managed-PG presets** — provider cards with in-app setup instructions; persist as `postgresql` with an SSL hint.
-- **SQLite file-path mode** — URI field becomes a file-path input with `Browse…`.
-- **Tag overflow scroll** — connection cards show ≤3 tags, then scroll horizontally.
-- **Input styling sweep** — `rounded-full` → `rounded-lg` on all form controls.
-- **Version bump** 0.6.0 → **0.7.0**.
-
-**Not in 0.7.0** (deferred, tracked below): Redis key browsing, MySQL Objects/ERD views, backup/restore/sync for MySQL + SQLite, multiple result sets, SSH key-file management, settings import/export, onboarding tour.
-
 ## 🎯 Next up (0.7.8) — Quick wins
 
 Scope: small, individually shippable items that round out tooling gaps. Picked to follow the v0.7.7 features milestone; tag **v0.7.8** when done.
@@ -60,6 +15,8 @@ Scope: small, individually shippable items that round out tooling gaps. Picked t
 - **Excel (.xlsx) export** — alongside CSV/JSON/SQL/Markdown in the grid export toolbar
 - **Cancel long-running queries** — per-connection cancel button (`pg_cancel_backend` and equivalents) instead of waiting or killing the app
 - **Settings export / import** — share theme, accent, editor options, page sizes, and defaults across machines (JSON file)
+- **Windows/Linux title bar fix** — the macOS "Overlay" drag strip (`h-7` in `App.tsx`) renders on every Tauri platform, so Windows/Linux show a blank grabbable bar between the native title bar and the page; gate the strip to macOS only (native title bar already handles dragging elsewhere)
+- **SQLite table editor (Create/Edit Table)** — the visual Create Table / Edit Table flow is PostgreSQL-only today (`tableManagement` capability + PG-flavored SQL gen in `TableForm`); extend to SQLite: SQLite-aware type mapping (no `serial` — `INTEGER PRIMARY KEY AUTOINCREMENT` instead), `TEXT`/`REAL`/`BLOB`, and ALTER TABLE limits (`ADD COLUMN` can't add PK/UNIQUE, `DROP COLUMN` needs SQLite ≥3.35)
 
 ## 📋 In the queue
 
@@ -138,6 +95,51 @@ Deferred from 0.7.0, slated for this bucket:
 - **In-app changelog** — "What's new" panel fed from bundled release notes
 
 ---
+
+## ✅ Shipped (0.7.7)
+
+### Admin follow-up
+
+- **PostgreSQL users/roles + grants management** — create/edit/drop roles with attributes; a per-role **privilege explorer** grouped by object class (tables, sequences, routines, schemas, databases) with collapsible sections (5-entry preview + fade, expand to show all) and GRANT/REVOKE staging through the changes queue (DB Pro has this at 0% on their roadmap — a differentiator to hold)
+- **Maintenance actions** — right-click table → VACUUM / ANALYZE / REINDEX
+
+### Table & relationship management
+
+- **Create table** — a "Create Table…" tab in the workspace using the same Visual ⇄ SQL flow as object create/edit: a columns grid (name / type / nullable / default / PK per row, type dropdowns with shorthand PG types, drag-to-reorder, add/remove rows) with a live Monaco SQL preview; multi-column PRIMARY KEY on create
+- **Edit table (robust column diff)** — open an existing table's columns in the same grid; on Stage, diff old vs new columns and emit the right statements, one per queue item: `ADD COLUMN`, `DROP COLUMN`, `RENAME COLUMN`, `ALTER COLUMN … TYPE`, `ALTER COLUMN … SET|DROP DEFAULT`, `SET|DROP NOT NULL`
+- **FK management** — multi-column FK composer (local column → referenced column pairs, referenced PKs first, type-match preview) with cross-schema references and ON DELETE / ON UPDATE actions; inlined into CREATE TABLE in create mode, separate ALTER staging in edit mode; FK rows in the form with Edit/Remove
+- **Related niceties** — column reordering via atomic table rebuild (single transaction, preserves constraints/indexes/FKs/grants/sequences, fail-closed for triggers/RLS/inheritance/partitioning), table options (tablespace, row-level security), changes queue auto-refreshes the object tree after schema-modifying commits
+- **Version bump** 0.7.6 → **0.7.7**.
+
+## ✅ Shipped (0.7.6)
+
+- **Full Object Management (PostgreSQL)** — create/edit/drop for every PostgreSQL object type (enums, functions, procedures, triggers, sequences, extensions, views, materialized views, indexes, constraints), staged through the changes queue with generated-SQL previews.
+- **Enable Keychain toggle** — wired end-to-end (default ON, opt-out): OFF = don't persist the DB password (session-only, re-prompt on connect) + purge the existing keychain entry; SSH secrets stay keychain-only.
+- **Objects view tabbed workspace** — object details open as tabs in the shared tabbed workspace (per-type icons), with an inline manual query tab and the changes queue reachable from the tab bar.
+- **⌘K object-search fixes** — clicking a result now switches to the Objects view / opens the table tab; arrow-key navigation + Enter to pick.
+- **Version bump** 0.7.5 → **0.7.6**.
+
+## ✅ Shipped (0.7.5)
+
+- **Bundled PG client tools** — static `pg_dump`/`pg_restore`/`psql` ship with the app (system-first, bundled fallback) so backup/restore/sync work with no separate install.
+- **Schema CRUD** — create/rename/drop schemas from the object tree; CASCADE drop with typed-name confirm + dependency warning.
+- **Global object search** — Cmd+K palette in the DB viewer, current-schema scope, all object types; results open a table tab or jump to the Objects view.
+- **Copy as DDL for any object** — `CREATE` DDL for every browsable type (tables via pg_dump; pg_get_*def passthrough; sequences/enums/extensions/views synthesized).
+- **Object dependencies** — `pg_depend` "what depends on this?" view, shown before destructive drops (table drop, schema drop).
+- **Version bump** 0.7.0 → **0.7.5**.
+
+## ✅ Shipped (0.7.0)
+
+- **New Connection screen revamp** — a single progressive flow: connection-string input + 2-column provider tab grid → expands into the full configuration form (label, tags/env/folder, General + SSH·SSL tabs). Removes the simple/detailed toggle.
+- **Full MySQL DB viewer support** — connect (incl. SSL + SSH), browse databases/tables/columns/FKs, run queries, paginate, inline cell editing + changes queue (insert/update/delete/bulk/empty/drop), DDL copy (`SHOW CREATE TABLE`), CSV/JSON import.
+- **DB viewer capability gating** — pure `dbCapabilities.ts` matrix per DB type; unsupported views show a clean "not supported" state instead of broken UI. Redis browsing explicitly gated off.
+- **Supabase & NeonDB managed-PG presets** — provider cards with in-app setup instructions; persist as `postgresql` with an SSL hint.
+- **SQLite file-path mode** — URI field becomes a file-path input with `Browse…`.
+- **Tag overflow scroll** — connection cards show ≤3 tags, then scroll horizontally.
+- **Input styling sweep** — `rounded-full` → `rounded-lg` on all form controls.
+- **Version bump** 0.6.0 → **0.7.0**.
+
+**Not in 0.7.0** (deferred, tracked above): Redis key browsing, MySQL Objects/ERD views, backup/restore/sync for MySQL + SQLite, multiple result sets, SSH key-file management, settings import/export, onboarding tour.
 
 ## ✅ Shipped
 
