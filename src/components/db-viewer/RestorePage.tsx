@@ -5,38 +5,62 @@ import { Button } from "../ui/Button";
 import { BackupProgress } from "./BackupProgress";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
-import { detectPgTools, pgRestore, getSchemas } from "../../lib/commands";
-import type { PgToolStatus } from "../../lib/types";
+import { useConnectionStore } from "../../stores/connectionStore";
+import {
+    detectPgTools,
+    pgRestore,
+    getSchemas,
+    detectMysqlTools,
+    mysqlRestore,
+    sqliteRestore,
+} from "../../lib/commands";
+import type { PgToolStatus, MySqlToolStatus, BackupJob } from "../../lib/types";
 
 interface RestorePageProps {
     connectionId: string;
 }
 
-const PLATFORM_INSTALL_INSTRUCTIONS: Record<string, string> = {
+const PG_INSTALL_INSTRUCTIONS: Record<string, string> = {
     darwin: "brew install libpq",
     linux: "sudo apt install postgresql-client  # Debian/Ubuntu\nsudo dnf install postgresql  # Fedora\nsudo pacman -S postgresql  # Arch",
     win32: "Download PostgreSQL installer from https://www.postgresql.org/download/windows/ and ensure pg_restore is in your PATH.",
 };
 
-function getPlatformInstructions(): string {
+const MYSQL_INSTALL_INSTRUCTIONS: Record<string, string> = {
+    darwin: "brew install mysql-client",
+    linux: "sudo apt install mysql-client  # Debian/Ubuntu\nsudo dnf install mysql  # Fedora\nsudo pacman -S mariadb  # Arch",
+    win32: "Download MySQL installer from https://dev.mysql.com/downloads/installer/ and ensure mysql is in your PATH.",
+};
+
+function getPlatformInstructions(map: Record<string, string>): string {
     const platform =
         typeof navigator !== "undefined"
             ? navigator.platform.toLowerCase()
             : "";
     if (platform.includes("mac") || platform.includes("darwin"))
-        return PLATFORM_INSTALL_INSTRUCTIONS.darwin;
-    if (platform.includes("linux")) return PLATFORM_INSTALL_INSTRUCTIONS.linux;
-    if (platform.includes("win")) return PLATFORM_INSTALL_INSTRUCTIONS.win32;
-    return PLATFORM_INSTALL_INSTRUCTIONS.linux;
+        return map.darwin;
+    if (platform.includes("linux")) return map.linux;
+    if (platform.includes("win")) return map.win32;
+    return map.linux;
 }
 
 export function RestorePage({ connectionId }: RestorePageProps) {
+    const connection = useConnectionStore((s) =>
+        s.connections.find((c) => c.id === connectionId),
+    );
+    const dbType = connection?.db_type ?? "postgresql";
+    const database = connection?.database ?? null;
+    const isPg = dbType === "postgresql";
+    const isMysql = dbType === "mysql";
+    const isSqlite = dbType === "sqlite";
+
     const [filePath, setFilePath] = useState("");
     const [format, setFormat] = useState("custom");
     const [clean, setClean] = useState(true);
     const [schema, setSchema] = useState("");
     const [confirmed, setConfirmed] = useState(false);
-    const [toolStatus, setToolStatus] = useState<PgToolStatus | null>(null);
+    const [pgToolStatus, setPgToolStatus] = useState<PgToolStatus | null>(null);
+    const [mysqlToolStatus, setMysqlToolStatus] = useState<MySqlToolStatus | null>(null);
     const [checkingTools, setCheckingTools] = useState(true);
     const [availableSchemas, setAvailableSchemas] = useState<string[]>([]);
 
@@ -68,63 +92,151 @@ export function RestorePage({ connectionId }: RestorePageProps) {
     useEffect(() => {
         setCheckingTools(true);
         setConfirmed(false);
-        detectPgTools()
-            .then((status) => setToolStatus(status))
-            .catch(() =>
-                setToolStatus({
-                    pg_dump_found: false,
-                    pg_restore_found: false,
-                    pg_dump_version: null,
-                    pg_restore_version: null,
-                    pg_dump_source: null,
-                    pg_restore_source: null,
-                }),
-            )
-            .finally(() => setCheckingTools(false));
+        setPgToolStatus(null);
+        setMysqlToolStatus(null);
+        setAvailableSchemas([]);
 
-        getSchemas(connectionId)
-            .then((schemas) => setAvailableSchemas(schemas))
-            .catch(() => setAvailableSchemas([]));
-    }, [connectionId]);
+        if (isPg) {
+            detectPgTools()
+                .then((status) => setPgToolStatus(status))
+                .catch(() =>
+                    setPgToolStatus({
+                        pg_dump_found: false,
+                        pg_restore_found: false,
+                        pg_dump_version: null,
+                        pg_restore_version: null,
+                        pg_dump_source: null,
+                        pg_restore_source: null,
+                    }),
+                )
+                .finally(() => setCheckingTools(false));
+
+            getSchemas(connectionId)
+                .then((schemas) => setAvailableSchemas(schemas))
+                .catch(() => setAvailableSchemas([]));
+        } else if (isMysql) {
+            detectMysqlTools()
+                .then((status) => setMysqlToolStatus(status))
+                .catch(() =>
+                    setMysqlToolStatus({
+                        mysqldumpFound: false,
+                        mysqlFound: false,
+                        mysqldumpVersion: null,
+                        mysqlVersion: null,
+                        mysqldumpSource: null,
+                        mysqlSource: null,
+                    }),
+                )
+                .finally(() => setCheckingTools(false));
+
+            getSchemas(connectionId)
+                .then((schemas) => setAvailableSchemas(schemas))
+                .catch(() => setAvailableSchemas([]));
+        } else {
+            setCheckingTools(false);
+        }
+    }, [connectionId, isPg, isMysql]);
 
     const handlePickFile = useCallback(async () => {
+        const extensions = isPg
+            ? ["dump", "sql", "tar", "custom", "gz"]
+            : isMysql
+              ? ["sql"]
+              : ["db", "sqlite", "sql"];
+
         const picked = await open({
             multiple: false,
             filters: [
                 {
                     name: "Backup Files",
-                    extensions: ["dump", "sql", "tar", "custom", "gz"],
+                    extensions,
                 },
             ],
         });
         if (picked && typeof picked === "string") setFilePath(picked);
-    }, []);
+    }, [isPg, isMysql, isSqlite]);
+
+    const runWithProgress = useCallback(
+        async (type: BackupJob["type"], action: () => Promise<unknown>) => {
+            const jobId = `${type}-${Date.now()}`;
+            startJob(jobId, type);
+            pendingJobRef.current = jobId;
+
+            try {
+                await action();
+            } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                useBackupStore.getState().failJob(jobId, msg);
+            }
+        },
+        [startJob],
+    );
 
     const handleStartRestore = useCallback(async () => {
         if (!filePath) {
             notify("Please select a file path", "error");
             return;
         }
-        const jobId = `restore-${Date.now()}`;
-        startJob(jobId, "restore");
-        pendingJobRef.current = jobId;
-
-        try {
-            await pgRestore(connectionId, {
-                format,
-                filePath,
-                clean,
-                schema: schema || undefined,
-            });
-        } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            useBackupStore.getState().failJob(jobId, msg);
+        if (isMysql && !database) {
+            notify("MySQL connection has no database selected", "error");
+            return;
         }
-    }, [filePath, format, clean, schema, connectionId, startJob, notify]);
 
-    const toolsMissing = toolStatus && !toolStatus.pg_restore_found;
-    const toolsBundled = toolStatus?.pg_restore_source === "bundled";
+        await runWithProgress("restore", () => {
+            if (isPg) {
+                return pgRestore(connectionId, {
+                    format,
+                    filePath,
+                    clean,
+                    schema: schema || undefined,
+                });
+            }
+            if (isMysql) {
+                return mysqlRestore(connectionId, {
+                    database: database!,
+                    filePath,
+                    clean,
+                });
+            }
+            return sqliteRestore(connectionId, { filePath, clean });
+        });
+    }, [
+        filePath,
+        database,
+        isPg,
+        isMysql,
+        isSqlite,
+        format,
+        clean,
+        schema,
+        connectionId,
+        notify,
+        runWithProgress,
+    ]);
+
+    const toolsMissing = isPg
+        ? pgToolStatus && !pgToolStatus.pg_restore_found
+        : isMysql
+          ? mysqlToolStatus && !mysqlToolStatus.mysqlFound
+          : false;
+    const toolsBundled = isPg
+        ? pgToolStatus?.pg_restore_source === "bundled"
+        : isMysql
+          ? mysqlToolStatus?.mysqlSource === "bundled"
+          : false;
     const canStart = filePath && confirmed && !isRunning;
+
+    const checkingMessage = isPg
+        ? "Checking for pg_restore..."
+        : isMysql
+          ? "Checking for mysql..."
+          : null;
+
+    const headerDescription = isPg
+        ? "Restore a database from a backup file"
+        : isMysql
+          ? "Restore a database from a SQL dump"
+          : "Restore a database from a backup file";
 
     return (
         <div className="flex flex-col h-full">
@@ -133,7 +245,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                 <Upload size={14} className="text-accent" />
                 <span className="text-xs font-medium text-text">Restore</span>
                 <span className="text-[11px] text-text-muted">
-                    Restore a database from a backup file
+                    {headerDescription}
                 </span>
             </div>
 
@@ -141,10 +253,10 @@ export function RestorePage({ connectionId }: RestorePageProps) {
             <div className="flex-1 overflow-y-auto">
                 <div className="max-w-lg mx-auto space-y-6 outline outline-border">
                     {/* Tool check */}
-                    {checkingTools && (
+                    {checkingTools && checkingMessage && (
                         <div className="glass p-4 text-center">
                             <p className="text-sm text-text-muted">
-                                Checking for pg_restore...
+                                {checkingMessage}
                             </p>
                         </div>
                     )}
@@ -152,14 +264,18 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                     {toolsMissing && !toolsBundled && (
                         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-4 space-y-2">
                             <p className="text-amber-300 text-sm font-semibold">
-                                pg_restore not found
+                                {isPg ? "pg_restore not found" : "mysql client not found"}
                             </p>
                             <p className="text-amber-200/80 text-xs leading-relaxed">
-                                The PostgreSQL client tools are required for
+                                The {isPg ? "PostgreSQL" : "MySQL"} client tools are required for
                                 backup/restore operations. Install them using:
                             </p>
                             <pre className="text-xs text-amber-100 bg-amber-500/10 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed">
-                                {getPlatformInstructions()}
+                                {getPlatformInstructions(
+                                    isPg
+                                        ? PG_INSTALL_INSTRUCTIONS
+                                        : MYSQL_INSTALL_INSTRUCTIONS,
+                                )}
                             </pre>
                         </div>
                     )}
@@ -168,28 +284,30 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                         <>
                             {/* Configuration card */}
                             <div className="p-5 space-y-5">
-                                {/* Format */}
-                                <div className="space-y-1">
-                                    <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
-                                        Format
-                                    </label>
-                                    <select
-                                        value={format}
-                                        onChange={(e) =>
-                                            setFormat(e.target.value)
-                                        }
-                                        className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
-                                    >
-                                        <option value="custom">
-                                            Custom Archive
-                                        </option>
-                                        <option value="plain">Plain SQL</option>
-                                        <option value="tar">Tarball</option>
-                                        <option value="directory">
-                                            Directory
-                                        </option>
-                                    </select>
-                                </div>
+                                {/* Format (PostgreSQL only) */}
+                                {isPg && (
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
+                                            Format
+                                        </label>
+                                        <select
+                                            value={format}
+                                            onChange={(e) =>
+                                                setFormat(e.target.value)
+                                            }
+                                            className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
+                                        >
+                                            <option value="custom">
+                                                Custom Archive
+                                            </option>
+                                            <option value="plain">Plain SQL</option>
+                                            <option value="tar">Tarball</option>
+                                            <option value="directory">
+                                                Directory
+                                            </option>
+                                        </select>
+                                    </div>
+                                )}
 
                                 {/* Backup file */}
                                 <div className="space-y-1 w-full">
@@ -218,54 +336,58 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                 </div>
 
                                 {/* Schema (optional) */}
-                                <div className="space-y-1">
-                                    <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
-                                        Schema{" "}
-                                        <span className="font-normal normal-case tracking-normal">
-                                            (optional)
-                                        </span>
-                                    </label>
-                                    <select
-                                        value={schema}
-                                        onChange={(e) =>
-                                            setSchema(e.target.value)
-                                        }
-                                        className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
-                                    >
-                                        <option value="">All schemas</option>
-                                        {availableSchemas.map((s) => (
-                                            <option key={s} value={s}>
-                                                {s}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </div>
+                                {(isPg || isMysql) && (
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
+                                            Schema{" "}
+                                            <span className="font-normal normal-case tracking-normal">
+                                                (optional)
+                                            </span>
+                                        </label>
+                                        <select
+                                            value={schema}
+                                            onChange={(e) =>
+                                                setSchema(e.target.value)
+                                            }
+                                            className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
+                                        >
+                                            <option value="">All schemas</option>
+                                            {availableSchemas.map((s) => (
+                                                <option key={s} value={s}>
+                                                    {s}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                )}
 
                                 {/* Clean toggle */}
-                                <label
-                                    className={`flex items-center gap-2.5 cursor-pointer group ${
-                                        format === "plain"
-                                            ? "opacity-40 pointer-events-none"
-                                            : ""
-                                    }`}
-                                >
-                                    <input
-                                        type="checkbox"
-                                        checked={clean}
-                                        onChange={(e) =>
-                                            setClean(e.target.checked)
-                                        }
-                                        disabled={format === "plain"}
-                                        className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer disabled:cursor-not-allowed"
-                                    />
-                                    <span className="text-sm text-text-muted group-hover:text-text transition-colors">
-                                        Clean{" "}
-                                        <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
-                                            DROP before CREATE
-                                        </code>
-                                    </span>
-                                </label>
-                                {format === "plain" && (
+                                {(isPg || isMysql || isSqlite) && (
+                                    <label
+                                        className={`flex items-center gap-2.5 cursor-pointer group ${
+                                            isPg && format === "plain"
+                                                ? "opacity-40 pointer-events-none"
+                                                : ""
+                                        }`}
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            checked={clean}
+                                            onChange={(e) =>
+                                                setClean(e.target.checked)
+                                            }
+                                            disabled={isPg && format === "plain"}
+                                            className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer disabled:cursor-not-allowed"
+                                        />
+                                        <span className="text-sm text-text-muted group-hover:text-text transition-colors">
+                                            Clean{" "}
+                                            <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
+                                                DROP before CREATE
+                                            </code>
+                                        </span>
+                                    </label>
+                                )}
+                                {isPg && format === "plain" && (
                                     <p className="text-[11px] text-text-muted/70 -mt-3">
                                         Plain SQL restores run via psql and don't
                                         support DROP-before-CREATE. Use Custom
@@ -325,4 +447,3 @@ export function RestorePage({ connectionId }: RestorePageProps) {
         </div>
     );
 }
-

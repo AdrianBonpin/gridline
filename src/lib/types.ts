@@ -302,6 +302,7 @@ export interface SyncOptions {
   targetConnectionId: string;
   schema?: string;
   tables?: string[];
+  dbType: DbType;
 }
 
 export interface PgToolStatus {

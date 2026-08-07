@@ -58,6 +58,7 @@ export function SyncDialog({ open, onClose }: SyncDialogProps) {
         targetConnectionId,
         schema: schema || undefined,
         tables: undefined,
+        dbType: "postgresql",
       });
       notify("Sync completed successfully", "success");
       onClose();
