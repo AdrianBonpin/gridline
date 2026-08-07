@@ -1033,9 +1033,16 @@ const onQueriesPanelResizeStart = useCallback(
                                                 onRunFromHistory={handleRunFromHistory}
                                                 dbType={currentConnection?.db_type}
                                                 isRunning={isRunning}
-                                                onCancel={() => {
-                                                    notify("Query cancelled", "info");
-                                                    void cancelQuery(connectionId);
+                                                onCancel={async () => {
+                                                    try {
+                                                        await cancelQuery(connectionId);
+                                                        notify("Query cancelled", "info");
+                                                    } catch (e) {
+                                                        notify(
+                                                            e instanceof Error ? e.message : String(e),
+                                                            "error",
+                                                        );
+                                                    }
                                                 }}
                                             />
                                             <div className="flex-1 min-h-0 overflow-hidden">
