@@ -10,6 +10,7 @@ import { ErrorBanner } from "./components/ui/ErrorBanner";
 import { ToastContainer } from "./components/ui/Toast";
 import { DbViewerScreen } from "./components/db-viewer/DbViewerScreen";
 import { useAppearance } from "./hooks/useAppearance";
+import { isMacOS } from "./lib/platform";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const VIEW_TITLES: Record<string, string> = {
@@ -79,7 +80,8 @@ export default function App() {
     return (
         <div className="h-svh bg-canvas select-none flex flex-col overflow-hidden">
             {typeof window !== "undefined" &&
-                "__TAURI_INTERNALS__" in window && (
+                "__TAURI_INTERNALS__" in window &&
+                isMacOS() && (
                     // macOS "Overlay" title bar: in-flow strip the window can be
                     // dragged by; traffic lights float over it. Only in Tauri.
                     <div
