@@ -496,3 +496,39 @@ fn sqlite_restore_clean_drops_existing() {
     let names: Vec<String> = dst.prepare("SELECT name FROM users ORDER BY id").unwrap().query_map([], |r| r.get::<_, String>(0)).unwrap().filter_map(|r| r.ok()).collect();
     assert_eq!(names, vec!["Alice".to_string(), "Bob".to_string()]);
 }
+
+// ------------------------------------------------------------------
+// MySQL dump / restore / sync arg building (Task 2.3)
+// ------------------------------------------------------------------
+
+#[test]
+fn mysql_dump_args_single_transaction_no_data_routines() {
+    let opts = MySqlBackupOptions {
+        database: "shop".into(), file_path: "/tmp/d.sql".into(),
+        single_transaction: true, no_data: true, routines: true, triggers: false, events: false,
+    };
+    let args = build_mysql_dump_args(&MySqlConnParams::new("h".into(), 3306, "u".into(), "shop".into(), "p".into()), &opts);
+    assert!(args.iter().any(|a| a == "--single-transaction"));
+    assert!(args.iter().any(|a| a == "--no-data"));
+    assert!(args.iter().any(|a| a == "--routines"));
+    assert!(args.iter().any(|a| a == "--databases=shop"));
+    assert!(args.iter().any(|a| a == "--result-file=/tmp/d.sql"));
+    // no --password on the command line (uses MYSQL_PWD env)
+    assert!(args.iter().all(|a| !a.starts_with("--password")));
+}
+
+#[test]
+fn mysql_restore_args_no_clean_flags() {
+    let opts = MySqlRestoreOptions { database: "shop".into(), file_path: "/tmp/d.sql".into(), clean: false };
+    let args = build_mysql_restore_args(&MySqlConnParams::new("h".into(), 3306, "u".into(), "shop".into(), "p".into()), &opts);
+    assert!(args.iter().any(|a| a == "--database=shop"));
+    assert!(args.iter().any(|a| a == "--host=h"));
+    assert!(args.iter().all(|a| a != "--force"));
+}
+
+#[test]
+fn mysql_env_uses_mysql_pwd_not_password_arg() {
+    let opts = MySqlBackupOptions { database: "db".into(), file_path: "/tmp/x.sql".into(), single_transaction: false, no_data: false, routines: false, triggers: false, events: false };
+    let args = build_mysql_dump_args(&MySqlConnParams::new("h".into(), 3306, "u".into(), "db".into(), "p".into()), &opts);
+    assert!(args.iter().all(|a| !a.starts_with("--password")));
+}

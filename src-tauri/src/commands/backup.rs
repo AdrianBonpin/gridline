@@ -490,6 +490,89 @@ pub fn run_sqlite_sync(source_path: &str, target_path: &str) -> Result<(), Strin
 }
 
 // ---------------------------------------------------------------------------
+// MySQL dump / restore / sync (headless-testable core)
+// ---------------------------------------------------------------------------
+
+fn base_mysql_args(conn: &MySqlConnParams) -> Vec<String> {
+    vec![
+        format!("--host={}", conn.host),
+        format!("--port={}", conn.port),
+        format!("--user={}", conn.username),
+    ]
+}
+
+/// `mariadb-dump`/`mysqldump` args. Passwords go via MYSQL_PWD env (set by the
+/// command), NEVER --password (process-list visibility).
+pub fn build_mysql_dump_args(conn: &MySqlConnParams, options: &MySqlBackupOptions) -> Vec<String> {
+    let mut a = base_mysql_args(conn);
+    if options.single_transaction { a.push("--single-transaction".into()); }
+    if options.no_data { a.push("--no-data".into()); }
+    if options.routines { a.push("--routines".into()); }
+    if options.triggers { a.push("--triggers".into()); }
+    if options.events { a.push("--events".into()); }
+    a.push(format!("--databases={}", options.database));
+    a.push(format!("--result-file={}", options.file_path));
+    a.push("--skip-column-statistics".into());
+    a
+}
+
+pub fn build_mysql_restore_args(conn: &MySqlConnParams, options: &MySqlRestoreOptions) -> Vec<String> {
+    let mut a = base_mysql_args(conn);
+    a.push(format!("--database={}", options.database));
+    a
+}
+
+/// System-first mariadb-dump/mariadb (bundled fallback in resources/mysql_tools).
+pub fn resolve_mysql_tool(app: &AppHandle, tool: &str) -> (String, Option<String>) {
+    let system_ok = Command::new(tool).arg("--version").output().is_ok();
+    let bundled = app.path().resource_dir().ok()
+        .map(|rd| rd.join("mysql_tools").join(bundled_bin_name(tool)))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().to_string());
+    pick_tool(system_ok, bundled.as_deref(), tool)
+}
+
+pub fn resolve_mysql_tool_paths(app: &AppHandle) -> MySqlToolPaths {
+    let (d, _) = resolve_mysql_tool(app, "mariadb-dump");
+    let (m, _) = resolve_mysql_tool(app, "mariadb");
+    MySqlToolPaths { mysqldump: d, mysql: m }
+}
+
+/// Headless core: spawn dump with MYSQL_PWD env. (Live behavior = #[ignore] integration test.)
+pub fn run_mysql_dump(conn: &MySqlConnParams, options: &MySqlBackupOptions, tools: &MySqlToolPaths) -> Result<(), String> {
+    let args = build_mysql_dump_args(conn, options);
+    let out = Command::new(&tools.mysqldump).env("MYSQL_PWD", &conn.password).args(&args).output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() { Ok(()) } else { Err(sanitize_error(&String::from_utf8_lossy(&out.stderr))) }
+}
+
+pub fn run_mysql_restore(conn: &MySqlConnParams, options: &MySqlRestoreOptions, tools: &MySqlToolPaths) -> Result<(), String> {
+    let args = build_mysql_restore_args(conn, options);
+    let file = std::fs::File::open(&options.file_path).map_err(|e| format!("open dump: {e}"))?;
+    let out = Command::new(&tools.mysql).env("MYSQL_PWD", &conn.password).args(&args).stdin(Stdio::from(file)).output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() { Ok(()) } else { Err(sanitize_error(&String::from_utf8_lossy(&out.stderr))) }
+}
+
+pub fn run_mysql_sync(source: &MySqlConnParams, target: &MySqlConnParams, tools: &MySqlToolPaths) -> Result<(), String> {
+    let mut dump_args = base_mysql_args(source);
+    dump_args.push("--single-transaction".into());
+    dump_args.push("--add-drop-table".into());
+    dump_args.push(format!("--databases={}", source.database));
+    let mut dump = Command::new(&tools.mysqldump).env("MYSQL_PWD", &source.password).args(&dump_args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("dump: {e}"))?;
+    let stdout = dump.stdout.take().unwrap();
+    let mut restore_args = base_mysql_args(target);
+    restore_args.push(format!("--database={}", target.database));
+    let restore = Command::new(&tools.mysql).env("MYSQL_PWD", &target.password).args(&restore_args).stdin(stdout).output();
+    let _ = dump.wait();
+    match restore {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(format!("restore: {}", sanitize_error(&String::from_utf8_lossy(&o.stderr)))),
+        Err(e) => Err(format!("restore: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tauri commands (thin wrappers: store lookup + keychain + event emission)
 // ---------------------------------------------------------------------------
 
