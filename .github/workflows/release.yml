@@ -177,11 +177,12 @@ jobs:
           case "${{ matrix.platform }}" in
             ubuntu-22.04)
               sudo apt-get update -y
-              sudo apt-get install -y cmake build-essential libssl-dev libzstd-dev pkg-config
+              sudo apt-get install -y cmake build-essential libssl-dev libzstd-dev pkg-config libgnutls28-dev patchelf
               git clone --depth 1 --branch "mariadb-${MARIADB_VER}" https://github.com/MariaDB/server.git /tmp/mariadb-server
               cd /tmp/mariadb-server
-              # Client-only build: wolfSSL + zlib are vendored, so the bundled
-              # clients need no system OpenSSL on the user's machine.
+              # Client-only build: wolfSSL + zlib are vendored. The in-tree
+              # Connector C still probes GnuTLS on Unix regardless of WITH_SSL,
+              # so libgnutls28-dev is required at build time.
               cmake -DCMAKE_BUILD_TYPE=Release \
                 -DWITHOUT_SERVER=ON \
                 -DWITHOUT_TOKUDB=1 \
@@ -201,16 +202,30 @@ jobs:
                 test -n "$src" || { echo "build produced no $b binary"; exit 1; }
                 cp "$src" "$OUT"/
               done
-              # Print the clients' shared-library deps for the first CI run.
-              # TODO(RELEASE): if the --version smoke check below fails with a
-              # shared-library error, the clients linked a shared libmariadb/
-              # libedit — copy it into "$OUT" and patchelf --set-rpath '$ORIGIN'
-              # exactly like the pg_tools step does for libpq.
-              ldd "$OUT"/mariadb-dump || true
+              # Bundle every non-core shared dependency (GnuTLS + its chain,
+              # libzstd) next to the clients and point the loader at $ORIGIN —
+              # the same pattern the pg_tools step uses for libpq.
+              for b in mariadb-dump mariadb; do
+                ldd "$OUT/$b" | awk '/=> \// {print $3}' | sort -u | while read -r lib; do
+                  case "$(basename "$lib")" in
+                    ld-linux*|libc.so*|libm.so*|libpthread*|libdl.so*|librt.so*|libgcc_s*|libstdc++*|libcrypt.so*|libresolv*|libutil*)
+                      ;; # core runtime — present on every glibc system
+                    *)
+                      cp -n "$lib" "$OUT/$(basename "$lib")" 2>/dev/null || true
+                      ;;
+                  esac
+                done
+                patchelf --set-rpath '$ORIGIN' "$OUT/$b"
+              done
               ;;
             macos-latest|macos-15-intel)
               git clone --depth 1 --branch "mariadb-${MARIADB_VER}" https://github.com/MariaDB/server.git /tmp/mariadb-server
               cd /tmp/mariadb-server
+              # macOS connects the in-tree Connector C against brew OpenSSL
+              # (proven to build+run on the runners); the Linux-only GnuTLS
+              # probe does not fire here. Absolute brew paths are rewritten to
+              # @loader_path below so user machines resolve them from the
+              # resource dir.
               if [ "$(uname -m)" = arm64 ]; then
                 SSL_DIR="/opt/homebrew/opt/openssl"
               else
@@ -234,10 +249,24 @@ jobs:
                 test -n "$src" || { echo "build produced no $b binary"; exit 1; }
                 cp "$src" "$OUT"/
               done
-              # TODO(RELEASE): if the --version smoke check below fails with a
-              # dyld error, rewrite the lib dependency to @loader_path like the
-              # pg_tools step does for libpq (see also the Linux shared-lib note).
-              otool -L "$OUT"/mariadb-dump || true
+              # Rewrite absolute Homebrew dylib deps to @loader_path so the
+              # bundled clients (and OpenSSL + their own deps) resolve from the
+              # resource dir on user machines. Fixed-point loop: each pass
+              # copies newly-seen dylibs and rewrites their parents' refs.
+              # Ad-hoc re-sign after each edit — arm64 dyld refuses to load a
+              # dylib whose (Homebrew) code signature was invalidated.
+              for pass in 1 2 3 4 5 6; do
+                for dylib in "$OUT"/*.dylib "$OUT"/mariadb-dump "$OUT"/mariadb; do
+                  [ -f "$dylib" ] || continue
+                  # `|| true` — with pipefail, grep exits 1 on zero matches.
+                  otool -L "$dylib" | awk 'NR>1 {print $1}' | grep -E '^/(usr/local|opt/homebrew)' | while read -r lib; do
+                    base=$(basename "$lib")
+                    if [ ! -f "$OUT/$base" ]; then cp "$lib" "$OUT/$base" 2>/dev/null || true; fi
+                    install_name_tool -change "$lib" "@loader_path/$base" "$dylib" 2>/dev/null || true
+                  done || true
+                  codesign --force --sign - "$dylib" 2>/dev/null || true
+                done
+              done
               ;;
             windows-latest)
               URL="https://archive.mariadb.org/mariadb-${MARIADB_VER}/winx64-packages/mariadb-${MARIADB_VER}-winx64.zip"
