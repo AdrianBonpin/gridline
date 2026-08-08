@@ -1,0 +1,10 @@
+# Template chooser settings — see
+# https://docs.github.com/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository
+blank_issues_enabled: true
+contact_links:
+  - name: Gridline Roadmap
+    url: https://github.com/AdrianBonpin/gridline/blob/prod/ROADMAP.md
+    about: Check what's already planned before requesting a feature
+  - name: README — feature list
+    url: https://github.com/AdrianBonpin/gridline#features
+    about: Confirm a feature isn't already shipped
