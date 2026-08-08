@@ -166,7 +166,7 @@ Cut a release by tagging the **`prod`** branch once the PR is merged — `git ta
 **Before tagging**, keep everything in sync:
 - Version number across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`
 - `src/lib/version.test.ts` and `src/lib/docs-coverage.test.ts` if they assert the version
-- **README download links are static (versioned)** — both download tables (top **Download** section + **Which file should I download?**) link directly to the release-tag assets (`releases/download/v0.7.8/<file>`). tauri-action uses default versioned asset names (`Gridline_<ver>_aarch64.dmg`, `Gridline-<ver>-1.x86_64.rpm`, etc.) — update BOTH tables to the new names on every release (see the MAINTENANCE comment in README.md).
+- **README download links are static (versioned)** — both download tables (top **Download** section + **Which file should I download?**) link directly to the release-tag assets (`releases/download/v0.7.9/<file>`). tauri-action uses default versioned asset names (`Gridline_<ver>_aarch64.dmg`, `Gridline-<ver>-1.x86_64.rpm`, etc.) — update BOTH tables to the new names on every release (see the MAINTENANCE comment in README.md).
 - **Bundled pg tools:** `tauri.conf.json` `bundle.resources` lists `resources/pg_tools/*`; the `release.yml` matrix builds/downloads + checksum-verifies the static binaries before the Tauri build step.
 
 ### Adding a Tauri Command
