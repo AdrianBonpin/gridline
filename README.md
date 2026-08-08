@@ -452,7 +452,7 @@ Highlights of what's next:
 
 Contributions, bug reports, and feature ideas are welcome. Gridline is Apache 2.0-licensed and intentionally stays open — no paywalled tiers, no bundled proprietary services.
 
-- Report a bug via the **[issue template](.github/ISSUE_TEMPLATE/bug_report.md)** — it walks you through environment details (OS, Gridline version, DB type/version, connection method) so we can reproduce issues quickly. Opening a [new issue](https://github.com/AdrianBonpin/gridline/issues/new) pre-fills the template automatically.
+- Open an issue via the **[template chooser](https://github.com/AdrianBonpin/gridline/issues/new)** — pick **Bug report** (with an environment table so we can reproduce issues quickly), **Feature request**, or **Improvement** (UX polish for existing features). New issues are auto-assigned to the maintainer.
 - Submit a pull request. Keep Tauri commands thin, type IPC boundaries explicitly, and follow the existing Rust/React conventions.
 
 ---

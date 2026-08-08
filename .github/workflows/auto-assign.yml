@@ -1,0 +1,25 @@
+name: Auto-assign new issues
+
+# Assigns every newly opened issue to the repository owner so nothing
+# lands in the inbox untriaged. The `issues` event only fires in the base
+# repository (not forks) and this job never checks out code — it only
+# talks to the GitHub API, so there is no fork/pwn-request exposure.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  auto-assign:
+    name: Assign issue to repo owner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign to ${{ github.repository_owner }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          OWNER: ${{ github.repository_owner }}
+        run: gh issue edit "$ISSUE_URL" --add-assignee "$OWNER"

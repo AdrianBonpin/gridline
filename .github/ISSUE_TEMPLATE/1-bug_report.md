@@ -3,12 +3,15 @@ name: Bug report
 about: Report a bug or unexpected behavior in Gridline so we can fix it
 title: "[Bug]: "
 labels: ["bug"]
-assignees: ''
+assignees: ['AdrianBonpin']
 ---
 
 <!--
   Thank you for reporting a bug! A complete report is the fastest way to get it fixed.
   Please fill in every section you can — the environment table alone often closes issues.
+
+  Is this a request for something new instead? Use the
+  Feature request or Improvement templates — those get triaged faster.
 -->
 
 ## Before you submit
@@ -58,7 +61,9 @@ assignees: ''
 
 <!--
   Paste the error text, console output, or a crash report here.
-  On macOS: Console.app → Gridline. On Windows: Event Viewer → Application.
+  - macOS: Console.app → Gridline
+  - Windows: Event Viewer → Application
+  - Linux: run Gridline from a terminal and capture stdout/stderr (or check the app-data dir, e.g. ~/.local/share/…)
   Remove anything that looks like a host/user/password/token before pasting.
 -->
 
@@ -76,6 +81,10 @@ assignees: ''
 
 <!-- Anything that gets you unstuck today (e.g. "works when I connect without SSH", "restarting the app fixes it"). Even a partial workaround helps others. -->
 
+## Related issues / PRs
+
+<!-- Links to related issues, PRs, or roadmap items. -->
+
 ## Additional context
 
-<!-- Anything else: does it reproduce with a fresh connection or only one specific database? Did it work in an earlier version? Frequency (always / sometimes)? -->
+<!-- Anything else: does it reproduce with a fresh connection or only one specific database? Did it work in an earlier version? Frequency (always / sometimes)? Does it happen on the demo SQLite database? -->
