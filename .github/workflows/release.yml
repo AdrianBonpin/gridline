@@ -11,7 +11,7 @@ name: Release
 # (bundle.macOS.signingIdentity: "-", hardenedRuntime: false). That replaces
 # the linker-only signature that made macOS report the app as "damaged" and
 # refuse Finder launches — users now get the standard "Open Anyway" prompt
-# (or run `xattr -dr com.apple.quarantine` for the damaged-error case, see
+# (or run `sudo xattr -dr com.apple.quarantine` for the damaged-error case, see
 # README). Still NOT Developer-ID signed / notarized (no certs yet).
 # tauri-action automatically signs + notarizes when the signing secrets are
 # present, so the moment we add APPLE_CERTIFICATE / APPLE_API_KEY /

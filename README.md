@@ -301,10 +301,10 @@ Gridline is currently distributed **unsigned** — it doesn't pay for code-signi
 - **macOS — "Gridline is damaged and can't be opened":** remove the quarantine flag macOS attaches to downloaded apps, then launch normally:
 
   ```bash
-  xattr -dr com.apple.quarantine /Applications/Gridline.app
+  sudo xattr -dr com.apple.quarantine /Applications/Gridline.app
   ```
 
-  You need to re-run this after **every upgrade** (each freshly-downloaded copy gets re-quarantined).
+  (`sudo` is required — some files inside the bundle are read-only, so removing the flag needs admin rights.) Re-run after **every upgrade** — each freshly-downloaded copy gets re-quarantined.
 - **Windows:** on the SmartScreen prompt, click **More info** → **Run anyway**.
 - **Linux:** no warning — install and run normally.
 
