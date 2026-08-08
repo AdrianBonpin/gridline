@@ -9,7 +9,7 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 ## ✅ Shipped (0.7.9)
 
 - **macOS Finder launch fix** — the local store opens under the OS app-data directory instead of a cwd-relative `gridline.db` (Finder/LaunchServices launches run with cwd `/`, so the old path made the app silently exit with a Rust panic before the UI started).
-- **macOS ad-hoc code signing** — bundles are signed at build time (`bundle.macOS.signingIdentity "-"`, hardened runtime off), replacing the Xcode linker-only signature that macOS treated as unsigned ("damaged and can't be opened", silent Finder refusal). Users still get a one-time Gatekeeper prompt; README documents the `xattr -dr com.apple.quarantine` workaround.
+- **macOS ad-hoc code signing** — bundles are signed at build time (`bundle.macOS.signingIdentity "-"`, hardened runtime off), replacing the Xcode linker-only signature that macOS treated as unsigned ("damaged and can't be opened", silent Finder refusal). Users still get a one-time Gatekeeper prompt; README documents the `sudo xattr -dr com.apple.quarantine` workaround.
 - **Vendored OpenSSL for `ssh2`** — the release binary no longer links an absolute Homebrew `/opt/homebrew/.../libssl.3.dylib` path (dyld aborted on machines without it).
 - **Version bump** 0.7.8 → **0.7.9**.
 
