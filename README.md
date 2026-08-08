@@ -41,7 +41,7 @@ Grab the installer for your OS from the [latest release](https://github.com/Adri
 | **Fedora / RHEL / openSUSE** | x86_64                       | [Gridline-0.7.9-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.9/Gridline-0.7.9-1.x86_64.rpm)     |
 | **Other Linux**              | amd64                        | [Gridline_0.7.9_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.9/Gridline_0.7.9_amd64.AppImage) |
 
-> Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below. All installers are **unsigned** — see the [notes](#which-file-should-i-download) on first-launch warnings.
+> **macOS first launch:** macOS may say *"Gridline is damaged and can't be opened"* or *"the developer cannot be verified"* — this is expected; the app isn't Developer-ID signed/notarized yet. See the [macOS first-launch instructions](#installers-are-unsigned-for-now) (right-click → Open, or the one-time `xattr` fix). Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below.
 
 <!--
   MAINTENANCE: These links are STATIC (versioned) — they point at the v0.7.9
