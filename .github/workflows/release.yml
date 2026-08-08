@@ -7,12 +7,16 @@ name: Release
 #   git checkout prod && git pull
 #   git tag v0.5.0 && git push origin v0.5.0
 #
-# SIGNING STATUS: builds are UNSIGNED for now (no code-signing certs yet —
-# see README "Download a release"). tauri-action automatically signs +
-# notarizes when the signing secrets are present, so the moment we add
-# APPLE_CERTIFICATE / APPLE_API_KEY / WINDOWS_CERTIFICATE (or Azure Trusted
-# Signing) to repo secrets, future builds are signed — no changes to this
-# file required.
+# SIGNING STATUS: macOS bundles are AD-HOC signed via tauri.conf.json
+# (bundle.macOS.signingIdentity: "-", hardenedRuntime: false). That replaces
+# the linker-only signature that made macOS report the app as "damaged" and
+# refuse Finder launches — users now get the standard "Open Anyway" prompt
+# (or run `xattr -dr com.apple.quarantine` for the damaged-error case, see
+# README). Still NOT Developer-ID signed / notarized (no certs yet).
+# tauri-action automatically signs + notarizes when the signing secrets are
+# present, so the moment we add APPLE_CERTIFICATE / APPLE_API_KEY /
+# WINDOWS_CERTIFICATE (or Azure Trusted Signing) to repo secrets, future
+# builds are properly signed — no changes to this file required.
 
 on:
   push:

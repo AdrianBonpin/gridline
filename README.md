@@ -293,9 +293,16 @@ Pre-built installers for macOS, Windows, and Linux are published on the [Release
 
 #### Installers are unsigned (for now)
 
-Gridline is currently distributed **unsigned** — it doesn't pay for code-signing certificates yet. Your OS will warn you the first time you open it. This is expected — the app is safe, it just hasn't paid the signing fee:
+Gridline is currently distributed **unsigned** — it doesn't pay for code-signing certificates yet (macOS builds are *ad-hoc signed*, so they pass Apple Silicon's launch checks but aren't Developer-ID signed or notarized). Your OS will warn you the first time you open it. This is expected — the app is safe, it just hasn't paid the signing fee:
 
-- **macOS:** right-click the app → **Open** → **Open** (or System Settings → Privacy & Security → **Open Anyway**). Do this once per version.
+- **macOS:** if you see *"Gridline can't be opened because the developer cannot be verified"* (or the app simply won't open from Finder), right-click the app → **Open** → **Open** (or System Settings → Privacy & Security → **Open Anyway**). Do this once per version.
+- **macOS — "Gridline is damaged and can't be opened":** remove the quarantine flag macOS attaches to downloaded apps, then launch normally:
+
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Gridline.app
+  ```
+
+  You need to re-run this after **every upgrade** (each freshly-downloaded copy gets re-quarantined).
 - **Windows:** on the SmartScreen prompt, click **More info** → **Run anyway**.
 - **Linux:** no warning — install and run normally.
 

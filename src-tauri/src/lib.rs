@@ -38,21 +38,33 @@ pub fn run() {
     // another provider is already installed).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let store = Store::open("gridline.db").expect("failed to open db");
-    let store_ref = StdMutex::new(store);
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_keyring_store::init())
-        .manage(AppState {
-            db_store: store_ref,
-            pool_manager: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
-            ssh_manager: StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend))),
-            cancel_registry: crate::cancel::CancelRegistry::default(),
-        })
         .setup(move |app| {
+            // Open the local store under the OS app-data directory. When the
+            // app is launched from Finder/LaunchServices the working directory
+            // is `/`, so a relative "gridline.db" path panics ("failed to
+            // open db", exit 101) before the UI ever starts. The demo DB uses
+            // the same directory (see commands/demo.rs).
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+            std::fs::create_dir_all(&data_dir)
+                .map_err(|e| format!("failed to create app data dir: {e}"))?;
+            let store =
+                Store::open(&data_dir.join("gridline.db").to_string_lossy()).expect("failed to open db");
+
+            app.manage(AppState {
+                db_store: StdMutex::new(store),
+                pool_manager: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
+                ssh_manager: StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend))),
+                cancel_registry: crate::cancel::CancelRegistry::default(),
+            });
+
             let state = app.state::<AppState>();
             demo::ensure_demo_db(app.handle(), &state.db_store)
                 .map_err(|e| {

@@ -34,7 +34,10 @@ tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "mysql", "tls-rustls", "json"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
 # async-ssh2 is not available at v0.4; using synchronous ssh2 via tokio::task::spawn_blocking per plan's fallback
-ssh2 = { version = "0.9" }
+# vendored-openssl: link OpenSSL statically so the release binary has NO
+# runtime dependency on the build machine's Homebrew openssl (@/opt/homebrew
+# absolute LC_LOAD_DYLIB — dyld aborts on user machines without it).
+ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 deadpool-postgres = { version = "0.14" }
 indexmap = { version = "2", features = ["serde"] }
 tauri-plugin-keyring-store = { version = "0.2.0", default-features = false }
