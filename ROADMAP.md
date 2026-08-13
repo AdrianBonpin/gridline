@@ -6,6 +6,11 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ---
 
+## ✅ Shipped (0.7.10)
+
+- **Copy connection URL** — from a connection card's ⋮ menu, copy the connection string for use in env vars / other tools: **Copy connection URL** (includes the password, fetched from the OS keychain on demand) and **Copy connection URL (no password)** (safe to share). Builds `postgresql://` / `mysql://` / `sqlite://` / `redis://` strings with percent-encoded credentials and the PG `sslmode` appended.
+- **Version bump** 0.7.9 → **0.7.10**.
+
 ## ✅ Shipped (0.7.9)
 
 - **macOS Finder launch fix** — the local store opens under the OS app-data directory instead of a cwd-relative `gridline.db` (Finder/LaunchServices launches run with cwd `/`, so the old path made the app silently exit with a Rust panic before the UI started).
