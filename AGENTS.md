@@ -248,7 +248,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Move-to-folder bulk action | ✅ | Selection toolbar → Move to Folder dialog (folder picker, move confirmed via dialog) |
 | Favorites / Recent connections | ✅ | Star toggle in the connection card ⋮ menu (persisted `favorite` flag); Recent connections row (top 8 via `getRecentConnections`) |
 | Connection status indicator on cards | ✅ | Kebab menu → Test connection with inline idle/checking/online/offline result, on-demand via keychain + `testConnection`. **Reports real `server_version` + `latency_ms`** (PG/MySQL/SQLite queries + connect timing in the Rust backend); shows `Online · 16.4 · 42ms` or the error, re-check debounced 2s |
-| Connection card actions menu (⋮) | ✅ | Kebab dropdown: Favorite toggle, Test connection (inline status), Manage submenu (Edit… / Duplicate / Delete…) |
+| Connection card actions menu (⋮) | ✅ | Kebab dropdown: Favorite toggle, Test connection (inline status), **Copy connection URL** (with password) / **Copy connection URL (no password)** (builds a `postgresql://`/`mysql://`/`sqlite://`/`redis://` string from the saved connection, percent-encoded, sslmode appended for PG; password fetched from keychain on demand), Manage submenu (Edit… / Duplicate / Delete…) |
 
 ### Database Viewer
 | Feature | Status | Details |

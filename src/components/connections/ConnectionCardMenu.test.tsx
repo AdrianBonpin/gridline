@@ -200,4 +200,41 @@ describe("ConnectionCardMenu", () => {
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByText("Manage")).not.toBeInTheDocument();
   });
+
+  it("Copy connection URL fetches the password and copies the full URL", async () => {
+    vi.mocked(commands.getConnectionPassword).mockResolvedValue("s3cret");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    renderMenu();
+    await openMenu();
+
+    await userEvent.click(screen.getByText("Copy connection URL"));
+
+    expect(commands.getConnectionPassword).toHaveBeenCalledWith("c1");
+    expect(writeText).toHaveBeenCalledWith(
+      "postgresql://:s3cret@prod.example.com:5432",
+    );
+    expect(screen.queryByText("Manage")).not.toBeInTheDocument();
+  });
+
+  it("Copy connection URL (no password) does not fetch the password", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    renderMenu();
+    await openMenu();
+
+    await userEvent.click(screen.getByText("Copy connection URL (no password)"));
+
+    expect(commands.getConnectionPassword).not.toHaveBeenCalled();
+    expect(writeText).toHaveBeenCalledWith(
+      "postgresql://prod.example.com:5432",
+    );
+    expect(screen.queryByText("Manage")).not.toBeInTheDocument();
+  });
 });

@@ -5,6 +5,7 @@ import {
     CircleCheck,
     CircleX,
     Copy,
+    EyeOff,
     Loader2,
     MoreVertical,
     Pencil,
@@ -14,6 +15,7 @@ import {
 import type { Connection } from "../../lib/types";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { buildConfigFromConnection } from "./ConnectionCard";
+import { buildConnectionUrl } from "../../lib/connectionString";
 import { useConnectionStatus } from "./useConnectionStatus";
 
 interface ConnectionCardMenuProps {
@@ -80,6 +82,19 @@ export function ConnectionCardMenu({
     const close = () => {
         setOpen(false);
         setManageOpen(false);
+    };
+
+    const copyUrl = async (withPassword: boolean) => {
+        let password: string | null = null;
+        if (withPassword) {
+            password = await useConnectionStore
+                .getState()
+                .getConnectionPassword(connection.id)
+                .catch(() => null);
+        }
+        const url = buildConnectionUrl(connection, password);
+        await navigator.clipboard.writeText(url).catch(() => {});
+        close();
     };
 
     const statusLabel =
@@ -167,6 +182,28 @@ export function ConnectionCardMenu({
                         >
                             {statusLabel}
                         </span>
+                    </button>
+
+                    <button
+                        type="button"
+                        onClick={() => {
+                            void copyUrl(true);
+                        }}
+                        className={menuItemClass}
+                    >
+                        <Copy size={14} className="text-text-muted" />
+                        <span className="truncate">Copy connection URL</span>
+                    </button>
+
+                    <button
+                        type="button"
+                        onClick={() => {
+                            void copyUrl(false);
+                        }}
+                        className={menuItemClass}
+                    >
+                        <EyeOff size={14} className="text-text-muted" />
+                        <span className="truncate">Copy connection URL (no password)</span>
                     </button>
 
                     <button
