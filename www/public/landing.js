@@ -46,6 +46,46 @@
       }
     });
 
+  // OS-aware download button
+  const downloadBtn = document.querySelector("a[data-download]");
+  if (downloadBtn) {
+    const platform = navigator.platform || "";
+    const userAgent = navigator.userAgent || "";
+    const isMac = /Mac/i.test(platform) && !/iPhone|iPad/i.test(userAgent);
+    const isWin = /Win/i.test(platform);
+    const isLinux = /Linux/i.test(platform) && !/Android/i.test(userAgent);
+
+    const releasesUrl = "https://github.com/AdrianBonpin/gridline/releases";
+    const version = "0.7.10";
+
+    if (isMac) {
+      downloadBtn.textContent = "Download for macOS";
+      downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline_${version}_aarch64.dmg`;
+      document.getElementById("macos-hint")?.classList.remove("hidden");
+    } else if (isWin) {
+      downloadBtn.textContent = "Download for Windows";
+      downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline_${version}_x64-setup.exe`;
+    } else if (isLinux) {
+      downloadBtn.textContent = "Download for Linux";
+      downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline-${version}-1.x86_64.rpm`;
+    } else {
+      downloadBtn.textContent = "Download";
+      downloadBtn.href = releasesUrl;
+    }
+  }
+
+  document.getElementById("copy-quarantine")?.addEventListener("click", async () => {
+    const command = "sudo xattr -dr com.apple.quarantine /Applications/Gridline.app";
+    try {
+      await navigator.clipboard.writeText(command);
+      const btn = document.getElementById("copy-quarantine");
+      if (!btn) return;
+      const original = btn.textContent;
+      btn.textContent = "Copied";
+      setTimeout(() => (btn.textContent = original), 1500);
+    } catch {}
+  });
+
   // Nav scroll background
   const nav = document.getElementById("nav");
   function onScroll() {

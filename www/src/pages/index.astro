@@ -29,15 +29,15 @@ const version = "0.7.10";
     <div class="max-w-[1200px] mx-auto px-6 text-center">
       <div class="hero-animate">
         <p class="font-mono text-xs tracking-[0.15em] uppercase text-[var(--accent)] mb-5">Open-Source Database GUI</p>
-        <h1 class="font-serif text-5xl md:text-7xl lg:text-8xl leading-[1.05] tracking-tight max-w-4xl mx-auto">
-          One app for every database.
+        <h1 class="font-serif text-5xl md:text-7xl lg:text-8xl leading-[1.05] tracking-tight max-w-4xl mx-auto lowercase">
+          one app for every <span class="text-[var(--accent)]">database</span>.
         </h1>
         <p class="mt-6 text-lg md:text-xl text-[var(--text-muted)] max-w-xl mx-auto">
           Query, explore, sync, and edit PostgreSQL, MySQL, SQLite, and Redis — with no paywalls, no tab limits, no account required.
         </p>
         <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
-          <a id="download" href="https://github.com/AdrianBonpin/gridline/releases" class="primary-btn">
-            Download for macOS
+          <a id="download" href="https://github.com/AdrianBonpin/gridline/releases" class="primary-btn" data-download>
+            Download
           </a>
           <a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="ghost-btn">
             View on GitHub
@@ -45,21 +45,29 @@ const version = "0.7.10";
         </div>
       </div>
 
-      <div class="hero-screenshot mt-14 md:mt-20 mx-auto max-w-5xl">
-        <div class="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-2 md:p-3 shadow-2xl">
-          <img
-            src="/screenshots/query-editor.png"
-            alt="Gridline query editor and data grid"
-            class="rounded-2xl w-full h-auto"
-            loading="eager"
-            decoding="async"
-          />
-        </div>
+      <div class="hero-screenshot mt-14 md:mt-20 mx-auto max-w-5xl rounded-2xl overflow-hidden border border-[var(--border)] shadow-2xl">
+        <img
+          src="/screenshots/query-editor.png"
+          alt="Gridline query editor and data grid"
+          class="w-full h-auto"
+          loading="eager"
+          decoding="async"
+        />
       </div>
 
-      <p class="mt-6 text-xs md:text-sm text-[var(--text-muted)] font-mono">
-        Free for personal and commercial use · Apache 2.0 · v{version}
-      </p>
+      <div class="mt-8 flex flex-col items-center gap-3">
+        <p class="text-xs md:text-sm text-[var(--text-muted)] font-mono">
+          Free for personal and commercial use · Apache 2.0 · v{version}
+        </p>
+
+        <div id="macos-hint" class="hidden max-w-lg w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-left">
+          <p class="text-xs text-[var(--text-muted)] mb-2">First launch on macOS? Run this in Terminal:</p>
+          <div class="flex items-center justify-between gap-3 rounded-lg bg-[var(--bg)] border border-[var(--border)] px-3 py-2">
+            <code class="font-mono text-xs truncate">sudo xattr -dr com.apple.quarantine /Applications/Gridline.app</code>
+            <button id="copy-quarantine" class="text-xs font-medium text-[var(--primary)] hover:text-[var(--primary-hover)] transition-colors shrink-0" aria-label="Copy command">Copy</button>
+          </div>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -230,8 +238,7 @@ const version = "0.7.10";
           <h4 class="font-semibold text-sm mb-4">Connect</h4>
           <ul class="space-y-2 text-sm text-[var(--text-muted)]">
             <li><a href="https://x.com/AdrianBonpin" target="_blank" rel="noopener" class="footer-link">X / Twitter</a></li>
-            <li><a href="#" class="footer-link">Discord</a></li>
-            <li><a href="mailto:hello@gridline.app" class="footer-link">Email</a></li>
+            <li><a href="mailto:adrianbonpin@gmail.com" class="footer-link">Email</a></li>
           </ul>
         </div>
       </div>
