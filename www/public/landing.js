@@ -54,11 +54,15 @@
     const isMac = /Mac/i.test(platform) && !/iPhone|iPad/i.test(userAgent);
     const isWin = /Win/i.test(platform);
     const isLinux = /Linux/i.test(platform) && !/Android/i.test(userAgent);
+    const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(userAgent);
 
     const releasesUrl = "https://github.com/AdrianBonpin/gridline/releases";
     const version = "0.7.10";
 
-    if (isMac) {
+    if (isMobile) {
+      downloadBtn.textContent = "Get it on GitHub";
+      downloadBtn.href = releasesUrl;
+    } else if (isMac) {
       downloadBtn.textContent = "Download for macOS";
       downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline_${version}_aarch64.dmg`;
       document.getElementById("macos-hint")?.classList.remove("hidden");
