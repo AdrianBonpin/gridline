@@ -351,7 +351,7 @@ git push origin v0.7.10
 
 GitHub Actions (`.github/workflows/release.yml`) builds installers for **Apple Silicon, Intel Macs, Windows, and Linux**, then opens a **draft release** on the [Releases](https://github.com/adrianbonpin/gridline/releases) page — review it and hit **Publish release**.
 
-Before tagging, make sure the version number is in sync across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, and update the **README download tables** (Download + Which file should I download?) to the new version's asset names.
+Before tagging, make sure the version number is in sync across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, and `desktop/src-tauri/tauri.conf.json`, and update the **README download tables** (Download + Which file should I download?) to the new version's asset names.
 
 ### Build from source
 
@@ -360,10 +360,11 @@ Before tagging, make sure the version number is in sync across `package.json`, `
 git clone https://github.com/adrianbonpin/gridline.git
 cd gridline
 
-# 2. Install frontend dependencies
+# 2. Install all workspace dependencies
 bun install
 
-# 3. Run in development mode with hot-reload
+# 3. Run in development mode with hot-reload (from desktop/)
+cd desktop
 bun run tauri dev
 
 # 4. Build for production
@@ -383,17 +384,21 @@ bun run tauri build
 ## Development
 
 ```bash
-# Frontend only (Vite dev server)
-bun run dev
+# Install all workspace dependencies (from the repo root)
+bun install
 
-# Full Tauri app with hot-reload
+# Full Tauri app with hot-reload (from desktop/)
+cd desktop
 bun run tauri dev
 
 # Production build
 bun run tauri build
 
+# Frontend only (Vite dev server)
+bun run dev
+
 # Rust backend only
-cd src-tauri
+cd desktop/src-tauri
 cargo build
 
 # Run tests
@@ -404,26 +409,28 @@ cargo test
 
 ```
 gridline/
-├── src/                    # React frontend
-│   ├── components/         # Reusable UI components
-│   ├── stores/             # Zustand/Jotai state stores
-│   ├── hooks/              # Custom React hooks
-│   ├── lib/                # Utilities, types, Tauri bindings
-│   ├── App.tsx             # Root component
-│   └── main.tsx            # Entry point
-├── src-tauri/              # Rust backend
-│   ├── src/
-│   │   ├── main.rs         # Entry point
-│   │   ├── lib.rs          # Tauri command registration
-│   │   ├── db/             # Database connection & pooling
-│   │   ├── commands/       # Tauri IPC command handlers
-│   │   └── models/         # Data structures & serde types
-│   ├── Cargo.toml
-│   └── tauri.conf.json
-├── public/                 # Static assets
-├── package.json
-├── tsconfig.json
-└── vite.config.ts
+├── package.json            # Bun workspace root (desktop + www)
+├── desktop/                # Tauri desktop app (React + Rust)
+│   ├── src/                # React frontend
+│   │   ├── components/     # Reusable UI components
+│   │   ├── stores/         # Zustand/Jotai state stores
+│   │   ├── hooks/          # Custom React hooks
+│   │   ├── lib/            # Utilities, types, Tauri bindings
+│   │   ├── App.tsx         # Root component
+│   │   └── main.tsx        # Entry point
+│   ├── src-tauri/          # Rust backend
+│   │   ├── src/
+│   │   │   ├── main.rs     # Entry point
+│   │   │   ├── lib.rs      # Tauri command registration
+│   │   │   ├── db/         # Database connection & pooling
+│   │   │   ├── commands/   # Tauri IPC command handlers
+│   │   │   └── models/     # Data structures & serde types
+│   │   ├── Cargo.toml
+│   │   └── tauri.conf.json
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── vite.config.ts
+└── www/                    # Website (Astro + Tailwind)
 ```
 
 ---

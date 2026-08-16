@@ -62,7 +62,7 @@ jobs:
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: './desktop/src-tauri -> target'
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -72,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           PG_VER="16.4"
-          OUT="${GITHUB_WORKSPACE}/src-tauri/resources/pg_tools"
+          OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/pg_tools"
           mkdir -p "$OUT"
           case "${{ matrix.platform }}" in
             ubuntu-22.04)
@@ -176,7 +176,7 @@ jobs:
         run: |
           set -euo pipefail
           MARIADB_VER="11.4.5"
-          OUT="${GITHUB_WORKSPACE}/src-tauri/resources/mysql_tools"
+          OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/mysql_tools"
           mkdir -p "$OUT"
           case "${{ matrix.platform }}" in
             ubuntu-22.04)
@@ -313,6 +313,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          projectPath: desktop
           tagName: ${{ github.ref_name }}
           releaseName: 'Gridline ${{ github.ref_name }}'
           releaseDraft: true

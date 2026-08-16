@@ -43,55 +43,68 @@ Gridline is an **open-source, cross-platform database GUI client** for PostgreSQ
 
 ```
 gridline/
-├── src/                          # React frontend (TypeScript)
-│   ├── components/               # Reusable UI components
-│   │   ├── layout/               # App shell, sidebar, tabs
-│   │   ├── editor/               # Monaco wrapper, autocomplete
-│   │   ├── grid/                 # Data grid, filters, export
-│   │   ├── tree/                 # Workspace/object explorer tree
-│   │   └── ui/                   # Primitives (buttons, modals, inputs)
-│   ├── stores/                   # Zustand/Jotai stores
-│   ├── hooks/                    # Custom hooks (useConnection, useQuery, etc.)
-│   ├── lib/                      # Utilities, types, Tauri bindings
-│   │   ├── commands.ts           # Typed wrappers around Tauri invoke()
-│   │   ├── types.ts              # Shared TypeScript interfaces
-│   │   └── utils.ts              # Formatting, validation helpers
-│   ├── App.tsx
-│   ├── main.tsx
-│   └── index.css                 # Tailwind directives + custom theme tokens
-├── src-tauri/                    # Rust backend
-│   ├── src/
-│   │   ├── main.rs               # Binary entry point
-│   │   ├── lib.rs                # Tauri builder, command registration
-│   │   ├── db/                   # Connection pooling, query execution
-│   │   │   ├── mod.rs
-│   │   │   ├── pool.rs           # Connection pool manager
-│   │   │   └── introspection.rs  # Schema/system catalog queries
-│   │   ├── commands/             # Tauri #[tauri::command] handlers
-│   │   │   ├── mod.rs
-│   │   │   ├── connections.rs    # CRUD for saved connections
-│   │   │   ├── query.rs          # SQL execution
-│   │   │   ├── schema.rs         # Object tree introspection
-│   │   │   ├── schema_graph.rs   # ER diagram / relationship graph
-│   │   │   ├── backup.rs         # pg_dump / pg_restore wrappers
-│   │   │   └── workspace.rs      # Workspace/folder persistence
-│   │   ├── models/               # Serde structs shared across commands
-│   │   │   ├── mod.rs
-│   │   │   ├── connection.rs
-│   │   │   ├── query.rs
-│   │   │   ├── db_viewer.rs      # DB viewer types (SchemaGraph, TableNode, etc.)
-│   │   │   └── workspace.rs
-│   │   └── store/                # SQLite local persistence layer
-│   │       ├── mod.rs
-│   │       └── migrations.rs
-│   ├── Cargo.toml
-│   ├── tauri.conf.json
-│   └── capabilities/             # Tauri capability permissions
-├── public/                       # Static frontend assets
-├── package.json
-├── tsconfig.json
-├── vite.config.ts
-├── tailwind.config.ts
+├── package.json                  # Workspace root: bun workspaces ["desktop", "www"], orchestration scripts
+├── desktop/                      # Tauri desktop app (React frontend + Rust backend)
+│   ├── package.json              # Frontend deps + scripts (name: gridline-desktop)
+│   ├── index.html
+│   ├── vite.config.ts            # Vite + Tailwind v4 + Tauri dev server (port 1420)
+│   ├── vitest.config.ts
+│   ├── tsconfig.json
+│   ├── tsconfig.node.json
+│   ├── bunfig.toml               # bun test preload
+│   ├── src/                      # React frontend (TypeScript)
+│   │   ├── components/           # Reusable UI components
+│   │   │   ├── layout/           # App shell, sidebar, tabs
+│   │   │   ├── editor/           # Monaco wrapper, autocomplete
+│   │   │   ├── grid/             # Data grid, filters, export
+│   │   │   ├── tree/             # Workspace/object explorer tree
+│   │   │   └── ui/               # Primitives (buttons, modals, inputs)
+│   │   ├── stores/               # Zustand/Jotai stores
+│   │   ├── hooks/                # Custom hooks (useConnection, useQuery, etc.)
+│   │   ├── lib/                  # Utilities, types, Tauri bindings
+│   │   │   ├── commands.ts       # Typed wrappers around Tauri invoke()
+│   │   │   ├── types.ts          # Shared TypeScript interfaces
+│   │   │   └── utils.ts          # Formatting, validation helpers
+│   │   ├── App.tsx
+│   │   ├── main.tsx
+│   │   └── index.css             # Tailwind directives + custom theme tokens
+│   └── src-tauri/                # Rust backend
+│       ├── src/
+│       │   ├── main.rs           # Binary entry point
+│       │   ├── lib.rs            # Tauri builder, command registration
+│       │   ├── db/               # Connection pooling, query execution
+│       │   │   ├── mod.rs
+│       │   │   ├── pool.rs       # Connection pool manager
+│       │   │   └── introspection.rs  # Schema/system catalog queries
+│       │   ├── commands/         # Tauri #[tauri::command] handlers
+│       │   │   ├── mod.rs
+│       │   │   ├── connections.rs    # CRUD for saved connections
+│       │   │   ├── query.rs      # SQL execution
+│       │   │   ├── schema.rs     # Object tree introspection
+│       │   │   ├── schema_graph.rs   # ER diagram / relationship graph
+│       │   │   ├── backup.rs     # pg_dump / pg_restore wrappers
+│       │   │   └── workspace.rs  # Workspace/folder persistence
+│       │   ├── models/           # Serde structs shared across commands
+│       │   │   ├── mod.rs
+│       │   │   ├── connection.rs
+│       │   │   ├── query.rs
+│       │   │   ├── db_viewer.rs  # DB viewer types (SchemaGraph, TableNode, etc.)
+│       │   │   └── workspace.rs
+│       │   └── store/            # SQLite local persistence layer
+│       │       ├── mod.rs
+│       │       └── migrations.rs
+│       ├── Cargo.toml
+│       ├── tauri.conf.json
+│       └── capabilities/         # Tauri capability permissions
+├── www/                          # Website: marketing site + docs (Astro + Tailwind)
+│   ├── package.json              # name: gridline-www
+│   ├── astro.config.mjs
+│   ├── tsconfig.json
+│   └── src/                      # Astro pages/components/styles
+├── .github/workflows/            # release.yml (monorepo paths) + auto-assign.yml
+├── docs/                         # Project docs
+├── screenshots/                  # README marketing images
+├── scripts/                      # Release tooling (render-cask.sh)
 └── AGENTS.md                     # This file
 ```
 
@@ -141,12 +154,15 @@ gridline/
 ### Commands
 
 ```bash
-bun install              # Install frontend dependencies
-bun run dev              # Vite dev server only (no Tauri)
-bun run tauri dev        # Full Tauri app with hot-reload
-bun run tauri build      # Production build
-cargo build              # Rust backend only (from src-tauri/)
-cargo test               # Rust tests
+bun install                                        # Install all workspace deps (repo root)
+bun run dev:desktop                                # Vite dev server only (no Tauri)
+bun run tauri:dev                                  # Full Tauri app with hot-reload
+bun run --filter gridline-desktop build            # Desktop production build
+bun run dev:www                                    # Website dev server (Astro)
+bun run build:www                                  # Website static build (www/dist/)
+bun run test                                       # Desktop frontend tests (vitest)
+cargo build                                        # Rust backend only (from desktop/src-tauri/)
+cargo test                                         # Rust tests (from desktop/src-tauri/)
 ```
 
 ### Branch & PR workflow
@@ -164,23 +180,23 @@ Direct pushes to `prod` will be bypassed only in emergencies; prefer the PR path
 Cut a release by tagging the **`prod`** branch once the PR is merged — `git tag vN.M.N && git push origin vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub).
 
 **Before tagging**, keep everything in sync:
-- Version number across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`
-- `src/lib/version.test.ts` and `src/lib/docs-coverage.test.ts` if they assert the version
+- Version number across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, and `desktop/src-tauri/tauri.conf.json`
+- `desktop/src/lib/version.test.ts` and `desktop/src/lib/docs-coverage.test.ts` if they assert the version
 - **README download links are static (versioned)** — both download tables (top **Download** section + **Which file should I download?**) link directly to the release-tag assets (`releases/download/v0.7.9/<file>`). tauri-action uses default versioned asset names (`Gridline_<ver>_aarch64.dmg`, `Gridline-<ver>-1.x86_64.rpm`, etc.) — update BOTH tables to the new names on every release (see the MAINTENANCE comment in README.md).
 - **Bundled pg tools:** `tauri.conf.json` `bundle.resources` lists `resources/pg_tools/*`; the `release.yml` matrix builds/downloads + checksum-verifies the static binaries before the Tauri build step.
 - **Release notes must include the macOS first-launch instructions** — until a Developer ID signing certificate is secured, releases are ad-hoc signed only (not notarized), so every macOS user hits a Gatekeeper prompt. The draft release body must include: right-click → **Open** → **Open** (or System Settings → Privacy & Security → **Open Anyway**) for "developer cannot be verified", and `sudo xattr -dr com.apple.quarantine /Applications/Gridline.app` (with the re-run-after-every-upgrade note) for "damaged and can't be opened".
 
 ### Adding a Tauri Command
 
-1. Define the command function in the appropriate `src-tauri/src/commands/` module
-2. Register it in `src-tauri/src/lib.rs` via `.invoke_handler(tauri::generate_handler![...])`
-3. Create a typed wrapper function in `src/lib/commands.ts`
+1. Define the command function in the appropriate `desktop/src-tauri/src/commands/` module
+2. Register it in `desktop/src-tauri/src/lib.rs` via `.invoke_handler(tauri::generate_handler![...])`
+3. Create a typed wrapper function in `desktop/src/lib/commands.ts`
 4. Call the wrapper from your React component/store
 
 ### Adding a New Dependency
 
 - **Frontend:** `bun add <package>` (runtime) or `bun add -d <package>` (dev)
-- **Rust:** Add to `src-tauri/Cargo.toml` under `[dependencies]`
+- **Rust:** Add to `desktop/src-tauri/Cargo.toml` under `[dependencies]`
 
 ### Testing Strategy
 
