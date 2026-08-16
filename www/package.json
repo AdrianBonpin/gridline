@@ -13,8 +13,12 @@
     "astro": "astro"
   },
   "dependencies": {
-    "astro": "^7.2.2",
+    "@fontsource-variable/literata": "^5.3.0",
+    "@fontsource-variable/outfit": "^5.3.0",
+    "@fontsource/space-mono": "^5.3.0",
     "@tailwindcss/vite": "^4.3.3",
+    "animejs": "^4.5.0",
+    "astro": "^7.2.2",
     "tailwindcss": "^4.3.3"
   }
 }
