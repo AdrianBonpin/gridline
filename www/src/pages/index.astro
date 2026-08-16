@@ -1,17 +1,353 @@
 ---
-import "../styles/global.css";
+import Layout from "../layouts/Layout.astro";
+const version = "0.7.10";
 ---
+<Layout title="Gridline — Open-Source Database GUI">
+  <script src="/landing.js" defer></script>
 
-<html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<link rel="icon" href="/favicon.ico" />
-		<meta name="viewport" content="width=device-width" />
-		<meta name="generator" content={Astro.generator} />
-		<title>Astro</title>
-	</head>
-	<body>
-		<h1>Astro</h1>
-	</body>
-</html>
+  <!-- Nav -->
+  <nav id="nav" class="fixed top-0 inset-x-0 z-50 transition-all duration-300">
+    <div class="max-w-[1200px] mx-auto px-6 py-4 flex items-center justify-between">
+      <a href="#" class="flex items-center gap-2.5 group">
+        <img src="/gridline-icon.svg" alt="Gridline" class="w-7 h-7" />
+        <span class="text-lg font-semibold tracking-tight">Gridline</span>
+      </a>
+      <div class="hidden md:flex items-center gap-6 text-sm">
+        <a href="#features" class="nav-link">Features</a>
+        <a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="nav-link">GitHub</a>
+        <a href="#download" class="nav-link">Download</a>
+        <button id="theme-toggle" class="p-2 rounded-full hover:bg-[var(--surface-elevated)] transition-colors" aria-label="Toggle theme">
+          <span class="theme-icon-sun hidden">☀</span>
+          <span class="theme-icon-moon">☾</span>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <header id="hero" class="relative pt-32 pb-20 md:pt-44 md:pb-28 overflow-hidden">
+    <div class="max-w-[1200px] mx-auto px-6 text-center">
+      <div class="hero-animate">
+        <p class="font-mono text-xs tracking-[0.15em] uppercase text-[var(--accent)] mb-5">Open-Source Database GUI</p>
+        <h1 class="font-serif text-5xl md:text-7xl lg:text-8xl leading-[1.05] tracking-tight max-w-4xl mx-auto">
+          One app for every database.
+        </h1>
+        <p class="mt-6 text-lg md:text-xl text-[var(--text-muted)] max-w-xl mx-auto">
+          Query, explore, sync, and edit PostgreSQL, MySQL, SQLite, and Redis — with no paywalls, no tab limits, no account required.
+        </p>
+        <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
+          <a id="download" href="https://github.com/AdrianBonpin/gridline/releases" class="primary-btn">
+            Download for macOS
+          </a>
+          <a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="ghost-btn">
+            View on GitHub
+          </a>
+        </div>
+      </div>
+
+      <div class="hero-screenshot mt-14 md:mt-20 mx-auto max-w-5xl">
+        <div class="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-2 md:p-3 shadow-2xl">
+          <img
+            src="/screenshots/query-editor.png"
+            alt="Gridline query editor and data grid"
+            class="rounded-2xl w-full h-auto"
+            loading="eager"
+            decoding="async"
+          />
+        </div>
+      </div>
+
+      <p class="mt-6 text-xs md:text-sm text-[var(--text-muted)] font-mono">
+        Free for personal and commercial use · Apache 2.0 · v{version}
+      </p>
+    </div>
+  </header>
+
+  <!-- Why Gridline -->
+  <section id="why" class="section-animate py-20 md:py-28">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <h2 class="font-serif text-3xl md:text-5xl text-center max-w-2xl mx-auto">
+        Everything the paid apps lock behind a subscription.
+      </h2>
+      <div class="mt-12 grid md:grid-cols-3 gap-5">
+        <article class="glass-card">
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">01</p>
+          <h3 class="text-xl font-semibold mb-2">No limits</h3>
+          <p class="text-[var(--text-muted)] text-sm leading-relaxed">
+            Unlimited connections, open tabs, saved queries, and exports. The free plan is the full plan.
+          </p>
+        </article>
+        <article class="glass-card">
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">02</p>
+          <h3 class="text-xl font-semibold mb-2">DB-to-DB sync</h3>
+          <p class="text-[var(--text-muted)] text-sm leading-relaxed">
+            Pipe <code class="font-mono text-xs">pg_dump</code> directly into <code class="font-mono text-xs">pg_restore</code> between two live connections. No file round-trip needed.
+          </p>
+        </article>
+        <article class="glass-card">
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">03</p>
+          <h3 class="text-xl font-semibold mb-2">Deeper PG explorer</h3>
+          <p class="text-[var(--text-muted)] text-sm leading-relaxed">
+            Full detail views for functions, triggers, sequences, enums, extensions, roles, and grants.
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- Feature highlights -->
+  <section id="features" class="section-animate py-20 md:py-28">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <p class="font-mono text-xs text-[var(--accent)] uppercase tracking-[0.15em] text-center mb-3">Features</p>
+      <h2 class="font-serif text-3xl md:text-5xl text-center mb-14">Explore, query, and move data.</h2>
+      <div class="grid md:grid-cols-2 gap-5">
+        <article class="feature-card">
+          <p class="font-mono text-xs text-[var(--text-muted)] mb-3">QUERY & EDIT</p>
+          <h3 class="text-xl font-semibold mb-2">SQL editor + virtualized grid</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-4">Run queries with autocomplete, inline edit cells, and browse 100k+ rows without breaking a sweat.</p>
+          <img src="/screenshots/query-editor.png" alt="SQL query editor" class="rounded-xl w-full h-auto border border-[var(--border)]" loading="lazy" />
+        </article>
+        <article class="feature-card">
+          <p class="font-mono text-xs text-[var(--text-muted)] mb-3">VISUALIZE</p>
+          <h3 class="text-xl font-semibold mb-2">ER diagram</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-4">Auto-layout schema graphs with crow’s foot relationships across schemas, right inside the app.</p>
+          <img src="/screenshots/er-diagram.png" alt="ER diagram" class="rounded-xl w-full h-auto border border-[var(--border)]" loading="lazy" />
+        </article>
+        <article class="feature-card">
+          <p class="font-mono text-xs text-[var(--text-muted)] mb-3">MOVE DATA</p>
+          <h3 class="text-xl font-semibold mb-2">Backup, restore, and sync</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-4">Point-and-click <code class="font-mono text-xs">pg_dump</code>/<code class="font-mono text-xs">pg_restore</code>, SQLite dumps, and live DB-to-DB sync.</p>
+          <img src="/screenshots/home.png" alt="Gridline home screen" class="rounded-xl w-full h-auto border border-[var(--border)]" loading="lazy" />
+        </article>
+        <article class="feature-card">
+          <p class="font-mono text-xs text-[var(--text-muted)] mb-3">MANAGE</p>
+          <h3 class="text-xl font-semibold mb-2">Objects, roles, and grants</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-4">Create and edit tables, foreign keys, indexes, functions, triggers, sequences, roles, and privileges.</p>
+          <img src="/screenshots/data-grid.png" alt="Data grid with foreign key preview" class="rounded-xl w-full h-auto border border-[var(--border)]" loading="lazy" />
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- Open source -->
+  <section id="oss" class="section-animate py-20 md:py-28 text-center">
+    <div class="max-w-[800px] mx-auto px-6">
+      <p class="font-mono text-xs text-[var(--accent)] uppercase tracking-[0.15em] mb-3">Open Source</p>
+      <h2 class="font-serif text-3xl md:text-5xl mb-5">Built in public.<br />No VC roadmap, no rug pulls.</h2>
+      <p class="text-[var(--text-muted)] mb-8 max-w-md mx-auto">
+        Gridline is Apache 2.0 and developed openly. Contributions, issues, and feature requests are welcome.
+      </p>
+      <a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="ghost-btn">
+        Star on GitHub
+      </a>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="section-animate py-20 md:py-28">
+    <div class="max-w-[800px] mx-auto px-6">
+      <h2 class="font-serif text-3xl md:text-5xl text-center mb-12">Questions? Answered.</h2>
+      <div class="faq-list space-y-3">
+        <details class="faq-item" open>
+          <summary class="faq-summary">
+            <span>Is Gridline really free for commercial use?</span>
+            <span class="faq-chevron">⌄</span>
+          </summary>
+          <div class="faq-body">
+            <p class="text-[var(--text-muted)] text-sm leading-relaxed">Yes. Gridline is released under the Apache 2.0 license. You can use it for personal, commercial, or internal company work without paying or signing up.</p>
+          </div>
+        </details>
+        <details class="faq-item">
+          <summary class="faq-summary">
+            <span>Which databases are supported?</span>
+            <span class="faq-chevron">⌄</span>
+          </summary>
+          <div class="faq-body">
+            <p class="text-[var(--text-muted)] text-sm leading-relaxed">PostgreSQL and SQLite are fully supported today, including browsing, querying, editing, backups, and visual tools. MySQL and Redis connections are in active development.</p>
+          </div>
+        </details>
+        <details class="faq-item">
+          <summary class="faq-summary">
+            <span>How is this different from TablePlus, Beekeeper Studio, or DB Pro?</span>
+            <span class="faq-chevron">⌄</span>
+          </summary>
+          <div class="faq-body">
+            <p class="text-[var(--text-muted)] text-sm leading-relaxed">No paywalled features, no tab or connection limits, and DB-to-DB sync without intermediate files. We also expose deeper PostgreSQL objects like sequences, enums, extensions, roles, and grants.</p>
+          </div>
+        </details>
+        <details class="faq-item">
+          <summary class="faq-summary">
+            <span>Do you store my database credentials?</span>
+            <span class="faq-chevron">⌄</span>
+          </summary>
+          <div class="faq-body">
+            <p class="text-[var(--text-muted)] text-sm leading-relaxed">Passwords are stored in your operating system keychain — macOS Keychain, Linux Secret Service, or Windows Credential Manager — never in Gridline’s local SQLite database.</p>
+          </div>
+        </details>
+        <details class="faq-item">
+          <summary class="faq-summary">
+            <span>Can I self-host or contribute?</span>
+            <span class="faq-chevron">⌄</span>
+          </summary>
+          <div class="faq-body">
+            <p class="text-[var(--text-muted)] text-sm leading-relaxed">Gridline is a desktop app, not a SaaS, so there’s nothing to self-host. The repo is open for contributions: code, docs, translations, and issue reports are all welcome.</p>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="border-t border-[var(--border)] mt-20 md:mt-28">
+    <div class="max-w-[1200px] mx-auto px-6 py-16 md:py-20">
+      <div class="grid md:grid-cols-4 gap-10 md:gap-8">
+        <div class="md:col-span-1">
+          <a href="#" class="flex items-center gap-2.5 mb-4">
+            <img src="/gridline-icon.svg" alt="Gridline" class="w-6 h-6" />
+            <span class="text-lg font-semibold">Gridline</span>
+          </a>
+          <p class="text-sm text-[var(--text-muted)] leading-relaxed">
+            The open-source database GUI that doesn’t hold features hostage.
+          </p>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm mb-4">Product</h4>
+          <ul class="space-y-2 text-sm text-[var(--text-muted)]">
+            <li><a href="#download" class="footer-link">Download</a></li>
+            <li><a href="#features" class="footer-link">Features</a></li>
+            <li><a href="https://github.com/AdrianBonpin/gridline/releases" target="_blank" rel="noopener" class="footer-link">Changelog</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm mb-4">Project</h4>
+          <ul class="space-y-2 text-sm text-[var(--text-muted)]">
+            <li><a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="footer-link">GitHub</a></li>
+            <li><a href="https://github.com/AdrianBonpin/gridline/issues" target="_blank" rel="noopener" class="footer-link">Issues</a></li>
+            <li><a href="/ROADMAP.md" class="footer-link">Roadmap</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm mb-4">Connect</h4>
+          <ul class="space-y-2 text-sm text-[var(--text-muted)]">
+            <li><a href="https://x.com/AdrianBonpin" target="_blank" rel="noopener" class="footer-link">X / Twitter</a></li>
+            <li><a href="#" class="footer-link">Discord</a></li>
+            <li><a href="mailto:hello@gridline.app" class="footer-link">Email</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="mt-12 pt-8 border-t border-[var(--border)] flex flex-col md:flex-row justify-between gap-3 text-xs text-[var(--text-muted)] font-mono">
+        <span>© 2026 Gridline contributors · Apache 2.0</span>
+        <span>Made with care for databases.</span>
+      </div>
+    </div>
+  </footer>
+</Layout>
+
+<style>
+  .nav-link {
+    position: relative;
+    color: var(--text-muted);
+    transition: color 0.2s;
+  }
+  .nav-link::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    bottom: -2px;
+    width: 0;
+    height: 1px;
+    background: var(--primary);
+    transition: width 0.3s ease;
+  }
+  .nav-link:hover {
+    color: var(--text);
+  }
+  .nav-link:hover::after {
+    width: 100%;
+  }
+  .primary-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem;
+    border-radius: 9999px;
+    background: var(--primary);
+    color: white;
+    font-weight: 500;
+    transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+  }
+  .primary-btn:hover {
+    transform: scale(1.02);
+    background: var(--primary-hover);
+    box-shadow: 0 10px 30px -10px rgba(59, 130, 246, 0.4);
+  }
+  .ghost-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem;
+    border-radius: 9999px;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-weight: 500;
+    background: transparent;
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .ghost-btn:hover {
+    background: var(--surface);
+    border-color: var(--surface-elevated);
+  }
+  .glass-card {
+    padding: 1.5rem;
+    border-radius: 1rem;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    transition: background 0.2s, transform 0.2s;
+  }
+  .glass-card:hover {
+    background: var(--surface-elevated);
+    transform: translateY(-2px);
+  }
+  .feature-card {
+    padding: 1.25rem;
+    border-radius: 1rem;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .faq-item {
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .faq-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.25rem;
+    cursor: pointer;
+    font-weight: 500;
+    list-style: none;
+  }
+  .faq-summary::-webkit-details-marker {
+    display: none;
+  }
+  .faq-chevron {
+    transition: transform 0.3s;
+    font-size: 1.25rem;
+  }
+  .faq-item[open] .faq-chevron {
+    transform: rotate(180deg);
+  }
+  .faq-body {
+    padding: 0 1.25rem 1.25rem;
+  }
+  .footer-link {
+    transition: color 0.2s, transform 0.2s;
+    display: inline-block;
+  }
+  .footer-link:hover {
+    color: var(--text);
+    transform: translateX(2px);
+  }
+</style>
