@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 // Import the docs as raw strings (vite/client declares `*?raw`); this keeps the
 // test free of a `node:fs` dependency so `tsc` (bun run build) stays clean.
-import agents from "../../AGENTS.md?raw";
-import readme from "../../README.md?raw";
+import agents from "../../../AGENTS.md?raw";
+import readme from "../../../README.md?raw";
 
 describe("v0.7.10 docs coverage", () => {
   it("AGENTS.md marks inline cell editing complete", () => {
