@@ -41,6 +41,16 @@ Grab the installer for your OS from the [latest release](https://github.com/Adri
 | **Fedora / RHEL / openSUSE** | x86_64                       | [Gridline-0.7.10-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline-0.7.10-1.x86_64.rpm)     |
 | **Other Linux**              | amd64                        | [Gridline_0.7.10_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline_0.7.10_amd64.AppImage) |
 
+**macOS via Homebrew** (recommended for Mac users):
+
+```bash
+brew install --cask AdrianBonpin/gridline/gridline
+# or, after a one-time `brew tap AdrianBonpin/gridline`:
+brew install --cask gridline
+```
+
+The cask strips the macOS quarantine flag automatically during install, so **no manual `xattr` step is needed** on the Homebrew path — the app just launches. (Direct-DMG downloads still need the [first-launch instructions](#installers-are-unsigned-for-now) below.)
+
 > **macOS first launch:** macOS may say *"Gridline is damaged and can't be opened"* or *"the developer cannot be verified"* — this is expected; the app isn't Developer-ID signed/notarized yet. See the [macOS first-launch instructions](#installers-are-unsigned-for-now) (right-click → Open, or the one-time `xattr` fix). Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below.
 
 <!--
@@ -298,6 +308,8 @@ Pre-built installers for macOS, Windows, and Linux are published on the [Release
 #### Installers are unsigned (for now)
 
 Gridline is currently distributed **unsigned** — it doesn't pay for code-signing certificates yet (macOS builds are *ad-hoc signed*, so they pass Apple Silicon's launch checks but aren't Developer-ID signed or notarized). Your OS will warn you the first time you open it. This is expected — the app is safe, it just hasn't paid the signing fee:
+
+> **Homebrew users:** the [Homebrew cask](#download) strips the quarantine flag automatically during install, so you skip all of the steps below — the app just launches.
 
 - **macOS:** if you see *"Gridline can't be opened because the developer cannot be verified"* (or the app simply won't open from Finder), right-click the app → **Open** → **Open** (or System Settings → Privacy & Security → **Open Anyway**). Do this once per version.
 - **macOS — "Gridline is damaged and can't be opened":** remove the quarantine flag macOS attaches to downloaded apps, then launch normally:
