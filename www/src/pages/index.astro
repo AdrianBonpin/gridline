@@ -35,22 +35,22 @@ const version = "0.7.10";
         <p class="mt-6 text-lg md:text-xl text-[var(--text-muted)] max-w-xl mx-auto">
           Query, explore, sync, and edit PostgreSQL, MySQL, SQLite, and Redis — with no paywalls, no tab limits, no account required.
         </p>
-        <div class="mt-8 flex flex-col items-center gap-3">
+        <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
           <a id="download" href="https://github.com/AdrianBonpin/gridline/releases" class="primary-btn" data-download>
             Download
           </a>
           <a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="ghost-btn">
             View on GitHub
           </a>
+        </div>
 
-          <div id="macos-hint" class="hidden max-w-lg w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-left mt-2">
+        <div id="macos-hint" class="hidden max-w-lg mx-auto w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-left mt-4">
             <p class="text-xs text-[var(--text-muted)] mb-2">First launch on macOS? Run this in Terminal:</p>
             <div class="flex items-center justify-between gap-3 rounded-lg bg-[var(--bg)] border border-[var(--border)] px-3 py-2">
               <code class="font-mono text-xs truncate">sudo xattr -dr com.apple.quarantine /Applications/Gridline.app</code>
               <button id="copy-quarantine" class="text-xs font-medium text-[var(--primary)] hover:text-[var(--primary-hover)] transition-colors shrink-0" aria-label="Copy command">Copy</button>
             </div>
           </div>
-        </div>
       </div>
 
       <div class="hero-screenshot mt-14 md:mt-20 mx-auto max-w-5xl">
