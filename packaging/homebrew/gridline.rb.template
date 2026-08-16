@@ -1,0 +1,54 @@
+# Homebrew Cask formula for Gridline.
+#
+# This file is the template; `scripts/render-cask.sh` substitutes
+# @VERSION@ / @ARM_SHA256@ / @INTEL_SHA256@ on each release and pushes the
+# rendered file to the `AdrianBonpin/homebrew-gridline` tap as
+# `Casks/gridline.rb`. End users then install with
+#
+#   brew install --cask AdrianBonpin/gridline/gridline
+#
+# or — after a one-time `brew tap AdrianBonpin/gridline` — with the short
+#
+#   brew install --cask gridline
+#
+# QUARANTINE: Gridline is ad-hoc signed (not Developer-ID signed/notarized),
+# so Homebrew casks (which deliberately set com.apple.quarantine on the
+# downloaded artifact) would make Gatekeeper refuse to launch it. The
+# `postflight` block strips the quarantine flag automatically — the standard
+# GoReleaser-documented pattern for unsigned casks — so `brew install` works
+# with no manual `xattr` step. This is a Gatekeeper bypass; drop the
+# postflight once the app is properly signed + notarized.
+
+cask "gridline" do
+  arch arm: "aarch64", intel: "x64"
+
+  version "@VERSION@"
+  sha256 arm:   "@ARM_SHA256@",
+         intel: "@INTEL_SHA256@"
+
+  url "https://github.com/AdrianBonpin/gridline/releases/download/v#{version}/Gridline_#{version}_#{arch}.dmg"
+  name "Gridline"
+  desc "Open-source, cross-platform database GUI client for PostgreSQL"
+  homepage "https://github.com/AdrianBonpin/gridline"
+
+  depends_on macos: ">= :monterey"
+
+  app "Gridline.app"
+
+  # The "installation step" — strip the quarantine flag so the unsigned
+  # (ad-hoc signed) app launches without the Gatekeeper prompt.
+  postflight do
+    if OS.mac?
+      system_command "/usr/bin/xattr",
+                     args: ["-dr", "com.apple.quarantine", "#{appdir}/Gridline.app"]
+    end
+  end
+
+  zap trash: [
+    "~/Library/Application Support/com.adrianbonpin.gridline",
+    "~/Library/Caches/com.adrianbonpin.gridline",
+    "~/Library/Preferences/com.adrianbonpin.gridline.plist",
+    "~/Library/Saved Application State/com.adrianbonpin.gridline.savedState",
+    "~/Library/WebKit/com.adrianbonpin.gridline",
+  ]
+end
