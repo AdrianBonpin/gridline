@@ -1,11 +1,14 @@
 ---
 import "../styles/global.css";
+import Seo from "../components/Seo.astro";
+import type { JsonLd } from "../lib/seo";
 
 export interface Props {
   title: string;
   description?: string;
   ogImage?: string;
   noIndex?: boolean;
+  jsonLd?: JsonLd[];
 }
 
 const {
@@ -13,6 +16,7 @@ const {
   description = "Gridline — the open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis. No paywalls, no tab limits, fully open source.",
   ogImage = "/og.png",
   noIndex = false,
+  jsonLd = [],
 } = Astro.props;
 
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
@@ -32,23 +36,33 @@ const isProd = import.meta.env.PROD;
     <link rel="canonical" href={canonicalURL} />
     <link rel="sitemap" href="/sitemap-index.xml" />
     <link rel="icon" type="image/svg+xml" href="/gridline-icon.svg" />
+    <link rel="apple-touch-icon" href="/gridline-icon.svg" />
+    <link rel="manifest" href="/site.webmanifest" />
 
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
     <meta property="og:url" content={canonicalURL} />
     <meta property="og:image" content={ogImageURL} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Gridline — the open-source database GUI" />
     <meta property="og:site_name" content="Gridline" />
+    <meta property="og:locale" content="en_US" />
 
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImageURL} />
+    <meta name="twitter:site" content="@AdrianBonpin" />
+    <meta name="twitter:creator" content="@AdrianBonpin" />
 
     <meta name="theme-color" content="#0a0a0a" />
     <meta name="color-scheme" content="dark light" />
 
     {noIndex && <meta name="robots" content="noindex, nofollow" />}
+
+    <Seo jsonLd={jsonLd} />
 
     {
       isProd && (
