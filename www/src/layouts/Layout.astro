@@ -75,6 +75,171 @@ const isProd = import.meta.env.PROD;
     }
   </head>
   <body>
+    <nav id="nav" class="fixed top-0 inset-x-0 z-50 transition-all duration-300 border-b border-transparent">
+      <div class="max-w-[1200px] mx-auto px-6 py-4 flex items-center justify-between">
+        <a href="/" class="flex items-center gap-2.5 group">
+          <img src="/gridline-icon.svg" alt="Gridline" class="w-7 h-7" />
+          <span class="text-lg font-semibold tracking-tight">Gridline</span>
+        </a>
+        <div class="hidden md:flex items-center gap-6 text-sm">
+          <a href="/#features" class="nav-link">Features</a>
+          <a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="nav-link">GitHub</a>
+          <a href="/#download" class="nav-link">Download</a>
+          <button id="theme-toggle" class="p-2 rounded-full hover:bg-[var(--surface-elevated)] transition-colors" aria-label="Toggle theme">
+            <span class="theme-icon-sun hidden">☀</span>
+            <span class="theme-icon-moon">☾</span>
+          </button>
+        </div>
+      </div>
+    </nav>
+
     <slot />
+
+    <footer class="border-t border-[var(--border)] mt-20 md:mt-28">
+      <div class="max-w-[1200px] mx-auto px-6 py-16 md:py-20">
+        <div class="grid md:grid-cols-4 gap-10 md:gap-8">
+          <div class="md:col-span-1">
+            <a href="/" class="flex items-center gap-2.5 mb-4">
+              <img src="/gridline-icon.svg" alt="Gridline" class="w-6 h-6" />
+              <span class="text-lg font-semibold">Gridline</span>
+            </a>
+            <p class="text-sm text-[var(--text-muted)] leading-relaxed">
+              The open-source database GUI that doesn't hold features hostage.
+            </p>
+          </div>
+          <div>
+            <h4 class="font-semibold text-sm mb-4">Product</h4>
+            <ul class="space-y-2 text-sm text-[var(--text-muted)]">
+              <li><a href="/#download" class="footer-link">Download</a></li>
+              <li><a href="/#features" class="footer-link">Features</a></li>
+              <li><a href="/changelog" class="footer-link">Changelog</a></li>
+            </ul>
+          </div>
+          <div>
+            <h4 class="font-semibold text-sm mb-4">Project</h4>
+            <ul class="space-y-2 text-sm text-[var(--text-muted)]">
+              <li><a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="footer-link">GitHub</a></li>
+              <li><a href="https://github.com/AdrianBonpin/gridline/issues" target="_blank" rel="noopener" class="footer-link">Issues</a></li>
+              <li><a href="https://github.com/AdrianBonpin/gridline/blob/prod/ROADMAP.md" target="_blank" rel="noopener" class="footer-link">Roadmap</a></li>
+              <li><a href="https://x.com/AdrianBonpin" target="_blank" rel="noopener" class="footer-link">X / Twitter</a></li>
+              <li><a href="mailto:adrianbonpin@gmail.com" class="footer-link">Email</a></li>
+            </ul>
+          </div>
+        </div>
+        <div class="mt-12 pt-8 border-t border-[var(--border)] flex flex-col md:flex-row justify-between gap-3 text-xs text-[var(--text-muted)] font-mono">
+          <span>© 2026 Gridline contributors · Apache 2.0</span>
+          <span>Made with care for databases.</span>
+        </div>
+      </div>
+    </footer>
   </body>
 </html>
+
+<style>
+  .nav-link {
+    position: relative;
+    color: var(--text-muted);
+    transition: color 0.2s;
+  }
+  .nav-link::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    bottom: -2px;
+    width: 0;
+    height: 1px;
+    background: var(--primary);
+    transition: width 0.3s ease;
+  }
+  .nav-link:hover {
+    color: var(--text);
+  }
+  .nav-link:hover::after {
+    width: 100%;
+  }
+  .primary-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem;
+    border-radius: 9999px;
+    background: var(--primary);
+    color: white;
+    font-weight: 500;
+    transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+  }
+  .primary-btn:hover {
+    transform: scale(1.02);
+    background: var(--primary-hover);
+    box-shadow: 0 10px 30px -10px rgba(59, 130, 246, 0.4);
+  }
+  .ghost-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem;
+    border-radius: 9999px;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-weight: 500;
+    background: transparent;
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .ghost-btn:hover {
+    background: var(--surface);
+    border-color: var(--surface-elevated);
+  }
+  .glass-card {
+    padding: 1.5rem;
+    border-radius: 1rem;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    transition: background 0.2s, transform 0.2s;
+  }
+  .glass-card:hover {
+    background: var(--surface-elevated);
+    transform: translateY(-2px);
+  }
+  .feature-card {
+    padding: 1.25rem;
+    border-radius: 1rem;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .faq-item {
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .faq-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.25rem;
+    cursor: pointer;
+    font-weight: 500;
+    list-style: none;
+  }
+  .faq-summary::-webkit-details-marker {
+    display: none;
+  }
+  .faq-chevron {
+    transition: transform 0.3s;
+    font-size: 1.25rem;
+  }
+  .faq-item[open] .faq-chevron {
+    transform: rotate(180deg);
+  }
+  .faq-body {
+    padding: 0 1.25rem 1.25rem;
+  }
+  .footer-link {
+    transition: color 0.2s, transform 0.2s;
+    display: inline-block;
+  }
+  .footer-link:hover {
+    color: var(--text);
+    transform: translateX(2px);
+  }
+</style>
