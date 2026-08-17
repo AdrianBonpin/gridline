@@ -1,0 +1,47 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { changelogEntries } from "../data/changelog";
+import { buildBreadcrumbJsonLd, buildTitle } from "../lib/seo";
+
+const site = "https://getgridline.app";
+const jsonLd = [
+  buildBreadcrumbJsonLd([
+    { name: "Home", url: `${site}/` },
+    { name: "Changelog", url: `${site}/changelog` },
+  ]),
+];
+---
+
+<Layout
+  title={buildTitle("Changelog")}
+  description="Gridline release notes. Free, open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis."
+  jsonLd={jsonLd}
+>
+  <main class="pt-32 pb-20 md:pt-44 md:pb-28">
+    <div class="max-w-[800px] mx-auto px-6">
+      <p class="font-mono text-xs tracking-[0.15em] uppercase text-[var(--accent)] mb-4">Changelog</p>
+      <h1 class="font-serif text-4xl md:text-6xl leading-[1.05] tracking-tight mb-10">Release notes</h1>
+
+      <div class="space-y-6">
+        {
+          changelogEntries.map((entry) => (
+            <article class="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6">
+              <h2 class="text-xl font-semibold mb-1">v{entry.version}</h2>
+              <p class="text-xs text-[var(--text-muted)] mb-3">{entry.date}</p>
+              <ul class="space-y-2 text-sm text-[var(--text-muted)]">
+                {entry.highlights.map((h) => <li>• {h}</li>)}
+              </ul>
+            </article>
+          ))
+        }
+      </div>
+
+      <p class="mt-8 text-sm text-[var(--text-muted)]">
+        Full release history on{" "}
+        <a href="https://github.com/AdrianBonpin/gridline/releases" target="_blank" rel="noopener" class="text-[var(--primary)] hover:text-[var(--primary-hover)]">
+          GitHub Releases
+        </a>.
+      </p>
+    </div>
+  </main>
+</Layout>
