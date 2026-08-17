@@ -32,6 +32,20 @@ html.light {
   --accent: #d97706;
 }
 
+/*
+ * Entry-animated elements start hidden (opacity 0) to prevent a flash of
+ * content before landing.js loads anime.js and runs the entrance timeline.
+ * The html.anime-ready class is present from first paint; animated elements
+ * are revealed by the anime.js timeline / IntersectionObserver (immediately
+ * for prefers-reduced-motion users). A <noscript> override in Layout.astro
+ * plus a JS script-load fallback guarantee content is never left hidden.
+ */
+html.anime-ready .hero-animate > *,
+html.anime-ready .hero-screenshot,
+html.anime-ready .section-animate > * {
+  opacity: 0;
+}
+
 html {
   background-color: var(--bg);
   color: var(--text);
