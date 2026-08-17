@@ -84,7 +84,7 @@ const isProd = import.meta.env.PROD;
         <div class="hidden md:flex items-center gap-6 text-sm">
           <a href="/#features" class="nav-link">Features</a>
           <a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="nav-link">GitHub</a>
-          <a href="/#download" class="nav-link">Download</a>
+          <a href="/#download" data-download data-download-label class="nav-link">Download</a>
           <button id="theme-toggle" class="p-2 rounded-full hover:bg-[var(--surface-elevated)] transition-colors" aria-label="Toggle theme">
             <span class="theme-icon-sun hidden">☀</span>
             <span class="theme-icon-moon">☾</span>
@@ -121,6 +121,11 @@ const isProd = import.meta.env.PROD;
               <li><a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="footer-link">GitHub</a></li>
               <li><a href="https://github.com/AdrianBonpin/gridline/issues" target="_blank" rel="noopener" class="footer-link">Issues</a></li>
               <li><a href="https://github.com/AdrianBonpin/gridline/blob/prod/ROADMAP.md" target="_blank" rel="noopener" class="footer-link">Roadmap</a></li>
+            </ul>
+          </div>
+          <div>
+            <h4 class="font-semibold text-sm mb-4">Connect</h4>
+            <ul class="space-y-2 text-sm text-[var(--text-muted)]">
               <li><a href="https://x.com/AdrianBonpin" target="_blank" rel="noopener" class="footer-link">X / Twitter</a></li>
               <li><a href="mailto:adrianbonpin@gmail.com" class="footer-link">Email</a></li>
             </ul>

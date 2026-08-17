@@ -46,37 +46,42 @@
       }
     });
 
-  // OS-aware download button
-  const downloadBtn = document.querySelector("a[data-download]");
-  if (downloadBtn) {
+  // OS-aware download buttons (nav + hero). Any element with [data-download]
+  // gets the platform-specific download URL; labels are only rewritten when the
+  // element does NOT opt out via a data-download-label attribute (nav keeps its
+  // compact "Download" label, hero gets "Download for macOS" etc.).
+  document.querySelectorAll("a[data-download]").forEach((downloadBtn) => {
     const platform = navigator.platform || "";
     const userAgent = navigator.userAgent || "";
     const isMac = /Mac/i.test(platform) && !/iPhone|iPad/i.test(userAgent);
     const isWin = /Win/i.test(platform);
     const isLinux = /Linux/i.test(platform) && !/Android/i.test(userAgent);
     const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(userAgent);
+    const keepLabel = downloadBtn.hasAttribute("data-download-label");
 
     const releasesUrl = "https://github.com/AdrianBonpin/gridline/releases";
     const version = "0.7.10";
 
     if (isMobile) {
-      downloadBtn.textContent = "Get it on GitHub";
       downloadBtn.href = releasesUrl;
+      if (!keepLabel) downloadBtn.textContent = "Get it on GitHub";
     } else if (isMac) {
-      downloadBtn.textContent = "Download for macOS";
       downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline_${version}_aarch64.dmg`;
-      document.getElementById("macos-hint")?.classList.remove("hidden");
+      if (!keepLabel) downloadBtn.textContent = "Download for macOS";
+      if (downloadBtn.id === "download") {
+        document.getElementById("macos-hint")?.classList.remove("hidden");
+      }
     } else if (isWin) {
-      downloadBtn.textContent = "Download for Windows";
       downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline_${version}_x64-setup.exe`;
+      if (!keepLabel) downloadBtn.textContent = "Download for Windows";
     } else if (isLinux) {
-      downloadBtn.textContent = "Download for Linux";
       downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline-${version}-1.x86_64.rpm`;
+      if (!keepLabel) downloadBtn.textContent = "Download for Linux";
     } else {
-      downloadBtn.textContent = "Download";
       downloadBtn.href = releasesUrl;
+      if (!keepLabel) downloadBtn.textContent = "Download";
     }
-  }
+  });
 
   document.getElementById("copy-quarantine")?.addEventListener("click", async () => {
     const command = "sudo xattr -dr com.apple.quarantine /Applications/Gridline.app";
