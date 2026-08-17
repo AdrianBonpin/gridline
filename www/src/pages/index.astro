@@ -8,6 +8,7 @@ import {
   buildWebSiteJsonLd,
 } from "../lib/seo";
 import { Image } from "astro:assets";
+import HeroDbViewer from "../components/hero/HeroDbViewer";
 import queryEditor from "../assets/screenshots/query-editor.png";
 import erDiagram from "../assets/screenshots/er-diagram.png";
 import home from "../assets/screenshots/home.png";
@@ -48,7 +49,7 @@ const jsonLd = [
 
   <!-- Hero -->
   <header id="hero" class="relative pt-32 pb-20 md:pt-44 md:pb-28 overflow-hidden">
-    <div class="max-w-[1200px] mx-auto px-6 text-center">
+    <div class="max-w-7xl mx-auto px-6 text-center">
       <div class="hero-animate">
         <p class="font-mono text-xs tracking-[0.15em] uppercase text-[var(--accent)] mb-5">Open-Source Database GUI</p>
         <h1 class="font-serif text-5xl md:text-7xl lg:text-8xl leading-[1.05] tracking-tight max-w-4xl mx-auto lowercase">
@@ -75,17 +76,22 @@ const jsonLd = [
           </div>
       </div>
 
-      <div class="hero-screenshot mt-14 md:mt-20 mx-auto max-w-5xl">
-        <Image
-          src={queryEditor}
-          alt="Gridline query editor and data grid"
-          widths={[640, 1024, 1600]}
-          sizes="(max-width: 1024px) 100vw, 1024px"
-          formats={["webp", "avif"]}
-          loading="eager"
-          fetchpriority="high"
-          class="w-full h-auto"
-        />
+      <div class="hero-screenshot mt-14 md:mt-20 mx-auto max-w-6xl">
+        <div class="hidden md:block aspect-[16/9]">
+          <HeroDbViewer client:visible />
+        </div>
+        <div class="md:hidden">
+          <Image
+            src={queryEditor}
+            alt="Gridline query editor and data grid"
+            widths={[640, 1024, 1600]}
+            sizes="(max-width: 1024px) 100vw, 1024px"
+            formats={["webp", "avif"]}
+            loading="eager"
+            fetchpriority="high"
+            class="w-full h-auto"
+          />
+        </div>
       </div>
 
       <p class="mt-8 text-xs md:text-sm text-[var(--text-muted)] font-mono">
@@ -96,7 +102,7 @@ const jsonLd = [
 
   <!-- Why Gridline -->
   <section id="why" class="section-animate py-20 md:py-28">
-    <div class="max-w-[1200px] mx-auto px-6">
+    <div class="max-w-7xl mx-auto px-6">
       <h2 class="font-serif text-3xl md:text-5xl text-center max-w-2xl mx-auto">
         Everything the paid apps lock behind a subscription.
       </h2>
@@ -128,7 +134,7 @@ const jsonLd = [
 
   <!-- Feature highlights -->
   <section id="features" class="section-animate py-20 md:py-28">
-    <div class="max-w-[1200px] mx-auto px-6">
+    <div class="max-w-7xl mx-auto px-6">
       <p class="font-mono text-xs text-[var(--accent)] uppercase tracking-[0.15em] text-center mb-3">Features</p>
       <h2 class="font-serif text-3xl md:text-5xl text-center mb-14">Explore, query, and move data.</h2>
       <div class="grid md:grid-cols-2 gap-5">
