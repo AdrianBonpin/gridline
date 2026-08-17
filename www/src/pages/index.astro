@@ -7,6 +7,11 @@ import {
   buildOrganizationJsonLd,
   buildWebSiteJsonLd,
 } from "../lib/seo";
+import { Image } from "astro:assets";
+import queryEditor from "../assets/screenshots/query-editor.png";
+import erDiagram from "../assets/screenshots/er-diagram.png";
+import home from "../assets/screenshots/home.png";
+import dataGrid from "../assets/screenshots/data-grid.png";
 const version = "0.7.10";
 const site = "https://getgridline.app";
 const jsonLd = [
@@ -71,12 +76,15 @@ const jsonLd = [
       </div>
 
       <div class="hero-screenshot mt-14 md:mt-20 mx-auto max-w-5xl">
-        <img
-          src="/screenshots/query-editor.png"
+        <Image
+          src={queryEditor}
           alt="Gridline query editor and data grid"
-          class="w-full h-auto"
+          widths={[640, 1024, 1600]}
+          sizes="(max-width: 1024px) 100vw, 1024px"
+          formats={["webp", "avif"]}
           loading="eager"
-          decoding="async"
+          fetchpriority="high"
+          class="w-full h-auto"
         />
       </div>
 
@@ -128,25 +136,25 @@ const jsonLd = [
           <p class="font-mono text-xs text-[var(--text-muted)] mb-3">QUERY & EDIT</p>
           <h3 class="text-xl font-semibold mb-2">SQL editor + virtualized grid</h3>
           <p class="text-[var(--text-muted)] text-sm mb-4">Run queries with autocomplete, inline edit cells, and browse 100k+ rows without breaking a sweat.</p>
-          <img src="/screenshots/query-editor.png" alt="SQL query editor" class="w-full h-auto" loading="lazy" />
+          <Image src={queryEditor} alt="SQL query editor" widths={[640, 1024]} sizes="(max-width: 1024px) 100vw, 640px" formats={["webp", "avif"]} loading="lazy" class="w-full h-auto" />
         </article>
         <article class="feature-card">
           <p class="font-mono text-xs text-[var(--text-muted)] mb-3">VISUALIZE</p>
           <h3 class="text-xl font-semibold mb-2">ER diagram</h3>
           <p class="text-[var(--text-muted)] text-sm mb-4">Auto-layout schema graphs with crow’s foot relationships across schemas, right inside the app.</p>
-          <img src="/screenshots/er-diagram.png" alt="ER diagram" class="w-full h-auto" loading="lazy" />
+          <Image src={erDiagram} alt="ER diagram" widths={[640, 1024]} sizes="(max-width: 1024px) 100vw, 640px" formats={["webp", "avif"]} loading="lazy" class="w-full h-auto" />
         </article>
         <article class="feature-card">
           <p class="font-mono text-xs text-[var(--text-muted)] mb-3">MOVE DATA</p>
           <h3 class="text-xl font-semibold mb-2">Backup, restore, and sync</h3>
           <p class="text-[var(--text-muted)] text-sm mb-4">Point-and-click <code class="font-mono text-xs">pg_dump</code>/<code class="font-mono text-xs">pg_restore</code>, SQLite dumps, and live DB-to-DB sync.</p>
-          <img src="/screenshots/home.png" alt="Gridline home screen" class="w-full h-auto" loading="lazy" />
+          <Image src={home} alt="Gridline home screen" widths={[640, 1024]} sizes="(max-width: 1024px) 100vw, 640px" formats={["webp", "avif"]} loading="lazy" class="w-full h-auto" />
         </article>
         <article class="feature-card">
           <p class="font-mono text-xs text-[var(--text-muted)] mb-3">MANAGE</p>
           <h3 class="text-xl font-semibold mb-2">Objects, roles, and grants</h3>
           <p class="text-[var(--text-muted)] text-sm mb-4">Create and edit tables, foreign keys, indexes, functions, triggers, sequences, roles, and privileges.</p>
-          <img src="/screenshots/data-grid.png" alt="Data grid with foreign key preview" class="w-full h-auto" loading="lazy" />
+          <Image src={dataGrid} alt="Data grid with foreign key preview" widths={[640, 1024]} sizes="(max-width: 1024px) 100vw, 640px" formats={["webp", "avif"]} loading="lazy" class="w-full h-auto" />
         </article>
       </div>
     </div>
