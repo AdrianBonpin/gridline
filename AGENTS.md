@@ -198,6 +198,14 @@ Cut a release by tagging the **`prod`** branch once the PR is merged — `git ta
 - **Frontend:** `bun add <package>` (runtime) or `bun add -d <package>` (dev)
 - **Rust:** Add to `desktop/src-tauri/Cargo.toml` under `[dependencies]`
 
+**Website (`www/`) deps — keep the standalone lockfile in sync:** `www/` is a bun workspace member, so `bun add` updates the **root** `bun.lock`, but Railpack (Dokploy, build path `/www`) uses the **standalone `www/bun.lock`**. After adding/removing a dep in `www/`, regenerate `www/bun.lock` so the deployed build stays deterministic:
+
+```bash
+TMP=$(mktemp -d) && cp www/package.json "$TMP/package.json" && cd "$TMP" && bun install --lockfile-only && cp bun.lock ../../www/bun.lock && cd - && rm -rf "$TMP"
+```
+
+(Adjust the `../../` relative path to point back at `www/` from the temp dir.) Commit both `bun.lock` and `www/bun.lock` together.
+
 ### Testing Strategy
 
 - **Rust:** Unit tests for database logic, connection pool management, and command handlers. Use `sqlx::test` with a test PostgreSQL instance for integration tests.
