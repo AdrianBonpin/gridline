@@ -1,8 +1,44 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import { faqItems } from "../data/faq";
+import {
+  buildSoftwareApplicationJsonLd,
+  buildFaqJsonLd,
+  buildOrganizationJsonLd,
+  buildWebSiteJsonLd,
+} from "../lib/seo";
 const version = "0.7.10";
+const site = "https://getgridline.app";
+const jsonLd = [
+  buildSoftwareApplicationJsonLd({
+    name: "Gridline",
+    url: `${site}/`,
+    description:
+      "The open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis. No paywalls, no tab limits, fully open source.",
+    image: `${site}/og.png`,
+    operatingSystem: "macOS, Windows, Linux",
+    applicationCategory: "DeveloperApplication",
+    offersPrice: 0,
+    offersCurrency: "USD",
+    downloadUrl: "https://github.com/AdrianBonpin/gridline/releases",
+  }),
+  buildFaqJsonLd(faqItems),
+  buildOrganizationJsonLd({
+    name: "Gridline",
+    url: `${site}/`,
+    logo: `${site}/gridline-icon.svg`,
+    sameAs: [
+      "https://github.com/AdrianBonpin/gridline",
+      "https://x.com/AdrianBonpin",
+    ],
+  }),
+  buildWebSiteJsonLd({
+    name: "Gridline",
+    url: `${site}/`,
+  }),
+];
 ---
-<Layout title="Gridline — Open-Source Database GUI">
+<Layout title="Gridline — Open-Source Database GUI" jsonLd={jsonLd}>
   <script src="/landing.js" defer></script>
 
   <!-- Nav -->
@@ -30,7 +66,7 @@ const version = "0.7.10";
       <div class="hero-animate">
         <p class="font-mono text-xs tracking-[0.15em] uppercase text-[var(--accent)] mb-5">Open-Source Database GUI</p>
         <h1 class="font-serif text-5xl md:text-7xl lg:text-8xl leading-[1.05] tracking-tight max-w-4xl mx-auto lowercase">
-          one app for every <span class="text-[var(--accent)]">database</span>.
+          the open-source database <span class="text-[var(--accent)]">gui</span> for every database.
         </h1>
         <p class="mt-6 text-lg md:text-xl text-[var(--text-muted)] max-w-xl mx-auto">
           Query, explore, sync, and edit PostgreSQL, MySQL, SQLite, and Redis — with no paywalls, no tab limits, no account required.
@@ -154,51 +190,19 @@ const version = "0.7.10";
     <div class="max-w-[800px] mx-auto px-6">
       <h2 class="font-serif text-3xl md:text-5xl text-center mb-12">Questions? Answered.</h2>
       <div class="faq-list space-y-3">
-        <details class="faq-item" open>
-          <summary class="faq-summary">
-            <span>Is Gridline really free for commercial use?</span>
-            <span class="faq-chevron">⌄</span>
-          </summary>
-          <div class="faq-body">
-            <p class="text-[var(--text-muted)] text-sm leading-relaxed">Yes. Gridline is released under the Apache 2.0 license. You can use it for personal, commercial, or internal company work without paying or signing up.</p>
-          </div>
-        </details>
-        <details class="faq-item">
-          <summary class="faq-summary">
-            <span>Which databases are supported?</span>
-            <span class="faq-chevron">⌄</span>
-          </summary>
-          <div class="faq-body">
-            <p class="text-[var(--text-muted)] text-sm leading-relaxed">PostgreSQL and SQLite are fully supported today, including browsing, querying, editing, backups, and visual tools. MySQL and Redis connections are in active development.</p>
-          </div>
-        </details>
-        <details class="faq-item">
-          <summary class="faq-summary">
-            <span>How is this different from TablePlus, Beekeeper Studio, or DB Pro?</span>
-            <span class="faq-chevron">⌄</span>
-          </summary>
-          <div class="faq-body">
-            <p class="text-[var(--text-muted)] text-sm leading-relaxed">No paywalled features, no tab or connection limits, and DB-to-DB sync without intermediate files. We also expose deeper PostgreSQL objects like sequences, enums, extensions, roles, and grants.</p>
-          </div>
-        </details>
-        <details class="faq-item">
-          <summary class="faq-summary">
-            <span>Do you store my database credentials?</span>
-            <span class="faq-chevron">⌄</span>
-          </summary>
-          <div class="faq-body">
-            <p class="text-[var(--text-muted)] text-sm leading-relaxed">Passwords are stored in your operating system keychain — macOS Keychain, Linux Secret Service, or Windows Credential Manager — never in Gridline’s local SQLite database.</p>
-          </div>
-        </details>
-        <details class="faq-item">
-          <summary class="faq-summary">
-            <span>Can I self-host or contribute?</span>
-            <span class="faq-chevron">⌄</span>
-          </summary>
-          <div class="faq-body">
-            <p class="text-[var(--text-muted)] text-sm leading-relaxed">Gridline is a desktop app, not a SaaS, so there’s nothing to self-host. The repo is open for contributions: code, docs, translations, and issue reports are all welcome.</p>
-          </div>
-        </details>
+        {
+          faqItems.map((item, i) => (
+            <details class="faq-item" open={i === 0}>
+              <summary class="faq-summary">
+                <span>{item.question}</span>
+                <span class="faq-chevron">⌄</span>
+              </summary>
+              <div class="faq-body">
+                <p class="text-[var(--text-muted)] text-sm leading-relaxed">{item.answer}</p>
+              </div>
+            </details>
+          ))
+        }
       </div>
     </div>
   </section>
