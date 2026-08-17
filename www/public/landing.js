@@ -115,7 +115,7 @@
       return;
     }
     const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/animejs@3.2.2/lib/anime.min.js";
+    script.src = "/vendor/anime.min.js";
     script.onload = () => callback(window.anime);
     document.head.appendChild(script);
   }
