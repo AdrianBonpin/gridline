@@ -180,7 +180,7 @@ Direct pushes to `prod` will be bypassed only in emergencies; prefer the PR path
 Cut a release by tagging the **`prod`** branch once the PR is merged — `git tag vN.M.N && git push origin vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub).
 
 **Before tagging**, keep everything in sync:
-- Version number across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, and `desktop/src-tauri/tauri.conf.json`
+- Version number across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/tauri.conf.json`, and `www/src/pages/index.astro` (the landing page version string)
 - `desktop/src/lib/version.test.ts` and `desktop/src/lib/docs-coverage.test.ts` if they assert the version
 - **README download links are static (versioned)** — both download tables (top **Download** section + **Which file should I download?**) link directly to the release-tag assets (`releases/download/v0.7.9/<file>`). tauri-action uses default versioned asset names (`Gridline_<ver>_aarch64.dmg`, `Gridline-<ver>-1.x86_64.rpm`, etc.) — update BOTH tables to the new names on every release (see the MAINTENANCE comment in README.md).
 - **Bundled pg tools:** `tauri.conf.json` `bundle.resources` lists `resources/pg_tools/*`; the `release.yml` matrix builds/downloads + checksum-verifies the static binaries before the Tauri build step.
