@@ -25,7 +25,7 @@ const isProd = import.meta.env.PROD;
 ---
 
 <!doctype html>
-<html lang="en" data-theme-auto>
+<html lang="en" data-theme-auto class="anime-ready">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -63,6 +63,21 @@ const isProd = import.meta.env.PROD;
     {noIndex && <meta name="robots" content="noindex, nofollow" />}
 
     <Seo jsonLd={jsonLd} />
+
+    {
+      // No-JS safety net: without JavaScript the anime.js entrance timeline
+      // never runs, so force every entry-animated element back to visible.
+      // (global.css hides them via the html.anime-ready selector.)
+    }
+    <noscript>
+      <style>
+        html.anime-ready .hero-animate > *,
+        html.anime-ready .hero-screenshot,
+        html.anime-ready .section-animate > * {
+          opacity: 1 !important;
+        }
+      </style>
+    </noscript>
 
     {
       isProd && (

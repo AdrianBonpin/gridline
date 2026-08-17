@@ -122,7 +122,14 @@
     const script = document.createElement("script");
     script.src = "/vendor/anime.min.js";
     script.onload = () => callback(window.anime);
+    script.onerror = () => revealAnimatedContent();
     document.head.appendChild(script);
+  }
+
+  // Revert the entry-animation hiding (html.anime-ready CSS) so content is
+  // always visible even if the animation library never loads.
+  function revealAnimatedContent() {
+    document.documentElement.classList.remove("anime-ready");
   }
 
   loadAnime((anime) => {
@@ -134,17 +141,24 @@
       const subtitle = hero.querySelector(".hero-animate > p:nth-of-type(2)");
       const buttons = hero.querySelector(".hero-animate > div");
       const screenshot = hero.querySelector(".hero-screenshot");
+      const macosHint = hero.querySelector("#macos-hint");
 
-      const heroTl = anime.timeline({ easing: "easeOutExpo" });
+      if (reducedMotion) {
+        // Reduced motion: reveal the hero immediately (CSS hides it at first
+        // paint to avoid flicker, but the timeline below is skipped). Section
+        // reveals below still run through the IntersectionObserver.
+        anime.set([eyebrow, h1, subtitle, buttons, screenshot, macosHint], { opacity: 1, translateY: 0 });
+      } else {
+        const heroTl = anime.timeline({ easing: "easeOutExpo" });
 
-      if (!reducedMotion) {
-        anime.set([eyebrow, h1, subtitle, buttons, screenshot], { opacity: 0, translateY: 20 });
+        anime.set([eyebrow, h1, subtitle, buttons, screenshot, macosHint], { opacity: 0, translateY: 20 });
         anime.set(screenshot, { opacity: 0, scale: 0.96, translateY: 0 });
 
         if (eyebrow) heroTl.add({ targets: eyebrow, opacity: [0, 1], translateY: [15, 0] }, 0);
         if (h1) heroTl.add({ targets: h1, opacity: [0, 1], translateY: [30, 0], duration: 800 }, 100);
         if (subtitle) heroTl.add({ targets: subtitle, opacity: [0, 1], translateY: [20, 0] }, 250);
         if (buttons) heroTl.add({ targets: buttons, opacity: [0, 1], translateY: [20, 0] }, 350);
+        if (macosHint) heroTl.add({ targets: macosHint, opacity: [0, 1], translateY: [20, 0] }, 400);
         if (screenshot) heroTl.add({ targets: screenshot, opacity: [0, 1], scale: [0.96, 1], duration: 900 }, 450);
       }
     }
