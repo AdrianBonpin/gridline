@@ -1,1 +1,50 @@
 @import "tailwindcss";
+@import "@fontsource-variable/literata";
+@import "@fontsource-variable/outfit";
+@import "@fontsource/space-mono/400.css";
+@import "@fontsource/space-mono/700.css";
+
+:root {
+  --font-serif: "Literata Variable", Georgia, serif;
+  --font-sans: "Outfit Variable", system-ui, sans-serif;
+  --font-mono: "Space Mono", ui-monospace, monospace;
+
+  --bg: #0a0a0a;
+  --surface: rgba(255, 255, 255, 0.04);
+  --surface-elevated: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.10);
+  --text: rgba(255, 255, 255, 0.90);
+  --text-muted: rgba(255, 255, 255, 0.55);
+  --primary: #3b82f6;
+  --primary-hover: #60a5fa;
+  --accent: #f59e0b;
+}
+
+html.light {
+  --bg: #fafafa;
+  --surface: rgba(0, 0, 0, 0.03);
+  --surface-elevated: rgba(0, 0, 0, 0.06);
+  --border: rgba(0, 0, 0, 0.10);
+  --text: #171717;
+  --text-muted: #737373;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --accent: #d97706;
+}
+
+html {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background-color: rgba(59, 130, 246, 0.3);
+}

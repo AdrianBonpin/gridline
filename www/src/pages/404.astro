@@ -1,0 +1,20 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+const title = "Page not found — Gridline";
+const description = "That page doesn’t exist. Head back to Gridline, the open-source database GUI.";
+---
+
+<Layout title={title} description={description} noIndex>
+  <main class="min-h-screen flex flex-col items-center justify-center px-6 text-center">
+    <p class="font-mono text-xs tracking-[0.15em] uppercase text-[var(--accent)] mb-4">404</p>
+    <h1 class="font-serif text-5xl md:text-7xl tracking-tight mb-4 lowercase">Lost in the schema.</h1>
+    <p class="text-[var(--text-muted)] max-w-md mb-8">
+      We couldn’t find that page. It may have been renamed, removed, or never existed.
+    </p>
+    <div class="flex flex-wrap items-center justify-center gap-3">
+      <a href="/" class="primary-btn">Back home</a>
+      <a href="/changelog" class="ghost-btn">Changelog</a>
+    </div>
+  </main>
+</Layout>

@@ -1,0 +1,15 @@
+---
+import type { JsonLd } from "../lib/seo";
+
+interface Props {
+  jsonLd?: JsonLd[];
+}
+
+const { jsonLd = [] } = Astro.props;
+---
+
+{
+  jsonLd.map((ld) => (
+    <script type="application/ld+json" set:html={JSON.stringify(ld)} />
+  ))
+}

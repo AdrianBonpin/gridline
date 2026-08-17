@@ -180,7 +180,7 @@ Direct pushes to `prod` will be bypassed only in emergencies; prefer the PR path
 Cut a release by tagging the **`prod`** branch once the PR is merged — `git tag vN.M.N && git push origin vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub).
 
 **Before tagging**, keep everything in sync:
-- Version number across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, and `desktop/src-tauri/tauri.conf.json`
+- Version number across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/tauri.conf.json`, and `www/src/pages/index.astro` (the landing page version string)
 - `desktop/src/lib/version.test.ts` and `desktop/src/lib/docs-coverage.test.ts` if they assert the version
 - **README download links are static (versioned)** — both download tables (top **Download** section + **Which file should I download?**) link directly to the release-tag assets (`releases/download/v0.7.9/<file>`). tauri-action uses default versioned asset names (`Gridline_<ver>_aarch64.dmg`, `Gridline-<ver>-1.x86_64.rpm`, etc.) — update BOTH tables to the new names on every release (see the MAINTENANCE comment in README.md).
 - **Bundled pg tools:** `tauri.conf.json` `bundle.resources` lists `resources/pg_tools/*`; the `release.yml` matrix builds/downloads + checksum-verifies the static binaries before the Tauri build step.
@@ -197,6 +197,14 @@ Cut a release by tagging the **`prod`** branch once the PR is merged — `git ta
 
 - **Frontend:** `bun add <package>` (runtime) or `bun add -d <package>` (dev)
 - **Rust:** Add to `desktop/src-tauri/Cargo.toml` under `[dependencies]`
+
+**Website (`www/`) deps — keep the standalone lockfile in sync:** `www/` is a bun workspace member, so `bun add` updates the **root** `bun.lock`, but Railpack (Dokploy, build path `/www`) uses the **standalone `www/bun.lock`**. After adding/removing a dep in `www/`, regenerate `www/bun.lock` so the deployed build stays deterministic:
+
+```bash
+TMP=$(mktemp -d) && cp www/package.json "$TMP/package.json" && cd "$TMP" && bun install --lockfile-only && cp bun.lock ../../www/bun.lock && cd - && rm -rf "$TMP"
+```
+
+(Adjust the `../../` relative path to point back at `www/` from the temp dir.) Commit both `bun.lock` and `www/bun.lock` together.
 
 ### Testing Strategy
 

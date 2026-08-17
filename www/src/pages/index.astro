@@ -1,17 +1,200 @@
 ---
-import "../styles/global.css";
+import Layout from "../layouts/Layout.astro";
+import { faqItems } from "../data/faq";
+import {
+  buildSoftwareApplicationJsonLd,
+  buildFaqJsonLd,
+  buildOrganizationJsonLd,
+  buildWebSiteJsonLd,
+} from "../lib/seo";
+import { Image } from "astro:assets";
+import queryEditor from "../assets/screenshots/query-editor.png";
+import erDiagram from "../assets/screenshots/er-diagram.png";
+import home from "../assets/screenshots/home.png";
+import dataGrid from "../assets/screenshots/data-grid.png";
+const version = "0.7.10";
+const site = "https://getgridline.app";
+const jsonLd = [
+  buildSoftwareApplicationJsonLd({
+    name: "Gridline",
+    url: `${site}/`,
+    description:
+      "The open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis. No paywalls, no tab limits, fully open source.",
+    image: `${site}/og.png`,
+    operatingSystem: "macOS, Windows, Linux",
+    applicationCategory: "DeveloperApplication",
+    offersPrice: 0,
+    offersCurrency: "USD",
+    downloadUrl: "https://github.com/AdrianBonpin/gridline/releases",
+  }),
+  buildFaqJsonLd(faqItems),
+  buildOrganizationJsonLd({
+    name: "Gridline",
+    url: `${site}/`,
+    logo: `${site}/gridline-icon.svg`,
+    sameAs: [
+      "https://github.com/AdrianBonpin/gridline",
+      "https://x.com/AdrianBonpin",
+    ],
+  }),
+  buildWebSiteJsonLd({
+    name: "Gridline",
+    url: `${site}/`,
+  }),
+];
 ---
+<Layout title="Gridline — Open-Source Database GUI" jsonLd={jsonLd}>
+  <script src="/landing.js" defer></script>
 
-<html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<link rel="icon" href="/favicon.ico" />
-		<meta name="viewport" content="width=device-width" />
-		<meta name="generator" content={Astro.generator} />
-		<title>Astro</title>
-	</head>
-	<body>
-		<h1>Astro</h1>
-	</body>
-</html>
+  <!-- Hero -->
+  <header id="hero" class="relative pt-32 pb-20 md:pt-44 md:pb-28 overflow-hidden">
+    <div class="max-w-[1200px] mx-auto px-6 text-center">
+      <div class="hero-animate">
+        <p class="font-mono text-xs tracking-[0.15em] uppercase text-[var(--accent)] mb-5">Open-Source Database GUI</p>
+        <h1 class="font-serif text-5xl md:text-7xl lg:text-8xl leading-[1.05] tracking-tight max-w-4xl mx-auto lowercase">
+          the open-source database <span class="text-[var(--accent)]">gui</span>
+        </h1>
+        <p class="mt-6 text-lg md:text-xl text-[var(--text-muted)] max-w-xl mx-auto">
+          Query, explore, sync, and edit PostgreSQL, MySQL, SQLite, and Redis — with no paywalls, no tab limits, no account required.
+        </p>
+        <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
+          <a id="download" href="https://github.com/AdrianBonpin/gridline/releases" class="primary-btn" data-download>
+            Download
+          </a>
+          <a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="ghost-btn">
+            View on GitHub
+          </a>
+        </div>
+
+        <div id="macos-hint" class="hidden max-w-lg mx-auto w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-left mt-4">
+            <p class="text-xs text-[var(--text-muted)] mb-2">First launch on macOS? Run this in Terminal:</p>
+            <div class="flex items-center justify-between gap-3 rounded-lg bg-[var(--bg)] border border-[var(--border)] px-3 py-2">
+              <code class="font-mono text-xs truncate">sudo xattr -dr com.apple.quarantine /Applications/Gridline.app</code>
+              <button id="copy-quarantine" class="text-xs font-medium text-[var(--primary)] hover:text-[var(--primary-hover)] transition-colors shrink-0" aria-label="Copy command">Copy</button>
+            </div>
+          </div>
+      </div>
+
+      <div class="hero-screenshot mt-14 md:mt-20 mx-auto max-w-5xl">
+        <Image
+          src={queryEditor}
+          alt="Gridline query editor and data grid"
+          widths={[640, 1024, 1600]}
+          sizes="(max-width: 1024px) 100vw, 1024px"
+          formats={["webp", "avif"]}
+          loading="eager"
+          fetchpriority="high"
+          class="w-full h-auto"
+        />
+      </div>
+
+      <p class="mt-8 text-xs md:text-sm text-[var(--text-muted)] font-mono">
+        Free for personal and commercial use · Apache 2.0 · v{version}
+      </p>
+    </div>
+  </header>
+
+  <!-- Why Gridline -->
+  <section id="why" class="section-animate py-20 md:py-28">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <h2 class="font-serif text-3xl md:text-5xl text-center max-w-2xl mx-auto">
+        Everything the paid apps lock behind a subscription.
+      </h2>
+      <div class="mt-12 grid md:grid-cols-3 gap-5">
+        <article class="glass-card">
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">01</p>
+          <h3 class="text-xl font-semibold mb-2">No limits</h3>
+          <p class="text-[var(--text-muted)] text-sm leading-relaxed">
+            Unlimited connections, open tabs, saved queries, and exports. The free plan is the full plan.
+          </p>
+        </article>
+        <article class="glass-card">
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">02</p>
+          <h3 class="text-xl font-semibold mb-2">DB-to-DB sync</h3>
+          <p class="text-[var(--text-muted)] text-sm leading-relaxed">
+            Pipe <code class="font-mono text-xs">pg_dump</code> directly into <code class="font-mono text-xs">pg_restore</code> between two live connections. No file round-trip needed.
+          </p>
+        </article>
+        <article class="glass-card">
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">03</p>
+          <h3 class="text-xl font-semibold mb-2">Deeper PG explorer</h3>
+          <p class="text-[var(--text-muted)] text-sm leading-relaxed">
+            Full detail views for functions, triggers, sequences, enums, extensions, roles, and grants.
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- Feature highlights -->
+  <section id="features" class="section-animate py-20 md:py-28">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <p class="font-mono text-xs text-[var(--accent)] uppercase tracking-[0.15em] text-center mb-3">Features</p>
+      <h2 class="font-serif text-3xl md:text-5xl text-center mb-14">Explore, query, and move data.</h2>
+      <div class="grid md:grid-cols-2 gap-5">
+        <article class="feature-card">
+          <p class="font-mono text-xs text-[var(--text-muted)] mb-3">QUERY & EDIT</p>
+          <h3 class="text-xl font-semibold mb-2">SQL editor + virtualized grid</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-4">Run queries with autocomplete, inline edit cells, and browse 100k+ rows without breaking a sweat.</p>
+          <Image src={queryEditor} alt="SQL query editor" widths={[640, 1024]} sizes="(max-width: 1024px) 100vw, 640px" formats={["webp", "avif"]} loading="lazy" class="w-full h-auto" />
+        </article>
+        <article class="feature-card">
+          <p class="font-mono text-xs text-[var(--text-muted)] mb-3">VISUALIZE</p>
+          <h3 class="text-xl font-semibold mb-2">ER diagram</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-4">Auto-layout schema graphs with crow’s foot relationships across schemas, right inside the app.</p>
+          <Image src={erDiagram} alt="ER diagram" widths={[640, 1024]} sizes="(max-width: 1024px) 100vw, 640px" formats={["webp", "avif"]} loading="lazy" class="w-full h-auto" />
+        </article>
+        <article class="feature-card">
+          <p class="font-mono text-xs text-[var(--text-muted)] mb-3">MOVE DATA</p>
+          <h3 class="text-xl font-semibold mb-2">Backup, restore, and sync</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-4">Point-and-click <code class="font-mono text-xs">pg_dump</code>/<code class="font-mono text-xs">pg_restore</code>, SQLite dumps, and live DB-to-DB sync.</p>
+          <Image src={home} alt="Gridline home screen" widths={[640, 1024]} sizes="(max-width: 1024px) 100vw, 640px" formats={["webp", "avif"]} loading="lazy" class="w-full h-auto" />
+        </article>
+        <article class="feature-card">
+          <p class="font-mono text-xs text-[var(--text-muted)] mb-3">MANAGE</p>
+          <h3 class="text-xl font-semibold mb-2">Objects, roles, and grants</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-4">Create and edit tables, foreign keys, indexes, functions, triggers, sequences, roles, and privileges.</p>
+          <Image src={dataGrid} alt="Data grid with foreign key preview" widths={[640, 1024]} sizes="(max-width: 1024px) 100vw, 640px" formats={["webp", "avif"]} loading="lazy" class="w-full h-auto" />
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- Open source -->
+  <section id="oss" class="section-animate py-20 md:py-28 text-center">
+    <div class="max-w-[800px] mx-auto px-6">
+      <p class="font-mono text-xs text-[var(--accent)] uppercase tracking-[0.15em] mb-3">Open Source</p>
+      <h2 class="font-serif text-3xl md:text-5xl mb-5">Built in public.<br />No VC roadmap, no rug pulls.</h2>
+      <p class="text-[var(--text-muted)] mb-8 max-w-md mx-auto">
+        Gridline is Apache 2.0 and developed openly. Contributions, issues, and feature requests are welcome.
+      </p>
+      <a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="ghost-btn">
+        Star on GitHub
+      </a>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="section-animate py-20 md:py-28">
+    <div class="max-w-[800px] mx-auto px-6">
+      <h2 class="font-serif text-3xl md:text-5xl text-center mb-12">Questions? Answered.</h2>
+      <div class="faq-list space-y-3">
+        {
+          faqItems.map((item, i) => (
+            <details class="faq-item" open={i === 0}>
+              <summary class="faq-summary">
+                <span>{item.question}</span>
+                <span class="faq-chevron">⌄</span>
+              </summary>
+              <div class="faq-body">
+                <p class="text-[var(--text-muted)] text-sm leading-relaxed">{item.answer}</p>
+              </div>
+            </details>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+</Layout>
+
