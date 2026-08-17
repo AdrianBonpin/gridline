@@ -8,7 +8,11 @@ export default defineConfig({
   site: 'https://getgridline.app',
   compressHTML: true,
   trailingSlash: 'ignore',
-  integrations: [sitemap()],
+  integrations: [
+    sitemap({
+      lastmod: new Date(),
+    }),
+  ],
   vite: {
     plugins: [tailwindcss()],
   },
