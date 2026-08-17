@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "astro dev",
+    "prebuild": "node scripts/generate-og.mjs",
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro"
@@ -20,5 +21,10 @@
     "animejs": "^4.5.0",
     "astro": "^7.2.2",
     "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@astrojs/sitemap": "^3.7.3",
+    "satori": "^0.29.0",
+    "sharp": "^0.35.3"
   }
 }

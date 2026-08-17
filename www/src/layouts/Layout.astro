@@ -1,20 +1,64 @@
 ---
 import "../styles/global.css";
+
 export interface Props {
   title: string;
   description?: string;
+  ogImage?: string;
+  noIndex?: boolean;
 }
-const { title, description = "Gridline — the open-source database GUI" } = Astro.props;
+
+const {
+  title,
+  description = "Gridline — the open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis. No paywalls, no tab limits, fully open source.",
+  ogImage = "/og.png",
+  noIndex = false,
+} = Astro.props;
+
+const canonicalURL = new URL(Astro.url.pathname, Astro.site);
+const ogImageURL = new URL(ogImage, Astro.site);
+const isProd = import.meta.env.PROD;
 ---
+
 <!doctype html>
 <html lang="en" data-theme-auto>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" type="image/svg+xml" href="/gridline-icon.svg" />
     <meta name="generator" content={Astro.generator} />
-    <meta name="description" content={description} />
+
     <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonicalURL} />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <link rel="icon" type="image/svg+xml" href="/gridline-icon.svg" />
+
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonicalURL} />
+    <meta property="og:image" content={ogImageURL} />
+    <meta property="og:site_name" content="Gridline" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImageURL} />
+
+    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="color-scheme" content="dark light" />
+
+    {noIndex && <meta name="robots" content="noindex, nofollow" />}
+
+    {
+      isProd && (
+        <script
+          src="https://stat.ranio.xyz/api/script.js"
+          data-site-id="846d0ea9e3d0"
+          defer
+        />
+      )
+    }
   </head>
   <body>
     <slot />
