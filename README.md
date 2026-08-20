@@ -30,16 +30,16 @@
 
 ## Download
 
-Grab the installer for your OS from the [latest release](https://github.com/AdrianBonpin/gridline/releases/latest) — the links below point at the current release (**v0.7.10**):
+Grab the installer for your OS from the [latest release](https://git.ranio.xyz/adrianbonpin/gridline/releases/latest) — the links below point at the current release (**v0.7.11**):
 
-| OS                           | Architecture                 | Download                                                                                                                         |
-| :--------------------------- | :--------------------------- | :------------------------------------------------------------------------------------------------------------------------------- |
-| **macOS**                    | Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.7.10_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline_0.7.10_aarch64.dmg)       |
-| **macOS**                    | Intel                        | [Gridline_0.7.10_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline_0.7.10_x64.dmg)               |
-| **Windows**                  | x64                          | [Gridline_0.7.10_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline_0.7.10_x64-setup.exe)   |
-| **Debian / Ubuntu**          | amd64                        | [Gridline_0.7.10_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline_0.7.10_amd64.deb)           |
-| **Fedora / RHEL / openSUSE** | x86_64                       | [Gridline-0.7.10-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline-0.7.10-1.x86_64.rpm)     |
-| **Other Linux**              | amd64                        | [Gridline_0.7.10_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline_0.7.10_amd64.AppImage) |
+| OS                           | Architecture                 | Download                                                                                                                             |
+| :--------------------------- | :--------------------------- | :----------------------------------------------------------------------------------------------------------------------------------- |
+| **macOS**                    | Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.7.11_aarch64.dmg](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline_0.7.11_aarch64.dmg)         |
+| **macOS**                    | Intel                        | [Gridline_0.7.11_x64.dmg](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline_0.7.11_x64.dmg)                 |
+| **Windows**                  | x64                          | [Gridline_0.7.11_x64-setup.exe](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline_0.7.11_x64-setup.exe)     |
+| **Debian / Ubuntu**          | amd64                        | [Gridline_0.7.11_amd64.deb](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline_0.7.11_amd64.deb)             |
+| **Fedora / RHEL / openSUSE** | x86_64                       | [Gridline-0.7.11-1.x86_64.rpm](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline-0.7.11-1.x86_64.rpm)       |
+| **Other Linux**              | amd64                        | [Gridline_0.7.11_amd64.AppImage](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline_0.7.11_amd64.AppImage)   |
 
 **macOS via Homebrew** (recommended for Mac users):
 
@@ -54,7 +54,7 @@ The cask strips the macOS quarantine flag automatically during install, so **no 
 > **macOS first launch:** macOS may say *"Gridline is damaged and can't be opened"* or *"the developer cannot be verified"* — this is expected; the app isn't Developer-ID signed/notarized yet. See the [macOS first-launch instructions](#installers-are-unsigned-for-now) (right-click → Open, or the one-time `xattr` fix). Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below.
 
 <!--
-  MAINTENANCE: These links are STATIC (versioned) — they point at the v0.7.10
+  MAINTENANCE: These links are STATIC (versioned) — they point at the v0.7.11
   release assets, not at a moving "latest" target. On every new release,
   update BOTH tables here (Download + Which file should I download?) to the
   new version's asset names, which are tauri-action's default naming:
@@ -326,16 +326,16 @@ Code signing **will be added in the future** (Apple Developer Program + a Window
 
 #### Which file should I download?
 
-Each release contains **one file per platform** — you only need the one that matches your computer. The links below point at the current release (**v0.7.10**):
+Each release contains **one file per platform** — you only need the one that matches your computer. The links below point at the current release (**v0.7.11**):
 
-| Your system                            | Download this                                                                                                                    | Notes                                                            |
-| :------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------- |
-| macOS **Apple Silicon** (M1/M2/M3/M4…) | [Gridline_0.7.10_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline_0.7.10_aarch64.dmg)       | `aarch64` = Apple's own chip                                     |
-| macOS **Intel**                        | [Gridline_0.7.10_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline_0.7.10_x64.dmg)               | `x64` = Intel/AMD                                                |
-| **Windows** (most PCs)                 | [Gridline_0.7.10_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline_0.7.10_x64-setup.exe)   | The `.msi` is an alternate installer (for enterprises/IT admins) |
-| **Debian / Ubuntu**                    | [Gridline_0.7.10_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline_0.7.10_amd64.deb)           | Install: `sudo apt install ./Gridline_0.7.10_amd64.deb`           |
-| **Fedora / RHEL / openSUSE**           | [Gridline-0.7.10-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline-0.7.10-1.x86_64.rpm)     | Install: `sudo dnf install Gridline-0.7.10-1.x86_64.rpm`          |
-| **Any other Linux**                    | [Gridline_0.7.10_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.7.10/Gridline_0.7.10_amd64.AppImage) | Works on every distro: `chmod +x` the file, then double-click it |
+| Your system                            | Download this                                                                                                                                | Notes                                                            |
+| :------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------- |
+| macOS **Apple Silicon** (M1/M2/M3/M4…) | [Gridline_0.7.11_aarch64.dmg](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline_0.7.11_aarch64.dmg)                 | `aarch64` = Apple's own chip                                     |
+| macOS **Intel**                        | [Gridline_0.7.11_x64.dmg](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline_0.7.11_x64.dmg)                         | `x64` = Intel/AMD                                                |
+| **Windows** (most PCs)                 | [Gridline_0.7.11_x64-setup.exe](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline_0.7.11_x64-setup.exe)             | The `.msi` is an alternate installer (for enterprises/IT admins) |
+| **Debian / Ubuntu**                    | [Gridline_0.7.11_amd64.deb](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline_0.7.11_amd64.deb)                     | Install: `sudo apt install ./Gridline_0.7.11_amd64.deb`           |
+| **Fedora / RHEL / openSUSE**           | [Gridline-0.7.11-1.x86_64.rpm](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline-0.7.11-1.x86_64.rpm)               | Install: `sudo dnf install Gridline-0.7.11-1.x86_64.rpm`          |
+| **Any other Linux**                    | [Gridline_0.7.11_amd64.AppImage](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.7.11/Gridline_0.7.11_amd64.AppImage)           | Works on every distro: `chmod +x` the file, then double-click it |
 
 **Not sure if your Mac is Intel or Apple Silicon?** Click the **Apple menu** → **About This Mac**. If it shows "Apple M1/M2/M3/M4…" download the `aarch64` file; if it shows an Intel chip, download `x64`. Downloading the wrong one won't run.
 
@@ -345,11 +345,11 @@ Cutting a release is one command — CI builds everything. **Releases are cut fr
 
 ```bash
 git checkout prod && git pull
-git tag v0.7.10
-git push origin v0.7.10
+git tag v0.7.11
+git push origin v0.7.11
 ```
 
-GitHub Actions (`.github/workflows/release.yml`) builds installers for **Apple Silicon, Intel Macs, Windows, and Linux**, then opens a **draft release** on the [Releases](https://github.com/adrianbonpin/gridline/releases) page — review it and hit **Publish release**.
+Gitea Actions (`.gitea/workflows/release.yml`) builds the **Linux and Windows** installers on the self-hosted runners, then opens a **draft release** on the [Releases](https://git.ranio.xyz/adrianbonpin/gridline/releases) page. **macOS is built manually** on the dev Mac and its DMGs uploaded to the same release via `scripts/release-mac.sh`. Review the draft and hit **Publish release**.
 
 Before tagging, make sure the version number is in sync across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, and `desktop/src-tauri/tauri.conf.json`, and update the **README download tables** (Download + Which file should I download?) to the new version's asset names.
 
@@ -437,7 +437,7 @@ gridline/
 
 ## Roadmap
 
-The full plan — next-up (v0.7.10), queue, and shipped history — lives in **[ROADMAP.md](./ROADMAP.md)**.
+The full plan — next-up, queue, and shipped history — lives in **[ROADMAP.md](./ROADMAP.md)**.
 
 Highlights of what's next:
 
