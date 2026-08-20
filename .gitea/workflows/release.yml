@@ -1,0 +1,249 @@
+name: Release
+
+# Builds Gridline installers for Linux and Windows on the self-hosted
+# Gitea Actions runners, then uploads them to a Gitea release.
+#
+#   * Linux  -> sec-s1-runner (label ubuntu-22.04) -> .deb / .rpm / .AppImage
+#   * Windows-> win-ig3i     (label windows)       -> .exe / .msi
+#
+# macOS is NOT built here. The Mac is built manually on Adrian's machine and
+# its DMGs uploaded to the same release by tag (scripts/release-mac.sh).
+#
+# Trigger: push a version tag from the `prod` branch, e.g.
+#   git checkout prod && git pull
+#   git tag v0.7.11 && git push origin v0.7.11
+#
+# Each job independently ensures the Gitea release exists (GET by tag, create
+# on 404) then uploads only its own platform assets — so Linux and Windows run
+# in parallel and both land on the same release page. If one platform's runner
+# is offline, the other job still succeeds (fail-fast: false).
+#
+# SIGNING STATUS: macOS is ad-hoc signed (manual, via tauri.conf.json). Linux
+# and Windows installers are unsigned. No certs are bundled.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  GITEA_SERVER: https://git.ranio.xyz
+  REPO_OWNER: adrianbonpin
+  REPO_NAME: gridline
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './desktop/src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build PostgreSQL client tools (bundled)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PG_VER="16.4"
+          OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/pg_tools"
+          mkdir -p "$OUT"
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential libreadline-dev zlib1g-dev flex bison patchelf
+          curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2" -o /tmp/pg.tar.bz2
+          tar -xf /tmp/pg.tar.bz2 -C /tmp
+          cd /tmp/postgresql-${PG_VER}
+          ./configure --prefix=/tmp/pgbuild --without-readline --without-icu CFLAGS="-O2"
+          make -C src/backend generated-headers
+          make -C src/interfaces/libpq all
+          make -j"$(nproc)" -C src/bin/pg_dump all
+          make -j"$(nproc)" -C src/bin/psql all
+          cp src/bin/pg_dump/pg_dump src/bin/pg_dump/pg_restore "$OUT"/
+          cp src/bin/psql/psql "$OUT"/
+          cp src/interfaces/libpq/libpq.so.5 "$OUT"/libpq.so.5
+          for b in pg_dump pg_restore psql; do
+            patchelf --set-rpath '$ORIGIN' "$OUT/$b"
+          done
+
+      - name: Build MariaDB client tools (bundled)
+        shell: bash
+        run: |
+          set -euo pipefail
+          MARIADB_VER="11.4.5"
+          OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/mysql_tools"
+          mkdir -p "$OUT"
+          sudo apt-get update -y
+          sudo apt-get install -y cmake build-essential libssl-dev libzstd-dev pkg-config libgnutls28-dev patchelf
+          git clone --depth 1 --branch "mariadb-${MARIADB_VER}" https://github.com/MariaDB/server.git /tmp/mariadb-server
+          cd /tmp/mariadb-server
+          cmake -DCMAKE_BUILD_TYPE=Release \
+            -DWITHOUT_SERVER=ON \
+            -DWITHOUT_TOKUDB=1 \
+            -DWITHOUT_ROCKSDB=1 \
+            -DWITHOUT_MROONGA=1 \
+            -DWITHOUT_SPIDER=1 \
+            -DWITHOUT_SEQUENCE=1 \
+            -DWITH_UNIT_TESTS=OFF \
+            -DWITH_SSL=bundled \
+            -DWITH_ZLIB=bundled .
+          make -j"$(nproc)" mariadb-dump mariadb
+          for b in mariadb-dump mariadb; do
+            src=$(find client -maxdepth 1 -type f -name "$b" -print -quit 2>/dev/null || true)
+            test -n "$src" || src=$(find . -type f -name "$b" -print -quit || true)
+            test -n "$src" || { echo "build produced no $b binary"; exit 1; }
+            cp "$src" "$OUT"/
+          done
+          for b in mariadb-dump mariadb; do
+            ldd "$OUT/$b" | awk '/=> \// {print $3}' | sort -u | while read -r lib; do
+              case "$(basename "$lib")" in
+                ld-linux*|libc.so*|libm.so*|libpthread*|libdl.so*|librt.so*|libgcc_s*|libstdc++*|libcrypt.so*|libresolv*|libutil*)
+                  ;;
+                *)
+                  cp -n "$lib" "$OUT/$(basename "$lib")" 2>/dev/null || true
+                  ;;
+              esac
+            done
+            patchelf --set-rpath '$ORIGIN' "$OUT/$b"
+          done
+
+      - name: Build installers
+        run: bun run --filter gridline-desktop tauri build
+
+      - name: Create release and upload Linux assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          API="${GITEA_SERVER}/api/v1/repos/${REPO_OWNER}/${REPO_NAME}"
+          AUTH="Authorization: token ${GITHUB_TOKEN}"
+
+          # Ensure the release exists (idempotent — both jobs may call this).
+          REL_ID=$(curl -fsS -H "$AUTH" "${API}/releases/tags/${TAG}" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+          if [ -z "$REL_ID" ]; then
+            BODY="Gridline ${TAG#v} — Linux and Windows installers."
+            REL_ID=$(curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Gridline ${TAG#v}\",\"body\":\"${BODY}\",\"draft\":true}" \
+              "${API}/releases" \
+              | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+          fi
+
+          BUNDLE="${GITHUB_WORKSPACE}/desktop/src-tauri/target/release/bundle"
+          cd "$BUNDLE"
+          for f in deb/*.deb rpm/*.rpm appimage/*.AppImage; do
+            [ -f "$f" ] || { echo "missing $f"; exit 1; }
+            name=$(basename "$f")
+            echo "uploading $name"
+            curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/octet-stream" \
+              --data-binary "@$f" \
+              "${API}/releases/${REL_ID}/assets?name=${name}"
+          done
+          echo "Linux assets uploaded to release ${REL_ID}"
+
+  windows:
+    runs-on: windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './desktop/src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build PostgreSQL client tools (bundled)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PG_VER="16.4"
+          OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/pg_tools"
+          mkdir -p "$OUT"
+          URL="https://get.enterprisedb.com/postgresql/postgresql-${PG_VER}-1-windows-x64-binaries.zip"
+          curl -fsSL "$URL" -o /tmp/pg.zip
+          EXPECTED="3508d8f085bc3980f38211a82e3f31e5fcae9952105d3dc2f8be67b64a822baa"
+          echo "$EXPECTED  /tmp/pg.zip" | sha256sum -c -
+          sha256sum /tmp/pg.zip
+          unzip -o /tmp/pg.zip -d /tmp/pg
+          cp /tmp/pg/pgsql/bin/pg_dump.exe /tmp/pg/pgsql/bin/pg_restore.exe /tmp/pg/pgsql/bin/psql.exe "$OUT"/
+          cp /tmp/pg/pgsql/bin/*.dll "$OUT"/
+
+      - name: Build MariaDB client tools (bundled)
+        shell: bash
+        run: |
+          set -euo pipefail
+          MARIADB_VER="11.4.5"
+          OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/mysql_tools"
+          mkdir -p "$OUT"
+          URL="https://archive.mariadb.org/mariadb-${MARIADB_VER}/winx64-packages/mariadb-${MARIADB_VER}-winx64.zip"
+          curl -fsSL "$URL" -o /tmp/mariadb.zip
+          sha256sum /tmp/mariadb.zip
+          unzip -o /tmp/mariadb.zip -d /tmp/mariadb
+          WINROOT="/tmp/mariadb/mariadb-${MARIADB_VER}-winx64"
+          cp "$WINROOT"/bin/mariadb-dump.exe "$WINROOT"/bin/mariadb.exe "$OUT"/
+          cp "$WINROOT"/lib/libmariadb.dll "$OUT"/
+
+      - name: Build installers
+        shell: bash
+        run: bun run --filter gridline-desktop tauri build
+
+      - name: Create release and upload Windows assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          API="${GITEA_SERVER}/api/v1/repos/${REPO_OWNER}/${REPO_NAME}"
+          AUTH="Authorization: token ${GITHUB_TOKEN}"
+
+          REL_ID=$(curl -fsS -H "$AUTH" "${API}/releases/tags/${TAG}" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+          if [ -z "$REL_ID" ]; then
+            BODY="Gridline ${TAG#v} — Linux and Windows installers."
+            REL_ID=$(curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Gridline ${TAG#v}\",\"body\":\"${BODY}\",\"draft\":true}" \
+              "${API}/releases" \
+              | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+          fi
+
+          BUNDLE="${GITHUB_WORKSPACE}/desktop/src-tauri/target/release/bundle"
+          cd "$BUNDLE"
+          for f in nsis/*-setup.exe msi/*.msi; do
+            [ -f "$f" ] || { echo "missing $f"; exit 1; }
+            name=$(basename "$f")
+            echo "uploading $name"
+            curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/octet-stream" \
+              --data-binary "@$f" \
+              "${API}/releases/${REL_ID}/assets?name=${name}"
+          done
+          echo "Windows assets uploaded to release ${REL_ID}"
