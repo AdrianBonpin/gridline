@@ -18,12 +18,12 @@
   <a href="https://react.dev/"><img src="https://img.shields.io/badge/react-%2320232a.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB" alt="React" /></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-D22128.svg?style=for-the-badge" alt="Apache 2.0 License" /></a>
-  <a href="https://github.com/adrianbonpin/gridline/stargazers"><img src="https://img.shields.io/github/stars/adrianbonpin/gridline?style=for-the-badge&logo=github&label=Stars" alt="GitHub stars" /></a>
+  <a href="https://git.ranio.xyz/adrianbonpin/gridline"><img src="https://img.shields.io/badge/Open_Source-Gitea-4183C4.svg?style=for-the-badge" alt="Open source on Gitea" /></a>
 </p>
 
 <p>
-  <a href="https://github.com/adrianbonpin/gridline/releases"><img src="https://img.shields.io/badge/Download_Latest_Release-2ea44f?style=for-the-badge&logo=github&logoColor=white" alt="Download Latest" /></a>
-  <a href="https://github.com/adrianbonpin/gridline/issues/new"><img src="https://img.shields.io/badge/Open_an_Issue-%23E4405F.svg?style=for-the-badge&logo=github&logoColor=white" alt="Open an Issue" /></a>
+  <a href="https://git.ranio.xyz/adrianbonpin/gridline/releases"><img src="https://img.shields.io/badge/Download_Latest_Release-2ea44f?style=for-the-badge" alt="Download Latest" /></a>
+  <a href="https://git.ranio.xyz/adrianbonpin/gridline/issues/new"><img src="https://img.shields.io/badge/Open_an_Issue-%23E4405F.svg?style=for-the-badge" alt="Open an Issue" /></a>
 </p>
 
 ---
@@ -301,9 +301,9 @@ _Notes: DB Pro is an Electron app (launched Nov 2025) whose marketing copy overc
 
 ### Download a release
 
-Pre-built installers for macOS, Windows, and Linux are published on the [Releases](https://github.com/adrianbonpin/gridline/releases) page.
+Pre-built installers for macOS, Windows, and Linux are published on the [Releases](https://git.ranio.xyz/adrianbonpin/gridline/releases) page.
 
-> ⚠️ Gridline is under active development. Expect rough edges and please [open issues](https://github.com/adrianbonpin/gridline/issues/new) when you hit them.
+> ⚠️ Gridline is under active development. Expect rough edges and please [open issues](https://git.ranio.xyz/adrianbonpin/gridline/issues/new) when you hit them.
 
 #### Installers are unsigned (for now)
 
@@ -357,7 +357,7 @@ Before tagging, make sure the version number is in sync across `desktop/package.
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/adrianbonpin/gridline.git
+git clone https://git.ranio.xyz/adrianbonpin/gridline.git
 cd gridline
 
 # 2. Install all workspace dependencies
@@ -473,7 +473,7 @@ Highlights of what's next:
 
 Contributions, bug reports, and feature ideas are welcome. Gridline is Apache 2.0-licensed and intentionally stays open — no paywalled tiers, no bundled proprietary services.
 
-- Open an issue via the **[template chooser](https://github.com/AdrianBonpin/gridline/issues/new)** — pick **Bug report** (with an environment table so we can reproduce issues quickly), **Feature request**, or **Improvement** (UX polish for existing features). New issues are auto-assigned to the maintainer.
+- Open an issue via the **[template chooser](https://git.ranio.xyz/adrianbonpin/gridline/issues/new)** — pick **Bug report** (with an environment table so we can reproduce issues quickly), **Feature request**, or **Improvement** (UX polish for existing features). New issues are auto-assigned to the maintainer.
 - Submit a pull request. Keep Tauri commands thin, type IPC boundaries explicitly, and follow the existing Rust/React conventions.
 
 ---
