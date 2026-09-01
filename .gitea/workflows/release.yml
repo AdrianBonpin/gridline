@@ -142,7 +142,7 @@ jobs:
           REL_ID=$(curl -fsS -H "$AUTH" "${API}/releases/tags/${TAG}" \
             | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2 || true)
           if [ -z "$REL_ID" ]; then
-            BODY="Gridline ${TAG#v} — Linux and Windows installers."
+            BODY="Gridline ${TAG#v} - Linux and Windows installers."
             REL_ID=$(curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/json" \
               -d "{\"tag_name\":\"${TAG}\",\"name\":\"Gridline ${TAG#v}\",\"body\":\"${BODY}\",\"draft\":true}" \
               "${API}/releases" \
@@ -259,7 +259,7 @@ jobs:
           REL_ID=$(curl -fsS -H "$AUTH" "${API}/releases/tags/${TAG}" \
             | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2 || true)
           if [ -z "$REL_ID" ]; then
-            BODY="Gridline ${TAG#v} — Linux and Windows installers."
+            BODY="Gridline ${TAG#v} - Linux and Windows installers."
             REL_ID=$(curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/json" \
               -d "{\"tag_name\":\"${TAG}\",\"name\":\"Gridline ${TAG#v}\",\"body\":\"${BODY}\",\"draft\":true}" \
               "${API}/releases" \
