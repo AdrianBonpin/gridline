@@ -8,10 +8,12 @@ use crate::models::db_viewer::{
     Change, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, IndexInfo,
     QueryResult, SequenceInfo, TableInfo, TriggerInfo,
 };
+use bytes::BytesMut;
 use std::collections::HashMap;
+use std::error::Error;
 use sqlx::Row;
 use tauri::State;
-use tokio_postgres::types::ToSql;
+use tokio_postgres::types::{Format, IsNull, ToSql, Type};
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -585,26 +587,75 @@ pub fn build_pg_insert_sql(
     )
 }
 
+/// A value bound to a PostgreSQL parameter in TEXT wire format, accepting any
+/// parameter type.
+///
+/// The frontend ships edited values as plain strings (and PK locators as
+/// numbers/booleans), but binding a native `String` fails for every non-text
+/// column type — `String::accepts` only matches `varchar`/`text`/`bpchar`/
+/// `name` — with `error serializing parameter N: cannot convert between the
+/// Rust type ... and the Postgres type ...`. Binding a native `i64` is also
+/// wrong because `i64::accepts` only matches `int8`.
+///
+/// `PgText` accepts *any* parameter type and writes the value as UTF-8 text in
+/// text wire format, so PostgreSQL itself parses the literal into the target
+/// column type. This works uniformly for `integer`, `bigint`, `numeric`,
+/// `boolean`, `uuid`, `json`/`jsonb`, timestamps, enums, etc. — exactly what
+/// PostgreSQL does for an `'<literal>'` in a query.
+#[derive(Debug, Clone)]
+struct PgText(String);
+
+impl From<&str> for PgText {
+    fn from(s: &str) -> Self {
+        PgText(s.to_string())
+    }
+}
+
+impl ToSql for PgText {
+    fn to_sql(
+        &self,
+        _ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        out.extend_from_slice(self.0.as_bytes());
+        Ok(IsNull::No)
+    }
+
+    fn accepts(_ty: &Type) -> bool {
+        true
+    }
+
+    fn encode_format(&self, _ty: &Type) -> Format {
+        Format::Text
+    }
+
+    fn to_sql_checked(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        self.to_sql(ty, out)
+    }
+}
+
 /// Convert a JSON value into a boxed PostgreSQL-bindable value.
 ///
-/// Maps common JSON types to `tokio_postgres::types::ToSql` implementors.
-/// Unknown/complex types are stringified as a fallback.
+/// Every non-null value is bound as a `PgText` (text wire format) so the server
+/// parses it into the target column type; SQL `NULL` is bound as `None`. This
+/// is deliberately type-agnostic — the caller already knows the column type
+/// through the SQL context (e.g. `SET "col" = $1` lets PostgreSQL infer `$1`
+/// as `col`'s type).
 fn pg_box_value(v: &serde_json::Value) -> Box<dyn ToSql + Send + Sync> {
-    match v {
-        serde_json::Value::Null => Box::new(Option::<String>::None),
-        serde_json::Value::Bool(b) => Box::new(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Box::new(i)
-            } else if let Some(f) = n.as_f64() {
-                Box::new(f)
-            } else {
-                Box::new(n.to_string())
-            }
-        }
-        serde_json::Value::String(s) => Box::new(s.clone()),
-        other => Box::new(other.to_string()),
+    if v.is_null() {
+        return Box::new(Option::<PgText>::None);
     }
+    let text = match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        other => other.to_string(),
+    };
+    Box::new(PgText::from(text.as_str()))
 }
 
 /// Convert a JSON value into a `rusqlite::types::Value` for SQLite binding.
@@ -3318,6 +3369,78 @@ mod tests {
             affected_count_error(2u64),
             Some("ambiguous row match".to_string())
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // PgText: universal text-format parameter binding (serialization fix)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pg_text_accepts_any_postgres_type() {
+        // String::accepts only matches text-ish types, so a plain String can't
+        // bind to an integer/boolean/uuid/jsonb column. PgText must accept all
+        // of these (the server parses the text into the column's own type).
+        for ty in [
+            Type::TEXT,
+            Type::VARCHAR,
+            Type::INT4,
+            Type::INT8,
+            Type::FLOAT8,
+            Type::NUMERIC,
+            Type::BOOL,
+            Type::UUID,
+            Type::JSON,
+            Type::JSONB,
+            Type::TIMESTAMP,
+            Type::TIMESTAMPTZ,
+            Type::DATE,
+            Type::TIME,
+        ] {
+            assert!(
+                PgText::accepts(&ty),
+                "PgText must accept {:?}",
+                ty
+            );
+        }
+        // Sanity: a native String must NOT accept a non-text type (proving the
+        // root cause this fix addresses).
+        assert!(!<&str as ToSql>::accepts(&Type::INT4));
+    }
+
+    #[test]
+    fn pg_text_serializes_as_utf8_text() {
+        use bytes::BytesMut;
+        use tokio_postgres::types::IsNull;
+
+        let val = pg_box_value(&serde_json::json!("42"));
+        let mut out = BytesMut::new();
+        let isnull = val.to_sql_checked(&Type::INT4, &mut out).unwrap();
+        assert!(matches!(isnull, IsNull::No));
+        assert_eq!(&out[..], b"42");
+        // Text wire format: the bytes are raw UTF-8, not binary-encoded int.
+        assert!(matches!(val.encode_format(&Type::INT4), Format::Text));
+    }
+
+    #[test]
+    fn pg_text_boxes_null_to_sql_null() {
+        use bytes::BytesMut;
+        use tokio_postgres::types::IsNull;
+
+        let val = pg_box_value(&serde_json::Value::Null);
+        let mut out = BytesMut::new();
+        assert!(matches!(
+            val.to_sql_checked(&Type::TEXT, &mut out).unwrap(),
+            IsNull::Yes
+        ));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn pg_text_stringifies_booleans_and_numbers() {
+        let b = pg_box_value(&serde_json::json!(true));
+        assert!(matches!(b.encode_format(&Type::BOOL), Format::Text));
+        let n = pg_box_value(&serde_json::json!(5));
+        assert!(matches!(n.encode_format(&Type::INT4), Format::Text));
     }
 
     async fn fresh_pool_manager() -> tokio::sync::Mutex<ConnectionPoolManager> {

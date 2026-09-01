@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
 import tauriConf from "../../src-tauri/tauri.conf.json";
 
-describe("tauri bundle config (v0.7.11)", () => {
+describe("tauri bundle config (v0.7.12)", () => {
   it("declares bundled pg_tools resources", () => {
     expect(tauriConf.bundle.resources).toContain("resources/pg_tools/*");
   });
-  it("version is 0.7.11", () => {
-    expect(tauriConf.version).toBe("0.7.11");
+  it("version is 0.7.12", () => {
+    expect(tauriConf.version).toBe("0.7.12");
   });
 });

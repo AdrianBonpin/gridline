@@ -1783,8 +1783,9 @@ dependencies = [
 
 [[package]]
 name = "gridline"
-version = "0.7.10"
+version = "0.7.11"
 dependencies = [
+ "bytes",
  "chrono",
  "deadpool-postgres",
  "indexmap 2.14.0",

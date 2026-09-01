@@ -140,13 +140,13 @@ jobs:
 
           # Ensure the release exists (idempotent — both jobs may call this).
           REL_ID=$(curl -fsS -H "$AUTH" "${API}/releases/tags/${TAG}" \
-            | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+            | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2 || true)
           if [ -z "$REL_ID" ]; then
             BODY="Gridline ${TAG#v} — Linux and Windows installers."
             REL_ID=$(curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/json" \
               -d "{\"tag_name\":\"${TAG}\",\"name\":\"Gridline ${TAG#v}\",\"body\":\"${BODY}\",\"draft\":true}" \
               "${API}/releases" \
-              | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+              | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
           fi
 
           BUNDLE="${GITHUB_WORKSPACE}/desktop/src-tauri/target/release/bundle"
@@ -189,7 +189,13 @@ jobs:
           OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/pg_tools"
           mkdir -p "$OUT"
           URL="https://get.enterprisedb.com/postgresql/postgresql-${PG_VER}-1-windows-x64-binaries.zip"
-          curl -fsSL "$URL" -o /tmp/pg.zip
+          CACHE="/c/ci/cache/postgresql-${PG_VER}-1-windows-x64-binaries.zip"
+          if [ -f "$CACHE" ]; then
+            echo "Using cached PG zip: $CACHE"
+            cp "$CACHE" /tmp/pg.zip
+          else
+            curl -fsSL "$URL" -o /tmp/pg.zip
+          fi
           EXPECTED="3508d8f085bc3980f38211a82e3f31e5fcae9952105d3dc2f8be67b64a822baa"
           echo "$EXPECTED  /tmp/pg.zip" | sha256sum -c -
           sha256sum /tmp/pg.zip
@@ -205,16 +211,34 @@ jobs:
           OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/mysql_tools"
           mkdir -p "$OUT"
           URL="https://archive.mariadb.org/mariadb-${MARIADB_VER}/winx64-packages/mariadb-${MARIADB_VER}-winx64.zip"
-          curl -fsSL "$URL" -o /tmp/mariadb.zip
+          CACHE="/c/ci/cache/mariadb-${MARIADB_VER}-winx64.zip"
+          if [ -f "$CACHE" ]; then
+            echo "Using cached MariaDB zip: $CACHE"
+            cp "$CACHE" /tmp/mariadb.zip
+          else
+            curl -fsSL "$URL" -o /tmp/mariadb.zip
+          fi
           sha256sum /tmp/mariadb.zip
           unzip -o /tmp/mariadb.zip -d /tmp/mariadb
           WINROOT="/tmp/mariadb/mariadb-${MARIADB_VER}-winx64"
           cp "$WINROOT"/bin/mariadb-dump.exe "$WINROOT"/bin/mariadb.exe "$OUT"/
           cp "$WINROOT"/lib/libmariadb.dll "$OUT"/
 
+      # rustc resolves `link.exe` via PATH for the windows-msvc target, but Git
+      # for Windows ships GNU coreutils with its own `link.exe` that shadows
+      # MSVC's linker (`link: extra operand ...`). Load the MSVC dev
+      # environment so PATH/LIB/INCLUDE point at the real MSVC toolchain.
+      # Fails fast here (instead of at link time) if the toolchain is missing.
+      - name: Set up MSVC build environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Build installers
-        shell: bash
-        run: bun run --filter gridline-desktop tauri build
+        shell: cmd
+        run: |
+          call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+          bun run --filter gridline-desktop tauri build
 
       - name: Create release and upload Windows assets
         shell: bash
@@ -227,13 +251,13 @@ jobs:
           AUTH="Authorization: token ${GITHUB_TOKEN}"
 
           REL_ID=$(curl -fsS -H "$AUTH" "${API}/releases/tags/${TAG}" \
-            | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+            | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2 || true)
           if [ -z "$REL_ID" ]; then
             BODY="Gridline ${TAG#v} — Linux and Windows installers."
             REL_ID=$(curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/json" \
               -d "{\"tag_name\":\"${TAG}\",\"name\":\"Gridline ${TAG#v}\",\"body\":\"${BODY}\",\"draft\":true}" \
               "${API}/releases" \
-              | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+              | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
           fi
 
           BUNDLE="${GITHUB_WORKSPACE}/desktop/src-tauri/target/release/bundle"

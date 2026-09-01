@@ -46,6 +46,9 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       set((s) => ({ connections: [...s.connections].sort((a, b) => Number(b.favorite) - Number(a.favorite)) }));
       // Also load tag order
       get().loadTagOrder();
+      // Refresh recents once connections are known so the recent strip is not
+      // computed against an empty list (avoids a startup race with loadRecent).
+      get().loadRecent().catch(() => {});
     } catch (e) {
       set({ loading: false, error: e instanceof Error ? e.message : String(e) });
     }

@@ -225,6 +225,33 @@ describe("favorites / recents / move-selection", () => {
     expect(commands.recordRecentConnection).toHaveBeenCalledWith("c1");
   });
 
+  it("loadAll refreshes recents once connections are known (startup race fix)", async () => {
+    const conn = makeConn({ id: "c1", name: "Prod" });
+    vi.spyOn(commands, "getConnections").mockResolvedValue([conn]);
+    vi.spyOn(commands, "getFolders").mockResolvedValue([]);
+    vi.spyOn(commands, "getTags").mockResolvedValue([]);
+    vi.spyOn(commands, "getRecentConnections").mockResolvedValue([
+      { connection_id: "c1", opened_at: "2026-08-02T00:00:00Z" },
+    ]);
+
+    // Simulate the app-shell mount: loadAll fires and populates connections.
+    await useConnectionStore.getState().loadAll();
+
+    // The recent strip must now show the connection that was opened previously.
+    expect(commands.getRecentConnections).toHaveBeenCalledWith(8);
+    expect(useConnectionStore.getState().recent).toEqual([conn]);
+  });
+
+  it("loadRecent maps cached recent ids against the current connection list", async () => {
+    const conn = makeConn({ id: "c1", name: "Prod" });
+    useConnectionStore.setState({ connections: [conn] });
+    vi.spyOn(commands, "getRecentConnections").mockResolvedValue([
+      { connection_id: "c1", opened_at: "2026-08-02T00:00:00Z" },
+    ]);
+    await useConnectionStore.getState().loadRecent();
+    expect(useConnectionStore.getState().recent).toEqual([conn]);
+  });
+
   describe("duplicateConnection", () => {
     it("copies fields with a '(copy)' name and favorite false", async () => {
       const src = makeConn({ id: "c1", name: "Prod", folder_id: "f1", tag_ids: ["t1"], favorite: true });
