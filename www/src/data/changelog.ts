@@ -6,6 +6,15 @@ export interface ChangelogEntry {
 
 export const changelogEntries: ChangelogEntry[] = [
   {
+    version: "0.7.12",
+    date: "2026-09-01",
+    highlights: [
+      "Reliable cell editing for non-text columns — editing a PostgreSQL cell whose type isn't text (integers, booleans, UUIDs, json/jsonb, timestamps, enums, numerics) now works; edited values are sent to PostgreSQL in text wire format so the server parses them into the column's own type.",
+      "Recent connections fix — the Recent strip no longer renders empty on first launch when the connections list hadn't loaded yet.",
+      "Full CI release pipeline for Windows — the self-hosted Windows runner now builds the .exe/.msi installers (bundled pg_dump/pg_restore/psql + MariaDB clients) and uploads them to the release alongside Linux.",
+    ],
+  },
+  {
     version: "0.7.10",
     date: "2026-08-13",
     highlights: [

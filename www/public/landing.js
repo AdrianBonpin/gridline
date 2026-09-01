@@ -59,12 +59,12 @@
     const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(userAgent);
     const keepLabel = downloadBtn.hasAttribute("data-download-label");
 
-    const releasesUrl = "https://github.com/AdrianBonpin/gridline/releases";
-    const version = "0.7.10";
+    const releasesUrl = "https://git.ranio.xyz/adrianbonpin/gridline/releases";
+    const version = "0.7.12";
 
     if (isMobile) {
       downloadBtn.href = releasesUrl;
-      if (!keepLabel) downloadBtn.textContent = "Get it on GitHub";
+      if (!keepLabel) downloadBtn.textContent = "Get it on Gitea";
     } else if (isMac) {
       downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline_${version}_aarch64.dmg`;
       if (!keepLabel) downloadBtn.textContent = "Download for macOS";
