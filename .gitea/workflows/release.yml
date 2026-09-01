@@ -146,7 +146,13 @@ jobs:
             REL_ID=$(curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/json" \
               -d "{\"tag_name\":\"${TAG}\",\"name\":\"Gridline ${TAG#v}\",\"body\":\"${BODY}\",\"draft\":true}" \
               "${API}/releases" \
-              | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+              | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2 || true)
+          fi
+          if [ -z "$REL_ID" ]; then
+            # A parallel job may have created the release between our GET and
+            # POST (create returns 422). Re-fetch by tag and upload to it.
+            REL_ID=$(curl -fsS -H "$AUTH" "${API}/releases/tags/${TAG}" \
+              | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2 || true)
           fi
 
           BUNDLE="${GITHUB_WORKSPACE}/desktop/src-tauri/target/release/bundle"
@@ -257,7 +263,13 @@ jobs:
             REL_ID=$(curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/json" \
               -d "{\"tag_name\":\"${TAG}\",\"name\":\"Gridline ${TAG#v}\",\"body\":\"${BODY}\",\"draft\":true}" \
               "${API}/releases" \
-              | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+              | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2 || true)
+          fi
+          if [ -z "$REL_ID" ]; then
+            # A parallel job may have created the release between our GET and
+            # POST (create returns 422). Re-fetch by tag and upload to it.
+            REL_ID=$(curl -fsS -H "$AUTH" "${API}/releases/tags/${TAG}" \
+              | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2 || true)
           fi
 
           BUNDLE="${GITHUB_WORKSPACE}/desktop/src-tauri/target/release/bundle"
