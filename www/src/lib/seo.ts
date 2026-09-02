@@ -108,3 +108,26 @@ export function buildBreadcrumbJsonLd(
 export function buildTitle(primary: string, brand = "Gridline"): string {
   return `${primary} | ${brand}`;
 }
+
+export function buildProductJsonLd(opts: {
+  name: string;
+  url: string;
+  description: string;
+  image: string;
+  offersPrice: number;
+  offersCurrency: string;
+}): JsonLd {
+  return {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    name: opts.name,
+    url: opts.url,
+    description: opts.description,
+    image: opts.image,
+    offers: {
+      "@type": "Offer",
+      price: opts.offersPrice,
+      priceCurrency: opts.offersCurrency,
+    },
+  };
+}

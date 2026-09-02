@@ -6,6 +6,8 @@ import {
   buildFaqJsonLd,
   buildOrganizationJsonLd,
   buildWebSiteJsonLd,
+  buildProductJsonLd,
+  buildBreadcrumbJsonLd,
 } from "../lib/seo";
 import { Image } from "astro:assets";
 import HeroDbViewer from "../components/hero/HeroDbViewer";
@@ -42,9 +44,21 @@ const jsonLd = [
     name: "Gridline",
     url: `${site}/`,
   }),
+  buildProductJsonLd({
+    name: "Gridline",
+    url: `${site}/`,
+    description:
+      "The open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis. No paywalls, no tab limits, fully open source.",
+    image: `${site}/og.png`,
+    offersPrice: 0,
+    offersCurrency: "USD",
+  }),
+  buildBreadcrumbJsonLd([
+    { name: "Home", url: `${site}/` },
+  ]),
 ];
 ---
-<Layout title="Gridline — Open-Source Database GUI" jsonLd={jsonLd}>
+<Layout title="Gridline — Free Open-Source Database GUI" jsonLd={jsonLd}>
   <script src="/landing.js" defer></script>
 
   <!-- Hero -->

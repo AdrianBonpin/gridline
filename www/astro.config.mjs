@@ -10,9 +10,7 @@ export default defineConfig({
   compressHTML: true,
   trailingSlash: 'ignore',
   integrations: [
-    sitemap({
-      lastmod: new Date(),
-    }),
+    sitemap(),
     react(),
   ],
   vite: {

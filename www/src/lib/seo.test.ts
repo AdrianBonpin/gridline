@@ -6,6 +6,7 @@ import {
   buildWebSiteJsonLd,
   buildBreadcrumbJsonLd,
   buildTitle,
+  buildProductJsonLd,
 } from "./seo";
 
 describe("seo builders", () => {
@@ -69,5 +70,19 @@ describe("seo builders", () => {
 
   it("buildTitle appends the brand", () => {
     expect(buildTitle("PostgreSQL GUI")).toBe("PostgreSQL GUI | Gridline");
+  });
+
+  it("buildProductJsonLd returns valid Product schema", () => {
+    const ld = buildProductJsonLd({
+      name: "Gridline",
+      url: "https://getgridline.app/",
+      description: "Open-source database GUI",
+      image: "https://getgridline.app/og.png",
+      offersPrice: 0,
+      offersCurrency: "USD",
+    });
+    expect(ld["@type"]).toBe("Product");
+    expect(ld.name).toBe("Gridline");
+    expect((ld.offers as { price: number }).price).toBe(0);
   });
 });

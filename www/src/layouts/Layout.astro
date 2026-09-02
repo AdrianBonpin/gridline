@@ -36,8 +36,13 @@ const isProd = import.meta.env.PROD;
     <link rel="canonical" href={canonicalURL} />
     <link rel="sitemap" href="/sitemap-index.xml" />
     <link rel="icon" type="image/svg+xml" href="/gridline-icon.svg" />
-    <link rel="apple-touch-icon" href="/gridline-icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
+    <link rel="preload" as="image" href="/og.png" />
+    <link rel="preconnect" href="https://stat.ranio.xyz" crossorigin />
+    <link rel="preconnect" href="https://git.ranio.xyz" />
+    <link rel="dns-prefetch" href="https://stat.ranio.xyz" />
+    <link rel="dns-prefetch" href="https://git.ranio.xyz" />
 
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
@@ -54,6 +59,7 @@ const isProd = import.meta.env.PROD;
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImageURL} />
+    <meta name="twitter:image:alt" content="Gridline — the open-source database GUI" />
     <meta name="twitter:site" content="@AdrianBonpin" />
     <meta name="twitter:creator" content="@AdrianBonpin" />
 
