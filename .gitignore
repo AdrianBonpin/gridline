@@ -38,3 +38,13 @@ docs/superpowers/
 .env
 !.env.example
 .worktrees/
+
+# Bundled DB client tools (built/downloaded during release, never committed)
+desktop/src-tauri/resources/pg_tools/pg_dump
+desktop/src-tauri/resources/pg_tools/pg_restore
+desktop/src-tauri/resources/pg_tools/psql
+desktop/src-tauri/resources/pg_tools/libpq.5.dylib
+desktop/src-tauri/resources/mysql_tools/mariadb
+desktop/src-tauri/resources/mysql_tools/mariadb-dump
+desktop/src-tauri/resources/mysql_tools/libcrypto.3.dylib
+desktop/src-tauri/resources/mysql_tools/libssl.3.dylib
