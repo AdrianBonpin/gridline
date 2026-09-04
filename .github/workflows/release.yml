@@ -7,16 +7,11 @@ name: Release
 #   git checkout prod && git pull
 #   git tag v0.5.0 && git push origin v0.5.0
 #
-# SIGNING STATUS: macOS bundles are AD-HOC signed via tauri.conf.json
-# (bundle.macOS.signingIdentity: "-", hardenedRuntime: false). That replaces
-# the linker-only signature that made macOS report the app as "damaged" and
-# refuse Finder launches — users now get the standard "Open Anyway" prompt
-# (or run `sudo xattr -dr com.apple.quarantine` for the damaged-error case, see
-# README). Still NOT Developer-ID signed / notarized (no certs yet).
-# tauri-action automatically signs + notarizes when the signing secrets are
-# present, so the moment we add APPLE_CERTIFICATE / APPLE_API_KEY /
-# WINDOWS_CERTIFICATE (or Azure Trusted Signing) to repo secrets, future
-# builds are properly signed — no changes to this file required.
+# SIGNING STATUS: macOS is Developer-ID signed + notarized via
+# scripts/release-mac.sh (built manually on Adrian's machine). NOTE: this
+# GitHub workflow is NOT the active release path — Gitea Actions uses
+# .gitea/workflows/release.yml (Linux/Windows only). Linux/Windows installers
+# remain unsigned.
 
 on:
   push:

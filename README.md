@@ -49,9 +49,9 @@ brew install --cask AdrianBonpin/gridline/gridline
 brew install --cask gridline
 ```
 
-The cask strips the macOS quarantine flag automatically during install, so **no manual `xattr` step is needed** on the Homebrew path — the app just launches. (Direct-DMG downloads still need the [first-launch instructions](#installers-are-unsigned-for-now) below.)
+The cask installs the app directly. The DMGs are Developer-ID signed and notarized, so macOS trusts them on first launch — no `xattr` or "Open Anyway" step needed.
 
-> **macOS first launch:** macOS may say *"Gridline is damaged and can't be opened"* or *"the developer cannot be verified"* — this is expected; the app isn't Developer-ID signed/notarized yet. See the [macOS first-launch instructions](#installers-are-unsigned-for-now) (right-click → Open, or the one-time `xattr` fix). Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below.
+> **macOS first launch:** Gridline is Developer-ID signed and notarized, so macOS opens it without a Gatekeeper prompt. Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below.
 
 <!--
   MAINTENANCE: These links are STATIC (versioned) — they point at the v0.7.12
@@ -307,24 +307,27 @@ Pre-built installers for macOS, Windows, and Linux are published on the [Release
 
 > ⚠️ Gridline is under active development. Expect rough edges and please [open issues](https://git.ranio.xyz/adrianbonpin/gridline/issues/new) when you hit them.
 
-#### Installers are unsigned (for now)
+#### macOS signing & notarization
 
-Gridline is currently distributed **unsigned** — it doesn't pay for code-signing certificates yet (macOS builds are *ad-hoc signed*, so they pass Apple Silicon's launch checks but aren't Developer-ID signed or notarized). Your OS will warn you the first time you open it. This is expected — the app is safe, it just hasn't paid the signing fee:
+Gridline's macOS builds are **Developer-ID signed and notarized**, so macOS opens them without a Gatekeeper prompt. This is configured on the machine that runs `scripts/release-mac.sh` (macOS is built manually, not in CI).
 
-> **Homebrew users:** the [Homebrew cask](#download) strips the quarantine flag automatically during install, so you skip all of the steps below — the app just launches.
+**One-time setup** (only the repo owner needs to do this):
 
-- **macOS:** if you see *"Gridline can't be opened because the developer cannot be verified"* (or the app simply won't open from Finder), right-click the app → **Open** → **Open** (or System Settings → Privacy & Security → **Open Anyway**). Do this once per version.
-- **macOS — "Gridline is damaged and can't be opened":** remove the quarantine flag macOS attaches to downloaded apps, then launch normally:
+1. **Create a Developer ID Application certificate** — [developer.apple.com](https://developer.apple.com) → Certificates, Identifiers & Profiles → **+** → **Developer ID Application**. Generate a Certificate Signing Request from Keychain Access (Certificate Assistant → *Request a Certificate From a Certificate Authority*), upload it, download the `.cer`, and double-click to install into your login keychain. Verify with `security find-identity -v -p codesigning`.
+2. **Create an App Store Connect API key** for notarization — [appstoreconnect.apple.com](https://appstoreconnect.apple.com) → Users and Access → **Integrations** → **App Store Connect API** → **+** (name it, *Developer* access). Download the `.p8` (shown once) and note the **Key ID** and **Issuer ID**.
+3. **Save the notarization credentials** to `~/.config/gridline/notarize.env` (never committed):
 
-  ```bash
-  sudo xattr -dr com.apple.quarantine /Applications/Gridline.app
-  ```
+   ```bash
+   APPLE_API_KEY=<Key ID>
+   APPLE_API_ISSUER=<Issuer ID>
+   APPLE_API_KEY_PATH=/absolute/path/to/AuthKey_<KeyID>.p8
+   ```
 
-  (`sudo` is required — some files inside the bundle are read-only, so removing the flag needs admin rights.) Re-run after **every upgrade** — each freshly-downloaded copy gets re-quarantined.
-- **Windows:** on the SmartScreen prompt, click **More info** → **Run anyway**.
-- **Linux:** no warning — install and run normally.
+   (Alternatively, drop the `.p8` at `~/.appstoreconnect/private_keys/AuthKey_<KeyID>.p8` and omit `APPLE_API_KEY_PATH`.)
 
-Code signing **will be added in the future** (Apple Developer Program + a Windows signing cert, e.g. Azure Trusted Signing) — the CI workflow is already wired to pick up the signing secrets automatically the moment they exist, no workflow changes needed.
+`scripts/release-mac.sh` auto-detects the Developer ID identity from your keychain, signs both architectures, notarizes + staples them, and verifies the result before uploading. If the certificate or credentials are missing it fails with instructions (set `GRIDLINE_SKIP_NOTARIZE=1` to build signed-but-unnotarized for testing only).
+
+**Windows** still shows a SmartScreen prompt (no Windows signing cert yet); **Linux** installs without a warning.
 
 #### Which file should I download?
 

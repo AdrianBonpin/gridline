@@ -75,6 +75,11 @@ for b in pg_dump pg_restore psql; do
   libpq=$(otool -L "$OUT_PG/$b" | awk '/libpq/ {print $1; exit}')
   install_name_tool -change "$libpq" "@loader_path/libpq.5.dylib" "$OUT_PG/$b"
 done
+# install_name_tool invalidates the linker's ad-hoc signature; re-sign so the
+# bundle passes notarization (every code object inside must be signed).
+for f in "$OUT_PG"/pg_dump "$OUT_PG"/pg_restore "$OUT_PG"/psql "$OUT_PG"/libpq.5.dylib; do
+  codesign --force --sign - "$f" 2>/dev/null || true
+done
 
 echo ">> Building MariaDB client tools..."
 mkdir -p "$OUT_MY"
@@ -116,6 +121,58 @@ for pass in 1 2 3 4 5 6; do
   done
 done
 
+# ---- macOS signing + notarization -----------------------------------------
+# Requires a "Developer ID Application" certificate in the login keychain and
+# an App Store Connect API key for notarization. See the README's "macOS
+# signing" section for how to create both.
+#
+# Notarization credentials are read from ~/.config/gridline/notarize.env
+# (never committed). Create it with:
+#   APPLE_API_KEY=<Key ID>
+#   APPLE_API_ISSUER=<Issuer ID>
+#   APPLE_API_KEY_PATH=/absolute/path/to/AuthKey_<KeyID>.p8
+# (or drop the .p8 at ~/.appstoreconnect/private_keys/AuthKey_<KeyID>.p8 and
+# omit APPLE_API_KEY_PATH — tauri auto-searches that location.)
+
+# 1. Resolve the Developer ID Application signing identity from the keychain.
+SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+  | grep -i 'Developer ID Application' \
+  | sed -E 's/.*"([^"]+)".*/\1/' \
+  | head -1 || true)"
+if [ -z "$SIGNING_IDENTITY" ]; then
+  echo "ERROR: No 'Developer ID Application' certificate found in the login keychain." >&2
+  echo "  Create one at https://developer.apple.com/account/resources/certificates/list" >&2
+  echo "  (Certificates, IDs & Profiles -> + -> Developer ID Application), download the" >&2
+  echo "  .cer, and double-click it to install into your login keychain." >&2
+  echo "  Verify with: security find-identity -v -p codesigning" >&2
+  exit 1
+fi
+export APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY"
+echo ">> Signing identity: $SIGNING_IDENTITY"
+
+# 2. Load notarization credentials.
+NOTARIZE_ENV="${HOME}/.config/gridline/notarize.env"
+if [ -f "$NOTARIZE_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$NOTARIZE_ENV"
+  set +a
+fi
+if [ -z "${APPLE_API_KEY:-}" ] || [ -z "${APPLE_API_ISSUER:-}" ]; then
+  if [ "${GRIDLINE_SKIP_NOTARIZE:-0}" = "1" ]; then
+    echo ">> WARNING: notarization credentials missing; GRIDLINE_SKIP_NOTARIZE=1 set." >&2
+    echo "  Building signed but NOT notarized (test-only — users will still see a prompt)." >&2
+  else
+    echo "ERROR: Notarization credentials not configured." >&2
+    echo "  Create ${NOTARIZE_ENV} with APPLE_API_KEY and APPLE_API_ISSUER" >&2
+    echo "  (and APPLE_API_KEY_PATH, or place the .p8 at ~/.appstoreconnect/private_keys/)." >&2
+    echo "  See the README's 'macOS signing' section for the App Store Connect API key setup." >&2
+    exit 1
+  fi
+else
+  echo ">> Notarization: API key ${APPLE_API_KEY} (issuer ${APPLE_API_ISSUER})"
+fi
+
 # ---- build the app (both arches) ------------------------------------------
 cd "${WORKSPACE}/desktop"
 echo ">> Installing frontend dependencies..."
@@ -129,6 +186,24 @@ bun run tauri build --target x86_64-apple-darwin
 VERSION="${TAG#v}"
 BUNDLE_ARM="${WORKSPACE}/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle"
 BUNDLE_INTEL="${WORKSPACE}/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle"
+
+# ---- verify signing + notarization -----------------------------------------
+# Confirm both .app bundles are properly signed and carry a stapled
+# notarization ticket before we upload them. spctl can lag right after
+# notarization (assessment cache), so stapler validate is the authoritative
+# check; a pending spctl is only a warning.
+for APP in \
+  "${BUNDLE_ARM}/macos/Gridline.app" \
+  "${BUNDLE_INTEL}/macos/Gridline.app"; do
+  [ -d "$APP" ] || { echo "missing $APP" >&2; exit 1; }
+  echo ">> Verifying $APP"
+  codesign --verify --deep --strict --verbose=2 "$APP" \
+    || { echo "codesign verify FAILED" >&2; exit 1; }
+  xcrun stapler validate "$APP" \
+    || { echo "notarization ticket not stapled" >&2; exit 1; }
+  spctl --assess --type execute --verbose=4 "$APP" \
+    || echo "  (spctl assessment pending — normal right after notarization; stapler validate passed)"
+done
 
 # ---- create/ensure release + upload DMGs -----------------------------------
 API="${GITEA_SERVER}/api/v1/repos/${REPO_OWNER}/${REPO_NAME}"
