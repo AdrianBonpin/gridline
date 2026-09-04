@@ -45,8 +45,20 @@ get_token() {
       if [ -n "$tok" ]; then echo "$tok"; return; fi
     fi
   fi
-  read -rsp "Gitea personal access token (repo write): " GITEA_TOKEN
-  echo "$GITEA_TOKEN"
+  # Fall back to the git credential store: tea's OAuth login stores an access
+  # token as the password for every push to this remote, and Gitea accepts it
+  # for API auth (Authorization: token <access_token>).
+  local host cred
+  host="${GITEA_SERVER#*://}"
+  cred="$(printf 'protocol=https\nhost=%s\n\n' "$host" \
+    | git credential fill 2>/dev/null | sed -n 's/^password=//p' | head -1 || true)"
+  if [ -n "$cred" ]; then echo "$cred"; return; fi
+  # Fail fast — continuing without a token fails only at the upload step,
+  # after the whole build has run.
+  echo "error: no Gitea token found" >&2
+  echo "  set GITEA_TOKEN, or run 'tea login' / 'git push' once so the" >&2
+  echo "  credential store has an entry for $host" >&2
+  exit 1
 }
 
 GITEA_TOKEN="$(get_token)"
