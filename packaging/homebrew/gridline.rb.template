@@ -26,7 +26,7 @@ cask "gridline" do
   desc "Open-source, cross-platform database GUI client for PostgreSQL"
   homepage "https://git.ranio.xyz/adrianbonpin/gridline"
 
-  depends_on macos: ">= :monterey"
+  depends_on macos: :monterey
 
   app "Gridline.app"
 
