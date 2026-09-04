@@ -21,10 +21,10 @@ cask "gridline" do
   sha256 arm:   "@ARM_SHA256@",
          intel: "@INTEL_SHA256@"
 
-  url "https://github.com/AdrianBonpin/gridline/releases/download/v#{version}/Gridline_#{version}_#{arch}.dmg"
+  url "https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v#{version}/Gridline_#{version}_#{arch}.dmg"
   name "Gridline"
   desc "Open-source, cross-platform database GUI client for PostgreSQL"
-  homepage "https://github.com/AdrianBonpin/gridline"
+  homepage "https://git.ranio.xyz/adrianbonpin/gridline"
 
   depends_on macos: ">= :monterey"
 
