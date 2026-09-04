@@ -15,7 +15,7 @@ import queryEditor from "../assets/screenshots/query-editor.png";
 import erDiagram from "../assets/screenshots/er-diagram.png";
 import home from "../assets/screenshots/home.png";
 import dataGrid from "../assets/screenshots/data-grid.png";
-const version = "0.7.12";
+const version = "0.7.13";
 const site = "https://getgridline.app";
 const jsonLd = [
   buildSoftwareApplicationJsonLd({
@@ -80,14 +80,6 @@ const jsonLd = [
             View on Gitea
           </a>
         </div>
-
-        <div id="macos-hint" class="hidden max-w-lg mx-auto w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-left mt-4">
-            <p class="text-xs text-[var(--text-muted)] mb-2">First launch on macOS? Run this in Terminal:</p>
-            <div class="flex items-center justify-between gap-3 rounded-lg bg-[var(--bg)] border border-[var(--border)] px-3 py-2">
-              <code class="font-mono text-xs truncate">sudo xattr -dr com.apple.quarantine /Applications/Gridline.app</code>
-              <button id="copy-quarantine" class="text-xs font-medium text-[var(--primary)] hover:text-[var(--primary-hover)] transition-colors shrink-0" aria-label="Copy command">Copy</button>
-            </div>
-          </div>
       </div>
 
       <div class="hero-screenshot mt-14 md:mt-20 mx-auto max-w-6xl">

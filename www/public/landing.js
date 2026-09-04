@@ -60,7 +60,7 @@
     const keepLabel = downloadBtn.hasAttribute("data-download-label");
 
     const releasesUrl = "https://git.ranio.xyz/adrianbonpin/gridline/releases";
-    const version = "0.7.12";
+    const version = "0.7.13";
 
     if (isMobile) {
       downloadBtn.href = releasesUrl;
@@ -68,9 +68,6 @@
     } else if (isMac) {
       downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline_${version}_aarch64.dmg`;
       if (!keepLabel) downloadBtn.textContent = "Download for macOS";
-      if (downloadBtn.id === "download") {
-        document.getElementById("macos-hint")?.classList.remove("hidden");
-      }
     } else if (isWin) {
       downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline_${version}_x64-setup.exe`;
       if (!keepLabel) downloadBtn.textContent = "Download for Windows";
@@ -81,18 +78,6 @@
       downloadBtn.href = releasesUrl;
       if (!keepLabel) downloadBtn.textContent = "Download";
     }
-  });
-
-  document.getElementById("copy-quarantine")?.addEventListener("click", async () => {
-    const command = "sudo xattr -dr com.apple.quarantine /Applications/Gridline.app";
-    try {
-      await navigator.clipboard.writeText(command);
-      const btn = document.getElementById("copy-quarantine");
-      if (!btn) return;
-      const original = btn.textContent;
-      btn.textContent = "Copied";
-      setTimeout(() => (btn.textContent = original), 1500);
-    } catch {}
   });
 
   // Nav scroll background
@@ -141,24 +126,22 @@
       const subtitle = hero.querySelector(".hero-animate > p:nth-of-type(2)");
       const buttons = hero.querySelector(".hero-animate > div");
       const screenshot = hero.querySelector(".hero-screenshot");
-      const macosHint = hero.querySelector("#macos-hint");
 
       if (reducedMotion) {
         // Reduced motion: reveal the hero immediately (CSS hides it at first
         // paint to avoid flicker, but the timeline below is skipped). Section
         // reveals below still run through the IntersectionObserver.
-        anime.set([eyebrow, h1, subtitle, buttons, screenshot, macosHint], { opacity: 1, translateY: 0 });
+        anime.set([eyebrow, h1, subtitle, buttons, screenshot], { opacity: 1, translateY: 0 });
       } else {
         const heroTl = anime.timeline({ easing: "easeOutExpo" });
 
-        anime.set([eyebrow, h1, subtitle, buttons, screenshot, macosHint], { opacity: 0, translateY: 20 });
+        anime.set([eyebrow, h1, subtitle, buttons, screenshot], { opacity: 0, translateY: 20 });
         anime.set(screenshot, { opacity: 0, scale: 0.96, translateY: 0 });
 
         if (eyebrow) heroTl.add({ targets: eyebrow, opacity: [0, 1], translateY: [15, 0] }, 0);
         if (h1) heroTl.add({ targets: h1, opacity: [0, 1], translateY: [30, 0], duration: 800 }, 100);
         if (subtitle) heroTl.add({ targets: subtitle, opacity: [0, 1], translateY: [20, 0] }, 250);
         if (buttons) heroTl.add({ targets: buttons, opacity: [0, 1], translateY: [20, 0] }, 350);
-        if (macosHint) heroTl.add({ targets: macosHint, opacity: [0, 1], translateY: [20, 0] }, 400);
         if (screenshot) heroTl.add({ targets: screenshot, opacity: [0, 1], scale: [0.96, 1], duration: 900 }, 450);
       }
     }

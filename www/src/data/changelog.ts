@@ -6,6 +6,13 @@ export interface ChangelogEntry {
 
 export const changelogEntries: ChangelogEntry[] = [
   {
+    version: "0.7.13",
+    date: "2026-09-04",
+    highlights: [
+      "macOS is now Developer-ID signed and notarized — the app is properly code-signed with a Developer ID Application certificate and notarized by Apple, so macOS opens it without the Gatekeeper 'Open Anyway' prompt or the xattr quarantine workaround.",
+    ],
+  },
+  {
     version: "0.7.12",
     date: "2026-09-01",
     highlights: [
