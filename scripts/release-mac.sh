@@ -112,6 +112,8 @@ echo ">> Building PostgreSQL client tools..."
 mkdir -p "$OUT_PG"
 PG_VER="16.4"
 curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2" -o /tmp/pg.tar.bz2
+# Idempotent re-runs: clear stale build dirs left by previous invocations.
+rm -rf "/tmp/postgresql-${PG_VER}" /tmp/pgbuild
 tar -xf /tmp/pg.tar.bz2 -C /tmp
 cd /tmp/postgresql-${PG_VER}
 ac_cv_func_strchrnul=no ./configure --prefix=/tmp/pgbuild --without-readline --without-icu CFLAGS="-O2"
@@ -137,6 +139,9 @@ done
 echo ">> Building MariaDB client tools..."
 mkdir -p "$OUT_MY"
 MARIADB_VER="11.4.5"
+# Idempotent re-runs: git clone fails if the destination is non-empty (e.g.
+# left over from an earlier build on the same machine). Clean it first.
+rm -rf /tmp/mariadb-server
 git clone --depth 1 --branch "mariadb-${MARIADB_VER}" https://github.com/MariaDB/server.git /tmp/mariadb-server
 cd /tmp/mariadb-server
 if [ "$(uname -m)" = arm64 ]; then
