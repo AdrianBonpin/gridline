@@ -44,8 +44,11 @@ Grab the installer for your OS from the [latest release](https://git.ranio.xyz/a
 **macOS via Homebrew** (recommended for Mac users):
 
 ```bash
-brew install --cask AdrianBonpin/gridline/gridline
-# or, after a one-time `brew tap AdrianBonpin/gridline`:
+# one-time setup (the tap is hosted on Gitea, not GitHub):
+brew tap AdrianBonpin/gridline https://git.ranio.xyz/adrianbonpin/homebrew-gridline.git
+brew trust adrianbonpin/gridline
+
+# install / upgrade:
 brew install --cask gridline
 ```
 
