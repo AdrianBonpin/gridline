@@ -1,3 +1,4 @@
+use crate::keychain_acl;
 use tauri_plugin_keyring_store::KeyringExt;
 
 /// Store a connection password in the OS keychain.
@@ -11,7 +12,10 @@ pub fn save_connection_password(
     app.keyring()
         .store
         .set_password(&connection_id, &password)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Best-effort: pin the item's ACL to this app so re-signed builds never prompt.
+    keychain_acl::after_store(&app, &connection_id);
+    Ok(())
 }
 
 /// Retrieve a connection password from the OS keychain.
@@ -55,7 +59,9 @@ pub fn save_connection_ssh_password(
     app.keyring()
         .store
         .set_password(&ssh_account("password", &connection_id), &password)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    keychain_acl::after_store(&app, &ssh_account("password", &connection_id));
+    Ok(())
 }
 
 /// Retrieve an SSH tunnel password from the OS keychain.
@@ -93,7 +99,9 @@ pub fn save_connection_ssh_passphrase(
     app.keyring()
         .store
         .set_password(&ssh_account("passphrase", &connection_id), &passphrase)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    keychain_acl::after_store(&app, &ssh_account("passphrase", &connection_id));
+    Ok(())
 }
 
 /// Retrieve an SSH private-key passphrase from the OS keychain.

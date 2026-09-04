@@ -5,6 +5,7 @@
 mod cancel;
 mod commands;
 mod db;
+mod keychain_acl;
 mod models;
 mod store;
 

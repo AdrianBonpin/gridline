@@ -49,3 +49,12 @@ rustls-pemfile = "2"
 rustls-pki-types = "1"
 rustls-native-certs = "0.7"
 
+# Keychain ACL normalization (explicit SecAccess on stored secrets so items
+# survive app re-signs without permission prompts) — macOS only.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
+security-framework-sys = "2.17"
+# core-foundation: CFString/CFArray/TCFType helpers for the SecAccess FFI
+# (already a transitive dep of security-framework; pinned to the same 0.10 line)
+core-foundation = "0.10"
+
