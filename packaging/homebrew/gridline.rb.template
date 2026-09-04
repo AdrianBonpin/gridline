@@ -11,13 +11,8 @@
 #
 #   brew install --cask gridline
 #
-# QUARANTINE: Gridline is ad-hoc signed (not Developer-ID signed/notarized),
-# so Homebrew casks (which deliberately set com.apple.quarantine on the
-# downloaded artifact) would make Gatekeeper refuse to launch it. The
-# `postflight` block strips the quarantine flag automatically — the standard
-# GoReleaser-documented pattern for unsigned casks — so `brew install` works
-# with no manual `xattr` step. This is a Gatekeeper bypass; drop the
-# postflight once the app is properly signed + notarized.
+# SIGNING: Gridline is Developer-ID signed + notarized, so macOS trusts it
+# and no quarantine-stripping postflight is needed.
 
 cask "gridline" do
   arch arm: "aarch64", intel: "x64"
@@ -34,15 +29,6 @@ cask "gridline" do
   depends_on macos: ">= :monterey"
 
   app "Gridline.app"
-
-  # The "installation step" — strip the quarantine flag so the unsigned
-  # (ad-hoc signed) app launches without the Gatekeeper prompt.
-  postflight do
-    if OS.mac?
-      system_command "/usr/bin/xattr",
-                     args: ["-dr", "com.apple.quarantine", "#{appdir}/Gridline.app"]
-    end
-  end
 
   zap trash: [
     "~/Library/Application Support/com.adrianbonpin.gridline",
