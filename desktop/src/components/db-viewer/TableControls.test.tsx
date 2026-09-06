@@ -325,13 +325,115 @@ describe("TableControls", () => {
     expect(screen.queryByLabelText(/insert row/i)).toBeNull();
   });
 
-  it("renders the FilterBuilder inside the filter popover", () => {
+  it("stages an insert with only editable columns when Insert Row is clicked", () => {
+    const cols = [
+      { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: "nextval('users_id_seq')", editable: false, is_generated: false },
+      { name: "name", data_type: "text", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      { name: "created_at", data_type: "timestamp", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: "now()", editable: true, is_generated: false },
+    ];
+    seed([makeTab({ data: { columns: cols, rows: [], total_rows: 0, page: 1, page_size: 50 } })], "tab-1");
+    renderControls({ columns: cols, rows: [] });
+    fireEvent.click(screen.getByLabelText(/insert row/i));
+    const queue = useDbViewerStore.getState().changesQueue;
+    expect(queue).toHaveLength(1);
+    expect(queue[0].type).toBe("insert");
+    expect(queue[0].newData).toEqual({ name: null, created_at: null });
+  });
+
+  it("renders the column filter popover with the + Add filter action", () => {
     seed([makeTab()], "tab-1");
     renderControls();
     fireEvent.click(screen.getByLabelText(/column filters/i));
-    expect(
-      screen.getByText("Drop columns here to add filters"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Column Filters")).toBeInTheDocument();
+    expect(screen.getByText("+ Add filter")).toBeInTheDocument();
+  });
+
+  it("debounces filter value edits so a query only fires after the user stops typing", () => {
+    vi.useFakeTimers();
+    seed([makeTab()], "tab-1");
+    const onFilterChange = vi.fn();
+    renderControls({
+      onFilterChange,
+      filterRules: [
+        { id: "r1", column: "id", operator: "contains", value: "" },
+      ],
+    });
+
+    fireEvent.click(screen.getByLabelText(/column filters/i));
+
+    const input = screen.getByPlaceholderText("value");
+    fireEvent.change(input, { target: { value: "a" } });
+    fireEvent.change(input, { target: { value: "ab" } });
+    fireEvent.change(input, { target: { value: "abc" } });
+
+    // No commit yet — the debounce hasn't elapsed.
+    expect(onFilterChange).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+
+    // Only the final value is committed, once.
+    expect(onFilterChange).toHaveBeenCalledTimes(1);
+    expect(onFilterChange).toHaveBeenCalledWith([
+      expect.objectContaining({ value: "abc" }),
+    ]);
+  });
+
+  it("closes the filter popover when the button is clicked while it is open", () => {
+    seed([makeTab()], "tab-1");
+    renderControls();
+
+    fireEvent.click(screen.getByLabelText(/column filters/i));
+    expect(screen.getByText("Column Filters")).toBeInTheDocument();
+
+    // Clicking the button while open closes it (plain toggle).
+    fireEvent.click(screen.getByLabelText(/column filters/i));
+    expect(screen.queryByText("Column Filters")).not.toBeInTheDocument();
+  });
+
+  it("toggles the sort rules popover open and closed", () => {
+    seed([makeTab()], "tab-1");
+    renderControls();
+
+    fireEvent.click(screen.getByLabelText(/sort rules/i));
+    expect(screen.getByText("Sort Rules")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/sort rules/i));
+    expect(screen.queryByText("Sort Rules")).not.toBeInTheDocument();
+  });
+
+  it("toggles the auto-refresh dropdown open and closed", () => {
+    seed([makeTab()], "tab-1");
+    renderControls();
+
+    fireEvent.click(screen.getByLabelText(/auto-refresh/i));
+    expect(screen.getByText("Off")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/auto-refresh/i));
+    expect(screen.queryByText("Off")).not.toBeInTheDocument();
+  });
+
+  it("toggles the show/hide columns dropdown open and closed", () => {
+    seed([makeTab()], "tab-1");
+    renderControls();
+
+    fireEvent.click(screen.getByLabelText(/toggle columns/i));
+    expect(screen.getByText("Visible columns")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/toggle columns/i));
+    expect(screen.queryByText("Visible columns")).not.toBeInTheDocument();
+  });
+
+  it("toggles the export dropdown open and closed", () => {
+    seed([makeTab()], "tab-1");
+    renderControls();
+
+    fireEvent.click(screen.getByLabelText(/export/i));
+    expect(screen.getByText("JSON")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/export/i));
+    expect(screen.queryByText("JSON")).not.toBeInTheDocument();
   });
 
   it("export dropdown includes the Excel option", () => {

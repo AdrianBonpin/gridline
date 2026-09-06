@@ -99,7 +99,7 @@ export function SchemaMenu({ connectionId, schema, onRefresh }: SchemaMenuProps)
     "w-full bg-surface border border-border rounded-md px-3 py-2 text-sm text-text placeholder:text-text-muted outline-none focus:border-accent/50 transition-colors";
 
   return (
-    <div className="flex items-center gap-1" ref={menuRef}>
+    <div className="relative flex items-center gap-1" ref={menuRef}>
       <button
         aria-label="New schema"
         onClick={() => {
@@ -123,7 +123,7 @@ export function SchemaMenu({ connectionId, schema, onRefresh }: SchemaMenuProps)
       )}
 
       {menuOpen && (
-        <div className="absolute right-0 top-8 mt-1 rounded-xl bg-surface border border-border py-1 z-20 min-w-[160px] shadow-lg">
+        <div className="absolute left-0 top-8 mt-1 rounded-xl bg-surface border border-border py-1 z-20 min-w-[160px] shadow-lg">
           <button
             type="button"
             onClick={() => {

@@ -15,7 +15,7 @@ import queryEditor from "../assets/screenshots/query-editor.png";
 import erDiagram from "../assets/screenshots/er-diagram.png";
 import home from "../assets/screenshots/home.png";
 import dataGrid from "../assets/screenshots/data-grid.png";
-const version = "0.7.14";
+const version = "0.7.15";
 const site = "https://getgridline.app";
 const jsonLd = [
   buildSoftwareApplicationJsonLd({
@@ -58,7 +58,7 @@ const jsonLd = [
   ]),
 ];
 ---
-<Layout title="Gridline — Free Open-Source Database GUI" jsonLd={jsonLd}>
+<Layout title="Gridline, Free Open-Source Database GUI" jsonLd={jsonLd}>
   <script src="/landing.js" defer></script>
 
   <!-- Hero -->
@@ -70,7 +70,7 @@ const jsonLd = [
           the open-source database <span class="text-[var(--accent)]">gui</span>
         </h1>
         <p class="mt-6 text-lg md:text-xl text-[var(--text-muted)] max-w-xl mx-auto">
-          Query, explore, sync, and edit PostgreSQL, MySQL, SQLite, and Redis — with no paywalls, no tab limits, no account required.
+          Query, explore, sync, and edit PostgreSQL, MySQL, SQLite, and Redis, with no paywalls, no tab limits, no account required.
         </p>
         <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
           <a id="download" href="https://git.ranio.xyz/adrianbonpin/gridline/releases" class="primary-btn" data-download>
@@ -176,13 +176,21 @@ const jsonLd = [
   <section id="oss" class="section-animate py-20 md:py-28 text-center">
     <div class="max-w-[800px] mx-auto px-6">
       <p class="font-mono text-xs text-[var(--accent)] uppercase tracking-[0.15em] mb-3">Open Source</p>
-      <h2 class="font-serif text-3xl md:text-5xl mb-5">Built in public.<br />No VC roadmap, no rug pulls.</h2>
+      <h2 class="font-serif text-3xl md:text-5xl mb-5">Free. Open source. Apache 2.0.</h2>
       <p class="text-[var(--text-muted)] mb-8 max-w-md mx-auto">
         Gridline is Apache 2.0 and developed openly. Contributions, issues, and feature requests are welcome.
       </p>
-      <a href="https://git.ranio.xyz/adrianbonpin/gridline" target="_blank" rel="noopener" class="ghost-btn">
-        Star on Gitea
-      </a>
+      <div class="flex flex-wrap items-center justify-center gap-3">
+        <a href="https://git.ranio.xyz/adrianbonpin/gridline" target="_blank" rel="noopener" class="ghost-btn">
+          Star on Gitea
+        </a>
+        <a href="https://ko-fi.com/adrianbonpin" target="_blank" rel="noopener" class="ghost-btn">
+          ☕ Support on Ko-fi
+        </a>
+      </div>
+      <p class="mt-6 text-xs text-[var(--text-muted)] max-w-sm mx-auto">
+        Gridline stays free. No feature is ever behind a payment. Ko-fi is only for those who want to say thanks.
+      </p>
     </div>
   </section>
 

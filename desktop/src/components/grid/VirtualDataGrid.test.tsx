@@ -48,6 +48,21 @@ describe("VirtualDataGrid", () => {
     expect(screen.getByRole("textbox")).toBeInTheDocument();
   });
 
+  it("renders a pending insert row with an 'auto' placeholder and no selection checkbox", () => {
+    const rows = [[null, null], ...mockRows];
+    mockGetTotalSize.mockReturnValue(rows.length * 36);
+    mockGetVirtualItems.mockReturnValue(rows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={rows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" pendingInsertChangeIds={["ch-1"]} />);
+    // Non-editable PK column in the insert row shows "auto" instead of NULL.
+    expect(screen.getByText("auto")).toBeInTheDocument();
+    // The insert row shows a "+" marker instead of a selection checkbox.
+    expect(screen.getByTitle("New row")).toBeInTheDocument();
+    // Real rows still render their checkboxes (2 real rows).
+    expect(screen.getAllByRole("checkbox")).toHaveLength(3); // 1 select-all + 2 row checkboxes
+  });
+
   it("shows staged values passed from the parent + a pending outline", () => {
     mockGetTotalSize.mockReturnValue(mockRows.length * 36);
     mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));

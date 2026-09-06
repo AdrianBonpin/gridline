@@ -13,6 +13,42 @@ describe("CellEditor", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onCommit).toHaveBeenCalledWith("Alicia");
   });
+
+  it("renders a native date input for date columns", () => {
+    render(<CellEditor initialValue="2024-01-15" dataType="date" onCommit={vi.fn()} onCancel={vi.fn()} />);
+    const input = screen.getByDisplayValue("2024-01-15");
+    expect(input).toHaveAttribute("type", "date");
+  });
+
+  it("renders a datetime-local input for timestamp columns", () => {
+    render(<CellEditor initialValue="2024-01-15 10:30:00" dataType="timestamp without time zone" onCommit={vi.fn()} onCancel={vi.fn()} />);
+    const input = screen.getByDisplayValue("2024-01-15T10:30");
+    expect(input).toHaveAttribute("type", "datetime-local");
+  });
+
+  it("commits a datetime-local value in canonical DB format (space separator + seconds)", () => {
+    const onCommit = vi.fn();
+    render(<CellEditor initialValue="2024-01-15 10:30:00" dataType="timestamp without time zone" onCommit={onCommit} onCancel={vi.fn()} />);
+    const input = screen.getByDisplayValue("2024-01-15T10:30");
+    fireEvent.change(input, { target: { value: "2024-01-15T11:45" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onCommit).toHaveBeenCalledWith("2024-01-15 11:45:00");
+  });
+
+  it("renders a boolean select with true/false options", () => {
+    render(<CellEditor initialValue="true" dataType="boolean" onCommit={vi.fn()} onCancel={vi.fn()} />);
+    const select = screen.getByRole("combobox");
+    expect(select).toHaveValue("true");
+    expect(screen.getByRole("option", { name: "true" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "false" })).toBeInTheDocument();
+  });
+
+  it("renders a number input for integer columns", () => {
+    render(<CellEditor initialValue="42" dataType="integer" onCommit={vi.fn()} onCancel={vi.fn()} />);
+    const input = screen.getByRole("spinbutton");
+    expect(input).toHaveAttribute("type", "number");
+    expect(input).toHaveAttribute("step", "1");
+  });
   it("commits null when a nullable cell is emptied", () => {
     const onCommit = vi.fn();
     render(<CellEditor initialValue="Alice" dataType="text" onCommit={onCommit} onCancel={vi.fn()} nullable />);
@@ -40,7 +76,7 @@ describe("CellEditor", () => {
   it("blocks empty commits on non-nullable non-text columns and shows an error", () => {
     const onCommit = vi.fn();
     render(<CellEditor initialValue="42" dataType="integer" onCommit={onCommit} onCancel={vi.fn()} />);
-    const input = screen.getByRole("textbox");
+    const input = screen.getByRole("spinbutton");
     fireEvent.change(input, { target: { value: "" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onCommit).not.toHaveBeenCalled();
@@ -57,7 +93,7 @@ describe("CellEditor", () => {
   it("clears the validation error as soon as the user types again", () => {
     const onCommit = vi.fn();
     render(<CellEditor initialValue="42" dataType="integer" onCommit={onCommit} onCancel={vi.fn()} />);
-    const input = screen.getByRole("textbox");
+    const input = screen.getByRole("spinbutton");
     fireEvent.change(input, { target: { value: "" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(screen.getByTestId("cell-editor-error")).toBeInTheDocument();

@@ -247,6 +247,16 @@ describe("dbViewerStore", () => {
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
   });
 
+  it("updateChange patches a single change in place", () => {
+    useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: null }, description: "x" } as any);
+    const id = useDbViewerStore.getState().changesQueue[0].id;
+    useDbViewerStore.getState().updateChange(id, { newData: { a: "hello" } });
+    const item = useDbViewerStore.getState().changesQueue[0];
+    expect(item.newData).toEqual({ a: "hello" });
+    expect(item.type).toBe("insert");
+    expect(item.description).toBe("x");
+  });
+
   it("clearChanges empties the queue", () => {
     useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 }, description: "x" } as any);
     useDbViewerStore.getState().addChange({ type: "delete", schema: "public", table: "t", primaryKey: { id: 1 }, description: "y" } as any);

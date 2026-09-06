@@ -6,6 +6,16 @@ export interface ChangelogEntry {
 
 export const changelogEntries: ChangelogEntry[] = [
   {
+    version: "0.7.15",
+    date: "2026-09-08",
+    highlights: [
+      "Insert Row now works — it adds an editable pending row at the top of the data grid (with a visible accent outline), and committing inserts only the columns you filled in so serial/identity/generated defaults apply.",
+      "Smart cell editors — date/time/datetime pickers, a boolean select, and number inputs for the matching column types (enums and foreign keys already had dropdowns), applied to both new rows and inline editing.",
+      "Landing page adds a support channel: coffee via Ko-fi (ko-fi.com/adrianbonpin), always optional, never gates a feature.",
+      "Landing page copy refreshed: em dashes dropped, OSS section simplified, FAQ added for how the project is funded.",
+    ],
+  },
+  {
     version: "0.7.14",
     date: "2026-09-04",
     highlights: [

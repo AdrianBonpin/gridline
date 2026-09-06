@@ -566,6 +566,14 @@ pub fn build_pg_insert_sql(
     table: &str,
     columns: &[(String, serde_json::Value)],
 ) -> (String, Vec<serde_json::Value>) {
+    // A table with no editable columns (e.g. only a serial/identity PK) inserts
+    // with all defaults — `INSERT ... () VALUES ()` is invalid SQL.
+    if columns.is_empty() {
+        return (
+            format!("INSERT INTO \"{}\".\"{}\" DEFAULT VALUES", schema, table),
+            vec![],
+        );
+    }
     let cols: Vec<String> = columns.iter().map(|(c, _)| format!("\"{}\"", c)).collect();
     let mut params: Vec<serde_json::Value> = Vec::new();
     let placeholders: Vec<String> = columns
@@ -3100,6 +3108,15 @@ mod tests {
             "INSERT SQL must contain 'VALUES'; got: {}",
             sql
         );
+    }
+
+    /// A table with no editable columns (only a serial/identity PK) must insert
+    /// with `DEFAULT VALUES`, not the invalid `INSERT ... () VALUES ()`.
+    #[test]
+    fn build_pg_insert_sql_empty_columns_uses_default_values() {
+        let (sql, params) = build_pg_insert_sql("public", "t", &[]);
+        assert_eq!(sql, "INSERT INTO \"public\".\"t\" DEFAULT VALUES");
+        assert!(params.is_empty());
     }
 
     /// Verify that `get_sqlite_ddl` returns the stored CREATE TABLE statement

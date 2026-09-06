@@ -60,7 +60,7 @@
     const keepLabel = downloadBtn.hasAttribute("data-download-label");
 
     const releasesUrl = "https://git.ranio.xyz/adrianbonpin/gridline/releases";
-    const version = "0.7.14";
+    const version = "0.7.15";
 
     if (isMobile) {
       downloadBtn.href = releasesUrl;

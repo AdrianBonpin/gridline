@@ -45,6 +45,10 @@ describe("buildChangeSql", () => {
     const item = { id: "1", type: "insert", schema: "public", table: "t", newData: { a: 1, b: "x" } } as any;
     expect(buildChangeSql(item)).toBe('INSERT INTO "public"."t" ("a", "b") VALUES (1, \'x\')');
   });
+  it("insert with no columns falls back to DEFAULT VALUES", () => {
+    const item = { id: "1", type: "insert", schema: "public", table: "t", newData: {} } as any;
+    expect(buildChangeSql(item)).toBe('INSERT INTO "public"."t" DEFAULT VALUES');
+  });
   it("update", () => {
     const item = { id: "1", type: "update", schema: "public", table: "t", primaryKey: { id: 5 }, newData: { name: "O'Brien" } } as any;
     expect(buildChangeSql(item)).toBe('UPDATE "public"."t" SET "name" = \'O\'\'Brien\' WHERE "id" = 5');

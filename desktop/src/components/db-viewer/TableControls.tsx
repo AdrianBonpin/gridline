@@ -6,7 +6,6 @@ import {
 } from "lucide-react";
 import { useDbViewerStore, type FilterRule, type SortRule } from "../../stores/dbViewerStore";
 import { useNotificationStore } from "../../stores/notificationStore";
-import { FilterBuilder } from "./FilterBuilder";
 import { Tooltip } from "../ui/Tooltip";
 import { exportData } from "../../lib/exportData";
 import type { ColumnInfo } from "../../lib/types";
@@ -49,22 +48,28 @@ function DropdownMenu({
   open,
   setOpen,
   align,
+  wrapRef,
   children,
 }: {
   open: boolean;
   setOpen: (v: boolean) => void;
   align?: "left" | "right";
+  /** When provided, outside-click detection uses this wrapper (which should
+   * contain both the toggle button and the menu) so the button never fights
+   * the outside-click handler. */
+  wrapRef?: React.RefObject<HTMLDivElement | null>;
   children: React.ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const close = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const container = wrapRef?.current ?? ref.current;
+      if (container && !container.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
-  }, [open, setOpen]);
+  }, [open, setOpen, wrapRef]);
 
   if (!open) return null;
   return (
@@ -79,28 +84,84 @@ function DropdownMenu({
   );
 }
 
+/**
+ * Debounced free-text input for filter values. The value is committed to the
+ * rules (and thus triggers a server-side refetch) only after the user stops
+ * typing for `DEBOUNCE_MS`. Without this, every keystroke fires a query and
+ * the in-flight guard in `fetchData` silently drops intermediate fetches, so
+ * the final filter value can end up not being applied.
+ */
+const FILTER_DEBOUNCE_MS = 400;
+
+function DebouncedValueInput({
+  value,
+  onCommit,
+  placeholder,
+}: {
+  value: string;
+  onCommit: (v: string) => void;
+  placeholder?: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Keep the draft in sync when the committed value changes externally
+  // (e.g. a rule is replaced or removed while this input is mounted).
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value;
+    setDraft(v);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => onCommit(v), FILTER_DEBOUNCE_MS);
+  };
+
+  return (
+    <input
+      type="text"
+      value={draft}
+      onChange={handleChange}
+      placeholder={placeholder}
+      className="flex-1 rounded border border-border bg-surface text-xs px-1.5 py-1 text-text min-w-0"
+    />
+  );
+}
+
 function FilterModal({
   columns,
   rules,
   onChange,
   open,
   setOpen,
+  wrapRef,
 }: {
   columns: ColumnInfo[];
   rules: FilterRule[];
   onChange: (rules: FilterRule[]) => void;
   open: boolean;
   setOpen: (v: boolean) => void;
+  wrapRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
+  // Close on outside click, but treat the toggle button (which lives inside
+  // the same wrapper) as part of the modal so it never fights the toggle.
   useEffect(() => {
     if (!open) return;
     const close = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
     };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
-  }, [open, setOpen]);
+  }, [open, setOpen, wrapRef]);
 
   if (!open) return null;
 
@@ -116,17 +177,13 @@ function FilterModal({
     onChange(rules.map((r) => (r.id === id ? { ...r, ...patch } : r)));
 
   return (
-    <div
-      ref={ref}
-      className="absolute top-full left-0 mt-1 z-30 w-96 rounded-lg bg-surface border border-border shadow-lg p-3"
-    >
+    <div className="absolute top-full left-0 mt-1 z-30 w-96 rounded-lg bg-surface border border-border shadow-lg p-3">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-text">Column Filters</span>
         <button type="button" onClick={() => setOpen(false)} className="text-text-muted hover:text-text cursor-pointer">
           <X size={14} />
         </button>
       </div>
-      <FilterBuilder columns={columns} rules={rules} onChange={onChange} />
       {rules.map((rule) => (
         <div key={rule.id} className="flex items-center gap-1.5 mb-1.5">
           <select
@@ -152,12 +209,10 @@ function FilterModal({
             <option value="notnull">not null</option>
           </select>
           {rule.operator !== "null" && rule.operator !== "notnull" && (
-            <input
-              type="text"
+            <DebouncedValueInput
               value={rule.value}
-              onChange={(e) => updateRule(rule.id, { value: e.target.value })}
+              onCommit={(v) => updateRule(rule.id, { value: v })}
               placeholder="value"
-              className="flex-1 rounded border border-border bg-surface text-xs px-1.5 py-1 text-text min-w-0"
             />
           )}
           <button type="button" onClick={() => removeRule(rule.id)} className="text-text-muted hover:text-red-400 shrink-0 cursor-pointer">
@@ -182,22 +237,27 @@ function SortModal({
   onChange,
   open,
   setOpen,
+  wrapRef,
 }: {
   columns: ColumnInfo[];
   rules: SortRule[];
   onChange: (rules: SortRule[]) => void;
   open: boolean;
   setOpen: (v: boolean) => void;
+  wrapRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
+  // Close on outside click, but treat the toggle button (which lives inside
+  // the same wrapper) as part of the modal so it never fights the toggle.
   useEffect(() => {
     if (!open) return;
     const close = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
     };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
-  }, [open, setOpen]);
+  }, [open, setOpen, wrapRef]);
 
   if (!open) return null;
 
@@ -213,10 +273,7 @@ function SortModal({
     onChange(rules.map((r) => (r.id === id ? { ...r, ...patch } : r)));
 
   return (
-    <div
-      ref={ref}
-      className="absolute top-full left-0 mt-1 z-30 w-72 rounded-lg bg-surface border border-border shadow-lg p-3"
-    >
+    <div className="absolute top-full left-0 mt-1 z-30 w-72 rounded-lg bg-surface border border-border shadow-lg p-3">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-text">Sort Rules</span>
         <button type="button" onClick={() => setOpen(false)} className="text-text-muted hover:text-text cursor-pointer">
@@ -272,6 +329,7 @@ function BulkActionsDropdown({
   onClearSelection: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const addChange = useDbViewerStore((s) => s.addChange);
 
   const copyToClipboard = (text: string) => {
@@ -338,7 +396,7 @@ function BulkActionsDropdown({
   };
 
   return (
-    <div className="relative">
+    <div className="relative" ref={wrapRef}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -347,7 +405,7 @@ function BulkActionsDropdown({
         <span className="text-xs font-medium">Actions</span>
         <ChevronDown size={12} />
       </button>
-      <DropdownMenu open={open} setOpen={setOpen} align="right">
+      <DropdownMenu open={open} setOpen={setOpen} align="right" wrapRef={wrapRef}>
         <button
           type="button"
           onClick={handleCopyJSON}
@@ -445,11 +503,16 @@ export function TableControls({
 
   // local state
   const [filterOpen, setFilterOpen] = useState(false);
+  const filterWrapRef = useRef<HTMLDivElement>(null);
   const [sortOpen, setSortOpen] = useState(false);
+  const sortWrapRef = useRef<HTMLDivElement>(null);
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
+  const columnMenuWrapRef = useRef<HTMLDivElement>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const exportWrapRef = useRef<HTMLDivElement>(null);
   const [autoRefresh, setAutoRefresh] = useState(defaultRefreshRate);
   const [autoRefreshOpen, setAutoRefreshOpen] = useState(false);
+  const autoRefreshWrapRef = useRef<HTMLDivElement>(null);
 
   // Auto-refresh: a self-restarting timer that only counts down while the tab
   // is idle. Fires a refresh, waits for it to complete (loading → false),
@@ -484,8 +547,14 @@ export function TableControls({
   };
 
   const handleInsertRow = () => {
+    // Build the insert template from editable columns only. PK / generated /
+    // identity columns are omitted so their defaults (serial, identity,
+    // generated) apply on commit — an explicit NULL would bypass them and
+    // fail with a NOT NULL violation.
     const newData: Record<string, unknown> = {};
-    columns.forEach((c) => { newData[c.name] = null; });
+    columns.forEach((c) => {
+      if (c.editable && !c.is_pk && !c.is_generated) newData[c.name] = null;
+    });
     addChange({
       type: "insert",
       schema,
@@ -545,7 +614,7 @@ export function TableControls({
   );
 
   const exportControl = (
-    <div className="relative">
+    <div className="relative" ref={exportWrapRef}>
       <Tooltip content="Export" side="bottom">
         <button
           type="button"
@@ -556,7 +625,7 @@ export function TableControls({
           <Download size={14} />
         </button>
       </Tooltip>
-      <DropdownMenu open={exportOpen} setOpen={setExportOpen}>
+      <DropdownMenu open={exportOpen} setOpen={setExportOpen} wrapRef={exportWrapRef}>
         {EXPORT_FORMATS.map((fmt) => (
           <button
             key={fmt.ext}
@@ -572,7 +641,7 @@ export function TableControls({
   );
 
   const columnsControl = (
-    <div className="relative">
+    <div className="relative" ref={columnMenuWrapRef}>
       <Tooltip content="Show/hide columns" side="bottom">
         <button
           type="button"
@@ -587,6 +656,7 @@ export function TableControls({
         open={columnMenuOpen}
         setOpen={setColumnMenuOpen}
         align={isQuery ? "left" : "right"}
+        wrapRef={columnMenuWrapRef}
       >
         <div className="px-2 py-1 text-[10px] text-text-muted uppercase tracking-wider">
           Visible columns
@@ -658,7 +728,7 @@ export function TableControls({
             {refreshControl}
 
             {/* Auto-refresh */}
-            <div className="relative">
+            <div className="relative" ref={autoRefreshWrapRef}>
               <Tooltip content={`Auto-refresh: ${autoRefresh > 0 ? `${autoRefresh / 1000}s` : "Off"}`} side="bottom">
                 <button
                   type="button"
@@ -672,7 +742,7 @@ export function TableControls({
                   {autoRefresh > 0 && <span className="text-[10px] font-medium">{autoRefresh / 1000}s</span>}
                 </button>
               </Tooltip>
-              <DropdownMenu open={autoRefreshOpen} setOpen={setAutoRefreshOpen}>
+              <DropdownMenu open={autoRefreshOpen} setOpen={setAutoRefreshOpen} wrapRef={autoRefreshWrapRef}>
                 {AUTO_REFRESH_OPTIONS.map((opt) => (
                   <button
                     key={opt.value}
@@ -692,7 +762,7 @@ export function TableControls({
             <div className="w-px h-4 bg-border mx-1" />
 
             {/* Filter */}
-            <div className="relative">
+            <div className="relative" ref={filterWrapRef}>
               <Tooltip content="Column filters" side="bottom">
                 <button
                   type="button"
@@ -716,11 +786,12 @@ export function TableControls({
                 onChange={onFilterChange}
                 open={filterOpen}
                 setOpen={setFilterOpen}
+                wrapRef={filterWrapRef}
               />
             </div>
 
             {/* Sort */}
-            <div className="relative">
+            <div className="relative" ref={sortWrapRef}>
               <Tooltip content="Sort rules" side="bottom">
                 <button
                   type="button"
@@ -744,6 +815,7 @@ export function TableControls({
                 onChange={onSortChange}
                 open={sortOpen}
                 setOpen={setSortOpen}
+                wrapRef={sortWrapRef}
               />
             </div>
 

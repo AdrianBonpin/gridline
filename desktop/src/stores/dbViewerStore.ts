@@ -167,6 +167,7 @@ interface DbViewerState {
   }) => void;
   cancelChange: (changeId: string) => void;
   removeChange: (changeId: string) => void;
+  updateChange: (changeId: string, patch: Partial<QueueItem>) => void;
   clearChanges: () => void;
   markChangeCommitted: (changeId: string) => void;
   markChangeFailed: (changeId: string, error: string) => void;
@@ -545,6 +546,13 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   removeChange: (changeId) =>
     set((state) => ({
       changesQueue: state.changesQueue.filter((c) => c.id !== changeId),
+    })),
+
+  updateChange: (changeId, patch) =>
+    set((state) => ({
+      changesQueue: state.changesQueue.map((c) =>
+        c.id === changeId ? { ...c, ...patch } : c,
+      ),
     })),
 
   clearChanges: () => set({ changesQueue: [] }),

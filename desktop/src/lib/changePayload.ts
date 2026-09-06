@@ -33,6 +33,7 @@ export function buildChangeSql(item: QueueItem): string {
     case "insert": {
       const data = item.newData ?? {};
       const cols = Object.keys(data);
+      if (cols.length === 0) return `INSERT INTO ${t} DEFAULT VALUES`;
       return `INSERT INTO ${t} (${cols.map(q).join(", ")}) VALUES (${cols.map((c) => lit(data[c])).join(", ")})`;
     }
     case "update": {

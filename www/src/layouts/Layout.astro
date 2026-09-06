@@ -13,7 +13,7 @@ export interface Props {
 
 const {
   title,
-  description = "Gridline — the open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis. No paywalls, no tab limits, fully open source.",
+  description = "Gridline, the open-source database GUI for PostgreSQL, MySQL, SQLite, and Redis. No paywalls, no tab limits, fully open source.",
   ogImage = "/og.png",
   noIndex = false,
   jsonLd = [],
@@ -51,7 +51,7 @@ const isProd = import.meta.env.PROD;
     <meta property="og:image" content={ogImageURL} />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="Gridline — the open-source database GUI" />
+    <meta property="og:image:alt" content="Gridline, the open-source database GUI" />
     <meta property="og:site_name" content="Gridline" />
     <meta property="og:locale" content="en_US" />
 
@@ -59,7 +59,7 @@ const isProd = import.meta.env.PROD;
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImageURL} />
-    <meta name="twitter:image:alt" content="Gridline — the open-source database GUI" />
+    <meta name="twitter:image:alt" content="Gridline, the open-source database GUI" />
     <meta name="twitter:site" content="@AdrianBonpin" />
     <meta name="twitter:creator" content="@AdrianBonpin" />
 
@@ -149,12 +149,13 @@ const isProd = import.meta.env.PROD;
             <ul class="space-y-2 text-sm text-[var(--text-muted)]">
               <li><a href="https://x.com/AdrianBonpin" target="_blank" rel="noopener" class="footer-link">X / Twitter</a></li>
               <li><a href="mailto:adrianbonpin@gmail.com" class="footer-link">Email</a></li>
+              <li><a href="https://ko-fi.com/adrianbonpin" target="_blank" rel="noopener" class="footer-link">Support on Ko-fi ☕</a></li>
             </ul>
           </div>
         </div>
         <div class="mt-12 pt-8 border-t border-[var(--border)] flex flex-col md:flex-row justify-between gap-3 text-xs text-[var(--text-muted)] font-mono">
           <span>© 2026 Gridline contributors · Apache 2.0</span>
-          <span>Made with care for databases.</span>
+          <span>Coffee-powered.</span>
         </div>
       </div>
     </footer>

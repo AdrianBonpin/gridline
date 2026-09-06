@@ -45,6 +45,10 @@ interface VirtualDataGridProps {
   stagedValues?: Record<string, string | null>;
   /** Keys of cells with a PENDING (not yet committed) update → drives the pulsing orange outline. */
   pendingKeys?: Record<string, boolean>;
+  /** Ordered change ids of pending insert rows prepended to `rows`. */
+  pendingInsertChangeIds?: string[];
+  /** Stage a cell edit on a pending insert row (updates the insert's newData). */
+  onStageInsertCell?: (changeId: string, column: string, value: string | null) => void;
 }
 
 const ROW_HEIGHT = 36;
@@ -74,20 +78,24 @@ export function VirtualDataGrid({
   fkPlaceholders,
   stagedValues,
   pendingKeys,
+  pendingInsertChangeIds,
+  onStageInsertCell,
 }: VirtualDataGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
   const visibleColumns = columns.filter((c) => !hiddenColumns.has(c.name));
   const hasColumns = columns.length > 0;
-  const allSelected = rows.length > 0 && selectedRows.size === rows.length;
+  const pendingInsertCount = pendingInsertChangeIds?.length ?? 0;
+  const realRowCount = rows.length - pendingInsertCount;
+  const allSelected = realRowCount > 0 && selectedRows.size === realRowCount;
   const selectAllRef = useRef<HTMLInputElement>(null);
 
   // Indeterminate state for partial selection
   useEffect(() => {
     if (selectAllRef.current) {
-      selectAllRef.current.indeterminate = selectedRows.size > 0 && selectedRows.size < rows.length;
+      selectAllRef.current.indeterminate = selectedRows.size > 0 && selectedRows.size < realRowCount;
     }
-  }, [selectedRows.size, rows.length]);
+  }, [selectedRows.size, realRowCount]);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -282,6 +290,8 @@ export function VirtualDataGrid({
       const isJson = !isNull && (col.data_type === "jsonb" || col.data_type === "json");
       const jp = isJson ? jsonPreview(displayCell) : { label: "", isJson: false };
       const editable = isCellEditable(col, tabType, dbType, readOnly);
+      const isInsertRow = rowIndex < pendingInsertCount;
+      const insertChangeId = isInsertRow ? pendingInsertChangeIds?.[rowIndex] : undefined;
       const isActive = activeCell?.row === rowIndex && activeCell?.col === colIndex;
       const isEditing = editingCell?.row === rowIndex && editingCell?.col === colIndex;
       const isPending =
@@ -307,23 +317,27 @@ export function VirtualDataGrid({
         // revert/display stays correct even after repeated edits of the same cell.
         const dbValue = ci >= 0 ? row[ci] : undefined;
         if (committed !== (dbValue === null || dbValue === undefined ? null : dbValue)) {
-          const locator = getLocator?.(row) ?? {};
-          onStageEdit?.(
-            cellToUpdateChange({
-              schema,
-              table,
-              primaryKey: locator,
-              oldData: { [col.name]: dbValue },
-              newData: { [col.name]: committed },
-            }) as {
-              type: "update";
-              schema: string;
-              table: string;
-              primaryKey: Record<string, unknown>;
-              oldData: Record<string, unknown>;
-              newData: Record<string, unknown>;
-            },
-          );
+          if (isInsertRow && insertChangeId) {
+            onStageInsertCell?.(insertChangeId, col.name, committed);
+          } else {
+            const locator = getLocator?.(row) ?? {};
+            onStageEdit?.(
+              cellToUpdateChange({
+                schema,
+                table,
+                primaryKey: locator,
+                oldData: { [col.name]: dbValue },
+                newData: { [col.name]: committed },
+              }) as {
+                type: "update";
+                schema: string;
+                table: string;
+                primaryKey: Record<string, unknown>;
+                oldData: Record<string, unknown>;
+                newData: Record<string, unknown>;
+              },
+            );
+          }
         }
         setPendingCellKey(cellKey);
         setEditingCell(null);
@@ -355,13 +369,15 @@ export function VirtualDataGrid({
           }
           style={{ width: getWidth(col.name), flexShrink: 0 }}
           title={
-            isNull
-              ? "NULL"
-              : isFk
-                ? `FK → ${col.fk_ref![0]}.${col.fk_ref![1]}: ${String(displayCell)}`
-                : isJson
-                  ? "Click to view JSON"
-                  : String(displayCell)
+            isInsertRow && !editable
+              ? "auto (default)"
+              : isNull
+                ? "NULL"
+                : isFk
+                  ? `FK → ${col.fk_ref![0]}.${col.fk_ref![1]}: ${String(displayCell)}`
+                  : isJson
+                    ? "Click to view JSON"
+                    : String(displayCell)
           }
           onClick={(e) => {
             setActiveCell({ row: rowIndex, col: colIndex });
@@ -390,6 +406,8 @@ export function VirtualDataGrid({
                 onCancel={() => setEditingCell(null)}
               />
             </div>
+          ) : isInsertRow && !editable ? (
+            <span className="italic text-text-muted/60">auto</span>
           ) : isNull ? (
             <span className="italic text-text-muted">NULL</span>
           ) : isJson ? (
@@ -420,7 +438,7 @@ export function VirtualDataGrid({
         </div>
       );
     },
-    [activeCell, columns, dbType, editingCell, enumValues, fkOptions, fkPlaceholders, getLocator, handleFkClick, onStageEdit, schema, table, tabType, getWidth, pendingCell, stagedValues, pendingKeys, pendingCellKey],
+    [activeCell, columns, dbType, editingCell, enumValues, fkOptions, fkPlaceholders, getLocator, handleFkClick, onStageEdit, onStageInsertCell, schema, table, tabType, getWidth, pendingCell, stagedValues, pendingKeys, pendingCellKey, pendingInsertCount, pendingInsertChangeIds],
   );
 
   // ── context menu helpers ──────────────────────────────
@@ -446,6 +464,11 @@ export function VirtualDataGrid({
       const ci = columns.findIndex((c) => c.name === column.name);
       const value = rows[row]?.[ci];
       if (value === null || value === undefined) return;
+      if (row < pendingInsertCount) {
+        const changeId = pendingInsertChangeIds?.[row];
+        if (changeId) onStageInsertCell?.(changeId, column.name, null);
+        return;
+      }
       const locator = getLocator?.(rows[row]) ?? {};
       onStageEdit?.(
         cellToUpdateChange({
@@ -464,7 +487,7 @@ export function VirtualDataGrid({
         },
       );
     },
-    [columns, dbType, getLocator, onStageEdit, readOnly, rows, schema, table, tabType, visibleColumns],
+    [columns, dbType, getLocator, onStageEdit, onStageInsertCell, readOnly, rows, schema, table, tabType, visibleColumns, pendingInsertCount, pendingInsertChangeIds],
   );
 
   return (
@@ -528,15 +551,18 @@ export function VirtualDataGrid({
           }}
         >
           {virtualizer.getVirtualItems().map((virtualRow) => {
-            const row = rows[virtualRow.index];
-            const isSelected = selectedRows.has(virtualRow.index);
+            const gridIndex = virtualRow.index;
+            const isInsertRow = gridIndex < pendingInsertCount;
+            const realIndex = isInsertRow ? -1 : gridIndex - pendingInsertCount;
+            const row = rows[gridIndex];
+            const isSelected = !isInsertRow && selectedRows.has(realIndex);
             return (
               <div
                 key={virtualRow.key}
-                data-index={virtualRow.index}
+                data-index={gridIndex}
                 className={`flex items-center border-b border-border ${
                   isSelected ? "bg-accent/5" : ""
-                } hover:bg-surface/50`}
+                } ${isInsertRow ? "bg-accent/[0.03] ring-1 ring-inset ring-accent/60" : ""} hover:bg-surface/50`}
                 style={{
                   position: "absolute",
                   top: 0,
@@ -546,20 +572,28 @@ export function VirtualDataGrid({
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
               >
-                {hasColumns && (
-                  <div
-                    style={{ width: 40, minWidth: 40 }}
-                    className="flex items-center justify-center border-r border-border self-stretch"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => onToggleRow(virtualRow.index)}
-                      className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
-                    />
-                  </div>
-                )}
-                {visibleColumns.map((col, i) => renderCell(col, row, virtualRow.index, i))}
+                {hasColumns &&
+                  (isInsertRow ? (
+                    <div
+                      style={{ width: 40, minWidth: 40 }}
+                      className="flex items-center justify-center border-r border-border self-stretch"
+                    >
+                      <span className="text-[10px] text-accent/70" title="New row">+</span>
+                    </div>
+                  ) : (
+                    <div
+                      style={{ width: 40, minWidth: 40 }}
+                      className="flex items-center justify-center border-r border-border self-stretch"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => onToggleRow(realIndex)}
+                        className="w-3.5 h-3.5 rounded border-border cursor-pointer accent-accent"
+                      />
+                    </div>
+                  ))}
+                {visibleColumns.map((col, i) => renderCell(col, row, gridIndex, i))}
               </div>
             );
           })}
@@ -601,6 +635,7 @@ export function VirtualDataGrid({
             isJson={ctxCol.data_type === "jsonb" || ctxCol.data_type === "json"}
             isFk={ctxCol.is_fk && ctxCol.fk_ref != null}
             nullable={ctxCol.is_nullable}
+            isInsertRow={ctxMenu.row < pendingInsertCount}
             onCopy={() => {
               void copyCellValue(ctxMenu.row, ctxMenu.col);
               setCtxMenu(null);
@@ -610,11 +645,11 @@ export function VirtualDataGrid({
               setCtxMenu(null);
             }}
             onViewRow={() => {
-              onOpenRowDetail?.(ctxMenu.row);
+              onOpenRowDetail?.(ctxMenu.row - pendingInsertCount);
               setCtxMenu(null);
             }}
             onSelectRow={() => {
-              onToggleRow(ctxMenu.row);
+              onToggleRow(ctxMenu.row - pendingInsertCount);
               setCtxMenu(null);
             }}
             onEdit={() => {

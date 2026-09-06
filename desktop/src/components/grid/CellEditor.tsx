@@ -30,6 +30,45 @@ const controlClass =
 /** Types that tolerate an empty string when NOT NULL ('' is a valid value). */
 const TEXT_LIKE = ["char", "text", "uuid", "bit"];
 
+/** Map a column data type to a "smart" input kind. */
+type InputKind = "date" | "datetime" | "time" | "boolean" | "number" | "text";
+
+const NUMERIC_TYPES = new Set([
+  "integer", "bigint", "smallint", "int", "int2", "int4", "int8",
+  "tinyint", "mediumint", "numeric", "decimal", "real", "double",
+  "double precision", "float", "float4", "float8", "money",
+  "serial", "bigserial", "smallserial",
+]);
+
+const INTEGER_TYPES = new Set([
+  "integer", "bigint", "smallint", "int", "int2", "int4", "int8",
+  "tinyint", "mediumint", "serial", "bigserial", "smallserial",
+]);
+
+function inputKindForType(dataType: string): InputKind {
+  const t = dataType.toLowerCase().trim();
+  if (t === "date") return "date";
+  if (t.includes("timestamp") || t === "datetime") return "datetime";
+  if (t === "time" || t === "timetz" || t.startsWith("time ")) return "time";
+  if (t === "boolean" || t === "bool") return "boolean";
+  if (NUMERIC_TYPES.has(t)) return "number";
+  return "text";
+}
+
+/** Convert a DB timestamp ("2024-01-15 10:30:00") to datetime-local ("2024-01-15T10:30"). */
+function toDatetimeLocal(v: string): string {
+  const m = v.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+  return m ? `${m[1]}T${m[2]}` : v;
+}
+
+/** Convert a datetime-local value ("2024-01-15T10:30") to the canonical DB
+ * format ("2024-01-15 10:30:00") accepted by both PostgreSQL and MySQL. */
+function fromDatetimeLocal(v: string): string {
+  const m = v.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::(\d{2}))?/);
+  if (m) return `${m[1]} ${m[2]}:${m[3] ?? "00"}`;
+  return v;
+}
+
 export function CellEditor({
   initialValue,
   dataType,
@@ -40,7 +79,11 @@ export function CellEditor({
   onCommit,
   onCancel,
 }: CellEditorProps) {
-  const [value, setValue] = useState(initialValue);
+  const kind = inputKindForType(dataType);
+  const isInteger = INTEGER_TYPES.has(dataType.toLowerCase().trim());
+  const [value, setValue] = useState(
+    kind === "datetime" ? toDatetimeLocal(initialValue) : initialValue,
+  );
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -72,6 +115,8 @@ export function CellEditor({
 
   useEffect(() => {
     if (enumValues && enumValues.length > 0) {
+      enumRef.current?.focus();
+    } else if (kind === "boolean") {
       enumRef.current?.focus();
     } else if (fkOptions && fkOptions.length > 0) {
       searchRef.current?.focus();
@@ -253,6 +298,63 @@ export function CellEditor({
             </div>,
             document.body,
           )}
+        {errorBubble}
+      </div>
+    );
+  }
+
+  if (kind === "boolean") {
+    return (
+      <div ref={rootRef} className={`flex h-full w-full items-center gap-1.5 px-1.5 ${error ? "ring-1 ring-inset ring-red-500/60" : ""}`}>
+        <select
+          ref={enumRef}
+          className={controlClass}
+          value={initialValue}
+          onChange={(e) => commitRaw(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+        >
+          <option value="">{nullable ? "NULL" : "—"}</option>
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+        {errorBubble}
+      </div>
+    );
+  }
+
+  if (kind === "date" || kind === "datetime" || kind === "time" || kind === "number") {
+    const inputType = kind === "datetime" ? "datetime-local" : kind;
+    return (
+      <div
+        ref={rootRef}
+        data-testid="cell-editor"
+        className={`flex h-full w-full items-center gap-2 ${error ? "ring-1 ring-inset ring-red-500/60" : ""}`}
+      >
+        <input
+          ref={ref as any}
+          type={inputType}
+          className={inputClass}
+          value={value}
+          step={kind === "number" ? (isInteger ? "1" : "any") : undefined}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commitRaw(kind === "datetime" ? fromDatetimeLocal(value) : value);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+        />
         {errorBubble}
       </div>
     );

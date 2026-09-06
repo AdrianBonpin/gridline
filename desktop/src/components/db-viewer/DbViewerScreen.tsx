@@ -231,6 +231,7 @@ export function DbViewerScreen({
     const changesQueue = useDbViewerStore((s) => s.changesQueue);
     const tables = useDbViewerStore((s) => s.tables);
     const stageCellEdit = useDbViewerStore((s) => s.stageCellEdit);
+    const updateChange = useDbViewerStore((s) => s.updateChange);
 
     const isRunning = activeTab?.tabType === "query" && !!activeTab?.loading;
 
@@ -337,6 +338,19 @@ export function DbViewerScreen({
             stageCellEdit({ tabId: activeTab.id, ...rest });
         },
         [activeTab, stageCellEdit],
+    );
+
+    const handleStageInsertCell = useCallback(
+        (changeId: string, column: string, value: string | null) => {
+            const change = useDbViewerStore
+                .getState()
+                .changesQueue.find((c) => c.id === changeId);
+            if (!change) return;
+            const newData = { ...(change.newData ?? {}) };
+            newData[column] = value;
+            updateChange(changeId, { newData });
+        },
+        [updateChange],
     );
 
     const handleOpenRowDetail = useCallback((rowIndex: number) => {
@@ -832,6 +846,24 @@ export function DbViewerScreen({
     // Data is already filtered and sorted server-side; no client-side transform needed.
     const processedRows = rawRows;
 
+    // Pending insert rows (from the changes queue) are prepended to the grid as
+    // editable rows. Only pending inserts for the active table tab count.
+    const pendingInserts =
+        activeTab?.tabType === "table"
+            ? changesQueue.filter(
+                  (c) =>
+                      c.type === "insert" &&
+                      c.status === "pending" &&
+                      c.schema === activeTab.schema &&
+                      c.table === activeTab.table,
+              )
+            : [];
+    const pendingInsertChangeIds = pendingInserts.map((c) => c.id);
+    const pendingInsertRows = pendingInserts.map((c) =>
+        columns.map((col) => c.newData?.[col.name] ?? null),
+    );
+    const displayRows = [...pendingInsertRows, ...processedRows];
+
     const onPanelResizeStart = useCallback(
         (e: React.MouseEvent) => {
             e.preventDefault();
@@ -1184,7 +1216,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                     connectionId={connectionId}
                                                     schema={activeSchema}
                                                     table={activeTable}
-                                                    rows={processedRows}
+                                                    rows={displayRows}
                                                     columns={columns}
                                                     hiddenColumns={hiddenColumns}
                                                     selectedRows={selectedRows}
@@ -1192,6 +1224,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                     tabType={activeTab?.tabType ?? "table"}
                                                     getLocator={getLocator}
                                                     onStageEdit={readOnlyTable ? undefined : handleStageEdit}
+                                                    onStageInsertCell={readOnlyTable ? undefined : handleStageInsertCell}
                                                     onOpenRowDetail={handleOpenRowDetail}
                                                     readOnly={readOnlyTable}
                                                     enumValues={editorOptions?.enums}
@@ -1199,6 +1232,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                     fkPlaceholders={editorOptions?.fkPlaceholders}
                                                     stagedValues={stagedValues}
                                                     pendingKeys={pendingKeys}
+                                                    pendingInsertChangeIds={pendingInsertChangeIds}
                                                     onToggleRow={(rowIndex) => {
                                                         setSelectedRows(
                                                             (prev) => {
@@ -1348,7 +1382,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 connectionId={connectionId}
                                                 schema={activeSchema}
                                                 table={activeTable}
-                                                rows={processedRows}
+                                                rows={displayRows}
                                                 columns={columns}
                                                 hiddenColumns={hiddenColumns}
                                                 selectedRows={selectedRows}
@@ -1356,6 +1390,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 tabType={activeTab?.tabType ?? "table"}
                                                 getLocator={getLocator}
                                                 onStageEdit={readOnlyTable ? undefined : handleStageEdit}
+                                                onStageInsertCell={readOnlyTable ? undefined : handleStageInsertCell}
                                                 onOpenRowDetail={handleOpenRowDetail}
                                                 readOnly={readOnlyTable}
                                                 enumValues={editorOptions?.enums}
@@ -1363,6 +1398,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 fkPlaceholders={editorOptions?.fkPlaceholders}
                                                 stagedValues={stagedValues}
                                                 pendingKeys={pendingKeys}
+                                                pendingInsertChangeIds={pendingInsertChangeIds}
                                                 onToggleRow={(rowIndex) => {
                                                     setSelectedRows((prev) => {
                                                         const next = new Set(
