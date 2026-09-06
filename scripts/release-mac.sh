@@ -7,13 +7,12 @@
 #
 # Usage:
 #   TAG=v0.7.11 ./scripts/release-mac.sh
-#   (optionally set GITEA_TOKEN env var to override token lookup)
 #
 # The release is keyed by tag. The Linux/Windows job creates it on the first
 # tag push; this script finds it (creating it only if it somehow doesn't exist)
 # and attaches the two DMGs: Gridline_<ver>_aarch64.dmg and Gridline_<ver>_x64.dmg
 #
-# Token: reads $GITEA_TOKEN, else tries the tea CLI config, else prompts.
+# Auth: uses the `tea` CLI (OAuth token, auto-refreshed).
 
 set -euo pipefail
 
@@ -28,40 +27,15 @@ if [ -z "$TAG" ]; then
   exit 1
 fi
 
-# ---- resolve auth token ----------------------------------------------------
-get_token() {
-  if [ -n "${GITEA_TOKEN:-}" ]; then
-    echo "$GITEA_TOKEN"; return
-  fi
-  # Try tea's stored credentials if available.
-  if command -v tea >/dev/null 2>&1; then
-    # tea stores its token in a config under the platform app-support dir.
-    local cfg
-    cfg="$(find "$HOME/Library/Application Support" "$HOME/.config" \
-      -maxdepth 2 -name 'config.yml' -path '*tea*' 2>/dev/null | head -1 || true)"
-    if [ -n "$cfg" ]; then
-      local tok
-      tok="$(sed -n 's/.*token:[" ]*\([^" ]*\).*/\1/p' "$cfg" 2>/dev/null | head -1 || true)"
-      if [ -n "$tok" ]; then echo "$tok"; return; fi
-    fi
-  fi
-  # Fall back to the git credential store: tea's OAuth login stores an access
-  # token as the password for every push to this remote, and Gitea accepts it
-  # for API auth (Authorization: token <access_token>).
-  local host cred
-  host="${GITEA_SERVER#*://}"
-  cred="$(printf 'protocol=https\nhost=%s\n\n' "$host" \
-    | git credential fill 2>/dev/null | sed -n 's/^password=//p' | head -1 || true)"
-  if [ -n "$cred" ]; then echo "$cred"; return; fi
-  # Fail fast — continuing without a token fails only at the upload step,
-  # after the whole build has run.
-  echo "error: no Gitea token found" >&2
-  echo "  set GITEA_TOKEN, or run 'tea login' / 'git push' once so the" >&2
-  echo "  credential store has an entry for $host" >&2
+# ---- resolve auth (tea CLI) ------------------------------------------------
+# The `tea` CLI carries the OAuth token and refreshes it automatically, so the
+# release upload below uses `tea` rather than a raw curl + token. (The git
+# credential store can hold a stale access token and 401.)
+if ! command -v tea >/dev/null 2>&1; then
+  echo "error: tea CLI not found (needed to upload release assets)" >&2
+  echo "  install it: https://gitea.com/gitea/tea" >&2
   exit 1
-}
-
-GITEA_TOKEN="$(get_token)"
+fi
 
 # ---- macOS signing + notarization -----------------------------------------
 # Requires a "Developer ID Application" certificate in the login keychain and
@@ -224,32 +198,21 @@ for APP in \
 done
 
 # ---- create/ensure release + upload DMGs -----------------------------------
-API="${GITEA_SERVER}/api/v1/repos/${REPO_OWNER}/${REPO_NAME}"
-AUTH="Authorization: token ${GITEA_TOKEN}"
+# Use `tea` for release management — it handles OAuth token refresh, unlike a
+# raw curl with a token from the git credential store (which can 401).
+cd "${WORKSPACE}"
 
 echo ">> Ensuring release ${TAG} exists..."
-REL_ID=$(curl -fsS -H "$AUTH" "${API}/releases/tags/${TAG}" \
-  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
-if [ -z "$REL_ID" ]; then
-  BODY="Gridline ${VERSION} — macOS (built manually)."
-  REL_ID=$(curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/json" \
-    -d "{\"tag_name\":\"${TAG}\",\"name\":\"Gridline ${VERSION}\",\"body\":\"${BODY}\",\"draft\":true}" \
-    "${API}/releases" \
-    | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+if ! tea release list -o json 2>/dev/null | grep -q "\"${TAG}\""; then
+  tea release create --tag "${TAG}" --title "Gridline ${VERSION}" \
+    --note "Gridline ${VERSION} — macOS (built manually)." --draft
+else
+  echo ">> Release ${TAG} already exists."
 fi
 
-upload() {
-  local file="$1"
-  [ -f "$file" ] || { echo "missing $file" >&2; exit 1; }
-  local name
-  name=$(basename "$file")
-  echo ">> uploading $name"
-  curl -fsS -X POST -H "$AUTH" -H "Content-Type: application/octet-stream" \
-    --data-binary "@$file" \
-    "${API}/releases/${REL_ID}/assets?name=${name}"
-}
-
-upload "${BUNDLE_ARM}/dmg/Gridline_${VERSION}_aarch64.dmg"
-upload "${BUNDLE_INTEL}/dmg/Gridline_${VERSION}_x64.dmg"
+echo ">> Uploading macOS DMGs..."
+tea releases assets create "${TAG}" \
+  "${BUNDLE_ARM}/dmg/Gridline_${VERSION}_aarch64.dmg" \
+  "${BUNDLE_INTEL}/dmg/Gridline_${VERSION}_x64.dmg"
 
 echo "Done. Release: ${GITEA_SERVER}/${REPO_OWNER}/${REPO_NAME}/releases/tag/${TAG}"

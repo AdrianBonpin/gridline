@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 // test free of a `node:fs` dependency so `tsc` (bun run build) stays clean.
 import agents from "../../../AGENTS.md?raw";
 import readme from "../../../README.md?raw";
+import landing from "../../../www/public/landing.js?raw";
 
 describe("v0.7.15 docs coverage", () => {
   it("AGENTS.md marks inline cell editing complete", () => {
@@ -68,5 +69,8 @@ describe("v0.7.15 docs coverage", () => {
     expect(readme).toContain("releases/download/v0.7.15/");
     expect(readme).toContain("Gridline_0.7.15_aarch64.dmg");
     expect(readme).toContain("Gridline-0.7.15-1.x86_64.rpm");
+  });
+  it("landing.js platform download links point to v0.7.15", () => {
+    expect(landing).toContain('const version = "0.7.15"');
   });
 });
