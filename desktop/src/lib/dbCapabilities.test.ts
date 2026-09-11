@@ -23,6 +23,16 @@ describe("dbCapabilities", () => {
     expect(c.visualizer).toBe(false);
   });
 
+  it("gives MariaDB the same capability set as MySQL", () => {
+    expect(DB_CAPABILITIES.mariadb).toEqual(DB_CAPABILITIES.mysql);
+  });
+
+  it("covers exactly the five DbTypes", () => {
+    expect(Object.keys(DB_CAPABILITIES).sort()).toEqual(
+      ["mariadb", "mysql", "postgresql", "redis", "sqlite"],
+    );
+  });
+
   it("gives SQLite explorer/queries/visualizer/editing/import/ddl/tools/tableManagement but not objects", () => {
     const c = DB_CAPABILITIES.sqlite;
     expect(c.explorer).toBe(true);

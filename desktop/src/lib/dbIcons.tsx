@@ -1,10 +1,11 @@
-import { siPostgresql, siMysql, siSqlite, siRedis, siSupabase, siNeon } from "simple-icons";
+import { siPostgresql, siMysql, siMariadb, siSqlite, siRedis, siSupabase, siNeon, siPlanetscale } from "simple-icons";
 import type { DbType } from "./types";
 
 // Brand colors from simple-icons
 const DB_COLORS: Record<DbType, string> = {
   postgresql: `#${siPostgresql.hex}`,
   mysql: `#${siMysql.hex}`,
+  mariadb: `#${siMariadb.hex}`,
   redis: `#${siRedis.hex}`,
   sqlite: `#${siSqlite.hex}`,
 };
@@ -13,6 +14,7 @@ const DB_COLORS: Record<DbType, string> = {
 const DB_PATHS: Record<DbType, string> = {
   postgresql: siPostgresql.path,
   mysql: siMysql.path,
+  mariadb: siMariadb.path,
   redis: siRedis.path,
   sqlite: siSqlite.path,
 };
@@ -20,6 +22,7 @@ const DB_PATHS: Record<DbType, string> = {
 export const DB_LABELS: Record<DbType, string> = {
   postgresql: "PostgreSQL",
   mysql: "MySQL",
+  mariadb: "MariaDB",
   redis: "Redis",
   sqlite: "SQLite",
 };
@@ -54,22 +57,25 @@ export function DbIcon({ type, size = 20, className }: DbIconProps) {
 export const DB_ICONS: Record<DbType, string> = {
   postgresql: "🐘",
   mysql: "🐬",
+  mariadb: "🦭",
   redis: "⚡",
   sqlite: "🗄️",
 };
 
 // ── Managed-PostgreSQL provider icons (Supabase, NeonDB) ──────────
 // These are NOT DbType values; connections persist as db_type="postgresql".
-type ProviderIconId = "supabase" | "neon";
+type ProviderIconId = "supabase" | "neon" | "planetscale";
 
 const PROVIDER_ICON_DATA: Record<ProviderIconId, { hex: string; path: string }> = {
   supabase: { hex: `#${siSupabase.hex}`, path: siSupabase.path },
   neon: { hex: `#${siNeon.hex}`, path: siNeon.path },
+  planetscale: { hex: `#${siPlanetscale.hex}`, path: siPlanetscale.path },
 };
 
 export const PROVIDER_LABELS: Record<ProviderIconId, string> = {
   supabase: "Supabase",
   neon: "NeonDB",
+  planetscale: "PlanetScale",
 };
 
 interface ProviderIconProps {

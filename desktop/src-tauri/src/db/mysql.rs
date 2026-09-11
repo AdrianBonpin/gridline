@@ -324,3 +324,63 @@ mod tests {
         assert_eq!(mysql_default_sort(&[]), "");
     }
 }
+// ── Schema-diff snapshot queries (0.8.0) ──────────────────────────────
+
+/// Columns: table_name, column_name, column_type, is_nullable, column_default
+pub fn mysql_snapshot_columns_query(schema: &str) -> String {
+    format!(
+        "SELECT table_name, column_name, column_type, is_nullable, \
+         COALESCE(column_default, '') \
+         FROM information_schema.columns \
+         WHERE table_schema = '{}' \
+         ORDER BY table_name, ordinal_position",
+        schema.replace('\'', "''")
+    )
+}
+
+/// Constraints (one row per constraint-column). Columns: table_name,
+/// constraint_name, constraint_type, column_name, referenced_table_name,
+/// delete_rule, update_rule, check_clause
+pub fn mysql_snapshot_constraints_query(schema: &str) -> String {
+    format!(
+        "SELECT kcu.table_name, kcu.constraint_name, tc.constraint_type, kcu.column_name, \
+         COALESCE(kcu.referenced_table_name, ''), \
+         COALESCE(rc.delete_rule, ''), COALESCE(rc.update_rule, ''), \
+         COALESCE((SELECT cc.check_clause FROM information_schema.check_constraints cc \
+            WHERE cc.constraint_schema = kcu.constraint_schema \
+              AND cc.constraint_name = kcu.constraint_name), '') \
+         FROM information_schema.key_column_usage kcu \
+         LEFT JOIN information_schema.table_constraints tc \
+           ON tc.constraint_schema = kcu.constraint_schema \
+          AND tc.constraint_name = kcu.constraint_name \
+          AND tc.table_name = kcu.table_name \
+         LEFT JOIN information_schema.referential_constraints rc \
+           ON rc.constraint_schema = kcu.constraint_schema \
+          AND rc.constraint_name = kcu.constraint_name \
+         WHERE kcu.constraint_schema = '{}' AND tc.constraint_type IS NOT NULL \
+         ORDER BY kcu.table_name, kcu.constraint_name, kcu.ordinal_position",
+        schema.replace('\'', "''")
+    )
+}
+
+/// Secondary indexes (one row per index-column). Columns: table_name,
+/// index_name, non_unique, column_name
+pub fn mysql_snapshot_indexes_query(schema: &str) -> String {
+    format!(
+        "SELECT table_name, index_name, non_unique, column_name \
+         FROM information_schema.statistics \
+         WHERE table_schema = '{}' AND index_name != 'PRIMARY' \
+         ORDER BY table_name, index_name, seq_in_index",
+        schema.replace('\'', "''")
+    )
+}
+
+/// Views. Columns: table_schema, table_name, view_definition
+pub fn mysql_snapshot_views_query(schema: &str) -> String {
+    format!(
+        "SELECT table_schema, table_name, view_definition \
+         FROM information_schema.views \
+         WHERE table_schema = '{}'",
+        schema.replace('\'', "''")
+    )
+}

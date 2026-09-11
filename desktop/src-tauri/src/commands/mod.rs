@@ -8,6 +8,8 @@ pub mod keychain;
 pub mod maintenance;
 pub mod objects;
 pub mod query;
+pub mod query_export;
+pub mod schema_diff;
 pub mod schema_graph;
 pub mod settings;
 pub mod ssh;

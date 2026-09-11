@@ -237,8 +237,9 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 ### Connection Management
 | Feature | Status | Details |
 | :--- | :---: | :--- |
-| Connections CRUD (PostgreSQL, MySQL, SQLite, Redis) | ✅ | Full create/read/update/delete with form validation |
-| New Connection screen (revamped) | ✅ | Two-stage entry → configured flow: Connection URI + 6-card provider grid (PostgreSQL / MySQL / SQLite / Redis / Supabase / NeonDB) with an OR divider → expands into label + tags/env/folder + General|SSH·SSL tabs. Supabase & NeonDB are managed-PostgreSQL presets (persist as `postgresql`) with in-app setup guides + SSL hints; SQLite swaps the URI field for a file-path + Browse input (v0.7.0) |
+| Connections CRUD (PostgreSQL, MySQL, SQLite, Redis, MariaDB) | ✅ | Full create/read/update/delete with form validation |
+| MariaDB connections | ✅ | First-class db_type on the MySQL driver path (v0.8.0) |
+| New Connection screen (revamped) | ✅ | Two-stage entry → configured flow: Connection URI + 6-card provider grid (PostgreSQL / MySQL / SQLite / Redis / Supabase / NeonDB) with an OR divider → expands into label + tags/env/folder + General|SSH·SSL tabs. Supabase & NeonDB are managed-PostgreSQL presets (persist as `postgresql`) with in-app setup guides + SSL hints; PlanetScale is a managed-MySQL (Vitess) preset (persists as `mysql`) with a setup guide + `.psdb.cloud` host detection (v0.8.0); SQLite swaps the URI field for a file-path + Browse input (v0.7.0) |
 | Connection testing (all DB types) | ✅ | PostgreSQL, MySQL, SQLite, Redis all testable |
 | DB Viewer: PostgreSQL browse + query | ✅ | Schemas, tables, paginated data, FK preview, JSON viewer |
 | DB Viewer: SQLite browse + query | ✅ | Full support via rusqlite |
@@ -295,7 +296,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Column show/hide | ✅ | Toggle visibility per column |
 | Column resize (drag handle) | ✅ | Double-click to auto-fit |
 | Row selection (checkboxes + select all) | ✅ | Bulk copy (JSON/CSV/SQL) and delete |
-| Export toolbar (JSON, CSV, SQL, Markdown, Excel (.xlsx)) | ✅ | Client-side Blob download of visible rows; Excel (.xlsx) via client-side workbook generation (v0.7.8) |
+| Export toolbar (JSON, CSV, SQL, Markdown, Excel (.xlsx)) | ✅ | Client-side Blob download of visible rows; Excel (.xlsx) via client-side workbook generation (v0.7.8); plus Rust-side **Export all rows to file…** (full-result CSV/JSONL/JSON streaming with progress + cancel) (v0.8.0) |
 | Excel (.xlsx) export | ✅ | Client-side .xlsx export of visible rows alongside JSON/CSV/SQL/Markdown (v0.7.8) |
 | Auto-refresh timer | ✅ | Configurable interval in settings |
 | Changes queue (INSERT, UPDATE, DELETE, bulk_insert, empty_table, drop_table) | ✅ | Stage → **Commit All**. Tab bar **Changes** button (amber border + count badge when pending) toggles a **popover** anchored to it: header with **Visual/SQL** toggle (cards showing op badge + table + description + per-change **Revert**, or a generated-SQL preview via `buildChangeSql`), footer **Clear All** + **Commit All (N)** with **⌘S/Ctrl+S** shortcut. Committed cards show a green ✓ (failed ✗); committing `drop_table` auto-closes open tabs of that table. **Insert Row** adds an editable pending row at the top of the grid (accent outline); committing inserts only the filled columns so serial/identity/generated defaults apply |
@@ -346,6 +347,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Schema visualizer (ER diagram) | ✅ | Full React Flow ER diagram with dagre auto-layout, crow's foot notation, schema selector, legend with cardinality colors, collapsible columns (PK/FK/unique-only), cross-schema FK support. PostgreSQL (single round-trip LATERAL query) + SQLite (PRAGMA). Uses @xyflow/react + dagre. |
 | Create/Edit table + column-diff + rebuild | ✅ | Create Table + Edit Table column-diff editor (ADD/DROP/RENAME/ALTER TYPE/SET|DROP DEFAULT/SET|DROP NOT NULL, staged one-per-queue-item); atomic column-reorder table rebuild in a single transaction, preserving constraints/indexes/FKs/grants/sequences (v0.7.7) |
 | Relationships (FK CRUD, cross-schema, ON DELETE/UPDATE) | ✅ | FK create/edit/drop with cross-schema references and ON DELETE/UPDATE actions (v0.7.7) |
+| TimescaleDB hypertables | ✅ | Objects view type on PG connections with the extension; runtime availability gating (v0.8.0) |
 
 ### Query Editor
 | Feature | Status | Details |
@@ -355,7 +357,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Destructive query guard | ✅ | Confirmation dialog for INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/REPLACE (`isDestructiveQuery` + `DestructiveQueryDialog`) |
 | Query history / recent queries | ✅ | v5 `query_history` table + v6 `favorite` column; consecutive-identical dedup + retention pruning (500/connection); `get_query_history`/`clear_query_history`/`set_history_favorite` commands; **QueryHistoryDropdown** in the query toolbar (load / run / favorite / clear, lazy fetch, loading + error states) |
 | SQL autocomplete (keywords, tables, columns) | ✅ | Completion provider in `src/lib/monacoSetup.ts` backed by `src/lib/sqlCompletion.ts` (pure, unit-tested): keywords (~60) + table names from the active schema; typing `table.` or `schema.table.` suggests that table's columns (introspected via `get_schema_graph`, cached per schema in memory, `incomplete: true` warm-up on first use) |
-| Multiple result sets | ❌ | |
+| Multiple result sets | ✅ | Stacked panels per statement via execute_query_multi; DML/DDL notices; stop-at-first-error (v0.8.0) |
 | Cancel long-running queries | ✅ | Per-connection cancel from the query toolbar (`pg_cancel_backend` / MySQL `KILL` / SQLite interruption) instead of waiting or killing the app (v0.7.8) |
 | Saved queries (named, organized) | ✅ | v6 `queries` table (nullable `connection_id` for global queries, `folder` field, `ON DELETE CASCADE`); `save_query`/`get_saved_queries`/`update_saved_query`/`delete_saved_query` commands with validation (name ≤200, folder ≤100, text ≤1MB); **SaveQueryDialog** (name + folder, empty-name guard); managed in the Queries view Saved tab |
 | Query favorites / pinning | ✅ | Star toggle per history entry via `set_history_favorite`; favorites-only filter in the Queries view History tab |
@@ -374,6 +376,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Bundled PostgreSQL client tools | ✅ | Static pg_dump/pg_restore/psql shipped as Tauri resources; system-first, bundled-fallback resolution via resource_dir (v0.7.5) |
 | SQLite .dump (backup/restore) | ✅ | Backup a SQLite database to a portable SQL dump and restore it back, matching the pg_dump UX (v0.7.8) |
 | Backup / Restore / Sync for MySQL & SQLite | ✅ | MySQL backup/restore via mysqldump (system-first); DB-to-DB sync extended beyond PostgreSQL (v0.7.8) |
+| Schema diff / compare | ✅ | Tools → Schema Diff; same-engine snapshot diff; safe items stage into the changes queue (v0.8.0) |
 | Table structure export (DDL) | ❌ | |
 
 ### Settings

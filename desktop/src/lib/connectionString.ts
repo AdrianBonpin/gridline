@@ -13,6 +13,7 @@ const DB_PROTOCOLS: Record<string, DbType> = {
   "postgresql:": "postgresql",
   "postgres:": "postgresql",
   "mysql:": "mysql",
+  "mariadb:": "mariadb",
   "sqlite:": "sqlite",
   "file:": "sqlite",
   "redis:": "redis",
@@ -22,6 +23,7 @@ const DB_PROTOCOLS: Record<string, DbType> = {
 const DEFAULT_PORTS: Record<DbType, number | null> = {
   postgresql: 5432,
   mysql: 3306,
+  mariadb: 3306,
   sqlite: null,
   redis: 6379,
 };
@@ -83,10 +85,13 @@ export function looksLikeConnectionString(input: string): boolean {
 /** Detect a managed-PostgreSQL provider from a connection host, purely for
  *  UI highlighting. Returns `"supabase"` / `"neon"` / `null`. db_type is
  *  unaffected (both presets persist as `postgresql`). */
-export function detectProviderFromHost(host: string): "supabase" | "neon" | null {
+export function detectProviderFromHost(
+  host: string,
+): "supabase" | "neon" | "planetscale" | null {
   const h = host.toLowerCase();
   if (h.endsWith(".supabase.co")) return "supabase";
   if (h.endsWith(".neon.tech")) return "neon";
+  if (h.endsWith(".psdb.cloud")) return "planetscale";
   return null;
 }
 
@@ -127,6 +132,8 @@ export function buildConnectionUrl(conn: Connection, password: string | null): s
     }
     case "mysql":
       return `mysql://${auth}${conn.host}${port}${db}`;
+    case "mariadb":
+      return `mariadb://${auth}${conn.host}${port}${db}`;
     case "sqlite":
       // host stores the file path; `sqlite:///abs/path` round-trips through
       // parseConnectionString (pathname → host).

@@ -22,10 +22,6 @@ interface ObjectExplorerPageProps {
     sidebarMode?: boolean;
 }
 
-const OBJECT_TYPE_OPTIONS = (Object.keys(TYPE_LABELS) as ObjectType[]).map(
-    (t) => ({ value: t, label: TYPE_LABELS[t] }),
-);
-
 /** Natural plural for empty-state copy, derived from SINGULAR_LABELS with known irregulars mapped explicitly. */
 function emptyPlural(type: ObjectType): string {
     const singular = SINGULAR_LABELS[type];
@@ -75,6 +71,7 @@ function typeToDdlType(type: ObjectType): string {
         sequences: "sequence",
         enums: "enum",
         extensions: "extension",
+        hypertables: "table",
         indexes: "index",
         constraints: "constraint",
         roles: "role",
@@ -125,6 +122,19 @@ export function ObjectExplorerPage({
     const changesQueue = useDbViewerStore((s) => s.changesQueue);
     const openObjectTab = useDbViewerStore((s) => s.openObjectTab);
     const refreshTree = useDbViewerStore((s) => s.refreshTree);
+    const hypertablesAvailable = useDbViewerStore((s) => s.hypertablesAvailable);
+    const setHypertablesAvailable = useDbViewerStore((s) => s.setHypertablesAvailable);
+    // Build the dropdown from the full object-type union, gating hypertables
+    // on confirmed TimescaleDB availability (visibleObjectTypes in ObjectTree
+    // is scoped to that tree's smaller type set).
+    const objectTypeOptions = useMemo(() => {
+        const all = Object.keys(TYPE_LABELS) as ObjectType[];
+        const visible =
+            hypertablesAvailable === true
+                ? all
+                : all.filter((t) => t !== "hypertables");
+        return visible.map((t) => ({ value: t, label: TYPE_LABELS[t] }));
+    }, [hypertablesAvailable]);
 
     // Use store for persistence, but allow re-fetching when schema changes
     const [items, setItems] = useState<AnyObject[] | null>(null);
@@ -217,6 +227,23 @@ export function ObjectExplorerPage({
             fetch();
         }
     }, [currentSchema, fetch]);
+
+    // Probe TimescaleDB availability once per connection so the hypertables
+    // object type only appears in the dropdown when it is actually supported.
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await cmd.getHypertables(connectionId);
+                if (!cancelled) setHypertablesAvailable(res.available);
+            } catch {
+                if (!cancelled) setHypertablesAvailable(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [connectionId, setHypertablesAvailable]);
 
     // After a commit containing ddl items succeeds, refetch the current
     // object-type list + refresh the schema tree so newly created/dropped
@@ -325,7 +352,7 @@ export function ObjectExplorerPage({
                         <SelectDropdown
                             value={type}
                             onChange={(v) => handleTypeChange(v as ObjectType)}
-                            options={OBJECT_TYPE_OPTIONS}
+                            options={objectTypeOptions}
                             variant="ghost"
                             aria-label="Object type"
                         />

@@ -887,3 +887,123 @@ mod tests {
         assert!(sql.contains("$1") && sql.contains("$2"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// TimescaleDB (hypertables)
+// ---------------------------------------------------------------------------
+
+/// Detect whether the timescaledb extension is installed on this database.
+pub fn pg_timescale_detect_query() -> String {
+    "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')".to_string()
+}
+
+/// Query hypertables in a schema (TimescaleDB 2.x information views).
+/// Columns: name, schema, num_dimensions, compression_enabled, num_chunks, total_size_bytes.
+pub fn pg_hypertables_query(_schema: &str) -> String {
+    "SELECT h.hypertable_name, h.hypertable_schema, \
+     h.num_dimensions, \
+     COALESCE(h.compression_enabled, false), \
+     (SELECT COUNT(*) FROM timescaledb_information.chunks c \
+        WHERE c.hypertable_schema = h.hypertable_schema \
+          AND c.hypertable_name = h.hypertable_name), \
+     pg_total_relation_size(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass)::bigint \
+     FROM timescaledb_information.hypertables h \
+     WHERE h.hypertable_schema = $1 \
+     ORDER BY h.hypertable_name"
+        .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Schema-diff snapshot queries (0.8.0) — one set-based query per object class
+// ---------------------------------------------------------------------------
+
+/// Table columns with resolved types, nullability, and defaults.
+/// Columns: table_name, column_name, data_type, is_nullable, default_expr
+pub fn pg_diff_columns_query() -> String {
+    "SELECT c.relname, a.attname, \
+     pg_catalog.format_type(a.atttypid, a.atttypmod), \
+     NOT a.attnotnull, \
+     pg_catalog.pg_get_expr(d.adbin, d.adrelid) \
+     FROM pg_catalog.pg_class c \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+     LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum \
+     WHERE n.nspname = $1 AND c.relkind IN ('r', 'p') \
+     ORDER BY c.relname, a.attnum"
+        .to_string()
+}
+
+/// Constraints (PK/UNIQUE/CHECK/FK) with exact column lists and FK metadata.
+/// Columns: table_name, constraint_name, contype, cols, ref_cols, ref_table, confdeltype, confupdtype, definition
+pub fn pg_diff_constraints_query() -> String {
+    "SELECT cl.relname, con.conname, con.contype::text, \
+     (SELECT string_agg(a.attname, ', ' ORDER BY k.ord) \
+        FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
+        JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum), \
+     (SELECT string_agg(a.attname, ', ' ORDER BY k.ord) \
+        FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
+        JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum), \
+     (SELECT n2.nspname || '.' || cl2.relname \
+        FROM pg_class cl2 JOIN pg_namespace n2 ON n2.oid = cl2.relnamespace \
+        WHERE cl2.oid = con.confrelid), \
+     con.confdeltype::text, con.confupdtype::text, \
+     pg_get_constraintdef(con.oid, true) \
+     FROM pg_catalog.pg_constraint con \
+     JOIN pg_catalog.pg_class cl ON cl.oid = con.conrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = cl.relnamespace \
+     WHERE n.nspname = $1 AND con.contype IN ('p', 'u', 'c', 'f') \
+     ORDER BY cl.relname, con.contype, con.conname"
+        .to_string()
+}
+
+/// Secondary indexes (constraint-backed indexes excluded), with column lists.
+/// Columns: table_name, index_name, is_unique, cols
+pub fn pg_diff_indexes_query() -> String {
+    "SELECT t.relname, i.relname, ix.indisunique, \
+     (SELECT string_agg(a.attname, ', ' ORDER BY k.ord) \
+        FROM unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) \
+        JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum \
+        WHERE k.attnum > 0) \
+     FROM pg_index ix \
+     JOIN pg_class i ON i.oid = ix.indexrelid \
+     JOIN pg_class t ON t.oid = ix.indrelid \
+     JOIN pg_namespace n ON n.oid = t.relnamespace \
+     WHERE n.nspname = $1 AND NOT ix.indisprimary \
+       AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = i.oid) \
+     ORDER BY t.relname, i.relname"
+        .to_string()
+}
+
+/// Views + materialized views. Columns: schema, name, definition, materialized
+pub fn pg_diff_views_query() -> String {
+    "SELECT v.schemaname, v.viewname, v.definition, false \
+     FROM pg_views v WHERE v.schemaname = $1 \
+     UNION ALL \
+     SELECT v.schemaname, v.matviewname, v.definition, true \
+     FROM pg_matviews v WHERE v.schemaname = $1 \
+     ORDER BY 2"
+        .to_string()
+}
+
+/// Sequences. Columns: schema, name, start, increment, min, max, cycle
+pub fn pg_diff_sequences_query() -> String {
+    "SELECT sequence_schema, sequence_name, \
+     COALESCE(start_value::text, '1'), COALESCE(increment::text, '1'), \
+     COALESCE(minimum_value::text, '1'), COALESCE(maximum_value::text, '9223372036854775807'), \
+     cycle_option = 'YES' \
+     FROM information_schema.sequences \
+     WHERE sequence_schema = $1 \
+     ORDER BY sequence_name"
+        .to_string()
+}
+
+/// Enums with ordered labels. Columns: schema, name, label (row per label)
+pub fn pg_diff_enums_query() -> String {
+    "SELECT n.nspname, t.typname, e.enumlabel \
+     FROM pg_type t \
+     JOIN pg_namespace n ON n.oid = t.typnamespace \
+     JOIN pg_enum e ON e.enumtypid = t.oid \
+     WHERE t.typtype = 'e' AND n.nspname = $1 \
+     ORDER BY t.typname, e.enumsortorder"
+        .to_string()
+}

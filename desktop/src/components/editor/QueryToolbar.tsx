@@ -9,6 +9,7 @@ import type { DbType } from "../../lib/types";
 const DB_TYPE_LABELS: Record<DbType, string> = {
   postgresql: "PostgreSQL",
   mysql: "MySQL",
+  mariadb: "MariaDB",
   sqlite: "SQLite",
   redis: "Redis",
 };

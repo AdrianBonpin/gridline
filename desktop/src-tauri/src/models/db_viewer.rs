@@ -73,6 +73,22 @@ pub struct QueryResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatementNotice {
+    pub statement_index: usize,
+    /// "dml" | "ddl" | "error"
+    pub kind: String,
+    pub text: String,
+    pub affected: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiQueryResult {
+    pub result_sets: Vec<QueryResult>,
+    pub notices: Vec<StatementNotice>,
+    pub execution_time_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pagination {
     pub page: i64,
     pub page_size: i64,
@@ -130,6 +146,23 @@ pub struct ExtensionInfo {
     pub schema: String,
     pub version: String,
     pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HypertableInfo {
+    pub name: String,
+    pub schema: String,
+    pub num_dimensions: i64,
+    pub compression_enabled: bool,
+    pub num_chunks: i64,
+    pub total_size_bytes: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HypertableListResponse {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub items: Vec<HypertableInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,6 +343,125 @@ pub struct Relationship {
     pub target_column: String,
     /// Inferred cardinality: "1:1", "1:N", or "N:M"
     pub cardinality: String,
+}
+
+// ---------------------------------------------------------------------------
+// Schema diff (0.8.0)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SnapshotColumn {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+    pub default_value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SnapshotIndex {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SnapshotFk {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_schema: String,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub on_delete: String,
+    pub on_update: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SnapshotConstraint {
+    pub name: String,
+    /// "unique" | "check"
+    pub kind: String,
+    /// check: expression; unique: comma-joined columns
+    pub definition: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SnapshotTable {
+    pub schema: String,
+    pub name: String,
+    pub columns: Vec<SnapshotColumn>,
+    pub primary_key: Vec<String>,
+    pub uniques: Vec<SnapshotConstraint>,
+    pub checks: Vec<SnapshotConstraint>,
+    pub indexes: Vec<SnapshotIndex>,
+    pub foreign_keys: Vec<SnapshotFk>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SnapshotView {
+    pub schema: String,
+    pub name: String,
+    pub definition: String,
+    pub materialized: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SnapshotSequence {
+    pub schema: String,
+    pub name: String,
+    pub start: String,
+    pub increment: String,
+    pub minimum: String,
+    pub maximum: String,
+    pub cycle: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SnapshotEnum {
+    pub schema: String,
+    pub name: String,
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SchemaSnapshot {
+    /// "postgresql" | "mysql" | "mariadb" | "sqlite" — the CONNECTION's db_type
+    pub engine: String,
+    pub schema: String,
+    pub tables: Vec<SnapshotTable>,
+    pub views: Vec<SnapshotView>,
+    pub sequences: Vec<SnapshotSequence>,
+    pub enums: Vec<SnapshotEnum>,
+    pub object_count: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiffDetailLine {
+    pub label: String,
+    pub old: String,
+    pub new: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiffItem {
+    /// "table" | "column" | "constraint" | "index" | "view" | "sequence" | "enum"
+    pub object_type: String,
+    /// For column/constraint/index items: "<table>.<name>"; else the object name
+    pub name: String,
+    /// "added" | "removed" | "changed"
+    pub kind: String,
+    pub detail: Vec<DiffDetailLine>,
+    /// Target-side statements (usually exactly one per item)
+    pub sync_sql: Vec<String>,
+    pub destructive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffReport {
+    pub items: Vec<DiffItem>,
+    pub source_label: String,
+    pub target_label: String,
+    pub truncated: bool,
 }
 
 #[cfg(test)]

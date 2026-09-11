@@ -7,6 +7,7 @@ import type { DbType } from "../../lib/types";
 const DB_TYPES: { value: DbType; label: string }[] = [
   { value: "postgresql", label: "PostgreSQL" },
   { value: "mysql", label: "MySQL" },
+  { value: "mariadb", label: "MariaDB" },
   { value: "sqlite", label: "SQLite" },
   { value: "redis", label: "Redis" },
 ];

@@ -1,6 +1,27 @@
 import { buildXlsx } from "./xlsx";
 import type { ColumnInfo } from "./types";
 
+/** Quote one CSV cell with formula-injection protection — mirrors the Rust
+ *  `csv_cell` from the streaming export (Task 10) byte-for-byte. */
+export function csvCell(value: unknown): string {
+  const s = value === null || value === undefined ? "" : String(value);
+  const guarded = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  if (/[,"\n\r]/.test(guarded)) {
+    return `"${guarded.replace(/"/g, '""')}"`;
+  }
+  return guarded;
+}
+
+/** SQL selecting every row of a table, dialect-quoted. */
+export function qualifiedTableSql(dbType: string, schema: string, table: string): string {
+  if (dbType === "mysql" || dbType === "mariadb") {
+    const q = (s: string) => s.replace(/`/g, "``");
+    return `SELECT * FROM \`${q(schema)}\`.\`${q(table)}\``;
+  }
+  const q = (s: string) => s.replace(/"/g, '""');
+  return `SELECT * FROM "${q(schema)}"."${q(table)}"`;
+}
+
 export function exportData(
   rows: unknown[][],
   columns: ColumnInfo[],
@@ -34,14 +55,9 @@ export function exportData(
       break;
     }
     case "csv": {
-      const csvRows = [headers.map((h) => `"${h.replace(/"/g, '""')}"`).join(",")];
+      const csvRows = [headers.map((h) => csvCell(h)).join(",")];
       for (const row of rows) {
-        csvRows.push(
-          row.map((cell) => {
-            const s = cell === null || cell === undefined ? "" : String(cell);
-            return `"${s.replace(/"/g, '""')}"`;
-          }).join(","),
-        );
+        csvRows.push(row.map((cell) => csvCell(cell)).join(","));
       }
       content = csvRows.join("\n");
       mime = "text/csv";

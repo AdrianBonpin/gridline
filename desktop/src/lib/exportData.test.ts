@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { exportData } from "./exportData";
+import { exportData, csvCell, qualifiedTableSql } from "./exportData";
 import type { ColumnInfo } from "./types";
 
 const columns: ColumnInfo[] = [
@@ -47,5 +47,27 @@ describe("exportData", () => {
       globalThis.URL.createObjectURL = origCreateObjectURL;
       globalThis.URL.revokeObjectURL = origRevokeObjectURL;
     }
+  });
+});
+
+describe("csvCell (client CSV parity with streamed export)", () => {
+  it("quotes and guards like the Rust writer", () => {
+    expect(csvCell("plain")).toBe("plain");
+    expect(csvCell("a,b")).toBe('"a,b"');
+    expect(csvCell('a"b')).toBe('"a""b"');
+    expect(csvCell("=SUM(A1)")).toBe("'=SUM(A1)");
+    expect(csvCell("+x")).toBe("'+x");
+    expect(csvCell("-1")).toBe("'-1");
+    expect(csvCell("@cmd")).toBe("'@cmd");
+    expect(csvCell(null)).toBe("");
+  });
+});
+
+describe("qualifiedTableSql", () => {
+  it("double-quotes for PG/SQLite and backticks for MySQL/MariaDB", () => {
+    expect(qualifiedTableSql("postgresql", "public", "users")).toBe('SELECT * FROM "public"."users"');
+    expect(qualifiedTableSql("sqlite", "main", "users")).toBe('SELECT * FROM "main"."users"');
+    expect(qualifiedTableSql("mysql", "app", "users")).toBe("SELECT * FROM `app`.`users`");
+    expect(qualifiedTableSql("mariadb", "app", "users")).toBe("SELECT * FROM `app`.`users`");
   });
 });

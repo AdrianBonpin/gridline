@@ -3,12 +3,13 @@ import { ChevronDown } from "lucide-react";
 import { SETUP_GUIDES } from "../../lib/providers";
 
 interface ProviderSetupGuideProps {
-  provider: "supabase" | "neon";
+  provider: "supabase" | "neon" | "planetscale";
 }
 
-const SSL_NOTE: Record<"supabase" | "neon", string> = {
+const SSL_NOTE: Record<"supabase" | "neon" | "planetscale", string> = {
   supabase: "SSL is required by Supabase.",
   neon: "Neon requires SSL.",
+  planetscale: "PlanetScale requires SSL with identity verification.",
 };
 
 export function ProviderSetupGuide({ provider }: ProviderSetupGuideProps) {

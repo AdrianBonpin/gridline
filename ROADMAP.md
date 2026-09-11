@@ -6,38 +6,21 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ---
 
-## ✅ Shipped (0.7.10)
+## ✅ Shipped (0.8.0)
 
-- **Copy connection URL** — from a connection card's ⋮ menu, copy the connection string for use in env vars / other tools: **Copy connection URL** (includes the password, fetched from the OS keychain on demand) and **Copy connection URL (no password)** (safe to share). Builds `postgresql://` / `mysql://` / `sqlite://` / `redis://` strings with percent-encoded credentials and the PG `sslmode` appended.
-- **Version bump** 0.7.9 → **0.7.10**.
-
-## ✅ Shipped (0.7.9)
-
-- **macOS Finder launch fix** — the local store opens under the OS app-data directory instead of a cwd-relative `gridline.db` (Finder/LaunchServices launches run with cwd `/`, so the old path made the app silently exit with a Rust panic before the UI started).
-- **macOS ad-hoc code signing** — bundles are signed at build time (`bundle.macOS.signingIdentity "-"`, hardened runtime off), replacing the Xcode linker-only signature that macOS treated as unsigned ("damaged and can't be opened", silent Finder refusal). Users still get a one-time Gatekeeper prompt; README documents the `sudo xattr -dr com.apple.quarantine` workaround.
-- **Vendored OpenSSL for `ssh2`** — the release binary no longer links an absolute Homebrew `/opt/homebrew/.../libssl.3.dylib` path (dyld aborted on machines without it).
-- **Version bump** 0.7.8 → **0.7.9**.
-
-## 🎯 Next up (0.8.0) — TBD
-
-Scope to be determined.
-
-## ✅ Shipped (0.7.8)
-
-- **SQLite `.dump` support** — match the pg_dump UX for SQLite (backup a SQLite database to a portable SQL dump, restore it back)
-- **Backup / Restore / Sync for MySQL & SQLite** — extend the pg-only tooling today: SQLite backup/restore + MySQL via `mysqldump` (system-first; decide bundling)
-- **Excel (.xlsx) export** — alongside CSV/JSON/SQL/Markdown in the grid export toolbar
-- **Cancel long-running queries** — per-connection cancel button (`pg_cancel_backend` and equivalents) instead of waiting or killing the app
-- **Settings export / import** — share theme, accent, editor options, page sizes, and defaults across machines (JSON file)
-- **Windows/Linux title bar fix** — the macOS "Overlay" drag strip (`h-7` in `App.tsx`) renders on every Tauri platform, so Windows/Linux show a blank grabbable bar between the native title bar and the page; gate the strip to macOS only (native title bar already handles dragging elsewhere)
-- **SQLite table editor (Create/Edit Table)** — the visual Create Table / Edit Table flow is PostgreSQL-only today (`tableManagement` capability + PG-flavored SQL gen in `TableForm`); extend to SQLite: SQLite-aware type mapping (no `serial` — `INTEGER PRIMARY KEY AUTOINCREMENT` instead), `TEXT`/`REAL`/`BLOB`, and ALTER TABLE limits (`ADD COLUMN` can't add PK/UNIQUE, `DROP COLUMN` needs SQLite ≥3.35)
-- **Version bump** 0.7.7 → **0.7.8**.
+- **Schema diff / compare** — same-engine structural diff (PG↔PG, MySQL-family↔MySQL-family, SQLite↔SQLite) with per-object sync SQL; non-destructive items stage through the changes queue, destructive items are copy-only. Target = current connection; source = any saved same-family connection.
+- **Query Workbench: multiple result sets** — stacked result panels per statement with DML/DDL affected-count notices and stop-at-first-error *(deferred from 0.7.0)*
+- **Query Workbench: result streaming to file** — full-result CSV/JSONL/JSON export with progress + cancel, constant memory (PG cursor fetch, MySQL/SQLite native streams)
+- **MariaDB support** — first-class `db_type` reusing the MySQL driver path; provider card, filter, URI schemes, backup via the already-bundled mariadb tools
+- **TimescaleDB support** — runtime extension detection; hypertables in the Objects view (dimensions, compression, chunks, size), read-only
+- **PlanetScale preset** — managed MySQL (Vitess) provider card + setup guide + `.psdb.cloud` host detection; persists as `db_type: mysql`
+- **Version bump** 0.7.15 → **0.8.0**.
 
 ## 📋 In the queue
 
 ### Full Redis Support
 
-Connection + test work today; **key browsing is explicitly not part of 0.7.0** — it stays gated behind an "unsupported" state. Goal: first-class Redis like the PG/SQLite/MySQL viewers.
+Connection + test only today — browsing stays gated behind a clean "unsupported" state. Goal: first-class Redis like the PG/SQLite/MySQL viewers.
 
 - Key browser (pattern search, filter by type, TTL display, key count)
 - Value editors per type: string, list, hash, set, zset, stream, JSON
@@ -46,28 +29,26 @@ Connection + test work today; **key browsing is explicitly not part of 0.7.0** �
 
 ### Additional Database Types
 
-- **MariaDB** (wire-compatible with MySQL — should largely fall out of the 0.7.0 MySQL work)
-- **TimescaleDB** (PostgreSQL extension — largely free once PG browsing is solid; surface hypertables/compression in the object tree)
-- Candidates after that: CockroachDB, DuckDB, SQL Server, MongoDB (drivers are heavier lifts — revisit with demand)
+MariaDB and TimescaleDB moved to [0.8.0](#-next-up-080). Remaining candidates: CockroachDB, DuckDB, SQL Server, MongoDB (drivers are heavier lifts — revisit with demand).
 
 ### Managed Database Support (beyond Supabase / Neon)
 
-Supabase and NeonDB presets shipped in v0.7.0. Remaining candidates:
+Supabase and NeonDB presets shipped in v0.7.0; PlanetScale moved to [0.8.0](#-next-up-080). Remaining:
 
-- **PlanetScale** (Vitess/MySQL)
-- **Turso** (libSQL)
+- **Turso** (libSQL — not SQLite over the wire; needs a `libsql` driver path in the Rust backend, not just a connection preset)
 - Provider detection guidance: paste a provider URL → Gridline auto-fills host/port/SSL mode; provider "connect" docs linked from the connection form
 
 ### Query Workbench Upgrades
 
-- **Multiple result sets** — one query, multiple result tabs (stacked/scrollable) instead of only the last result *(deferred from 0.7.0)*
-- **Result streaming to file** — export 500k+ rows without loading them all into memory
+Multiple result sets and result streaming to file moved to [0.8.0](#-next-up-080). Remaining:
+
 - **Visual query builder** — drag-and-drop tables/joins/filters that generate SQL (TablePlus has one; DB Pro plans one)
 
 ### Schema & Data Tooling
 
-- **Schema diff / compare** — two-database structure diff that pairs naturally with DB-to-DB sync
-- **MySQL Objects view + schema visualizer** — functions/triggers/sequences/enums/extensions browsing and ER diagram for MySQL *(deferred from 0.7.0 and out of scope for the object-management release — PostgreSQL-only for now)*
+Schema diff / compare moved to [0.8.0](#-next-up-080). Remaining:
+
+- **MySQL Objects view + schema visualizer** — functions/triggers/sequences/enums/extensions browsing and ER diagram for MySQL *(PostgreSQL-only today)*
 - **More export formats** — JSONL, Parquet alongside CSV/JSON/SQL/Markdown/Excel
 
 ## 🔮 Planned
@@ -84,9 +65,9 @@ Bring-your-own-key — no bundled model, no paywall, key stored in the OS keycha
 
 ### Website & Docs
 
-- Landing page with screenshots, feature tour, and download links
+The marketing site (`www/`, Astro) is live: landing page with screenshots, FAQ, and a changelog feed. Remaining:
+
 - User documentation (connection setup, SSH/TLS, backup/sync, changes queue)
-- Blog / changelog feed
 
 ### UI/UX Improvements (rolling)
 
@@ -99,14 +80,62 @@ Continuous polish, tracked as issues rather than one-off milestones:
 - Session restore — reopen tabs and query state from the last session
 - Light-theme parity pass — dark is first-class; polish the light theme to match
 
-Deferred from 0.7.0, slated for this bucket:
+Still deferred from 0.7.0, slated for this bucket:
 
 - **Onboarding tour** — first-run walkthrough built around the Gridline Demo database; contextual tooltips per screen
-- **Settings export/import** — share theme, accent, editor options, page sizes, and defaults across machines (JSON file)
 - **SSH key management** — read/generate key pairs and paste private keys directly in the SSH tab (today: path inputs only)
 - **In-app changelog** — "What's new" panel fed from bundled release notes
 
 ---
+
+## ✅ Shipped (0.7.10)
+
+- **Copy connection URL** — from a connection card's ⋮ menu, copy the connection string for use in env vars / other tools: **Copy connection URL** (includes the password, fetched from the OS keychain on demand) and **Copy connection URL (no password)** (safe to share). Builds `postgresql://` / `mysql://` / `sqlite://` / `redis://` strings with percent-encoded credentials and the PG `sslmode` appended.
+- **Version bump** 0.7.9 → **0.7.10**.
+
+## ✅ Shipped (0.7.15)
+
+- **Insert Row** — adds an editable pending row at the top of the data grid (visible accent outline); committing inserts only the filled columns so serial/identity/generated defaults apply
+- **Smart cell editors** — date/time/datetime pickers, a boolean select, and number inputs for the matching column types (enums and FKs already had dropdowns), applied to both new rows and inline editing
+- **Landing page support channel** — coffee via Ko-fi (ko-fi.com/adrianbonpin), always optional, never gates a feature
+- **Landing page copy refresh** — em dashes dropped, OSS section simplified, FAQ added for how the project is funded
+- **Version bump** 0.7.14 → **0.7.15**.
+
+## ✅ Shipped (0.7.14)
+
+- **No more repeated macOS keychain prompts** — saved connection passwords and SSH secrets are ACL-pinned to the app's code signature when stored, so app upgrades never re-trigger the macOS keychain access dialog (users upgrading from older builds see one final prompt — choose Always Allow)
+- **Install via Homebrew** — add the Gitea tap (`brew tap AdrianBonpin/gridline https://git.ranio.xyz/adrianbonpin/homebrew-gridline.git`) and run `brew install --cask gridline`
+- **Version bump** 0.7.13 → **0.7.14**.
+
+## ✅ Shipped (0.7.13)
+
+- **Developer-ID signed + notarized macOS** — the app is properly code-signed with a Developer ID Application certificate and notarized by Apple, so macOS opens it without the Gatekeeper "Open Anyway" prompt or the `xattr` quarantine workaround
+- **Version bump** 0.7.12 → **0.7.13**.
+
+## ✅ Shipped (0.7.12) *(includes 0.7.11: release-pipeline/docs refresh — README download links moved from GitHub to the self-hosted Gitea `git.ranio.xyz`)*
+
+- **Reliable cell editing for non-text columns** — editing a PostgreSQL cell whose type isn't text (integers, booleans, UUIDs, json/jsonb, timestamps, enums, numerics) now works; edited values are sent to PostgreSQL in text wire format so the server parses them into the column's own type
+- **Recent connections fix** — the Recent strip no longer renders empty on first launch when the connections list hadn't loaded yet
+- **Full CI release pipeline for Windows** — the self-hosted Windows runner now builds the .exe/.msi installers (bundled pg_dump/pg_restore/psql + MariaDB clients) and uploads them to the release alongside Linux
+- **Version bump** 0.7.11 → **0.7.12**.
+
+## ✅ Shipped (0.7.9)
+
+- **macOS Finder launch fix** — the local store opens under the OS app-data directory instead of a cwd-relative `gridline.db` (Finder/LaunchServices launches run with cwd `/`, so the old path made the app silently exit with a Rust panic before the UI started).
+- **macOS ad-hoc code signing** — bundles are signed at build time (`bundle.macOS.signingIdentity "-"`, hardened runtime off), replacing the Xcode linker-only signature that macOS treated as unsigned ("damaged and can't be opened", silent Finder refusal). Users still get a one-time Gatekeeper prompt; README documents the `sudo xattr -dr com.apple.quarantine` workaround.
+- **Vendored OpenSSL for `ssh2`** — the release binary no longer links an absolute Homebrew `/opt/homebrew/.../libssl.3.dylib` path (dyld aborted on machines without it).
+- **Version bump** 0.7.8 → **0.7.9**.
+
+## ✅ Shipped (0.7.8)
+
+- **SQLite `.dump` support** — backup a SQLite database to a portable SQL dump and restore it back, matching the pg_dump UX
+- **Backup / Restore / Sync for MySQL & SQLite** — the pg-only tooling extended: MySQL backup/restore via `mysqldump` (system-first) and DB-to-DB sync beyond PostgreSQL
+- **Excel (.xlsx) export** — alongside CSV/JSON/SQL/Markdown in the grid export toolbar
+- **Cancel long-running queries** — per-connection cancel button (`pg_cancel_backend` and equivalents) instead of waiting or killing the app
+- **Settings export / import** — share theme, accent, editor options, page sizes, and defaults across machines (JSON file)
+- **Windows/Linux title bar fix** — the macOS overlay drag strip (`h-7` in `App.tsx`) is now gated to macOS; Windows/Linux use the native title bar for dragging
+- **SQLite table editor (Create/Edit Table)** — the visual Create Table / Edit Table flow extended to SQLite: SQLite-aware type mapping (`INTEGER PRIMARY KEY AUTOINCREMENT` instead of `serial`, `TEXT`/`REAL`/`BLOB`) and ALTER TABLE limits respected (`ADD COLUMN` can't add PK/UNIQUE, `DROP COLUMN` needs SQLite ≥3.35)
+- **Version bump** 0.7.7 → **0.7.8**.
 
 ## ✅ Shipped (0.7.7)
 
@@ -151,24 +180,13 @@ Deferred from 0.7.0, slated for this bucket:
 - **Input styling sweep** — `rounded-full` → `rounded-lg` on all form controls.
 - **Version bump** 0.6.0 → **0.7.0**.
 
-**Not in 0.7.0** (deferred, tracked above): Redis key browsing, MySQL Objects/ERD views, backup/restore/sync for MySQL + SQLite, multiple result sets, SSH key-file management, settings import/export, onboarding tour.
+**Deferred from 0.7.0**: Redis key browsing and MySQL Objects/ERD views (still in the queue); SSH key management and onboarding tour (planned). Since shipped elsewhere: backup/restore/sync for MySQL & SQLite and settings import/export (0.7.8); multiple result sets (slated for 0.8.0).
 
-## ✅ Shipped
+## ✅ Shipped — earlier releases (pre-0.7.0)
 
-- Full PostgreSQL object management — create/edit/drop staged through the changes queue (v0.7.6)
-- Enable Keychain toggle — opt-out password persistence (v0.7.6)
-- Objects view tabbed workspace (v0.7.6)
-- Bundled PG client tools — `pg_dump`/`pg_restore`/`psql` shipped with the app, system-first with bundled fallback (v0.7.5)
-- Schema CRUD — create/rename/drop schemas with CASCADE + dependency warning (v0.7.5)
-- Global object search — Cmd+K across all object types in the current schema (v0.7.5)
-- Copy as DDL for any object (v0.7.5)
-- Object dependencies — `pg_depend` view before destructive drops (v0.7.5)
 - Tauri 2.0 + React 19 + TypeScript 5.8 project shell
-- PostgreSQL and SQLite browse/query support
-- Full MySQL DB viewer — connect, browse, query, edit + changes queue (v0.7.0)
-- New Connection screen revamp — provider grid + Supabase/NeonDB managed-pg presets (v0.7.0)
-- DB viewer capability gating + Redis unsupported state (v0.7.0)
 - Connection management with URI parser, SSH tunnels, TLS, OS keychain
+- PostgreSQL and SQLite browse/query support
 - Workspace tree, folders, tags, favorites, recents
 - Multi-tab DB viewer with virtualized grid, server-side filtering/sorting
 - FK preview, JSON popover, inline cell editing, changes queue

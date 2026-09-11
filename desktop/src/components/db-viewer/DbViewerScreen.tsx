@@ -5,7 +5,7 @@ import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar, NAV_CAPABILITY_KEY } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { isDestructiveQuery, isSchemaModifyingQuery } from "../../lib/utils";
-import { executeQuery, cancelQuery } from "../../lib/commands";
+import { executeQueryMulti, cancelQuery } from "../../lib/commands";
 import { getCapabilities } from "../../lib/dbCapabilities";
 
 const QueryEditor = lazy(() => import("../editor/QueryEditor").then((m) => ({ default: m.QueryEditor })));
@@ -19,8 +19,11 @@ import { ObjectDetail, type AnyObject } from "./objects/ObjectDetail";
 import { ObjectFormTab } from "./objects/ObjectFormTab";
 import { TabBar } from "./TabBar";
 import { VirtualDataGrid } from "../grid/VirtualDataGrid";
+import { ResultSetPanels } from "./ResultSetPanels";
 import { RowDetailDrawer } from "../grid/RowDetailDrawer";
 import { TableControls } from "./TableControls";
+import { StreamExportDialog } from "./StreamExportDialog";
+import { qualifiedTableSql } from "../../lib/exportData";
 import { EditConnectionModal } from "./EditConnectionModal";
 import { PasswordPromptDialog } from "./PasswordPromptDialog";
 import { useDbConnection } from "../../hooks/useDbConnection";
@@ -177,6 +180,7 @@ export function DbViewerScreen({
     const [rowDetailIdx, setRowDetailIdx] = useState<number | null>(null);
     const [editModalOpen, setEditModalOpen] = useState(false);
     const [destructiveQuery, setDestructiveQuery] = useState<string | null>(null);
+    const [streamExport, setStreamExport] = useState<{ sql: string } | null>(null);
     const connections = useConnectionStore((s) => s.connections);
     const currentConnection =
         connections.find((c) => c.id === connectionId) ?? null;
@@ -260,6 +264,7 @@ export function DbViewerScreen({
 
     const setTabData = useDbViewerStore((s) => s.setTabData);
     const setTabError = useDbViewerStore((s) => s.setTabError);
+    const setTabMulti = useDbViewerStore((s) => s.setTabMulti);
     const setTabLoading = useDbViewerStore((s) => s.setTabLoading);
     const databases = useDbViewerStore((s) => s.databases);
     const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
@@ -311,8 +316,24 @@ export function DbViewerScreen({
         if (!tab) return;
         setTabLoading(tabId, true);
         try {
-            const result = await executeQuery(connectionId, sql, tab.page, tab.pageSize);
-            setTabData(tabId, result);
+            const multi = await executeQueryMulti(connectionId, sql, tab.page, tab.pageSize);
+            const first = multi.result_sets[0] ?? null;
+            // Stamp the run's execution time onto the first set so the toolbar
+            // (TableControls reads activeTab.data.execution_time_ms) still shows it.
+            if (first) {
+                setTabData(tabId, { ...first, execution_time_ms: multi.execution_time_ms });
+            } else {
+                // Lone DML/DDL run with no result set — keep the empty-state behavior.
+                setTabData(tabId, {
+                    columns: [],
+                    rows: [],
+                    total_rows: 0,
+                    page: tab.page,
+                    page_size: tab.pageSize,
+                    execution_time_ms: multi.execution_time_ms,
+                });
+            }
+            setTabMulti(tabId, multi);
             useQueryStore.getState().invalidateHistory(connectionId);
             if (isSchemaModifyingQuery(sql)) {
                 const st = useDbViewerStore.getState();
@@ -1017,6 +1038,48 @@ const onQueriesPanelResizeStart = useCallback(
               )
             : {};
 
+        // Shared VirtualDataGrid props for the query-tab results region. The
+        // multi-result panels reuse these (overriding rows/columns per set);
+        // single-set runs render the grid directly with today's props.
+        const gridPropsForQueryTab = {
+            connectionId,
+            schema: activeSchema,
+            table: activeTable,
+            rows: displayRows,
+            columns,
+            hiddenColumns,
+            selectedRows,
+            dbType: currentConnection?.db_type ?? "postgresql",
+            tabType: activeTab?.tabType ?? "table",
+            getLocator,
+            onStageEdit: readOnlyTable ? undefined : handleStageEdit,
+            onStageInsertCell: readOnlyTable ? undefined : handleStageInsertCell,
+            onOpenRowDetail: handleOpenRowDetail,
+            readOnly: readOnlyTable,
+            enumValues: editorOptions?.enums,
+            fkOptions: editorOptions?.fks,
+            fkPlaceholders: editorOptions?.fkPlaceholders,
+            stagedValues,
+            pendingKeys,
+            pendingInsertChangeIds,
+            onToggleRow: (rowIndex: number) => {
+                setSelectedRows((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(rowIndex)) next.delete(rowIndex);
+                    else next.add(rowIndex);
+                    return next;
+                });
+            },
+            onToggleAll: () => {
+                setSelectedRows((prev) => {
+                    if (prev.size === processedRows.length && processedRows.length > 0) {
+                        return new Set();
+                    }
+                    return new Set(processedRows.map((_, i) => i));
+                });
+            },
+        };
+
         return (
                             <div className="flex-1 w-0 flex flex-col min-w-0 overflow-hidden">
                                 <TabBar onCommitted={handleCommitted} />
@@ -1209,74 +1272,31 @@ const onQueriesPanelResizeStart = useCallback(
                                                                 }
                                                                 variant="query"
                                                                 isMatview={readOnlyTable}
+                                                                onExportToFile={() =>
+                                                                    setStreamExport({
+                                                                        sql:
+                                                                            activeTab?.tabType === "query"
+                                                                                ? activeTab.query ?? ""
+                                                                                : qualifiedTableSql(
+                                                                                      currentConnection?.db_type ?? "postgresql",
+                                                                                      activeSchema,
+                                                                                      activeTable,
+                                                                                  ),
+                                                                    })
+                                                                }
                                                             />
                                                         )}
                                                         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                                                <VirtualDataGrid
-                                                    connectionId={connectionId}
-                                                    schema={activeSchema}
-                                                    table={activeTable}
-                                                    rows={displayRows}
-                                                    columns={columns}
-                                                    hiddenColumns={hiddenColumns}
-                                                    selectedRows={selectedRows}
-                                                    dbType={currentConnection?.db_type ?? "postgresql"}
-                                                    tabType={activeTab?.tabType ?? "table"}
-                                                    getLocator={getLocator}
-                                                    onStageEdit={readOnlyTable ? undefined : handleStageEdit}
-                                                    onStageInsertCell={readOnlyTable ? undefined : handleStageInsertCell}
-                                                    onOpenRowDetail={handleOpenRowDetail}
-                                                    readOnly={readOnlyTable}
-                                                    enumValues={editorOptions?.enums}
-                                                    fkOptions={editorOptions?.fks}
-                                                    fkPlaceholders={editorOptions?.fkPlaceholders}
-                                                    stagedValues={stagedValues}
-                                                    pendingKeys={pendingKeys}
-                                                    pendingInsertChangeIds={pendingInsertChangeIds}
-                                                    onToggleRow={(rowIndex) => {
-                                                        setSelectedRows(
-                                                            (prev) => {
-                                                                const next =
-                                                                    new Set(
-                                                                        prev,
-                                                                    );
-                                                                if (
-                                                                    next.has(
-                                                                        rowIndex,
-                                                                    )
-                                                                )
-                                                                    next.delete(
-                                                                        rowIndex,
-                                                                    );
-                                                                else
-                                                                    next.add(
-                                                                        rowIndex,
-                                                                    );
-                                                                return next;
-                                                            },
-                                                        );
-                                                    }}
-                                                    onToggleAll={() => {
-                                                        setSelectedRows(
-                                                            (prev) => {
-                                                                if (
-                                                                    prev.size ===
-                                                                        processedRows.length &&
-                                                                    processedRows.length >
-                                                                        0
-                                                                ) {
-                                                                    return new Set();
-                                                                }
-                                                                return new Set(
-                                                                    processedRows.map(
-                                                                        (_, i) =>
-                                                                            i,
-                                                                    ),
-                                                                );
-                                                            },
-                                                        );
-                                                    }}
-                                                />
+                                                {activeTab?.tabType === "query" && activeTab.multi && (activeTab.multi.result_sets.length > 1 || activeTab.multi.notices.length > 0) ? (
+                                                    <ResultSetPanels
+                                                        multi={activeTab.multi}
+                                                        renderGrid={(set) => (
+                                                            <VirtualDataGrid {...gridPropsForQueryTab} rows={set.rows} columns={set.columns} />
+                                                        )}
+                                                    />
+                                                ) : (
+                                                    <VirtualDataGrid {...gridPropsForQueryTab} />
+                                                )}
                                                     </div>
                                                     </div>
                                                 </>
@@ -1375,6 +1395,18 @@ const onQueriesPanelResizeStart = useCallback(
                                                     setSelectedRows(new Set())
                                                 }
                                                 isMatview={readOnlyTable}
+                                                onExportToFile={() =>
+                                                    setStreamExport({
+                                                        sql:
+                                                            activeTab?.tabType === "query"
+                                                                ? activeTab.query ?? ""
+                                                                : qualifiedTableSql(
+                                                                      currentConnection?.db_type ?? "postgresql",
+                                                                      activeSchema,
+                                                                      activeTable,
+                                                                  ),
+                                                    })
+                                                }
                                             />
                                         )}
                                         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -1566,6 +1598,13 @@ const onQueriesPanelResizeStart = useCallback(
                 />
                 {capabilities.objects && (
                     <ObjectSearchPalette connectionId={connectionId} />
+                )}
+                {streamExport && (
+                    <StreamExportDialog
+                        connectionId={connectionId}
+                        sql={streamExport.sql}
+                        onClose={() => setStreamExport(null)}
+                    />
                 )}
             </div>
         </TooltipProvider>

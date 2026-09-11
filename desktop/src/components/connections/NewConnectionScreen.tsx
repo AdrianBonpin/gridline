@@ -31,6 +31,7 @@ type Stage = "entry" | "configured";
 const FALLBACK_PORTS: Record<string, number> = {
     postgresql: 5432,
     mysql: 3306,
+    mariadb: 3306,
     redis: 6379,
 };
 
@@ -73,7 +74,7 @@ export function NewConnectionScreen({
 }: NewConnectionScreenProps) {
     const [stage, setStage] = useState<Stage>("entry");
     const [managedPreset, setManagedPreset] = useState<
-        "supabase" | "neon" | null
+        "supabase" | "neon" | "planetscale" | null
     >(null);
     const [form, setForm] = useState<ConnectionFormData>(() =>
         createEmptyForm(
@@ -98,7 +99,7 @@ export function NewConnectionScreen({
         const parsed = parseConnectionString(value);
         if (parsed) {
             const provider =
-                parsed.db_type === "postgresql"
+                parsed.db_type === "postgresql" || parsed.db_type === "mysql"
                     ? detectProviderFromHost(parsed.host)
                     : null;
             setManagedPreset(provider);
@@ -138,7 +139,9 @@ export function NewConnectionScreen({
         (id: ProviderId) => {
             const provider = getProviderById(id)!;
             setManagedPreset(
-                provider.isManagedPreset ? (id as "supabase" | "neon") : null,
+                provider.isManagedPreset
+                    ? (id as "supabase" | "neon" | "planetscale")
+                    : null,
             );
             revealConfigured({
                 db_type: provider.dbType,
@@ -147,6 +150,7 @@ export function NewConnectionScreen({
                         ? null
                         : getDefaultPort(provider.dbType),
                 ...(provider.dbType === "sqlite" ? { host: "" } : {}),
+                ...(id === "planetscale" ? { ssl_mode: "verify-full" } : {}),
             });
         },
         [revealConfigured],
@@ -163,7 +167,7 @@ export function NewConnectionScreen({
                     const parsed = parseConnectionString(value);
                     if (parsed) {
                         const provider =
-                            parsed.db_type === "postgresql"
+                            parsed.db_type === "postgresql" || parsed.db_type === "mysql"
                                 ? detectProviderFromHost(parsed.host)
                                 : null;
                         setManagedPreset(provider);

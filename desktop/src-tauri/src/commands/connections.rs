@@ -2,7 +2,7 @@ use crate::models::{Connection, ConnectionInput};
 use crate::store::Store;
 use std::sync::Mutex;
 
-const VALID_DB_TYPES: [&str; 4] = ["postgresql", "mysql", "sqlite", "redis"];
+const VALID_DB_TYPES: [&str; 5] = ["postgresql", "mysql", "mariadb", "sqlite", "redis"];
 
 fn validate(input: &ConnectionInput) -> Result<(), String> {
     if input.name.is_empty() || input.name.chars().count() > 100 {
@@ -360,3 +360,7 @@ mod tests {
         assert_eq!(get_recent_connections_inner(&st, 10).unwrap().len(), 0);
     }
 }
+
+#[cfg(test)]
+#[path = "connections.test.rs"]
+mod connections_tests;

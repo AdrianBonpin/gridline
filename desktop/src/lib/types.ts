@@ -1,4 +1,4 @@
-export type DbType = "postgresql" | "mysql" | "sqlite" | "redis";
+export type DbType = "postgresql" | "mysql" | "mariadb" | "sqlite" | "redis";
 
 export type Theme = "dark" | "light" | "system";
 export type FontSize = "small" | "medium" | "large";
@@ -189,6 +189,19 @@ export interface QueryResult {
   error?: string | null;
 }
 
+export interface StatementNotice {
+  statement_index: number;
+  kind: "dml" | "ddl" | "error" | string;
+  text: string;
+  affected: number | null;
+}
+
+export interface MultiQueryResult {
+  result_sets: QueryResult[];
+  notices: StatementNotice[];
+  execution_time_ms: number;
+}
+
 export type ChangeStatus = "pending" | "applied" | "error";
 
 export type ChangeItemType =
@@ -367,6 +380,7 @@ export type ObjectType =
   | "sequences"
   | "enums"
   | "extensions"
+  | "hypertables"
   | "indexes"
   | "constraints"
   | "procedures"
@@ -376,6 +390,21 @@ export interface ObjectSearchHit {
   name: string;
   schema: string;
   object_type: string; // TABLE | VIEW | MATERIALIZED VIEW | FUNCTION | PROCEDURE | TRIGGER | SEQUENCE | ENUM | EXTENSION | INDEX | CONSTRAINT
+}
+
+export interface HypertableInfo {
+  name: string;
+  schema: string;
+  num_dimensions: number;
+  compression_enabled: boolean;
+  num_chunks: number;
+  total_size_bytes: number | null;
+}
+
+export interface HypertableListResponse {
+  available: boolean;
+  reason: string | null;
+  items: HypertableInfo[];
 }
 
 export interface DependencyInfo {
@@ -477,4 +506,25 @@ export interface Relationship {
 export interface SchemaGraph {
   tables: TableNode[];
   relationships: Relationship[];
+}
+export interface DiffDetailLine {
+  label: string;
+  old: string;
+  new: string;
+}
+
+export interface DiffItem {
+  object_type: string;
+  name: string;
+  kind: "added" | "removed" | "changed";
+  detail: DiffDetailLine[];
+  sync_sql: string[];
+  destructive: boolean;
+}
+
+export interface DiffReport {
+  items: DiffItem[];
+  source_label: string;
+  target_label: string;
+  truncated: boolean;
 }

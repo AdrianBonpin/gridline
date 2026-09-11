@@ -1,22 +1,24 @@
 import { useEffect, useState, useMemo } from "react";
-import { ChevronRight, ChevronDown, FunctionSquare, GitBranch, ListOrdered, Tag, Puzzle, Search } from "lucide-react";
+import { ChevronRight, ChevronDown, FunctionSquare, GitBranch, ListOrdered, Tag, Puzzle, Layers, Search } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import * as cmd from "../../lib/commands";
-import type { FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo } from "../../lib/types";
+import type { FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, HypertableInfo } from "../../lib/types";
+import { HypertableDetail } from "./HypertableDetail";
 
-type ObjectType = "functions" | "triggers" | "sequences" | "enums" | "extensions";
+type ObjectType = "functions" | "triggers" | "sequences" | "enums" | "extensions" | "hypertables";
 
 interface ObjectTreeProps {
   type: ObjectType;
   connectionId: string;
 }
 
-const TYPE_LABELS: Record<ObjectType, string> = {
+export const TYPE_LABELS: Record<ObjectType, string> = {
   functions: "functions",
   triggers: "triggers",
   sequences: "sequences",
   enums: "enums",
   extensions: "extensions",
+  hypertables: "hypertables",
 };
 
 const ICONS: Record<ObjectType, React.ReactNode> = {
@@ -25,7 +27,17 @@ const ICONS: Record<ObjectType, React.ReactNode> = {
   sequences: <ListOrdered size={14} className="text-text-muted shrink-0" />,
   enums: <Tag size={14} className="text-text-muted shrink-0" />,
   extensions: <Puzzle size={14} className="text-text-muted shrink-0" />,
+  hypertables: <Layers size={14} className="text-text-muted shrink-0" />,
 };
+
+/** Object types visible in the dropdown. Hypertables only show when the
+ *  connection confirmed TimescaleDB availability (available === true). */
+export function visibleObjectTypes(hypertablesAvailable: boolean | null): ObjectType[] {
+  const all = Object.keys(TYPE_LABELS) as ObjectType[];
+  return hypertablesAvailable === true
+    ? all
+    : all.filter((t) => t !== "hypertables");
+}
 
 function SourceCode({ source }: { source: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -59,11 +71,13 @@ export function ObjectTree({ type, connectionId }: ObjectTreeProps) {
   const sequences = useDbViewerStore((s) => s.sequences);
   const enums = useDbViewerStore((s) => s.enums);
   const extensions = useDbViewerStore((s) => s.extensions);
+  const hypertables = useDbViewerStore((s) => s.hypertables);
   const setFunctions = useDbViewerStore((s) => s.setFunctions);
   const setTriggers = useDbViewerStore((s) => s.setTriggers);
   const setSequences = useDbViewerStore((s) => s.setSequences);
   const setEnums = useDbViewerStore((s) => s.setEnums);
   const setExtensions = useDbViewerStore((s) => s.setExtensions);
+  const setHypertables = useDbViewerStore((s) => s.setHypertables);
 
   const [loading, setLoading] = useState(false);
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
@@ -77,8 +91,9 @@ export function ObjectTree({ type, connectionId }: ObjectTreeProps) {
       case "sequences": return sequences;
       case "enums": return enums;
       case "extensions": return extensions;
+      case "hypertables": return hypertables;
     }
-  }, [type, functions, triggers, sequences, enums, extensions]);
+  }, [type, functions, triggers, sequences, enums, extensions, hypertables]);
 
   const setter = useMemo(() => {
     switch (type) {
@@ -87,8 +102,9 @@ export function ObjectTree({ type, connectionId }: ObjectTreeProps) {
       case "sequences": return setSequences;
       case "enums": return setEnums;
       case "extensions": return setExtensions;
+      case "hypertables": return setHypertables;
     }
-  }, [type, setFunctions, setTriggers, setSequences, setEnums, setExtensions]);
+  }, [type, setFunctions, setTriggers, setSequences, setEnums, setExtensions, setHypertables]);
 
   // Fetch on mount if not in store
   useEffect(() => {
@@ -113,6 +129,9 @@ export function ObjectTree({ type, connectionId }: ObjectTreeProps) {
         } else if (type === "enums") {
           const result = await cmd.getEnums(connectionId, currentSchema ?? undefined);
           if (!cancelled) (setEnums as (v: EnumInfo[]) => void)(result);
+        } else if (type === "hypertables") {
+          const res = await cmd.getHypertables(connectionId, currentSchema ?? undefined);
+          if (!cancelled) (setHypertables as (v: HypertableInfo[]) => void)(res.available ? res.items : []);
         }
       } catch {
         // Silently fail — store remains null, we show the empty state
@@ -123,7 +142,7 @@ export function ObjectTree({ type, connectionId }: ObjectTreeProps) {
 
     fetchData();
     return () => { cancelled = true; };
-  }, [type, connectionId, currentSchema, data, setter, setFunctions, setTriggers, setSequences, setEnums, setExtensions]);
+  }, [type, connectionId, currentSchema, data, setter, setFunctions, setTriggers, setSequences, setEnums, setExtensions, setHypertables]);
 
   const q = search.toLowerCase().trim();
 
@@ -316,6 +335,16 @@ export function ObjectTree({ type, connectionId }: ObjectTreeProps) {
                           </div>
                         )}
                       </>
+                    );
+                  })()}
+
+                  {type === "hypertables" && (() => {
+                    const h = item as HypertableInfo;
+                    return (
+                      <HypertableDetail
+                        item={h}
+                        onOpenTable={(schema, table) => useDbViewerStore.getState().openTab(schema, table)}
+                      />
                     );
                   })()}
                 </div>

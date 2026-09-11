@@ -31,7 +31,7 @@ export function abbreviateType(dataType: string): string {
   return TYPE_ABBREV[lower] ?? dataType;
 }
 
-const VALID_DB_TYPES: DbType[] = ["postgresql", "mysql", "sqlite", "redis"];
+const VALID_DB_TYPES: DbType[] = ["postgresql", "mysql", "mariadb", "sqlite", "redis"];
 
 export function validateConnectionInput(input: ConnectionInput): ValidationResult {
   if (!input.name || input.name.length === 0) return { ok: false, error: "name is required" };

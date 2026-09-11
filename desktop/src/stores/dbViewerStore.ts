@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, IndexInfo, ConstraintInfo, ObjectType, RoleInfo } from "../lib/types";
+import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, HypertableInfo, IndexInfo, ConstraintInfo, ObjectType, RoleInfo, MultiQueryResult, DiffItem } from "../lib/types";
 import { getDatabases, getSchemas, getTables } from "../lib/commands";
 import type { ObjectKind, DdlParams } from "../lib/objectCrud";
 
@@ -58,6 +58,7 @@ export interface ViewerTab {
   loading: boolean;
   error: string | null;
   data: QueryResult | null;
+  multi?: MultiQueryResult | null;
   columnFilter?: { column: string; value: string };
   filterRules: FilterRule[];
   sortRules: SortRule[];
@@ -117,6 +118,8 @@ interface DbViewerState {
   sequences: SequenceInfo[] | null;
   enums: EnumInfo[] | null;
   extensions: ExtensionInfo[] | null;
+  hypertables: HypertableInfo[] | null;
+  hypertablesAvailable: boolean | null;
   indexes: IndexInfo[] | null;
   setSchemaTreeLoading: (loading: boolean) => void;
   constraints: ConstraintInfo[] | null;
@@ -144,6 +147,7 @@ interface DbViewerState {
   setPage: (tabId: string, page: number) => void;
   setPageSize: (tabId: string, pageSize: number) => void;
   setTabData: (tabId: string, data: QueryResult) => void;
+  setTabMulti: (tabId: string, multi: MultiQueryResult | null) => void;
   setTabLoading: (tabId: string, loading: boolean) => void;
   setTabError: (tabId: string, error: string) => void;
   setColumnFilter: (tabId: string, column: string, value: string) => void;
@@ -165,6 +169,7 @@ interface DbViewerState {
     rows?: unknown[][];
     description?: string | null;
   }) => void;
+  addDiffItems: (items: DiffItem[]) => void;
   cancelChange: (changeId: string) => void;
   removeChange: (changeId: string) => void;
   updateChange: (changeId: string, patch: Partial<QueueItem>) => void;
@@ -182,6 +187,8 @@ interface DbViewerState {
   setSequences: (sequences: SequenceInfo[]) => void;
   setEnums: (enums: EnumInfo[]) => void;
   setExtensions: (extensions: ExtensionInfo[]) => void;
+  setHypertables: (hypertables: HypertableInfo[]) => void;
+  setHypertablesAvailable: (v: boolean | null) => void;
   setIndexes: (indexes: IndexInfo[]) => void;
   setConstraints: (constraints: ConstraintInfo[]) => void;
   setRoles: (roles: RoleInfo[]) => void;
@@ -224,6 +231,8 @@ const initialState = {
   sequences: null as SequenceInfo[] | null,
   enums: null as EnumInfo[] | null,
   extensions: null as ExtensionInfo[] | null,
+  hypertables: null as HypertableInfo[] | null,
+  hypertablesAvailable: null as boolean | null,
   indexes: null as IndexInfo[] | null,
   constraints: null as ConstraintInfo[] | null,
   roles: [] as RoleInfo[],
@@ -443,8 +452,13 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setTabData: (tabId, data) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, data, loading: false, error: null } : t,
+        t.id === tabId ? { ...t, data, multi: null, loading: false, error: null } : t,
       ),
+    })),
+
+  setTabMulti: (tabId, multi) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, multi } : t)),
     })),
 
   setTabLoading: (tabId, loading) =>
@@ -536,6 +550,19 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({ changesQueue: [...state.changesQueue, item] }));
   },
 
+  addDiffItems: (items) => {
+    for (const it of items) {
+      if (it.destructive || it.sync_sql.length === 0) continue;
+      for (const sql of it.sync_sql) {
+        get().addChange({
+          type: "ddl",
+          sql,
+          description: `Schema diff: ${it.object_type} ${it.name} (${it.kind})`,
+        });
+      }
+    }
+  },
+
   cancelChange: (changeId) =>
     set((state) => ({
       changesQueue: state.changesQueue.map((c) =>
@@ -586,6 +613,8 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setSequences: (sequences) => set({ sequences }),
   setEnums: (enums) => set({ enums }),
   setExtensions: (extensions) => set({ extensions }),
+  setHypertables: (hypertables) => set({ hypertables }),
+  setHypertablesAvailable: (v) => set({ hypertablesAvailable: v }),
   setIndexes: (indexes) => set({ indexes }),
   setConstraints: (constraints) => set({ constraints }),
   setRoles: (roles) => set({ roles }),

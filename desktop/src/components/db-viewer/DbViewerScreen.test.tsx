@@ -281,8 +281,8 @@ describe("DbViewerScreen", () => {
 
     it("executes a non-destructive query when Run is clicked", async () => {
         const executeQuery = vi
-            .spyOn(commands, "executeQuery")
-            .mockResolvedValue(mockQueryResult as any);
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue({ result_sets: [mockQueryResult], notices: [], execution_time_ms: 42 } as any);
         render(
             <DbViewerScreen
                 connectionId="c1"
@@ -306,13 +306,11 @@ describe("DbViewerScreen", () => {
 
     it("shows a destructive-query confirmation dialog and executes on confirm", async () => {
         const executeQuery = vi
-            .spyOn(commands, "executeQuery")
+            .spyOn(commands, "executeQueryMulti")
             .mockResolvedValue({
-                columns: [],
-                rows: [],
-                total_rows: 0,
-                page: 1,
-                page_size: 50,
+                result_sets: [{ columns: [], rows: [], total_rows: 0, page: 1, page_size: 50 }],
+                notices: [],
+                execution_time_ms: 42,
             } as any);
         render(
             <DbViewerScreen
@@ -345,8 +343,8 @@ describe("DbViewerScreen", () => {
     });
 
     it("refreshes the schema tree after a DDL query runs", async () => {
-        vi.spyOn(commands, "executeQuery").mockResolvedValue(
-            mockQueryResult as any,
+        vi.spyOn(commands, "executeQueryMulti").mockResolvedValue(
+            { result_sets: [mockQueryResult], notices: [], execution_time_ms: 42 } as any,
         );
         const getSchemas = vi
             .spyOn(commands, "getSchemas")
@@ -377,8 +375,8 @@ describe("DbViewerScreen", () => {
     });
 
     it("does not refresh the schema tree after a SELECT", async () => {
-        vi.spyOn(commands, "executeQuery").mockResolvedValue(
-            mockQueryResult as any,
+        vi.spyOn(commands, "executeQueryMulti").mockResolvedValue(
+            { result_sets: [mockQueryResult], notices: [], execution_time_ms: 42 } as any,
         );
         const getSchemas = vi
             .spyOn(commands, "getSchemas")
@@ -396,7 +394,7 @@ describe("DbViewerScreen", () => {
         );
         fireEvent.change(textarea, { target: { value: "SELECT 1" } });
         fireEvent.click(screen.getByRole("button", { name: /run query/i }));
-        await waitFor(() => expect(commands.executeQuery).toHaveBeenCalled());
+        await waitFor(() => expect(commands.executeQueryMulti).toHaveBeenCalled());
         expect(getSchemas).not.toHaveBeenCalled();
     });
 
@@ -423,8 +421,8 @@ describe("DbViewerScreen", () => {
 
     it("runs the current query when the Cmd+Enter action fires", async () => {
         const executeQuery = vi
-            .spyOn(commands, "executeQuery")
-            .mockResolvedValue(mockQueryResult as any);
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue({ result_sets: [mockQueryResult], notices: [], execution_time_ms: 42 } as any);
         render(
             <DbViewerScreen
                 connectionId="c1"
@@ -452,7 +450,7 @@ describe("DbViewerScreen", () => {
         const pending = new Promise<unknown>((r) => {
             resolveRun = r;
         });
-        vi.spyOn(commands, "executeQuery").mockReturnValue(pending as any);
+        vi.spyOn(commands, "executeQueryMulti").mockReturnValue(pending as any);
         render(
             <DbViewerScreen
                 connectionId="c1"
@@ -469,7 +467,7 @@ describe("DbViewerScreen", () => {
         await waitFor(() =>
             expect(screen.getByTestId("query-run-pulse")).toBeInTheDocument(),
         );
-        resolveRun(mockQueryResult);
+        resolveRun({ result_sets: [mockQueryResult], notices: [], execution_time_ms: 42 });
         await waitFor(() =>
             expect(screen.queryByTestId("query-run-pulse")).toBeNull(),
         );
@@ -477,8 +475,8 @@ describe("DbViewerScreen", () => {
 
     it("collapses and re-expands the query results via the caret", async () => {
         const executeQuery = vi
-            .spyOn(commands, "executeQuery")
-            .mockResolvedValue(mockQueryResult as any);
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue({ result_sets: [mockQueryResult], notices: [], execution_time_ms: 42 } as any);
         render(
             <DbViewerScreen
                 connectionId="c1"
@@ -505,8 +503,8 @@ describe("DbViewerScreen", () => {
     });
 
     it("resizes the results panel with a drag handle, clamped to min/max", async () => {
-        vi.spyOn(commands, "executeQuery").mockResolvedValue(
-            mockQueryResult as any,
+        vi.spyOn(commands, "executeQueryMulti").mockResolvedValue(
+            { result_sets: [mockQueryResult], notices: [], execution_time_ms: 42 } as any,
         );
         render(
             <DbViewerScreen
@@ -930,7 +928,7 @@ describe("DbViewerScreen", () => {
     });
 
     it("renders an objectForm tab with the Visual/SQL toggle in the objects view", async () => {
-    vi.spyOn(commands, "executeQuery").mockResolvedValue({ columns: [], rows: [], total_rows: 0, page: 1, page_size: 50 } as any);
+    vi.spyOn(commands, "executeQueryMulti").mockResolvedValue({ result_sets: [{ columns: [], rows: [], total_rows: 0, page: 1, page_size: 50 }], notices: [], execution_time_ms: 42 } as any);
     vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
     vi.spyOn(commands, "getDatabases").mockResolvedValue(["mydb"]);
     vi.spyOn(commands, "getTables").mockResolvedValue([] as any);

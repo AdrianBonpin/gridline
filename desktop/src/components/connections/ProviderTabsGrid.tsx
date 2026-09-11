@@ -24,7 +24,7 @@ export function ProviderTabsGrid({ selectedId, onSelect }: ProviderTabsGridProps
             }`}
           >
             <span className="w-8 h-8 flex items-center justify-center">
-              {p.isManagedPreset ? <ProviderIcon id={p.id as "supabase" | "neon"} size={24} /> : <DbIcon type={p.dbType} size={24} />}
+              {p.isManagedPreset ? <ProviderIcon id={p.id as "supabase" | "neon" | "planetscale"} size={24} /> : <DbIcon type={p.dbType} size={24} />}
             </span>
             <span className="text-sm font-medium">{p.label}</span>
             {p.isManagedPreset && (

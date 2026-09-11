@@ -7,7 +7,7 @@ import type { ConnectionFormData } from "./connectionFormData";
 export interface GeneralTabProps {
   form: ConnectionFormData;
   onChange: (updates: Partial<ConnectionFormData>) => void;
-  managedPreset?: "supabase" | "neon" | null;
+  managedPreset?: "supabase" | "neon" | "planetscale" | null;
 }
 
 const AUTH_OPTIONS = ["User & Password"];
@@ -32,7 +32,7 @@ export function GeneralTab({ form, onChange, managedPreset }: GeneralTabProps) {
         )}
         {managedPreset && (
           <p className="text-xs text-accent-muted mt-1.5">
-            {managedPreset === "supabase" ? "Supabase" : "NeonDB"} requires SSL — enable it under SSH / SSL.
+            {managedPreset === "supabase" ? "Supabase" : managedPreset === "planetscale" ? "PlanetScale" : "NeonDB"} requires SSL — enable it under SSH / SSL.
           </p>
         )}
       </div>

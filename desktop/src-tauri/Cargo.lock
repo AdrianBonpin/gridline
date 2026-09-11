@@ -1783,12 +1783,13 @@ dependencies = [
 
 [[package]]
 name = "gridline"
-version = "0.7.15"
+version = "0.8.0"
 dependencies = [
  "bytes",
  "chrono",
  "core-foundation 0.10.1",
  "deadpool-postgres",
+ "futures-util",
  "indexmap 2.14.0",
  "redis",
  "rusqlite",

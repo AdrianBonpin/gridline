@@ -3,7 +3,7 @@ use crate::store::Store;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
-const VALID_DB_TYPES: [&str; 4] = ["postgresql", "mysql", "sqlite", "redis"];
+const VALID_DB_TYPES: [&str; 5] = ["postgresql", "mysql", "mariadb", "sqlite", "redis"];
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ImportRecord {

@@ -6,6 +6,18 @@ export interface ChangelogEntry {
 
 export const changelogEntries: ChangelogEntry[] = [
   {
+    version: "0.8.0",
+    date: "2026-09-09",
+    highlights: [
+      "Schema diff / compare — pick a source connection of the same engine family and diff it against the current one: added/removed/changed tables, columns, constraints, indexes, views, sequences, and enums, each with generated same-dialect sync SQL. Non-destructive items stage into the changes queue; destructive changes (DROPs, ALTER TYPE) are copy-only with a warning.",
+      "Multiple result sets — run a script and see every statement's results stacked in order, with affected-count notices for DML/DDL and a stop-at-first-error card that keeps prior results visible.",
+      "Export all rows to file — stream the full result of any query (no page limit, constant memory) to CSV, JSONL, or JSON, with progress and cancel.",
+      "MariaDB — first-class database type: provider card, type filter, connection URL copy/paste, and full viewer/editing/import/backup parity with MySQL.",
+      "TimescaleDB — hypertables surface in the Objects view on PostgreSQL connections with the extension installed: dimensions, compression status, chunk count, and size.",
+      "PlanetScale preset — managed MySQL (Vitess) provider card with a researched setup guide and .psdb.cloud host detection.",
+    ],
+  },
+  {
     version: "0.7.15",
     date: "2026-09-08",
     highlights: [

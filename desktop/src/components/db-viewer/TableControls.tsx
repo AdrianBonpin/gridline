@@ -467,6 +467,8 @@ interface TableControlsProps {
   isMatview?: boolean;
   /** "table" = full table toolbar; "query" = export/refresh/columns + timing */
   variant?: "table" | "query";
+  /** Open the full-result streamed export dialog. */
+  onExportToFile?: () => void;
 }
 
 export function TableControls({
@@ -488,6 +490,7 @@ export function TableControls({
   defaultRefreshRate = 0,
   isMatview = false,
   variant = "table",
+  onExportToFile,
 }: TableControlsProps) {
   const isQuery = variant === "query";
   const notify = useNotificationStore((s) => s.notify);
@@ -636,6 +639,21 @@ export function TableControls({
             {fmt.label}
           </button>
         ))}
+        {onExportToFile && (
+          <>
+            <div className="my-1 h-px bg-border" />
+            <button
+              type="button"
+              onClick={() => {
+                setExportOpen(false);
+                onExportToFile();
+              }}
+              className="w-full px-3 py-1.5 text-xs text-left text-text hover:bg-surface-raised transition-colors cursor-pointer"
+            >
+              Export all rows to file…
+            </button>
+          </>
+        )}
       </DropdownMenu>
     </div>
   );

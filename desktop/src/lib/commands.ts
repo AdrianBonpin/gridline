@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreOptions, SqliteBackupOptions, SqliteRestoreOptions, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreOptions, SqliteBackupOptions, SqliteRestoreOptions, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult } from "./types";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 import type { ChangePayload } from "./changePayload";
+import type { DiffReport } from "./types";
 import { buildObjectDdl as buildObjectDdlImpl, type ObjectKind, type DdlParams } from "./objectCrud";
 
 export { type ObjectKind, type DdlParams };
@@ -226,6 +227,13 @@ export async function getExtensions(connectionId: string): Promise<ExtensionInfo
   return invoke<ExtensionInfo[]>("get_extensions", { connectionId });
 }
 
+export async function getHypertables(
+  connectionId: string,
+  schema?: string,
+): Promise<HypertableListResponse> {
+  return invoke<HypertableListResponse>("get_hypertables", { connectionId, schema });
+}
+
 export async function getSchemaGraph(
   connectionId: string,
   schema?: string,
@@ -277,6 +285,24 @@ export async function executeQuery(
   pageSize: number,
 ): Promise<QueryResult> {
   return invoke<QueryResult>("execute_query", { connectionId, query, page, pageSize });
+}
+
+export async function executeQueryMulti(
+  connectionId: string,
+  query: string,
+  page: number,
+  pageSize: number,
+): Promise<MultiQueryResult> {
+  return invoke<MultiQueryResult>("execute_query_multi", { connectionId, query, page, pageSize });
+}
+
+export async function exportQueryToFile(
+  connectionId: string,
+  sql: string,
+  format: string,
+  path: string,
+): Promise<{ rows_written: number; path: string }> {
+  return invoke("export_query_to_file", { connectionId, sql, format, path });
 }
 
 export async function getQueryHistory(
@@ -393,4 +419,14 @@ export async function getTablespaces(connectionId: string): Promise<TablespaceIn
 }
 export async function buildRebuildScript<C extends { name: string; type: string; nullable: boolean; default: string | null; is_pk: boolean }[]>(connectionId: string, schema: string, table: string, newColumns: C): Promise<string> {
   return invoke<string>("build_rebuild_script", { connectionId, schema, table, newColumns });
+}
+export async function compareSchemas(
+  sourceConnectionId: string,
+  sourceSchema: string,
+  targetConnectionId: string,
+  targetSchema: string,
+): Promise<DiffReport> {
+  return invoke<DiffReport>("compare_schemas", {
+    sourceConnectionId, sourceSchema, targetConnectionId, targetSchema,
+  });
 }

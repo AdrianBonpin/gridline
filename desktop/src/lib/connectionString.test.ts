@@ -125,6 +125,30 @@ describe("parseConnectionString", () => {
     });
   });
 
+  it("parses mariadb:// with the 3306 default port", () => {
+    const result = parseConnectionString("mariadb://root:pw@localhost/app");
+    expect(result).toEqual({
+      db_type: "mariadb",
+      host: "localhost",
+      port: 3306,
+      username: "root",
+      password: "pw",
+      database: "app",
+    });
+  });
+
+  it("keeps mysql:// mapped to the mysql db_type", () => {
+    const result = parseConnectionString("mysql://root:pw@localhost:3307/app");
+    expect(result).toEqual({
+      db_type: "mysql",
+      host: "localhost",
+      port: 3307,
+      username: "root",
+      password: "pw",
+      database: "app",
+    });
+  });
+
   it("defaults Redis port to 6379 when omitted", () => {
     const result = parseConnectionString("redis://localhost");
     expect(result).toEqual({
@@ -170,6 +194,19 @@ describe("detectProviderFromHost", () => {
     });
   });
 
+describe("detectProviderFromHost", () => {
+  it("detects PlanetScale access hosts", () => {
+    expect(detectProviderFromHost("xxxx.us-east-2.psdb.cloud")).toBe("planetscale");
+    expect(detectProviderFromHost("aws.connect.psdb.cloud")).toBe("planetscale");
+  });
+
+  it("still detects supabase and neon", () => {
+    expect(detectProviderFromHost("db.abc.supabase.co")).toBe("supabase");
+    expect(detectProviderFromHost("ep-1-pooler.eu.aws.neon.tech")).toBe("neon");
+    expect(detectProviderFromHost("example.com")).toBeNull();
+  });
+});
+
 describe("buildConnectionUrl", () => {
   it("builds a PostgreSQL URL with password and sslmode", () => {
     const url = buildConnectionUrl(
@@ -210,6 +247,22 @@ describe("buildConnectionUrl", () => {
       "pw",
     );
     expect(url).toBe("mysql://root:pw@127.0.0.1:3306/app");
+  });
+
+  it("emits mariadb:// for a mariadb connection", () => {
+    const url = buildConnectionUrl(
+      makeConn({ db_type: "mariadb", host: "127.0.0.1", port: 3306, username: "root", database: "app" }),
+      "pw",
+    );
+    expect(url).toBe("mariadb://root:pw@127.0.0.1:3306/app");
+  });
+
+  it("omits the password in the mariadb no-password variant", () => {
+    const url = buildConnectionUrl(
+      makeConn({ db_type: "mariadb", host: "127.0.0.1", port: 3306, username: "root", database: "app" }),
+      null,
+    );
+    expect(url).toBe("mariadb://root@127.0.0.1:3306/app");
   });
 
   it("builds a Redis URL with password but no username", () => {

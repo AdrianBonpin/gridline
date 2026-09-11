@@ -107,7 +107,7 @@ fn url_scheme_end(msg: &str, i: usize) -> Option<usize> {
 pub fn validate_test_input(config: &DbConfig) -> Option<String> {
     let db_type = config.db_type.to_lowercase();
 
-    let valid_types = ["postgresql", "mysql", "sqlite", "redis"];
+    let valid_types = ["postgresql", "mysql", "mariadb", "sqlite", "redis"];
     if !valid_types.contains(&db_type.as_str()) {
         return Some(format!(
             "unsupported database type: {}. Supported types: {}",
@@ -220,6 +220,7 @@ pub async fn test_database_connection(config: &DbConfig, ssh: &SshManager) -> Te
     let result = match config.db_type.to_lowercase().as_str() {
         "postgresql" => test_pg_connection(config, ssh).await,
         "mysql" => test_mysql_connection(config, ssh).await,
+        "mariadb" => test_mysql_connection(config, ssh).await,
         "sqlite" => test_sqlite_connection(config),
         "redis" => test_redis_connection(config, ssh).await,
         other => TestConnectionResult {
@@ -724,3 +725,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "test_connection.test.rs"]
+mod test_connection_tests;

@@ -8,7 +8,7 @@ import type { ConnectionFormData } from "./connectionFormData";
 export interface DetailedConnectionFormProps {
   form: ConnectionFormData;
   onChange: (updates: Partial<ConnectionFormData>) => void;
-  managedPreset?: "supabase" | "neon" | null;
+  managedPreset?: "supabase" | "neon" | "planetscale" | null;
 }
 
 export function DetailedConnectionForm({ form, onChange, managedPreset }: DetailedConnectionFormProps) {

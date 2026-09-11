@@ -5,8 +5,8 @@
 
 use crate::db::pool::{ConnectionPoolManager, DbConfig, DbHandle};
 use crate::models::db_viewer::{
-    Change, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, IndexInfo,
-    QueryResult, SequenceInfo, TableInfo, TriggerInfo,
+    Change, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, HypertableInfo,
+    HypertableListResponse, IndexInfo, QueryResult, SequenceInfo, TableInfo, TriggerInfo,
 };
 use bytes::BytesMut;
 use std::collections::HashMap;
@@ -1198,7 +1198,7 @@ pub async fn db_connect(
             }
             Err(e) => Err(format!("Connection failed: {}", e)),
         }
-    } else if config.db_type == "mysql" {
+    } else if config.db_type == "mysql" || config.db_type == "mariadb" {
         run_mysql_connect(
             &connection_id,
             &config,
@@ -2641,6 +2641,58 @@ pub async fn get_functions(
 }
 
 #[tauri::command]
+pub async fn get_hypertables(
+    connection_id: String,
+    schema: Option<String>,
+    state: State<'_, crate::AppState>,
+) -> Result<HypertableListResponse, String> {
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            let detected: bool = client
+                .query_one(&crate::db::introspection::pg_timescale_detect_query(), &[])
+                .await
+                .map(|r| r.get::<_, bool>(0))
+                .unwrap_or(false);
+            if !detected {
+                return Ok(HypertableListResponse {
+                    available: false,
+                    reason: Some("TimescaleDB extension is not installed".into()),
+                    items: vec![],
+                });
+            }
+            let schema = schema.unwrap_or_else(|| "public".to_string());
+            let query = crate::db::introspection::pg_hypertables_query(&schema);
+            let rows = client
+                .query(&query, &[&schema])
+                .await
+                .map_err(|e| format!("TimescaleDB introspection failed: {e}"))?;
+            Ok(HypertableListResponse {
+                available: true,
+                reason: None,
+                items: rows
+                    .iter()
+                    .map(|r| HypertableInfo {
+                        name: r.get(0),
+                        schema: r.get(1),
+                        num_dimensions: r.get::<_, Option<i64>>(2).unwrap_or(0),
+                        compression_enabled: r.get::<_, Option<bool>>(3).unwrap_or(false),
+                        num_chunks: r.get::<_, Option<i64>>(4).unwrap_or(0),
+                        total_size_bytes: r.get::<_, Option<i64>>(5),
+                    })
+                    .collect(),
+            })
+        }
+        Some(DbHandle::Sqlite(_)) | Some(DbHandle::MySql(_)) => Ok(HypertableListResponse {
+            available: false,
+            reason: Some("Hypertables are a TimescaleDB (PostgreSQL) feature".into()),
+            items: vec![],
+        }),
+        None => Err("Connection not found".into()),
+    }
+}
+
+#[tauri::command]
 pub async fn get_indexes(
     connection_id: String,
     schema: Option<String>,
@@ -3637,3 +3689,7 @@ mod tests {
         assert!(!pg_dump_available_at("/nonexistent/pg_dump_999999"));
     }
 }
+
+#[cfg(test)]
+#[path = "db_viewer.test.rs"]
+mod db_viewer_extra_tests;

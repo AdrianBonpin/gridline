@@ -3,13 +3,15 @@ import { SelectDropdown } from "../ui/SelectDropdown";
 import { BackupPage } from "./BackupPage";
 import { RestorePage } from "./RestorePage";
 import { SyncPage } from "./SyncPage";
+import { SchemaDiffPage } from "./SchemaDiffPage";
 
-type ToolOperation = "backup" | "restore" | "sync";
+type ToolOperation = "backup" | "restore" | "sync" | "diff";
 
 const OPERATION_OPTIONS = [
   { value: "backup", label: "Backup" },
   { value: "restore", label: "Restore" },
   { value: "sync", label: "DB Sync" },
+  { value: "diff", label: "Schema Diff" },
 ];
 
 export function ToolsPage({ connectionId }: { connectionId: string }) {
@@ -33,6 +35,7 @@ export function ToolsPage({ connectionId }: { connectionId: string }) {
         {operation === "backup" && <BackupPage connectionId={connectionId} />}
         {operation === "restore" && <RestorePage connectionId={connectionId} />}
         {operation === "sync" && <SyncPage />}
+        {operation === "diff" && <SchemaDiffPage connectionId={connectionId} />}
       </div>
     </div>
   );

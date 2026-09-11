@@ -10,7 +10,7 @@
 //! 3. Every query is recorded in the local `query_history` table.
 
 use crate::db::pool::DbHandle;
-use crate::models::db_viewer::{ColumnInfo, QueryResult};
+use crate::models::db_viewer::{ColumnInfo, MultiQueryResult, QueryResult, StatementNotice};
 use serde::{Deserialize, Serialize};
 use sqlx::{Column, Row};
 use std::time::Instant;
@@ -709,6 +709,507 @@ async fn execute_mysql_raw(
 }
 
 // ---------------------------------------------------------------------------
+// Multiple result sets (execute_query_multi)
+// ---------------------------------------------------------------------------
+// Per the spec: statements execute sequentially; SELECT-producing statements
+// get wrapped pagination (first page per set + total count — per-set paging is
+// deliberately omitted because re-running a script would re-execute DML);
+// DML/DDL produce notices; the first error stops the run, prior sets survive.
+
+const MAX_STATEMENTS: usize = 50;
+
+pub(crate) enum StatementOutcome {
+    Set(QueryResult),
+    Notice {
+        kind: &'static str,
+        text: String,
+        affected: Option<i64>,
+    },
+}
+
+/// Classify a statement by its first significant keyword (execution-time
+/// classification per spec §4 — NOT in the tokenizer).
+pub(crate) fn statement_kind(stmt: &str) -> &'static str {
+    let k: String = stmt
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_lowercase();
+    match k.as_str() {
+        "select" | "with" | "values" | "table" => "select",
+        "insert" | "update" | "delete" => "dml",
+        _ => "ddl",
+    }
+}
+
+/// Parse a PG CommandComplete tag ("INSERT 0 5" → 5; "CREATE TABLE" → None).
+pub(crate) fn affected_from_tag(tag: &str) -> Option<i64> {
+    tag.split_whitespace().last()?.parse::<i64>().ok()
+}
+
+fn notice_for(
+    idx: usize,
+    kind: &str,
+    text: String,
+    affected: Option<i64>,
+) -> StatementNotice {
+    StatementNotice {
+        statement_index: idx,
+        kind: kind.to_string(),
+        text,
+        affected,
+    }
+}
+
+// ── SQLite walker ─────────────────────────────────────────────────
+
+pub(crate) fn execute_sqlite_statement(
+    conn: &rusqlite::Connection,
+    stmt: &str,
+    page: i64,
+    page_size: i64,
+) -> Result<StatementOutcome, String> {
+    match conn.execute(stmt, []) {
+        Ok(n) => Ok(StatementOutcome::Notice {
+            kind: if statement_kind(stmt) == "ddl" { "ddl" } else { "dml" },
+            text: format!("OK — {n} rows affected"),
+            affected: Some(n as i64),
+        }),
+        Err(rusqlite::Error::ExecuteReturnedResults) => {
+            let (columns, all_rows) = execute_sqlite_with_query(conn, stmt)?;
+            let total_rows = all_rows.len() as i64;
+            let rows: Vec<Vec<serde_json::Value>> = all_rows
+                .into_iter()
+                .take(page_size.max(0) as usize)
+                .collect();
+            Ok(StatementOutcome::Set(QueryResult {
+                columns,
+                rows,
+                total_rows,
+                page,
+                page_size,
+                execution_time_ms: None,
+            }))
+        }
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if e.code == rusqlite::ErrorCode::OperationInterrupted =>
+        {
+            Err("Query cancelled".to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+pub(crate) fn run_sqlite_statements(
+    conn: &rusqlite::Connection,
+    statements: &[String],
+    page: i64,
+    page_size: i64,
+    result_sets: &mut Vec<QueryResult>,
+    notices: &mut Vec<StatementNotice>,
+) -> Option<String> {
+    for (idx, stmt) in statements.iter().enumerate() {
+        match execute_sqlite_statement(conn, stmt, page, page_size) {
+            Ok(StatementOutcome::Set(qr)) => result_sets.push(qr),
+            Ok(StatementOutcome::Notice { kind, text, affected }) => {
+                notices.push(notice_for(idx, kind, text, affected))
+            }
+            Err(e) if e == "Query cancelled" => return Some(e),
+            Err(e) => {
+                notices.push(StatementNotice {
+                    statement_index: idx,
+                    kind: "error".into(),
+                    text: e.clone(),
+                    affected: None,
+                });
+                return Some(format!("Statement {} failed: {e}", idx + 1));
+            }
+        }
+    }
+    None
+}
+
+// ── PostgreSQL walker ─────────────────────────────────────────────
+
+pub(crate) async fn execute_pg_statement(
+    client: &tokio_postgres::Client,
+    stmt: &str,
+    page: i64,
+    page_size: i64,
+) -> Result<StatementOutcome, String> {
+    let trimmed = stmt.trim();
+    let off = (page.saturating_sub(1).max(0)) * page_size;
+
+    // 1. Try wrapped pagination — a parse error here executes nothing.
+    let wrapped_count = format!("SELECT COUNT(*) FROM ({}) AS _gridline_cnt", trimmed);
+    if let Ok(row) = client.query_one(&wrapped_count, &[]).await {
+        let total_rows: i64 = row.get(0);
+        let wrapped_data = format!(
+            "SELECT * FROM ({}) AS _gridline_data LIMIT $1 OFFSET $2",
+            trimmed
+        );
+        let data_rows = client
+            .query(&wrapped_data, &[&page_size, &off])
+            .await
+            .map_err(|e| {
+                if is_pg_cancel_error(&e) {
+                    "Query cancelled".to_string()
+                } else {
+                    format!("{e}")
+                }
+            })?;
+        let columns: Vec<ColumnInfo> = match data_rows.first() {
+            Some(first) => first
+                .columns()
+                .iter()
+                .map(|c| ColumnInfo {
+                    name: c.name().to_string(),
+                    data_type: format!("{:?}", c.type_()),
+                    is_nullable: true,
+                    is_pk: false,
+                    is_fk: false,
+                    fk_ref: None,
+                    default_value: None,
+                    editable: true,
+                    is_generated: false,
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let rows: Vec<Vec<serde_json::Value>> = data_rows
+            .iter()
+            .map(|row| {
+                (0..row.len())
+                    .map(|i| crate::commands::db_viewer::pg_value_to_json(row, i))
+                    .collect()
+            })
+            .collect();
+        return Ok(StatementOutcome::Set(QueryResult {
+            columns,
+            rows,
+            total_rows,
+            page,
+            page_size,
+            execution_time_ms: None,
+        }));
+    }
+
+    // 2. Raw single-statement execution via simple_query (captures the
+    //    CommandComplete tag so DML notices carry affected counts).
+    let messages = client
+        .simple_query(trimmed)
+        .await
+        .map_err(|e| {
+            if is_pg_cancel_error(&e) {
+                "Query cancelled".to_string()
+            } else {
+                crate::commands::db_viewer::pg_error_message(&e)
+            }
+        })?;
+
+    let mut columns: Vec<ColumnInfo> = Vec::new();
+    let mut all_rows: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut last_tag: Option<String> = None;
+    for msg in messages {
+        match msg {
+            tokio_postgres::SimpleQueryMessage::Row(row) => {
+                if columns.is_empty() {
+                    columns = row
+                        .columns()
+                        .iter()
+                        .map(|c| ColumnInfo {
+                            name: c.name().to_string(),
+                            data_type: "text".to_string(),
+                            is_nullable: true,
+                            is_pk: false,
+                            is_fk: false,
+                            fk_ref: None,
+                            default_value: None,
+                            editable: true,
+                            is_generated: false,
+                        })
+                        .collect();
+                }
+                let values: Vec<serde_json::Value> = (0..row.len())
+                    .map(|i| match row.try_get::<usize>(i) {
+                        Ok(Some(s)) => serde_json::Value::String(s.to_string()),
+                        _ => serde_json::Value::Null,
+                    })
+                    .collect();
+                all_rows.push(values);
+            }
+            tokio_postgres::SimpleQueryMessage::CommandComplete(tag) => {
+                last_tag = Some(tag.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    if all_rows.is_empty() {
+        let tag = last_tag.clone().unwrap_or_else(|| "OK".to_string());
+        let affected = last_tag.as_deref().and_then(affected_from_tag);
+        return Ok(StatementOutcome::Notice {
+            kind: if statement_kind(stmt) == "ddl" { "ddl" } else { "dml" },
+            text: tag,
+            affected,
+        });
+    }
+
+    let total_rows = all_rows.len() as i64;
+    let rows: Vec<Vec<serde_json::Value>> = all_rows
+        .into_iter()
+        .take(page_size.max(0) as usize)
+        .collect();
+    Ok(StatementOutcome::Set(QueryResult {
+        columns,
+        rows,
+        total_rows,
+        page,
+        page_size,
+        execution_time_ms: None,
+    }))
+}
+
+pub(crate) async fn run_pg_statements(
+    client: &tokio_postgres::Client,
+    statements: &[String],
+    page: i64,
+    page_size: i64,
+    result_sets: &mut Vec<QueryResult>,
+    notices: &mut Vec<StatementNotice>,
+) -> Option<String> {
+    for (idx, stmt) in statements.iter().enumerate() {
+        match execute_pg_statement(client, stmt, page, page_size).await {
+            Ok(StatementOutcome::Set(qr)) => result_sets.push(qr),
+            Ok(StatementOutcome::Notice { kind, text, affected }) => {
+                notices.push(notice_for(idx, kind, text, affected))
+            }
+            Err(e) if e == "Query cancelled" => return Some(e),
+            Err(e) => {
+                notices.push(StatementNotice {
+                    statement_index: idx,
+                    kind: "error".into(),
+                    text: e.clone(),
+                    affected: None,
+                });
+                return Some(format!("Statement {} failed: {e}", idx + 1));
+            }
+        }
+    }
+    None
+}
+
+// ── MySQL walker ──────────────────────────────────────────────────
+
+async fn execute_mysql_statement_on(
+    conn: &mut sqlx::mysql::MySqlConnection,
+    stmt: &str,
+    page: i64,
+    page_size: i64,
+) -> Result<StatementOutcome, String> {
+    let trimmed = stmt.trim();
+    let off = (page.saturating_sub(1).max(0)) * page_size;
+
+    let total_rows: i64 = match sqlx::query_scalar::<_, i64>(&mysql_wrap_count(trimmed))
+        .fetch_one(&mut *conn)
+        .await
+    {
+        Ok(n) => n,
+        Err(e) if is_mysql_cancel_error(&e) => return Err("Query cancelled".to_string()),
+        Err(_) => {
+            return execute_mysql_raw(conn, trimmed, page, page_size, off)
+                .await
+                .map(|qr| {
+                    if qr.columns.is_empty() {
+                        StatementOutcome::Notice {
+                            kind: if statement_kind(stmt) == "ddl" { "ddl" } else { "dml" },
+                            text: "OK".to_string(),
+                            affected: None,
+                        }
+                    } else {
+                        StatementOutcome::Set(qr)
+                    }
+                });
+        }
+    };
+
+    let data_rows = match sqlx::query(&mysql_wrap_data(trimmed))
+        .bind(page_size)
+        .bind(off)
+        .fetch_all(&mut *conn)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) if is_mysql_cancel_error(&e) => return Err("Query cancelled".to_string()),
+        Err(e) => return Err(crate::commands::db_viewer::sanitize_error(&format!("{e}"))),
+    };
+    let columns: Vec<ColumnInfo> = match data_rows.first() {
+        Some(first) => first
+            .columns()
+            .iter()
+            .map(|c| ColumnInfo {
+                name: c.name().to_string(),
+                data_type: c.type_info().to_string(),
+                is_nullable: true,
+                is_pk: false,
+                is_fk: false,
+                fk_ref: None,
+                default_value: None,
+                editable: true,
+                is_generated: false,
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    let rows: Vec<Vec<serde_json::Value>> = data_rows
+        .iter()
+        .map(|r| (0..r.len()).map(|i| mysql_cell_to_json(r, i)).collect())
+        .collect();
+    Ok(StatementOutcome::Set(QueryResult {
+        columns,
+        rows,
+        total_rows,
+        page,
+        page_size,
+        execution_time_ms: None,
+    }))
+}
+
+async fn run_mysql_statements(
+    conn: &mut sqlx::mysql::MySqlConnection,
+    statements: &[String],
+    page: i64,
+    page_size: i64,
+    result_sets: &mut Vec<QueryResult>,
+    notices: &mut Vec<StatementNotice>,
+    cancel_registry: &crate::cancel::CancelRegistry,
+    connection_id: &str,
+) -> Option<String> {
+    let conn_id: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap_or(-1);
+    cancel_registry.set_mysql_conn_id(connection_id, Some(conn_id));
+    for (idx, stmt) in statements.iter().enumerate() {
+        match execute_mysql_statement_on(conn, stmt, page, page_size).await {
+            Ok(StatementOutcome::Set(qr)) => result_sets.push(qr),
+            Ok(StatementOutcome::Notice { kind, text, affected }) => {
+                notices.push(notice_for(idx, kind, text, affected))
+            }
+            Err(e) if e == "Query cancelled" => {
+                cancel_registry.set_mysql_conn_id(connection_id, None);
+                return Some(e);
+            }
+            Err(e) => {
+                notices.push(StatementNotice {
+                    statement_index: idx,
+                    kind: "error".into(),
+                    text: e.clone(),
+                    affected: None,
+                });
+                cancel_registry.set_mysql_conn_id(connection_id, None);
+                return Some(format!("Statement {} failed: {e}", idx + 1));
+            }
+        }
+    }
+    cancel_registry.set_mysql_conn_id(connection_id, None);
+    None
+}
+
+/// Execute a multi-statement script, returning every result set and notices.
+/// `execute_query` is untouched; the query workspace calls this instead.
+#[tauri::command]
+pub async fn execute_query_multi(
+    connection_id: String,
+    query: String,
+    page: Option<i64>,
+    page_size: Option<i64>,
+    state: State<'_, crate::AppState>,
+) -> Result<MultiQueryResult, String> {
+    let start = Instant::now();
+    let p = page.unwrap_or(1);
+    let ps = page_size.unwrap_or(50);
+
+    let statements = crate::db::sql_split::split_statements(&query);
+    if statements.is_empty() {
+        return Err("Query cannot be empty".to_string());
+    }
+    if statements.len() > MAX_STATEMENTS {
+        return Err(format!(
+            "Too many statements: {} (max {MAX_STATEMENTS})",
+            statements.len()
+        ));
+    }
+
+    let mut result_sets: Vec<QueryResult> = Vec::new();
+    let mut notices: Vec<StatementNotice> = Vec::new();
+
+    let err_text: Option<String>;
+    let mut pm = state.pool_manager.lock().await;
+    match pm.get(&connection_id) {
+        Some(DbHandle::Postgresql(client, _)) => {
+            err_text =
+                run_pg_statements(client, &statements, p, ps, &mut result_sets, &mut notices).await;
+        }
+        Some(DbHandle::Sqlite(conn)) => {
+            err_text = run_sqlite_statements(conn, &statements, p, ps, &mut result_sets, &mut notices);
+        }
+        Some(DbHandle::MySql(pool)) => {
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
+            err_text = run_mysql_statements(
+                &mut *conn,
+                &statements,
+                p,
+                ps,
+                &mut result_sets,
+                &mut notices,
+                &state.cancel_registry,
+                &connection_id,
+            )
+            .await;
+        }
+        None => return Err("Connection not found".to_string()),
+    }
+
+    let elapsed = start.elapsed().as_millis() as i64;
+    let row_count = result_sets.first().map(|q| q.rows.len() as i64).unwrap_or(0);
+    let history_id = Uuid::new_v4().to_string();
+    if let Some(e) = &err_text {
+        insert_history(
+            &state.db_store,
+            &history_id,
+            &connection_id,
+            &query,
+            Some(elapsed),
+            Some(row_count),
+            "error",
+            Some(e.as_str()),
+        );
+    } else {
+        insert_history(
+            &state.db_store,
+            &history_id,
+            &connection_id,
+            &query,
+            Some(elapsed),
+            Some(row_count),
+            "success",
+            None,
+        );
+    }
+
+    Ok(MultiQueryResult {
+        result_sets,
+        notices,
+        execution_time_ms: elapsed,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Query history commands
 // ---------------------------------------------------------------------------
 
@@ -1378,3 +1879,7 @@ mod tests {
         assert!(res.unwrap_err().contains("Query cancelled"));
     }
 }
+
+#[cfg(test)]
+#[path = "query.test.rs"]
+mod query_tests;
