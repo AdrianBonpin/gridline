@@ -7,22 +7,44 @@ name: Release
 #   git checkout prod && git pull
 #   git tag v0.5.0 && git push origin v0.5.0
 #
-# SIGNING STATUS: macOS is Developer-ID signed + notarized via
-# scripts/release-mac.sh (built manually on Adrian's machine). NOTE: this
-# GitHub workflow is NOT the active release path — Gitea Actions uses
-# .gitea/workflows/release.yml (Linux/Windows only). Linux/Windows installers
+# SIGNING STATUS: this is the ACTIVE release path. macOS is Developer-ID
+# signed + notarized in CI when the Apple secrets below are configured (see
+# README "macOS signing & notarization"). When the secrets are absent the mac
+# jobs still build, but ad-hoc signed / unnotarized. Linux/Windows installers
 # remain unsigned.
+#
+# Required secrets for signed + notarized macOS builds:
+#   APPLE_CERTIFICATE           base64 of the Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD  password for that .p12
+#   APPLE_SIGNING_IDENTITY      "Developer ID Application: Name (TEAMID)"
+#   KEYCHAIN_PASSWORD           any throwaway password for the temp keychain
+#   APPLE_API_KEY               App Store Connect Key ID
+#   APPLE_API_ISSUER            App Store Connect Issuer ID
+#   APPLE_API_KEY_CONTENT       contents of the AuthKey_<KeyID>.p8
+#
+# The cask bump runs only after the draft release is PUBLISHED (the GitHub
+# releases/tags API does not serve drafts), so it is wired to the `release:
+# published` event rather than the tag push. It also needs HOMEBREW_TAP_TOKEN.
 
 on:
   push:
     tags:
       - 'v*'
+  release:
+    types: [published]
 
 permissions:
   contents: write
 
 jobs:
   publish:
+    # Build + draft release happen on the tag push; the `release: published`
+    # event exists only to trigger the cask bump below.
+    if: github.event_name == 'push'
+    env:
+      # Empty when the secret is unset — the tool steps below test for a
+      # non-empty value before re-signing.
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +61,63 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # ---- Apple signing setup (macOS only, skipped when secrets absent) ---
+      - name: Detect Apple signing secrets
+        id: apple
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.APPLE_CERTIFICATE }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::APPLE_CERTIFICATE not set — macOS build will be ad-hoc signed and NOT notarized."
+          fi
+
+      # The bundled pg/mariadb tools are re-signed in their own steps below, so
+      # the identity must be in a keychain BEFORE those steps run. tauri-action
+      # is deliberately NOT given APPLE_CERTIFICATE (only the identity), so it
+      # does not create a second keychain.
+      - name: Import Apple Developer ID certificate
+        if: startsWith(matrix.platform, 'macos') && steps.apple.outputs.enabled == 'true'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="gridline-signing.keychain-db"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          EXISTING="$(security list-keychain -d user | tr -d ' \"')"
+          security list-keychain -d user -s "$KEYCHAIN" $EXISTING
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning
+
+      - name: Prepare notarization credentials
+        if: startsWith(matrix.platform, 'macos') && steps.apple.outputs.enabled == 'true'
+        shell: bash
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
+          mkdir -p "$(dirname "$KEY_PATH")"
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$KEY_PATH"
+          {
+            echo "APPLE_API_KEY=${APPLE_API_KEY}"
+            echo "APPLE_API_ISSUER=${APPLE_API_ISSUER}"
+            echo "APPLE_API_KEY_PATH=${KEY_PATH}"
+          } >> "$GITHUB_ENV"
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -131,6 +210,16 @@ jobs:
                 libpq=$(otool -L "$OUT/$b" | awk '/libpq/ {print $1; exit}')
                 install_name_tool -change "$libpq" "@loader_path/libpq.5.dylib" "$OUT/$b"
               done
+              # install_name_tool invalidates the linker signature. Re-sign with
+              # the Developer ID identity + hardened runtime + secure timestamp:
+              # Apple rejects ad-hoc-signed nested executables at notarization.
+              # No-op until the Apple secrets are configured.
+              if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+                for f in "$OUT"/pg_dump "$OUT"/pg_restore "$OUT"/psql "$OUT"/libpq.5.dylib; do
+                  codesign --force --options runtime --timestamp \
+                    --sign "$APPLE_SIGNING_IDENTITY" "$f"
+                done
+              fi
               ;;
             windows-latest)
               URL="https://get.enterprisedb.com/postgresql/postgresql-${PG_VER}-1-windows-x64-binaries.zip"
@@ -263,7 +352,12 @@ jobs:
                     if [ ! -f "$OUT/$base" ]; then cp "$lib" "$OUT/$base" 2>/dev/null || true; fi
                     install_name_tool -change "$lib" "@loader_path/$base" "$dylib" 2>/dev/null || true
                   done || true
-                  codesign --force --sign - "$dylib" 2>/dev/null || true
+                  if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+                    codesign --force --options runtime --timestamp \
+                      --sign "$APPLE_SIGNING_IDENTITY" "$dylib"
+                  else
+                    codesign --force --sign - "$dylib" 2>/dev/null || true
+                  fi
                 done
               done
               ;;
@@ -328,16 +422,32 @@ jobs:
   # no-ops until that secret is set, so releases stay green before this is
   # configured.
   bump-cask:
-    needs: publish
+    # Triggered by `release: published`, NOT the tag push: the GitHub
+    # releases/tags API returns 404 for drafts, so the DMGs are undownloadable
+    # until the draft is published.
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
+      - name: Check for tap token
+        id: tap
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.HOMEBREW_TAP_TOKEN }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::HOMEBREW_TAP_TOKEN not set - skipping Homebrew cask bump."
+          fi
+
       - name: Checkout
+        if: steps.tap.outputs.enabled == 'true'
         uses: actions/checkout@v4
 
       - name: Resolve version and DMG checksums
         id: meta
+        if: steps.tap.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -349,6 +459,7 @@ jobs:
           echo "sha_intel=$(shasum -a 256 /tmp/intel.dmg | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout tap repo
+        if: steps.tap.outputs.enabled == 'true'
         uses: actions/checkout@v4
         with:
           repository: AdrianBonpin/homebrew-gridline
@@ -356,6 +467,7 @@ jobs:
           path: tap
 
       - name: Render and push cask
+        if: steps.tap.outputs.enabled == 'true'
         env:
           VERSION: ${{ steps.meta.outputs.version }}
           SHA_ARM: ${{ steps.meta.outputs.sha_arm }}
