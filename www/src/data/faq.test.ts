@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { faqItems } from "./faq";
 
 describe("faqItems", () => {
-  it("has exactly 5 items", () => {
-    expect(faqItems).toHaveLength(5);
+  it("has exactly 6 items", () => {
+    expect(faqItems).toHaveLength(6);
   });
 
   it("every item has a non-empty question and answer", () => {

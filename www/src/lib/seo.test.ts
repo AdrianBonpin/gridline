@@ -20,7 +20,7 @@ describe("seo builders", () => {
       applicationCategory: "DeveloperApplication",
       offersPrice: 0,
       offersCurrency: "USD",
-      downloadUrl: "https://git.ranio.xyz/adrianbonpin/gridline/releases",
+      downloadUrl: "https://github.com/AdrianBonpin/gridline/releases",
     });
     expect(ld["@type"]).toBe("SoftwareApplication");
     expect(ld.name).toBe("Gridline");
@@ -43,10 +43,10 @@ describe("seo builders", () => {
       name: "Gridline",
       url: "https://getgridline.app/",
       logo: "https://getgridline.app/gridline-icon.svg",
-      sameAs: ["https://git.ranio.xyz/adrianbonpin/gridline"],
+      sameAs: ["https://github.com/AdrianBonpin/gridline"],
     });
     expect(ld["@type"]).toBe("Organization");
-    expect(ld.sameAs).toContain("https://git.ranio.xyz/adrianbonpin/gridline");
+    expect(ld.sameAs).toContain("https://github.com/AdrianBonpin/gridline");
   });
 
   it("buildWebSiteJsonLd includes SearchAction", () => {
