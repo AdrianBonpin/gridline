@@ -197,6 +197,37 @@ for APP in \
     || echo "  (spctl assessment pending — normal right after notarization; stapler validate passed)"
 done
 
+# ---- notarize + staple the DMGs --------------------------------------------
+# Notarizing the .app is not enough. When a user opens the downloaded DMG,
+# Gatekeeper assesses the DMG itself — and an unnotarized DMG is rejected as
+# "Unnotarized Developer ID" even though the app inside it is fine. Submit each
+# DMG to the same notary service and staple the ticket into the DMG.
+if [ "${GRIDLINE_SKIP_NOTARIZE:-0}" = "1" ]; then
+  echo ">> Skipping DMG notarization (GRIDLINE_SKIP_NOTARIZE=1)."
+else
+  API_KEY_PATH="${APPLE_API_KEY_PATH:-${HOME}/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY}.p8}"
+  [ -f "$API_KEY_PATH" ] || {
+    echo "ERROR: notarization API key not found at $API_KEY_PATH" >&2
+    echo "  Set APPLE_API_KEY_PATH in ${NOTARIZE_ENV} or place the .p8 at the default location." >&2
+    exit 1
+  }
+  for DMG in \
+    "${BUNDLE_ARM}/dmg/Gridline_${VERSION}_aarch64.dmg" \
+    "${BUNDLE_INTEL}/dmg/Gridline_${VERSION}_x64.dmg"; do
+    [ -f "$DMG" ] || { echo "missing $DMG" >&2; exit 1; }
+    echo ">> Notarizing $(basename "$DMG") (this can take a few minutes)"
+    xcrun notarytool submit "$DMG" \
+      --key "$API_KEY_PATH" \
+      --key-id "$APPLE_API_KEY" \
+      --issuer "$APPLE_API_ISSUER" \
+      --wait
+    xcrun stapler staple "$DMG" \
+      || { echo "failed to staple $(basename "$DMG")" >&2; exit 1; }
+    xcrun stapler validate "$DMG" \
+      || { echo "notarization ticket not stapled to $(basename "$DMG")" >&2; exit 1; }
+  done
+fi
+
 # ---- create/ensure release + upload DMGs -----------------------------------
 # Use `tea` for release management — it handles OAuth token refresh, unlike a
 # raw curl with a token from the git credential store (which can 401).

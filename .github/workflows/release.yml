@@ -439,6 +439,59 @@ jobs:
           # README download tables link to them statically per release —
           # remember to update both README tables when cutting a new version.
 
+      # tauri-action notarizes + staples the .app but NOT the .dmg wrapping it,
+      # so Gatekeeper rejects the downloaded DMG as "Unnotarized Developer ID"
+      # even though the app inside is fine. Submit the DMG to the same notary
+      # service, staple the ticket, and replace the uploaded asset.
+      #
+      # Assets are replaced via the release ID rather than `gh release upload`:
+      # the GitHub releases/tags endpoint returns 404 for drafts, so uploading
+      # by tag cannot work while the release is still a draft.
+      - name: Notarize and staple the DMGs
+        if: startsWith(matrix.platform, 'macos') && steps.apple.outputs.enabled == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(desktop/src-tauri/target/*/release/bundle/dmg/*.dmg)
+          if [ ${#dmgs[@]} -eq 0 ]; then
+            echo "no DMG produced" >&2
+            exit 1
+          fi
+          REL_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"${RELEASE_TAG}\") | .id" | head -1)
+          if [ -z "$REL_ID" ]; then
+            echo "could not resolve a release id for ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          for dmg in "${dmgs[@]}"; do
+            name=$(basename "$dmg")
+            echo ">> notarizing $name (this can take a few minutes)"
+            xcrun notarytool submit "$dmg" \
+              --key "$APPLE_API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY" \
+              --issuer "$APPLE_API_ISSUER" \
+              --wait
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
+            # Replace the copy tauri-action uploaded, which carries no DMG ticket.
+            old=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets" \
+              --jq ".[] | select(.name == \"${name}\") | .id" | head -1)
+            if [ -n "$old" ]; then
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${old}"
+            fi
+            echo ">> re-uploading stapled $name"
+            curl -fsS -X POST \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@${dmg}" \
+              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets?name=${name}"
+            echo
+          done
+          echo "all DMGs notarized and stapled"
+
   # After the installers are uploaded, refresh the Homebrew cask in the
   # AdrianBonpin/homebrew-gridline tap: hash the freshly-published DMGs,
   # render Casks/gridline.rb from the template, and push it. Users then get

@@ -318,7 +318,7 @@ Pre-built installers for macOS, Windows, and Linux are published on the [Release
 
 #### macOS signing & notarization
 
-Gridline's macOS builds are **Developer-ID signed and notarized by GitHub Actions**, so macOS opens them without a Gatekeeper prompt.
+Gridline's macOS builds are **Developer-ID signed and notarized by GitHub Actions**, so macOS opens them without a Gatekeeper prompt. Both the `.app` and the `.dmg` it ships inside are notarized and carry a stapled ticket — notarizing only the `.app` is not enough, because Gatekeeper assesses the downloaded DMG itself and rejects it as "Unnotarized Developer ID" even when the app within is fine.
 
 **One-time setup** (only the repo owner needs to do this):
 
