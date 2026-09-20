@@ -32,7 +32,7 @@ export const changelogEntries: ChangelogEntry[] = [
     date: "2026-09-04",
     highlights: [
       "No more repeated macOS keychain prompts — saved connection passwords and SSH secrets are now ACL-pinned to the app's code signature when stored, so app upgrades never re-trigger the macOS keychain access dialog (users upgrading from older builds see one final prompt — choose Always Allow).",
-      "Install via Homebrew — add the Gitea tap (brew tap AdrianBonpin/gridline https://git.ranio.xyz/adrianbonpin/homebrew-gridline.git) and run brew install --cask gridline.",
+      "Install via Homebrew — add the Homebrew tap (brew tap AdrianBonpin/gridline https://github.com/AdrianBonpin/homebrew-gridline.git) and run brew install --cask gridline.",
     ],
   },
   {

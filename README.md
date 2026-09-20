@@ -18,7 +18,7 @@
   <a href="https://react.dev/"><img src="https://img.shields.io/badge/react-%2320232a.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB" alt="React" /></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-D22128.svg?style=for-the-badge" alt="Apache 2.0 License" /></a>
-  <a href="https://github.com/AdrianBonpin/gridline"><img src="https://img.shields.io/badge/Open_Source-Gitea-4183C4.svg?style=for-the-badge" alt="Open source on GitHub" /></a>
+  <a href="https://github.com/AdrianBonpin/gridline"><img src="https://img.shields.io/badge/Open_Source-GitHub-181717.svg?style=for-the-badge" alt="Open source on GitHub" /></a>
 </p>
 
 <p>
@@ -44,7 +44,7 @@ Grab the installer for your OS from the [latest release](https://github.com/Adri
 **macOS via Homebrew** (recommended for Mac users):
 
 ```bash
-# one-time setup (the tap is hosted on Gitea, not GitHub):
+# one-time setup (the tap is hosted on GitHub):
 brew tap AdrianBonpin/gridline https://github.com/AdrianBonpin/homebrew-gridline.git
 brew trust adrianbonpin/gridline
 

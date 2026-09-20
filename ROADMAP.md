@@ -104,7 +104,7 @@ Still deferred from 0.7.0, slated for this bucket:
 ## ✅ Shipped (0.7.14)
 
 - **No more repeated macOS keychain prompts** — saved connection passwords and SSH secrets are ACL-pinned to the app's code signature when stored, so app upgrades never re-trigger the macOS keychain access dialog (users upgrading from older builds see one final prompt — choose Always Allow)
-- **Install via Homebrew** — add the Gitea tap (`brew tap AdrianBonpin/gridline https://git.ranio.xyz/adrianbonpin/homebrew-gridline.git`) and run `brew install --cask gridline`
+- **Install via Homebrew** — add the Homebrew tap (`brew tap AdrianBonpin/gridline https://github.com/AdrianBonpin/homebrew-gridline.git`) and run `brew install --cask gridline`
 - **Version bump** 0.7.13 → **0.7.14**.
 
 ## ✅ Shipped (0.7.13)
@@ -112,7 +112,7 @@ Still deferred from 0.7.0, slated for this bucket:
 - **Developer-ID signed + notarized macOS** — the app is properly code-signed with a Developer ID Application certificate and notarized by Apple, so macOS opens it without the Gatekeeper "Open Anyway" prompt or the `xattr` quarantine workaround
 - **Version bump** 0.7.12 → **0.7.13**.
 
-## ✅ Shipped (0.7.12) *(includes 0.7.11: release-pipeline/docs refresh — README download links moved from GitHub to the self-hosted Gitea `git.ranio.xyz`)*
+## ✅ Shipped (0.7.12) *(includes 0.7.11: release-pipeline/docs refresh)*
 
 - **Reliable cell editing for non-text columns** — editing a PostgreSQL cell whose type isn't text (integers, booleans, UUIDs, json/jsonb, timestamps, enums, numerics) now works; edited values are sent to PostgreSQL in text wire format so the server parses them into the column's own type
 - **Recent connections fix** — the Recent strip no longer renders empty on first launch when the connections list hadn't loaded yet
