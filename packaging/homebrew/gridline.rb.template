@@ -1,9 +1,9 @@
 # Homebrew Cask formula for Gridline.
 #
-# This file is the template; `scripts/render-cask.sh` substitutes
-# @VERSION@ / @ARM_SHA256@ / @INTEL_SHA256@ on each release and pushes the
-# rendered file to the `AdrianBonpin/homebrew-gridline` tap as
-# `Casks/gridline.rb`. End users then install with
+# This file is the template; `scripts/render-cask.sh` substitutes the version
+# and the per-arch SHA-256 checksums on each release and pushes the rendered
+# file to the `AdrianBonpin/homebrew-gridline` tap as `Casks/gridline.rb`.
+# End users then install with
 #
 #   brew install --cask AdrianBonpin/gridline/gridline
 #

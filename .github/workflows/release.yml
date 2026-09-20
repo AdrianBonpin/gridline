@@ -41,8 +41,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build, e.g. v0.8.0'
+        description: 'Tag to build or bump the cask for, e.g. v0.8.0'
         required: true
+      bump_cask:
+        description: 'Only bump the Homebrew cask for `tag` (skip the build)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -54,9 +58,10 @@ env:
 
 jobs:
   publish:
-    # Build + draft release happen on the tag push; the `release: published`
-    # event exists only to trigger the cask bump below.
-    if: github.event_name != 'release'
+    # Build + draft release happen on a tag push or a dispatch that isn't a
+    # cask-only run. The `release: published` event exists only to trigger the
+    # cask bump below.
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.bump_cask != true)
     env:
       # Empty when the secret is unset — the tool steps below test for a
       # non-empty value before re-signing.
@@ -445,10 +450,12 @@ jobs:
   # cleanly until that secret is set, so releases stay green before this is
   # configured.
   bump-cask:
-    # Triggered by `release: published`, NOT the tag push: the GitHub
-    # releases/tags API returns 404 for drafts, so the DMGs are undownloadable
-    # until the draft is published.
-    if: github.event_name == 'release'
+    # Normally fires on `release: published`, which requires the DMGs to be
+    # downloadable — the GitHub releases/tags API returns 404 for drafts, so
+    # this cannot run on the tag push. NOTE: a release whose DRAFT was created
+    # by tauri-action's GITHUB_TOKEN does not reliably emit a `release` event,
+    # so `workflow_dispatch` with bump_cask=true is the dependable path.
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.bump_cask == true)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -474,9 +481,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          gh release download "$GITHUB_REF_NAME" -p "Gridline_${VERSION}_aarch64.dmg" -O /tmp/arm.dmg
-          gh release download "$GITHUB_REF_NAME" -p "Gridline_${VERSION}_x64.dmg" -O /tmp/intel.dmg
+          VERSION="${RELEASE_TAG#v}"
+          gh release download "$RELEASE_TAG" -p "Gridline_${VERSION}_aarch64.dmg" -O /tmp/arm.dmg
+          gh release download "$RELEASE_TAG" -p "Gridline_${VERSION}_x64.dmg" -O /tmp/intel.dmg
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "sha_arm=$(shasum -a 256 /tmp/arm.dmg | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "sha_intel=$(shasum -a 256 /tmp/intel.dmg | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
