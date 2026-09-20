@@ -18,34 +18,34 @@
   <a href="https://react.dev/"><img src="https://img.shields.io/badge/react-%2320232a.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB" alt="React" /></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-D22128.svg?style=for-the-badge" alt="Apache 2.0 License" /></a>
-  <a href="https://git.ranio.xyz/adrianbonpin/gridline"><img src="https://img.shields.io/badge/Open_Source-Gitea-4183C4.svg?style=for-the-badge" alt="Open source on Gitea" /></a>
+  <a href="https://github.com/AdrianBonpin/gridline"><img src="https://img.shields.io/badge/Open_Source-Gitea-4183C4.svg?style=for-the-badge" alt="Open source on GitHub" /></a>
 </p>
 
 <p>
-  <a href="https://git.ranio.xyz/adrianbonpin/gridline/releases"><img src="https://img.shields.io/badge/Download_Latest_Release-2ea44f?style=for-the-badge" alt="Download Latest" /></a>
-  <a href="https://git.ranio.xyz/adrianbonpin/gridline/issues/new"><img src="https://img.shields.io/badge/Open_an_Issue-%23E4405F.svg?style=for-the-badge" alt="Open an Issue" /></a>
+  <a href="https://github.com/AdrianBonpin/gridline/releases"><img src="https://img.shields.io/badge/Download_Latest_Release-2ea44f?style=for-the-badge" alt="Download Latest" /></a>
+  <a href="https://github.com/AdrianBonpin/gridline/issues/new"><img src="https://img.shields.io/badge/Open_an_Issue-%23E4405F.svg?style=for-the-badge" alt="Open an Issue" /></a>
 </p>
 
 ---
 
 ## Download
 
-Grab the installer for your OS from the [latest release](https://git.ranio.xyz/adrianbonpin/gridline/releases/latest) — the links below point at the current release (**v0.8.0**):
+Grab the installer for your OS from the [latest release](https://github.com/AdrianBonpin/gridline/releases/latest) — the links below point at the current release (**v0.8.0**):
 
 | OS                           | Architecture                 | Download                                                                                                                             |
 | :--------------------------- | :--------------------------- | :----------------------------------------------------------------------------------------------------------------------------------- |
-| **macOS**                    | Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.8.0_aarch64.dmg](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_aarch64.dmg)         |
-| **macOS**                    | Intel                        | [Gridline_0.8.0_x64.dmg](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_x64.dmg)                 |
-| **Windows**                  | x64                          | [Gridline_0.8.0_x64-setup.exe](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_x64-setup.exe)     |
-| **Debian / Ubuntu**          | amd64                        | [Gridline_0.8.0_amd64.deb](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_amd64.deb)             |
-| **Fedora / RHEL / openSUSE** | x86_64                       | [Gridline-0.8.0-1.x86_64.rpm](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline-0.8.0-1.x86_64.rpm)       |
-| **Other Linux**              | amd64                        | [Gridline_0.8.0_amd64.AppImage](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_amd64.AppImage)   |
+| **macOS**                    | Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.8.0_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_aarch64.dmg)         |
+| **macOS**                    | Intel                        | [Gridline_0.8.0_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_x64.dmg)                 |
+| **Windows**                  | x64                          | [Gridline_0.8.0_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_x64-setup.exe)     |
+| **Debian / Ubuntu**          | amd64                        | [Gridline_0.8.0_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_amd64.deb)             |
+| **Fedora / RHEL / openSUSE** | x86_64                       | [Gridline-0.8.0-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline-0.8.0-1.x86_64.rpm)       |
+| **Other Linux**              | amd64                        | [Gridline_0.8.0_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_amd64.AppImage)   |
 
 **macOS via Homebrew** (recommended for Mac users):
 
 ```bash
 # one-time setup (the tap is hosted on Gitea, not GitHub):
-brew tap AdrianBonpin/gridline https://git.ranio.xyz/adrianbonpin/homebrew-gridline.git
+brew tap AdrianBonpin/gridline https://github.com/AdrianBonpin/homebrew-gridline.git
 brew trust adrianbonpin/gridline
 
 # install / upgrade:
@@ -104,7 +104,7 @@ Gridline is built for developers and small teams who manage multiple database en
 
 - **v0.7.15** — **Support channel on the landing page**: optional coffee via [Ko-fi](https://ko-fi.com/adrianbonpin), never gates a feature. Landing copy refreshed (em dashes dropped, OSS section simplified, funding FAQ); version bump.
 
-- **v0.7.14** — **No more repeated macOS keychain prompts**: saved connection passwords and SSH secrets are now ACL-pinned to the app's code signature on every save (`keychain_acl`), so app upgrades never re-trigger the macOS keychain access dialog (users upgrading from pre-signing builds see one final prompt — choose **Always Allow**). **Install via Homebrew**: `brew tap AdrianBonpin/gridline https://git.ranio.xyz/adrianbonpin/homebrew-gridline.git` then `brew install --cask gridline`; version bump.
+- **v0.7.14** — **No more repeated macOS keychain prompts**: saved connection passwords and SSH secrets are now ACL-pinned to the app's code signature on every save (`keychain_acl`), so app upgrades never re-trigger the macOS keychain access dialog (users upgrading from pre-signing builds see one final prompt — choose **Always Allow**). **Install via Homebrew**: `brew tap AdrianBonpin/gridline https://github.com/AdrianBonpin/homebrew-gridline.git` then `brew install --cask gridline`; version bump.
 
 - **v0.7.13** — **macOS is now Developer-ID signed and notarized**: the app is properly code-signed with a Developer ID Application certificate and notarized by Apple, so macOS opens it without the Gatekeeper "Open Anyway" prompt or the `xattr` quarantine workaround. The release script (`scripts/release-mac.sh`) auto-detects the signing identity from the keychain, notarizes + staples both architectures, and verifies the result before uploading; version bump.
 
@@ -312,29 +312,33 @@ _Notes: DB Pro is an Electron app (launched Nov 2025) whose marketing copy overc
 
 ### Download a release
 
-Pre-built installers for macOS, Windows, and Linux are published on the [Releases](https://git.ranio.xyz/adrianbonpin/gridline/releases) page.
+Pre-built installers for macOS, Windows, and Linux are published on the [Releases](https://github.com/AdrianBonpin/gridline/releases) page.
 
-> ⚠️ Gridline is under active development. Expect rough edges and please [open issues](https://git.ranio.xyz/adrianbonpin/gridline/issues/new) when you hit them.
+> ⚠️ Gridline is under active development. Expect rough edges and please [open issues](https://github.com/AdrianBonpin/gridline/issues/new) when you hit them.
 
 #### macOS signing & notarization
 
-Gridline's macOS builds are **Developer-ID signed and notarized**, so macOS opens them without a Gatekeeper prompt. This is configured on the machine that runs `scripts/release-mac.sh` (macOS is built manually, not in CI).
+Gridline's macOS builds are **Developer-ID signed and notarized by GitHub Actions**, so macOS opens them without a Gatekeeper prompt.
 
 **One-time setup** (only the repo owner needs to do this):
 
 1. **Create a Developer ID Application certificate** — [developer.apple.com](https://developer.apple.com) → Certificates, Identifiers & Profiles → **+** → **Developer ID Application**. Generate a Certificate Signing Request from Keychain Access (Certificate Assistant → *Request a Certificate From a Certificate Authority*), upload it, download the `.cer`, and double-click to install into your login keychain. Verify with `security find-identity -v -p codesigning`.
 2. **Create an App Store Connect API key** for notarization — [appstoreconnect.apple.com](https://appstoreconnect.apple.com) → Users and Access → **Integrations** → **App Store Connect API** → **+** (name it, *Developer* access). Download the `.p8` (shown once) and note the **Key ID** and **Issuer ID**.
-3. **Save the notarization credentials** to `~/.config/gridline/notarize.env` (never committed):
+3. **Add the signing secrets** to the repository (**Settings → Secrets and variables → Actions**):
 
-   ```bash
-   APPLE_API_KEY=<Key ID>
-   APPLE_API_ISSUER=<Issuer ID>
-   APPLE_API_KEY_PATH=/absolute/path/to/AuthKey_<KeyID>.p8
-   ```
+   | Secret                       | Value                                                                                              |
+   | :--------------------------- | :------------------------------------------------------------------------------------------------- |
+   | `APPLE_CERTIFICATE`          | base64 of the exported Developer ID `.p12` — `base64 -i DeveloperID.p12 \| pbcopy`                  |
+   | `APPLE_CERTIFICATE_PASSWORD` | the password you set when exporting the `.p12`                                                     |
+   | `APPLE_SIGNING_IDENTITY`     | e.g. `Developer ID Application: Your Name (TEAMID)` — from `security find-identity -v -p codesigning` |
+   | `KEYCHAIN_PASSWORD`          | any throwaway password for the temporary CI keychain                                                |
+   | `APPLE_API_KEY`              | App Store Connect **Key ID**                                                                        |
+   | `APPLE_API_ISSUER`           | App Store Connect **Issuer ID**                                                                     |
+   | `APPLE_API_KEY_CONTENT`      | contents of the downloaded `AuthKey_<KeyID>.p8`                                                     |
 
-   (Alternatively, drop the `.p8` at `~/.appstoreconnect/private_keys/AuthKey_<KeyID>.p8` and omit `APPLE_API_KEY_PATH`.)
+   When these secrets are absent the macOS jobs still build, but the DMGs are ad-hoc signed and **not** notarized (users get the “Open Anyway” prompt). The CI re-signs the bundled PostgreSQL/MariaDB client binaries with the same Developer ID identity, because Apple rejects ad-hoc-signed nested executables during notarization.
 
-`scripts/release-mac.sh` auto-detects the Developer ID identity from your keychain, signs both architectures, notarizes + staples them, and verifies the result before uploading. If the certificate or credentials are missing it fails with instructions (set `GRIDLINE_SKIP_NOTARIZE=1` to build signed-but-unnotarized for testing only).
+`scripts/release-mac.sh` is the **local fallback** path (used before GitHub Actions took over macOS builds, and still handy for a signed build without burning CI minutes). It auto-detects the Developer ID identity from your keychain, reads notarization credentials from `~/.config/gridline/notarize.env` (`APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_PATH`), signs both architectures, notarizes + staples them, and verifies the result before uploading. If the certificate or credentials are missing it fails with instructions (set `GRIDLINE_SKIP_NOTARIZE=1` to build signed-but-unnotarized for testing only).
 
 **Windows** still shows a SmartScreen prompt (no Windows signing cert yet); **Linux** installs without a warning.
 
@@ -344,12 +348,12 @@ Each release contains **one file per platform** — you only need the one that m
 
 | Your system                            | Download this                                                                                                                                | Notes                                                            |
 | :------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------- |
-| macOS **Apple Silicon** (M1/M2/M3/M4…) | [Gridline_0.8.0_aarch64.dmg](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_aarch64.dmg)                 | `aarch64` = Apple's own chip                                     |
-| macOS **Intel**                        | [Gridline_0.8.0_x64.dmg](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_x64.dmg)                         | `x64` = Intel/AMD                                                |
-| **Windows** (most PCs)                 | [Gridline_0.8.0_x64-setup.exe](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_x64-setup.exe)             | The `.msi` is an alternate installer (for enterprises/IT admins) |
-| **Debian / Ubuntu**                    | [Gridline_0.8.0_amd64.deb](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_amd64.deb)                     | Install: `sudo apt install ./Gridline_0.8.0_amd64.deb`           |
-| **Fedora / RHEL / openSUSE**           | [Gridline-0.8.0-1.x86_64.rpm](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline-0.8.0-1.x86_64.rpm)               | Install: `sudo dnf install Gridline-0.8.0-1.x86_64.rpm`          |
-| **Any other Linux**                    | [Gridline_0.8.0_amd64.AppImage](https://git.ranio.xyz/adrianbonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_amd64.AppImage)           | Works on every distro: `chmod +x` the file, then double-click it |
+| macOS **Apple Silicon** (M1/M2/M3/M4…) | [Gridline_0.8.0_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_aarch64.dmg)                 | `aarch64` = Apple's own chip                                     |
+| macOS **Intel**                        | [Gridline_0.8.0_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_x64.dmg)                         | `x64` = Intel/AMD                                                |
+| **Windows** (most PCs)                 | [Gridline_0.8.0_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_x64-setup.exe)             | The `.msi` is an alternate installer (for enterprises/IT admins) |
+| **Debian / Ubuntu**                    | [Gridline_0.8.0_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_amd64.deb)                     | Install: `sudo apt install ./Gridline_0.8.0_amd64.deb`           |
+| **Fedora / RHEL / openSUSE**           | [Gridline-0.8.0-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline-0.8.0-1.x86_64.rpm)               | Install: `sudo dnf install Gridline-0.8.0-1.x86_64.rpm`          |
+| **Any other Linux**                    | [Gridline_0.8.0_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.0/Gridline_0.8.0_amd64.AppImage)           | Works on every distro: `chmod +x` the file, then double-click it |
 
 **Not sure if your Mac is Intel or Apple Silicon?** Click the **Apple menu** → **About This Mac**. If it shows "Apple M1/M2/M3/M4…" download the `aarch64` file; if it shows an Intel chip, download `x64`. Downloading the wrong one won't run.
 
@@ -363,7 +367,9 @@ git tag v0.7.15
 git push origin v0.7.15
 ```
 
-Gitea Actions (`.gitea/workflows/release.yml`) builds the **Linux and Windows** installers on the self-hosted runners, then opens a **draft release** on the [Releases](https://git.ranio.xyz/adrianbonpin/gridline/releases) page. **macOS is built manually** on the dev Mac and its DMGs uploaded to the same release via `scripts/release-mac.sh`. Review the draft and hit **Publish release**.
+GitHub Actions (`.github/workflows/release.yml`) builds the **macOS (Apple Silicon + Intel), Windows, and Linux** installers in parallel and opens a **draft release** on the [Releases](https://github.com/AdrianBonpin/gridline/releases) page. Review the draft and hit **Publish release** — publishing triggers a follow-up job that bumps the Homebrew cask in [`AdrianBonpin/homebrew-gridline`](https://github.com/AdrianBonpin/homebrew-gridline) (requires the `HOMEBREW_TAP_TOKEN` secret; skipped when unset).
+
+The self-hosted Gitea mirror (`.gitea/workflows/release.yml`) still builds Linux and Windows for the Gitea release, and `scripts/release-mac.sh` can build macOS locally — both are kept as a fallback if GitHub is unavailable.
 
 Before tagging, make sure the version number is in sync across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, and `desktop/src-tauri/tauri.conf.json`, and update the **README download tables** (Download + Which file should I download?) to the new version's asset names.
 
@@ -371,7 +377,7 @@ Before tagging, make sure the version number is in sync across `desktop/package.
 
 ```bash
 # 1. Clone the repository
-git clone https://git.ranio.xyz/adrianbonpin/gridline.git
+git clone https://github.com/AdrianBonpin/gridline.git
 cd gridline
 
 # 2. Install all workspace dependencies
@@ -487,7 +493,7 @@ Highlights of what's next:
 
 Contributions, bug reports, and feature ideas are welcome. Gridline is Apache 2.0-licensed and intentionally stays open — no paywalled tiers, no bundled proprietary services.
 
-- Open an issue via the **[template chooser](https://git.ranio.xyz/adrianbonpin/gridline/issues/new)** — pick **Bug report** (with an environment table so we can reproduce issues quickly), **Feature request**, or **Improvement** (UX polish for existing features). New issues are auto-assigned to the maintainer.
+- Open an issue via the **[template chooser](https://github.com/AdrianBonpin/gridline/issues/new)** — pick **Bug report** (with an environment table so we can reproduce issues quickly), **Feature request**, or **Improvement** (UX polish for existing features). New issues are auto-assigned to the maintainer.
 - Submit a pull request. Keep Tauri commands thin, type IPC boundaries explicitly, and follow the existing Rust/React conventions.
 
 ---
