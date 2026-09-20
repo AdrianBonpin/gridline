@@ -35,15 +35,28 @@ on:
       - 'v*'
   release:
     types: [published]
+  # Rebuild an EXISTING tag without moving it — e.g. to re-run a release after
+  # a workflow fix. Dispatch from `prod` and pass the tag to build; the tag
+  # itself is never rewritten, so the release ref stays truthful.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build, e.g. v0.8.0'
+        required: true
 
 permissions:
   contents: write
+
+env:
+  # workflow_dispatch passes the tag as an input; push/release events derive it
+  # from the ref. Drives the checkout ref and tauri-action's tagName.
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   publish:
     # Build + draft release happen on the tag push; the `release: published`
     # event exists only to trigger the cask bump below.
-    if: github.event_name == 'push'
+    if: github.event_name != 'release'
     env:
       # Empty when the secret is unset — the tool steps below test for a
       # non-empty value before re-signing.
@@ -64,6 +77,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       # ---- Apple signing setup (macOS only, skipped when secrets absent) ---
       - name: Detect Apple signing secrets
@@ -410,8 +425,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Gridline ${{ github.ref_name }}'
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: 'Gridline ${{ env.RELEASE_TAG }}'
           releaseDraft: true
           args: ${{ matrix.args }}
           # Assets use tauri-action's default versioned naming (e.g.
