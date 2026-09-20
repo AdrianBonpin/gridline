@@ -112,7 +112,11 @@ jobs:
           set -euo pipefail
           KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
           mkdir -p "$(dirname "$KEY_PATH")"
-          printf '%s' "$APPLE_API_KEY_CONTENT" > "$KEY_PATH"
+          # Apple's PEM parser expects a terminating newline, which
+          # `gh secret set` strips from the stored value — so write one
+          # explicitly. A doubled trailing newline is harmless to PEM parsers,
+          # but a missing one can make notarization fail to load the key.
+          printf '%s\n' "$APPLE_API_KEY_CONTENT" > "$KEY_PATH"
           {
             echo "APPLE_API_KEY=${APPLE_API_KEY}"
             echo "APPLE_API_ISSUER=${APPLE_API_ISSUER}"
