@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
 #
-# Build Gridline for macOS on this machine and upload the DMGs to the Gitea
-# release for a given tag. macOS is built manually (NOT auto-built on tag);
-# the Linux and Windows installers are built by the Gitea Actions workflow
-# (.gitea/workflows/release.yml) and already uploaded to the same release.
+# LOCAL FALLBACK: build Gridline for macOS on this machine and upload the signed
+# + notarized DMGs to the GitHub release for a given tag.
+#
+# macOS is normally built, Developer-ID signed and notarized by GitHub Actions
+# (.github/workflows/release.yml) using the APPLE_* repository secrets, together
+# with the Windows and Linux installers. Reach for this script when you want a
+# signed build without spending CI minutes, or when Actions is unavailable.
 #
 # Usage:
-#   TAG=v0.7.11 ./scripts/release-mac.sh
+#   TAG=v0.8.1 ./scripts/release-mac.sh
 #
-# The release is keyed by tag. The Linux/Windows job creates it on the first
-# tag push; this script finds it (creating it only if it somehow doesn't exist)
-# and attaches the two DMGs: Gridline_<ver>_aarch64.dmg and Gridline_<ver>_x64.dmg
+# The release is keyed by tag: the Actions job creates the draft on a tag push,
+# and this script finds it (creating it only if it somehow doesn't exist) and
+# attaches/replaces the two DMGs — Gridline_<ver>_aarch64.dmg and
+# Gridline_<ver>_x64.dmg. Uploads use --clobber, so a locally signed DMG
+# supersedes the CI one; publish the draft afterwards on GitHub.
 #
-# Auth: uses the `tea` CLI (OAuth token, auto-refreshed).
+# Auth: the `gh` CLI (GitHub is the only release target; the Gitea mirror is
+# code-only).
 
 set -euo pipefail
 
 # ---- config ---------------------------------------------------------------
-GITEA_SERVER="${GITEA_SERVER:-https://git.ranio.xyz}"
-REPO_OWNER="${REPO_OWNER:-adrianbonpin}"
-REPO_NAME="${REPO_NAME:-gridline}"
+GH_REPO="${GH_REPO:-AdrianBonpin/gridline}"
 TAG="${TAG:-${1:-}}"
 
 if [ -z "$TAG" ]; then
@@ -27,13 +31,10 @@ if [ -z "$TAG" ]; then
   exit 1
 fi
 
-# ---- resolve auth (tea CLI) ------------------------------------------------
-# The `tea` CLI carries the OAuth token and refreshes it automatically, so the
-# release upload below uses `tea` rather than a raw curl + token. (The git
-# credential store can hold a stale access token and 401.)
-if ! command -v tea >/dev/null 2>&1; then
-  echo "error: tea CLI not found (needed to upload release assets)" >&2
-  echo "  install it: https://gitea.com/gitea/tea" >&2
+# ---- resolve auth (gh CLI) -------------------------------------------------
+if ! command -v gh >/dev/null 2>&1; then
+  echo "error: gh CLI not found (needed to upload release assets)" >&2
+  echo "  install it: https://cli.github.com" >&2
   exit 1
 fi
 
@@ -229,21 +230,20 @@ else
 fi
 
 # ---- create/ensure release + upload DMGs -----------------------------------
-# Use `tea` for release management — it handles OAuth token refresh, unlike a
-# raw curl with a token from the git credential store (which can 401).
 cd "${WORKSPACE}"
 
-echo ">> Ensuring release ${TAG} exists..."
-if ! tea release list -o json 2>/dev/null | grep -q "\"${TAG}\""; then
-  tea release create --tag "${TAG}" --title "Gridline ${VERSION}" \
-    --note "Gridline ${VERSION} — macOS (built manually)." --draft
+echo ">> Ensuring release ${TAG} exists on ${GH_REPO}..."
+if ! gh release view "${TAG}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+  gh release create "${TAG}" --repo "${GH_REPO}" --title "Gridline ${VERSION}" \
+    --notes "Gridline ${VERSION} — macOS (built locally, signed + notarized)." --draft
 else
   echo ">> Release ${TAG} already exists."
 fi
 
-echo ">> Uploading macOS DMGs..."
-tea releases assets create "${TAG}" \
+# --clobber replaces the CI-built (ad-hoc) DMGs with this signed + notarized pair.
+echo ">> Uploading macOS DMGs (replacing any existing ones)..."
+gh release upload "${TAG}" --repo "${GH_REPO}" --clobber \
   "${BUNDLE_ARM}/dmg/Gridline_${VERSION}_aarch64.dmg" \
   "${BUNDLE_INTEL}/dmg/Gridline_${VERSION}_x64.dmg"
 
-echo "Done. Release: ${GITEA_SERVER}/${REPO_OWNER}/${REPO_NAME}/releases/tag/${TAG}"
+echo "Done. Review + publish the draft: https://github.com/${GH_REPO}/releases/tag/${TAG}"
