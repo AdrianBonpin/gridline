@@ -25,6 +25,9 @@ pub fn get_connection_password(
     app: tauri::AppHandle,
     connection_id: String,
 ) -> Result<Option<String>, String> {
+    // Repair a stale item ACL first: after a rebuild/path change macOS would
+    // otherwise ask for the keychain password on every access (once per secret).
+    keychain_acl::before_read(&app, &connection_id);
     app.keyring()
         .store
         .get_password(&connection_id)
@@ -37,6 +40,7 @@ pub fn get_connection_password_internal(
     app: &tauri::AppHandle,
     connection_id: &str,
 ) -> Result<Option<String>, String> {
+    keychain_acl::before_read(app, connection_id);
     app.keyring()
         .store
         .get_password(connection_id)
@@ -71,6 +75,7 @@ pub fn get_connection_ssh_password(
     app: tauri::AppHandle,
     connection_id: String,
 ) -> Result<Option<String>, String> {
+    keychain_acl::before_read(&app, &ssh_account("password", &connection_id));
     app.keyring()
         .store
         .get_password(&ssh_account("password", &connection_id))
@@ -111,6 +116,7 @@ pub fn get_connection_ssh_passphrase(
     app: tauri::AppHandle,
     connection_id: String,
 ) -> Result<Option<String>, String> {
+    keychain_acl::before_read(&app, &ssh_account("passphrase", &connection_id));
     app.keyring()
         .store
         .get_password(&ssh_account("passphrase", &connection_id))
@@ -135,6 +141,7 @@ pub fn get_connection_ssh_password_internal(
     app: &tauri::AppHandle,
     connection_id: &str,
 ) -> Result<Option<String>, String> {
+    keychain_acl::before_read(app, &ssh_account("password", connection_id));
     app.keyring()
         .store
         .get_password(&ssh_account("password", connection_id))
