@@ -1,0 +1,25 @@
+#!/bin/sh
+#
+# post-merge hook — after `git pull`/merge, refresh the Gitea fallback.
+#
+# Installed via `scripts/install-git-hooks.sh` (git core.hooksPath = scripts/hooks).
+# GitHub merges (e.g. a squash-merged PR) happen server-side, so a local
+# `git pull` on prod is the moment to bring the Gitea mirror along.
+#
+# args: $1 = 1 when the merge was a squash, otherwise 0
+
+if [ "${GRIDLINE_MIRROR_RUNNING:-}" = "1" ]; then
+  exit 0
+fi
+
+branch="$(git symbolic-ref --short -q HEAD)" || exit 0
+case "$branch" in
+  prod|main) ;;
+  *) exit 0 ;;
+esac
+
+root="$(git rev-parse --show-toplevel)" || exit 0
+GRIDLINE_MIRROR_RUNNING=1 sh "$root/scripts/mirror-gitea.sh" ||
+  echo "post-merge: warning: Gitea mirror was not updated" >&2
+
+exit 0

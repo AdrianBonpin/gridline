@@ -104,7 +104,7 @@ gridline/
 ├── .github/workflows/            # release.yml (monorepo paths) + auto-assign.yml
 ├── docs/                         # Project docs
 ├── screenshots/                  # README marketing images
-├── scripts/                      # Release tooling (render-cask.sh)
+├── scripts/                      # Release tooling (render-cask.sh, release-mac.sh) + Gitea mirror (mirror-gitea.sh, hooks/, install-git-hooks.sh)
 └── AGENTS.md                     # This file
 ```
 
@@ -177,9 +177,16 @@ cargo test                                         # Rust tests (from desktop/sr
 
 Direct pushes to `prod` will be bypassed only in emergencies; prefer the PR path so changes land through the PR gate.
 
+**The Gitea fallback keeps itself current — run `scripts/install-git-hooks.sh` once per clone.** It sets `core.hooksPath=scripts/hooks`, so:
+
+- `pre-push` mirrors `prod` + all tags to `origin` (Gitea) whenever you push to the `github` remote,
+- `post-merge` mirrors again after a `git pull`/merge while on `prod` (a PR squash-merged on GitHub only reaches the mirror when the local `prod` pulls it).
+
+`scripts/mirror-gitea.sh` does the same by hand (`--branches` also pushes feature branches); it refuses to push to a GitHub remote and exits non-zero if the mirror could not be updated. The hooks downgrade that to a warning — **a Gitea outage never blocks a push to GitHub**.
+
 ### Releases
 
-**Releases are GitHub-only.** Tag `prod` and push the tag to the `github` remote — `git tag vN.M.N && git push github vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub). Never push release tags to `origin`/Gitea; it exists only as a fallback copy of the code.
+**Releases are GitHub-only.** Tag `prod` and push the tag to the `github` remote — `git tag vN.M.N && git push github vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub). The Gitea tag arrives automatically via the `pre-push` hook (or `scripts/mirror-gitea.sh`) — never `git push origin vN.M.N` expecting a build, and never publish a release on Gitea.
 
 **Before tagging**, keep everything in sync:
 - Version number across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/tauri.conf.json`, and `www/src/pages/index.astro` (the landing page version string)
