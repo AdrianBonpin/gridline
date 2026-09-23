@@ -9,14 +9,17 @@ export interface DetailedConnectionFormProps {
   form: ConnectionFormData;
   onChange: (updates: Partial<ConnectionFormData>) => void;
   managedPreset?: "supabase" | "neon" | "planetscale" | null;
+  /** Placeholder for the Connection Label when the field is empty, e.g. the
+   *  name derived from a pasted connection string. */
+  namePlaceholder?: string;
 }
 
-export function DetailedConnectionForm({ form, onChange, managedPreset }: DetailedConnectionFormProps) {
+export function DetailedConnectionForm({ form, onChange, managedPreset, namePlaceholder }: DetailedConnectionFormProps) {
   const [activeTab, setActiveTab] = useState<"general" | "tagsEnv" | "ssh">("general");
 
   return (
     <div className="space-y-4">
-      <ConnectionMetadataRow form={form} onChange={onChange} />
+      <ConnectionMetadataRow form={form} onChange={onChange} namePlaceholder={namePlaceholder} />
       <div>
         <div className="flex gap-6 border-b border-border mb-4">
           <button type="button" onClick={() => setActiveTab("general")} className={`pb-2 text-sm cursor-pointer transition-colors ${activeTab === "general" ? "text-text border-b-2 border-text" : "text-text-muted hover:text-text"}`}>General</button>

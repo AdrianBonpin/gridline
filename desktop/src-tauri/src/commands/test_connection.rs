@@ -265,7 +265,7 @@ async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnecti
     // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
     // degrade to encrypt-only `require`. Direct connections honor the mode.
     let decision = crate::commands::ssh::effective_tls_decision(
-        crate::db::tls::tls_decision(config.ssl_mode.as_deref()),
+        crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref()),
         target.via_tunnel,
     );
     let tls = match crate::db::tls::build_tls_config(
@@ -368,7 +368,7 @@ async fn test_mysql_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
     // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
     // degrade to encrypt-only `require`. Direct connections honor the mode.
     let decision = crate::commands::ssh::effective_tls_decision(
-        crate::db::tls::tls_decision(config.ssl_mode.as_deref()),
+        crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref()),
         target.via_tunnel,
     );
     match decision {

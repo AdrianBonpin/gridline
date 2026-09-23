@@ -29,6 +29,37 @@ pub fn tls_decision(ssl_mode: Option<&str>) -> TlsDecision {
     }
 }
 
+/// Host suffixes of managed providers that reject plaintext connections with
+/// `connection is insecure (try using 'sslmode=require')`.
+const MANAGED_SSL_HOST_SUFFIXES: [&str; 3] = [".neon.tech", ".supabase.co", ".psdb.cloud"];
+
+/// Resolve the SSL mode to use for a connection, defaulting these managed
+/// providers to `require` when the connection carries no explicit mode.
+///
+/// Connections saved before the UI persisted `ssl_mode` (or imported without
+/// it) would otherwise connect with TLS disabled and be refused by the server.
+/// An explicit mode always wins, so a deliberate `disable` is never overridden,
+/// and the inferred mode only encrypts — it never verifies certificates.
+pub fn resolve_ssl_mode(host: &str, ssl_mode: Option<&str>) -> Option<String> {
+    if let Some(mode) = ssl_mode {
+        return Some(mode.to_string());
+    }
+    let host = host.to_ascii_lowercase();
+    if MANAGED_SSL_HOST_SUFFIXES
+        .iter()
+        .any(|suffix| host.ends_with(suffix))
+    {
+        return Some("require".to_string());
+    }
+    None
+}
+
+/// TLS decision for a connection, applying the managed-provider default from
+/// [`resolve_ssl_mode`] before mapping to a [`TlsDecision`].
+pub fn tls_decision_for(host: &str, ssl_mode: Option<&str>) -> TlsDecision {
+    tls_decision(resolve_ssl_mode(host, ssl_mode).as_deref())
+}
+
 /// Build a rustls `ClientConfig` for tokio-postgres, or `None` for disable.
 /// `ca_path` is required for Verify; `cert_path`/`key_path` are optional client auth.
 pub fn build_tls_config(
@@ -195,6 +226,50 @@ mod tests {
             TlsDecision::Verify
         ));
         assert!(matches!(tls_decision(Some("bogus")), TlsDecision::Disable));
+    }
+
+    #[test]
+    fn resolve_ssl_mode_defaults_managed_hosts_to_require() {
+        // Saved connections that predate the form storing `ssl_mode` still work.
+        for host in [
+            "ep-hidden-star-b3hqtp4x-pooler.c-4.ap-southeast-1.aws.neon.tech",
+            "db.abcdefghijklmnopqrst.supabase.co",
+            "xxxx.us-east-2.psdb.cloud",
+            "EP-X-POOLER.EU.AWS.NEON.TECH",
+        ] {
+            assert_eq!(resolve_ssl_mode(host, None).as_deref(), Some("require"));
+        }
+    }
+
+    #[test]
+    fn resolve_ssl_mode_leaves_other_hosts_and_explicit_modes_alone() {
+        assert_eq!(resolve_ssl_mode("localhost", None), None);
+        assert_eq!(resolve_ssl_mode("prod.example.com", None), None);
+        // An explicit mode always wins — a deliberate `disable` is never overridden.
+        assert_eq!(
+            resolve_ssl_mode("ep-x.eu.aws.neon.tech", Some("disable")).as_deref(),
+            Some("disable")
+        );
+        assert_eq!(
+            resolve_ssl_mode("ep-x.eu.aws.neon.tech", Some("verify-full")).as_deref(),
+            Some("verify-full")
+        );
+    }
+
+    #[test]
+    fn tls_decision_for_honors_managed_default_and_explicit_modes() {
+        assert!(matches!(
+            tls_decision_for("ep-x.eu.aws.neon.tech", None),
+            TlsDecision::Require
+        ));
+        assert!(matches!(
+            tls_decision_for("ep-x.eu.aws.neon.tech", Some("disable")),
+            TlsDecision::Disable
+        ));
+        assert!(matches!(
+            tls_decision_for("db.example.com", None),
+            TlsDecision::Disable
+        ));
     }
 
     #[test]

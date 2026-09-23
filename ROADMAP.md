@@ -16,6 +16,12 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 - **PlanetScale preset** — managed MySQL (Vitess) provider card + setup guide + `.psdb.cloud` host detection; persists as `db_type: mysql`
 - **Version bump** 0.7.15 → **0.8.0**.
 
+## ✅ Shipped (unreleased)
+
+- **Connection-string SSL mode is honored end to end** — pasting a provider URL now carries its `?sslmode=` (Neon/Supabase `require`, `verify-full`, MySQL `ssl-mode=`) into the saved connection instead of silently connecting with TLS off, and the SSH/SSL tab's mode + certificate paths are persisted on create/edit (they were previously dropped before reaching the backend). Save/Test also fall back to a URL-derived label, so a pasted URL can be saved without typing anything. Fixes managed-provider connections failing with *"connection is insecure (try using `sslmode=require`)"*.
+- **Managed hosts default to TLS** — `*.neon.tech` / `*.supabase.co` / `*.psdb.cloud` resolve to `require` when a connection has no `ssl_mode`, so connections saved before the form persisted it (or imported without it) connect again without being re-saved. An explicit mode — including `disable` — always wins.
+- **Managed presets preselect their TLS mode** — Supabase/NeonDB → Require, PlanetScale → Verify Full.
+
 ## 📋 In the queue
 
 ### Full Redis Support
@@ -36,7 +42,6 @@ MariaDB and TimescaleDB moved to [0.8.0](#-next-up-080). Remaining candidates: C
 Supabase and NeonDB presets shipped in v0.7.0; PlanetScale moved to [0.8.0](#-next-up-080). Remaining:
 
 - **Turso** (libSQL — not SQLite over the wire; needs a `libsql` driver path in the Rust backend, not just a connection preset)
-- Provider detection guidance: paste a provider URL → Gridline auto-fills host/port/SSL mode; provider "connect" docs linked from the connection form
 
 ### Query Workbench Upgrades
 
