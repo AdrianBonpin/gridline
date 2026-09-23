@@ -6,6 +6,15 @@ export interface ChangelogEntry {
 
 export const changelogEntries: ChangelogEntry[] = [
   {
+    version: "0.8.1",
+    date: "2026-09-24",
+    highlights: [
+      "Managed-provider connections fixed — pasting a Neon / Supabase / PlanetScale connection string now carries its `?sslmode=` into the saved connection (it was silently dropped, so TLS stayed off and Neon answered `connection is insecure (try using sslmode=require)`). The SSH / SSL tab's mode and certificate paths are now persisted on create *and* edit, and the managed presets pre-select their TLS mode (Supabase / Neon → Require, PlanetScale → Verify Full). As a safety net, hosts under `*.neon.tech` / `*.supabase.co` / `*.psdb.cloud` default to `require` when a connection has no stored mode, so connections saved before this fix keep working.",
+      "Pasting a connection URI fills every setting it can — type, host, port, user, password, database and TLS mode — and suggests a name from the URL (database name, else host), which Test and Save use when the label is left blank. A pasted URL can now be tested and saved with no retyping.",
+      "macOS keychain prompts now self-heal — an item whose ACL still points at an older binary path (the pre-monorepo `src-tauri/` layout, a reinstalled app, an ad-hoc dev build) made macOS ask for your keychain password on *every* access, once per secret, with no way to make it stick. The app now checks the item's ACL (silently) before reading and repairs it when needed, so you authorize a secret once and it stays silent afterwards.",
+    ],
+  },
+  {
     version: "0.8.0",
     date: "2026-09-09",
     highlights: [

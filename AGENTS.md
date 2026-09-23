@@ -167,17 +167,19 @@ cargo test                                         # Rust tests (from desktop/sr
 
 ### Branch & PR workflow
 
+**GitHub is the only remote that matters.** The canonical repo is `github` → [AdrianBonpin/gridline](https://github.com/AdrianBonpin/gridline) (default branch `prod`, issues, PRs, Actions, releases). The `origin` remote (`git.ranio.xyz/adrianbonpin/gridline`) is a **just-in-case mirror** — do not push branches, open PRs, or publish releases/tags there. If you must mirror something manually, push to `github` first.
+
 **Never commit or push directly to `prod`** — `prod` is protected (branch rules require a pull request). Always:
 
 1. Branch out first — `git checkout -b feat/<short-name>` (or `fix/…`, `docs/…`) from `prod`
-2. Commit and push the feature branch
-3. Open a PR into `prod` and merge it there
+2. Commit and push the feature branch to `github` (`git push -u github <branch>`)
+3. Open a PR into `prod` on GitHub (`gh pr create --repo AdrianBonpin/gridline --base prod`) and merge it there
 
 Direct pushes to `prod` will be bypassed only in emergencies; prefer the PR path so changes land through the PR gate.
 
 ### Releases
 
-Cut a release by tagging the **`prod`** branch once the PR is merged — `git tag vN.M.N && git push origin vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub).
+**Releases are GitHub-only.** Tag `prod` and push the tag to the `github` remote — `git tag vN.M.N && git push github vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub). Never push release tags to `origin`/Gitea; it exists only as a fallback copy of the code.
 
 **Before tagging**, keep everything in sync:
 - Version number across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/tauri.conf.json`, and `www/src/pages/index.astro` (the landing page version string)
@@ -245,7 +247,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | DB Viewer: SQLite browse + query | ✅ | Full support via rusqlite |
 | DB Viewer: MySQL browse + query + edit | ✅ | Full viewer: connect (SSL + SSH tunnel), databases/tables/columns/FKs, query + pagination, inline cell editing + changes queue, DDL copy (`SHOW CREATE TABLE`), CSV/JSON import — added in v0.7.0. PK-only editing (no ctid equivalent); VARBINARY `information_schema` columns decoded correctly |
 | DB Viewer: Redis browse | ❌ | Connection + test only; browsing gated off with a clean "not supported" state (v0.7.0) |
-| Password storage in OS keychain | ✅ | macOS Keychain, Linux Secret Service, Windows Credential Manager; macOS items get an explicit `SecAccess` ACL pinning them to the app's code-signature requirement on every save (`keychain_acl.rs`) — items survive re-signs/upgrades without keychain permission prompts |
+| Password storage in OS keychain | ✅ | macOS Keychain, Linux Secret Service, Windows Credential Manager. macOS items get an explicit `SecAccess` ACL pinning them to the app's code-signature requirement on every save (`keychain_acl.rs`) — items survive re-signs/upgrades without keychain permission prompts. **Self-healing ACLs**: the ACL is also (silently) verified *before* reads and repaired when this app isn't in it, so items pinned to an older binary path (pre-monorepo `src-tauri/`, a reinstalled app, an ad-hoc dev build) cost one authorization instead of asking for the keychain password on every access, per secret |
 | Enable keychain toggle | ✅ | Default ON (opt-out); OFF = don't persist the DB password (session-only, re-prompt on connect) + purge existing keychain entry; SSH secrets stay keychain-only (v0.7.6) |
 | SSH tunnel config UI | ✅ | Host, port, user, auth method, key path, passphrase fields |
 | SSH tunnel runtime | ✅ | Real ssh2 tunnel (password + key auth), binds 127.0.0.1 only, secrets in OS keychain (`ssh_password:<id>` / `ssh_passphrase:<id>`), closed on pool eviction / app exit; TLS downgraded to `require` through the tunnel |
