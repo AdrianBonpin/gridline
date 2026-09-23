@@ -10,18 +10,23 @@ const { updateConnection, loadAll } = vi.hoisted(() => ({
 }));
 
 vi.mock("../../stores/connectionStore", () => ({
-  useConnectionStore: (sel: (s: any) => any) =>
-    sel({ updateConnection, loadAll, folders: [], tags: [] }),
+  useConnectionStore: Object.assign(
+    (sel: (s: any) => any) =>
+      sel({ updateConnection, loadAll, folders: [], tags: [] }),
+    { getState: () => ({ getConnectionPassword: async () => "pw" }) },
+  ),
 }));
 vi.mock("../../lib/commands", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/commands")>();
   return {
     ...actual,
     updateConnection: vi.fn(),
-    testConnection: vi.fn(),
+    testConnection: vi.fn().mockResolvedValue({ ok: true }),
     saveConnectionPassword: vi.fn(),
     saveConnectionSshPassword: vi.fn(),
     saveConnectionSshPassphrase: vi.fn(),
+    getConnectionSshPassword: vi.fn().mockResolvedValue(null),
+    getConnectionSshPassphrase: vi.fn().mockResolvedValue(null),
     deleteConnectionPassword: vi.fn(),
   };
 });
@@ -120,5 +125,63 @@ describe("EditConnectionModal", () => {
       expect(vi.mocked(commands.deleteConnectionPassword)).toHaveBeenCalledWith("c1")
     );
     expect(vi.mocked(commands.saveConnectionPassword)).not.toHaveBeenCalled();
+  });
+
+  it("persists the existing SSL settings on save", async () => {
+    render(
+      <EditConnectionModal
+        connection={{
+          ...baseConn,
+          ssl_mode: "verify-full",
+          ssl_ca_path: "/tmp/ca.pem",
+          ssl_cert_path: "/tmp/client.pem",
+          ssl_key_path: "/tmp/client.key",
+        }}
+        open={true}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(vi.mocked(commands.updateConnection)).toHaveBeenCalled());
+    expect(vi.mocked(commands.updateConnection)).toHaveBeenCalledWith(
+      "c1",
+      expect.objectContaining({
+        ssl_mode: "verify-full",
+        ssl_ca_path: "/tmp/ca.pem",
+        ssl_cert_path: "/tmp/client.pem",
+        ssl_key_path: "/tmp/client.key",
+      }),
+    );
+  });
+
+  it("tests with the same SSL + SSH config it would save", async () => {
+    render(
+      <EditConnectionModal
+        connection={{
+          ...baseConn,
+          ssl_mode: "require",
+          ssh_host: "jump.example.com",
+          ssh_port: 22,
+          ssh_user: "tunnel",
+          ssh_auth_method: "key",
+          ssh_private_key_path: "/tmp/id_ed25519",
+        }}
+        open={true}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^test$/i }));
+    await waitFor(() => expect(vi.mocked(commands.testConnection)).toHaveBeenCalled());
+    expect(vi.mocked(commands.testConnection)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ssl_mode: "require",
+        ssh_host: "jump.example.com",
+        ssh_user: "tunnel",
+        ssh_auth_method: "key",
+        ssh_private_key_path: "/tmp/id_ed25519",
+      }),
+    );
   });
 });

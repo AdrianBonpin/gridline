@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseConnectionString, looksLikeConnectionString, detectProviderFromHost, buildConnectionUrl } from "./connectionString";
+import { parseConnectionString, looksLikeConnectionString, detectProviderFromHost, buildConnectionUrl, suggestConnectionLabel } from "./connectionString";
 import type { Connection } from "./types";
 
 function makeConn(overrides: Partial<Connection> = {}): Connection {
@@ -30,6 +30,7 @@ describe("parseConnectionString", () => {
       username: "user",
       password: "pass",
       database: "mydb",
+      ssl_mode: null,
     });
   });
 
@@ -42,6 +43,7 @@ describe("parseConnectionString", () => {
       username: "root",
       password: null,
       database: "app",
+      ssl_mode: null,
     });
   });
 
@@ -54,6 +56,7 @@ describe("parseConnectionString", () => {
       username: "user",
       password: "pass",
       database: "0",
+      ssl_mode: null,
     });
   });
 
@@ -66,6 +69,7 @@ describe("parseConnectionString", () => {
       username: null,
       password: null,
       database: null,
+      ssl_mode: null,
     });
   });
 
@@ -78,6 +82,7 @@ describe("parseConnectionString", () => {
       username: null,
       password: null,
       database: null,
+      ssl_mode: null,
     });
   });
 
@@ -90,6 +95,7 @@ describe("parseConnectionString", () => {
       username: "user",
       password: null,
       database: "db",
+      ssl_mode: null,
     });
   });
 
@@ -102,11 +108,50 @@ describe("parseConnectionString", () => {
       username: "user",
       password: null,
       database: "db",
+      ssl_mode: "require",
     });
   });
 
   it("returns null for an empty string", () => {
     expect(parseConnectionString("")).toBeNull();
+  });
+  it("lifts sslmode from a Neon-style URL (extra params ignored)", () => {
+    const result = parseConnectionString(
+      "postgresql://neondb_owner:pw@ep-hidden-star-b3hqtp4x-pooler.c-4.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+    );
+    expect(result).toMatchObject({
+      db_type: "postgresql",
+      host: "ep-hidden-star-b3hqtp4x-pooler.c-4.ap-southeast-1.aws.neon.tech",
+      username: "neondb_owner",
+      password: "pw",
+      database: "neondb",
+      ssl_mode: "require",
+    });
+  });
+
+  it("lifts every supported sslmode value", () => {
+    const mode = (q: string) => parseConnectionString(`postgresql://u@h/db?sslmode=${q}`)?.ssl_mode;
+    expect(mode("disable")).toBe("disable");
+    expect(mode("require")).toBe("require");
+    expect(mode("verify-ca")).toBe("verify-ca");
+    expect(mode("verify-full")).toBe("verify-full");
+    expect(mode("VERIFY-FULL")).toBe("verify-full");
+    expect(mode("verify_full")).toBe("verify-full");
+  });
+
+  it("ignores unsupported sslmode values instead of downgrading to plaintext", () => {
+    expect(parseConnectionString("postgresql://u@h/db?sslmode=allow")?.ssl_mode).toBeNull();
+    expect(parseConnectionString("postgresql://u@h/db?sslmode=prefer")?.ssl_mode).toBeNull();
+    expect(parseConnectionString("postgresql://u@h/db?sslmode=bogus")?.ssl_mode).toBeNull();
+  });
+
+  it("lifts MySQL's ssl-mode vocabulary and skips TLS for non-SQL db types", () => {
+    expect(parseConnectionString("mysql://u@h/db?ssl-mode=REQUIRED")?.ssl_mode).toBe("require");
+    expect(parseConnectionString("mysql://u@h/db?ssl-mode=verify-full")?.ssl_mode).toBe("verify-full");
+    expect(parseConnectionString("mysql://u@h/db?ssl-mode=VERIFY_IDENTITY")?.ssl_mode).toBe("verify-full");
+    expect(parseConnectionString("mysql://u@h/db?ssl-mode=PREFERRED")?.ssl_mode).toBeNull();
+    expect(parseConnectionString("redis://u@h?sslmode=require")?.ssl_mode).toBeNull();
+    expect(parseConnectionString("sqlite:///tmp/a.db?sslmode=require")?.ssl_mode).toBeNull();
   });
 
   it("returns null for a non-URL string", () => {
@@ -122,6 +167,7 @@ describe("parseConnectionString", () => {
       username: "user",
       password: null,
       database: "db",
+      ssl_mode: null,
     });
   });
 
@@ -134,6 +180,7 @@ describe("parseConnectionString", () => {
       username: "root",
       password: "pw",
       database: "app",
+      ssl_mode: null,
     });
   });
 
@@ -146,6 +193,7 @@ describe("parseConnectionString", () => {
       username: "root",
       password: "pw",
       database: "app",
+      ssl_mode: null,
     });
   });
 
@@ -158,6 +206,7 @@ describe("parseConnectionString", () => {
       username: null,
       password: null,
       database: null,
+      ssl_mode: null,
     });
   });
 });
@@ -177,6 +226,33 @@ describe("looksLikeConnectionString", () => {
 
   it("returns false for normal search text", () => {
     expect(looksLikeConnectionString("production database")).toBe(false);
+  });
+});
+
+describe("suggestConnectionLabel", () => {
+  const label = (url: string) => {
+    const parsed = parseConnectionString(url)!;
+    return suggestConnectionLabel(parsed);
+  };
+
+  it("prefers the database name", () => {
+    expect(
+      label("postgresql://neondb_owner:pw@ep-x-pooler.c-4.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"),
+    ).toBe("neondb");
+  });
+
+  it("falls back to the host when there is no database", () => {
+    expect(label("postgresql://u@db.example.com:5432")).toBe("db.example.com");
+  });
+
+  it("uses the file stem for SQLite paths", () => {
+    expect(label("sqlite:///Users/me/data/app-demo.sqlite")).toBe("app-demo");
+    expect(label("file:///tmp/notes.db")).toBe("notes");
+  });
+
+  it("caps the label at the 100-char validation limit", () => {
+    const host = `${"a".repeat(120)}.example.com`;
+    expect(label(`postgresql://u@${host}/`).length).toBe(100);
   });
 });
 
@@ -291,6 +367,7 @@ describe("buildConnectionUrl", () => {
       username: "user",
       password: "pass",
       database: "mydb",
+      ssl_mode: null,
     });
   });
 });

@@ -1005,7 +1005,7 @@ pub(crate) async fn run_mysql_connect(
     // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
     // degrade to encrypt-only `require`. Direct connections honor the mode.
     let decision = crate::commands::ssh::effective_tls_decision(
-        crate::db::tls::tls_decision(config.ssl_mode.as_deref()),
+        crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref()),
         via_tunnel,
     );
     match decision {
@@ -1084,7 +1084,7 @@ pub async fn db_connect(
         // connections honor the user's mode. Building this before opening the
         // tunnel means a config error can't leak the tunnel.
         let decision = crate::commands::ssh::effective_tls_decision(
-            crate::db::tls::tls_decision(config.ssl_mode.as_deref()),
+            crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref()),
             will_tunnel,
         );
         let tls = crate::db::tls::build_tls_config(

@@ -55,14 +55,14 @@ export function SslFields({ values, onChange }: SslFieldsProps) {
             <label className="block text-sm text-text mb-1.5">CA Certificate</label>
             <div className="flex gap-2">
               <Input
-                value={(values.ssl_ca_cert as string) ?? ""}
-                onChange={(value) => onChange({ ssl_ca_cert: value })}
+                value={(values.ssl_ca_path as string) ?? ""}
+                onChange={(value) => onChange({ ssl_ca_path: value })}
                 placeholder="/path/to/ca-cert.pem"
                 aria-label="CA Certificate"
               />
               <button
                 type="button"
-                onClick={() => handlePickFile("ssl_ca_cert")}
+                onClick={() => handlePickFile("ssl_ca_path")}
                 className="px-4 py-2 rounded-full bg-surface border border-border text-sm text-text hover:bg-surface-raised transition-colors cursor-pointer"
               >
                 Browse
@@ -74,14 +74,14 @@ export function SslFields({ values, onChange }: SslFieldsProps) {
             <label className="block text-sm text-text mb-1.5">Client Certificate</label>
             <div className="flex gap-2">
               <Input
-                value={(values.ssl_client_cert as string) ?? ""}
-                onChange={(value) => onChange({ ssl_client_cert: value })}
+                value={(values.ssl_cert_path as string) ?? ""}
+                onChange={(value) => onChange({ ssl_cert_path: value })}
                 placeholder="/path/to/client-cert.pem"
                 aria-label="Client Certificate"
               />
               <button
                 type="button"
-                onClick={() => handlePickFile("ssl_client_cert")}
+                onClick={() => handlePickFile("ssl_cert_path")}
                 className="px-4 py-2 rounded-full bg-surface border border-border text-sm text-text hover:bg-surface-raised transition-colors cursor-pointer"
               >
                 Browse
@@ -93,14 +93,14 @@ export function SslFields({ values, onChange }: SslFieldsProps) {
             <label className="block text-sm text-text mb-1.5">Client Key</label>
             <div className="flex gap-2">
               <Input
-                value={(values.ssl_client_key as string) ?? ""}
-                onChange={(value) => onChange({ ssl_client_key: value })}
+                value={(values.ssl_key_path as string) ?? ""}
+                onChange={(value) => onChange({ ssl_key_path: value })}
                 placeholder="/path/to/client-key.pem"
                 aria-label="Client Key"
               />
               <button
                 type="button"
-                onClick={() => handlePickFile("ssl_client_key")}
+                onClick={() => handlePickFile("ssl_key_path")}
                 className="px-4 py-2 rounded-full bg-surface border border-border text-sm text-text hover:bg-surface-raised transition-colors cursor-pointer"
               >
                 Browse

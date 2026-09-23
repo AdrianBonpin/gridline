@@ -4,9 +4,9 @@ import { Button } from "../ui/Button";
 import { DetailedConnectionForm } from "../connections/DetailedConnectionForm";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useNotificationStore } from "../../stores/notificationStore";
-import { updateConnection, testConnection, saveConnectionSshPassword, saveConnectionSshPassphrase } from "../../lib/commands";
+import { updateConnection, testConnection, saveConnectionSshPassword, saveConnectionSshPassphrase, getConnectionSshPassword, getConnectionSshPassphrase } from "../../lib/commands";
 import { persistDbPassword } from "../../lib/keychain";
-import { detectProviderFromHost } from "../../lib/connectionString";
+import { detectProviderFromHost, type SslMode } from "../../lib/connectionString";
 import type { Connection, ConnectionInput } from "../../lib/types";
 import type { ConnectionFormData } from "../connections/connectionFormData";
 
@@ -47,6 +47,10 @@ export function EditConnectionModal({
     ssh_private_key: connection.ssh_private_key_path ?? null,
     ssh_password: null,
     ssh_passphrase: null,
+    ssl_mode: (connection.ssl_mode as SslMode | null | undefined) ?? null,
+    ssl_ca_path: connection.ssl_ca_path ?? null,
+    ssl_cert_path: connection.ssl_cert_path ?? null,
+    ssl_key_path: connection.ssl_key_path ?? null,
   }));
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -75,6 +79,10 @@ export function EditConnectionModal({
         ssh_private_key_path: form.ssh_private_key ?? null,
         ssh_password: form.ssh_password ?? null,
         ssh_passphrase: form.ssh_passphrase ?? null,
+        ssl_mode: form.ssl_mode ?? null,
+        ssl_ca_path: form.ssl_ca_path ?? null,
+        ssl_cert_path: form.ssl_cert_path ?? null,
+        ssl_key_path: form.ssl_key_path ?? null,
       };
       const updated = await updateConnection(connection.id, input);
       await persistDbPassword(connection.id, form.use_keychain, form.password).catch(() => {});
@@ -104,6 +112,18 @@ export function EditConnectionModal({
       if (!password) {
         password = await useConnectionStore.getState().getConnectionPassword(connection.id).catch(() => null);
       }
+      // SSH secrets live in the keychain only, so a tunneled connection can be
+      // tested without re-entering them.
+      const sshPassword =
+        form.ssh_password ??
+        (form.ssh_host
+          ? await getConnectionSshPassword(connection.id).catch(() => null)
+          : null);
+      const sshPassphrase =
+        form.ssh_passphrase ??
+        (form.ssh_host
+          ? await getConnectionSshPassphrase(connection.id).catch(() => null)
+          : null);
 
       const result = await testConnection({
         name: form.name,
@@ -116,7 +136,19 @@ export function EditConnectionModal({
         folder_id: form.folder_id,
         environment: form.environment,
         tag_ids: form.tag_ids,
-        ssh_password: form.ssh_password ?? null,
+        // Test the same config Save would persist — a tunneled/SSL connection
+        // must be probed through its tunnel and TLS mode.
+        ssh_host: form.ssh_host ?? null,
+        ssh_port: form.ssh_port ?? null,
+        ssh_user: form.ssh_user ?? null,
+        ssh_auth_method: form.ssh_auth_method ?? null,
+        ssh_private_key_path: form.ssh_private_key ?? null,
+        ssh_password: sshPassword,
+        ssh_passphrase: sshPassphrase,
+        ssl_mode: form.ssl_mode ?? null,
+        ssl_ca_path: form.ssl_ca_path ?? null,
+        ssl_cert_path: form.ssl_cert_path ?? null,
+        ssl_key_path: form.ssl_key_path ?? null,
       });
       if (result.ok) {
         notify("Connection successful", "success");

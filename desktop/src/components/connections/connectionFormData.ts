@@ -1,5 +1,6 @@
 import type { DbType } from "../../lib/types";
 import type { Environment } from "./EnvironmentSelect";
+import type { SslMode } from "../../lib/connectionString";
 
 export interface ConnectionFormData {
   name: string;
@@ -24,4 +25,13 @@ export interface ConnectionFormData {
   ssh_private_key?: string | null;
   ssh_password: string | null;
   ssh_passphrase?: string | null;
+  // SSL/TLS fields. These must live on the form data (and survive into the
+  // submit payload) or the SSH/SSL tab's selections are silently dropped — the
+  // backend then connects with TLS disabled, which managed providers (Neon,
+  // Supabase, PlanetScale) reject with "connection is insecure".
+  // `null` = unset, which the backend treats as TLS disabled.
+  ssl_mode?: SslMode | null;
+  ssl_ca_path?: string | null;
+  ssl_cert_path?: string | null;
+  ssl_key_path?: string | null;
 }

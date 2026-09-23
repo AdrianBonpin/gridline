@@ -9,6 +9,8 @@ import { ProviderSetupGuide } from "./ProviderSetupGuide";
 import {
     parseConnectionString,
     detectProviderFromHost,
+    suggestConnectionLabel,
+    type ParsedConnectionString,
 } from "../../lib/connectionString";
 import { getProviderById, type ProviderId } from "../../lib/providers";
 import { validateConnectionInput } from "../../lib/utils";
@@ -53,6 +55,10 @@ function createEmptyForm(
         database: null,
         use_keychain: true,
         ssh_password: null,
+        ssl_mode: null,
+        ssl_ca_path: null,
+        ssl_cert_path: null,
+        ssl_key_path: null,
     };
 }
 
@@ -64,6 +70,40 @@ function getDefaultPort(dbType: string): number {
     );
 }
 
+type ManagedPreset = "supabase" | "neon" | "planetscale" | null;
+
+/** Managed-provider highlight for a parsed URL (Postgres/MySQL hosts only). */
+function providerForParsed(parsed: ParsedConnectionString): ManagedPreset {
+    return parsed.db_type === "postgresql" || parsed.db_type === "mysql"
+        ? detectProviderFromHost(parsed.host)
+        : null;
+}
+
+/**
+ * Everything a pasted connection string can populate, so the connection can be
+ * tested and saved with no manual cleanup: connection type, host, port,
+ * user/password/database, and the `?sslmode=` TLS mode.
+ *
+ * The URL's SSL mode wins when present; otherwise the mode the user already
+ * picked under SSH / SSL is kept. The label is left blank when the user has not
+ * typed one (the derived name is offered as a placeholder and used on save by
+ * `buildPayload`), so a suggestion never clobbers or gets appended to.
+ */
+function parsedFormPatch(
+    parsed: ParsedConnectionString,
+    prev: ConnectionFormData,
+): Partial<ConnectionFormData> {
+    return {
+        db_type: parsed.db_type,
+        host: parsed.host,
+        port: parsed.port ?? getDefaultPort(parsed.db_type),
+        username: parsed.username,
+        password: parsed.password,
+        database: parsed.database,
+        ssl_mode: parsed.ssl_mode ?? prev.ssl_mode ?? null,
+    };
+}
+
 export function NewConnectionScreen({
     defaultFolderId = null,
     prefilledConnectionString = "",
@@ -73,9 +113,7 @@ export function NewConnectionScreen({
     onCancel,
 }: NewConnectionScreenProps) {
     const [stage, setStage] = useState<Stage>("entry");
-    const [managedPreset, setManagedPreset] = useState<
-        "supabase" | "neon" | "planetscale" | null
-    >(null);
+    const [managedPreset, setManagedPreset] = useState<ManagedPreset>(null);
     const [form, setForm] = useState<ConnectionFormData>(() =>
         createEmptyForm(
             defaultFolderId,
@@ -86,6 +124,12 @@ export function NewConnectionScreen({
     const [saveLoading, setSaveLoading] = useState(false);
     const createConnection = useConnectionStore((s) => s.createConnection);
     const notify = useNotificationStore((s) => s.notify);
+    // Name to use when the label is left blank: derived from the pasted URL
+    // (database name, else host/file stem). Shown as the Connection Label's
+    // placeholder and applied at save/test time, so a suggestion never
+    // clobbers or gets appended to typed text.
+    const parsedUri = parseConnectionString(form.connection_string);
+    const suggestedName = parsedUri ? suggestConnectionLabel(parsedUri) : "";
 
     const revealConfigured = useCallback(
         (updates: Partial<ConnectionFormData>) => {
@@ -97,26 +141,17 @@ export function NewConnectionScreen({
 
     const handleConnectionStringChange = useCallback((value: string) => {
         const parsed = parseConnectionString(value);
-        if (parsed) {
-            const provider =
-                parsed.db_type === "postgresql" || parsed.db_type === "mysql"
-                    ? detectProviderFromHost(parsed.host)
-                    : null;
-            setManagedPreset(provider);
-            setForm((prev) => ({
-                ...prev,
-                connection_string: value,
-                db_type: parsed.db_type,
-                host: parsed.host,
-                port: parsed.port ?? getDefaultPort(parsed.db_type),
-                username: parsed.username,
-                password: parsed.password,
-                database: parsed.database,
-            }));
-        } else {
+        if (!parsed) {
             setManagedPreset(null);
             setForm((prev) => ({ ...prev, connection_string: value }));
+            return;
         }
+        setManagedPreset(providerForParsed(parsed));
+        setForm((prev) => ({
+            ...prev,
+            connection_string: value,
+            ...parsedFormPatch(parsed, prev),
+        }));
     }, []);
 
     useEffect(() => {
@@ -150,7 +185,15 @@ export function NewConnectionScreen({
                         ? null
                         : getDefaultPort(provider.dbType),
                 ...(provider.dbType === "sqlite" ? { host: "" } : {}),
-                ...(id === "planetscale" ? { ssl_mode: "verify-full" } : {}),
+                // Managed providers refuse plaintext connections. Preselect
+                // their documented mode so Test/Save works on the first try.
+                // (PlanetScale/MySQL requires identity verification.)
+                ...(id === "planetscale"
+                    ? { ssl_mode: "verify-full" as const }
+                    : {}),
+                ...(id === "supabase" || id === "neon"
+                    ? { ssl_mode: "require" as const }
+                    : {}),
             });
         },
         [revealConfigured],
@@ -166,22 +209,11 @@ export function NewConnectionScreen({
                     const value = updates.connection_string;
                     const parsed = parseConnectionString(value);
                     if (parsed) {
-                        const provider =
-                            parsed.db_type === "postgresql" || parsed.db_type === "mysql"
-                                ? detectProviderFromHost(parsed.host)
-                                : null;
-                        setManagedPreset(provider);
+                        setManagedPreset(providerForParsed(parsed));
                         return {
                             ...prev,
                             ...updates,
-                            db_type: parsed.db_type,
-                            host: parsed.host,
-                            port:
-                                parsed.port ??
-                                getDefaultPort(parsed.db_type),
-                            username: parsed.username,
-                            password: parsed.password,
-                            database: parsed.database,
+                            ...parsedFormPatch(parsed, prev),
                         };
                     }
                     return { ...prev, ...updates };
@@ -194,7 +226,7 @@ export function NewConnectionScreen({
 
     const buildPayload = useCallback((): ConnectionInput => {
         return {
-            name: form.name,
+            name: form.name.trim() || suggestedName,
             db_type: form.db_type,
             host: form.host,
             port: form.port,
@@ -213,8 +245,12 @@ export function NewConnectionScreen({
             ssh_private_key_path: form.ssh_private_key ?? null,
             ssh_password: form.ssh_password ?? null,
             ssh_passphrase: form.ssh_passphrase ?? null,
+            ssl_mode: form.ssl_mode ?? null,
+            ssl_ca_path: form.ssl_ca_path ?? null,
+            ssl_cert_path: form.ssl_cert_path ?? null,
+            ssl_key_path: form.ssl_key_path ?? null,
         };
-    }, [form]);
+    }, [form, suggestedName]);
 
     const validate = useCallback((): string | null => {
         const result = validateConnectionInput(buildPayload());
@@ -336,6 +372,7 @@ export function NewConnectionScreen({
                     <DetailedConnectionForm
                         form={form}
                         onChange={updateForm}
+                        namePlaceholder={suggestedName || undefined}
                     />
                 </>
             )}
