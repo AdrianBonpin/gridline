@@ -1,0 +1,46 @@
+#!/bin/sh
+#
+# pre-push hook — mirrors the trunk branch and tags to the Gitea fallback.
+#
+# Installed via `scripts/install-git-hooks.sh` (git core.hooksPath = scripts/hooks).
+# Git has no client-side post-push hook, so the mirror runs here: the refs are
+# already committed locally, so whether Gitea or GitHub receives them first makes
+# no difference. A Gitea outage prints a warning and never blocks the push.
+#
+# stdin receives one line per ref being pushed:
+#   <local-ref> <local-sha> <remote-ref> <remote-sha>
+#
+# args: $1 = remote name, $2 = remote URL
+
+remote_url="${2:-}"
+
+# Only react to pushes of the canonical GitHub remote.
+case "$remote_url" in
+  *github.com*) ;;
+  *) exit 0 ;;
+esac
+
+# Don't recurse when the mirror script itself is pushing to Gitea.
+if [ "${GRIDLINE_MIRROR_RUNNING:-}" = "1" ]; then
+  exit 0
+fi
+
+mirror_needed=0
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  # Ignore deletions (all-zero object id).
+  case "$local_sha" in
+    0000000000000000000000000000000000000000) continue ;;
+  esac
+  case "$remote_ref" in
+    refs/heads/prod|refs/heads/main|refs/tags/*) mirror_needed=1 ;;
+  esac
+done
+
+[ "$mirror_needed" = "1" ] || exit 0
+
+root="$(git rev-parse --show-toplevel)" || exit 0
+GRIDLINE_MIRROR_RUNNING=1 sh "$root/scripts/mirror-gitea.sh" ||
+  echo "pre-push: warning: Gitea mirror was not updated (continuing with the push)" >&2
+
+# Never block the push to GitHub because of a mirror problem.
+exit 0
