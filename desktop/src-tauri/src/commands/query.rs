@@ -565,6 +565,73 @@ pub(crate) fn mysql_wrap_count(query: &str) -> String {
     format!("SELECT COUNT(*) FROM ({}) AS _gridline_cnt", query.trim())
 }
 
+/// How a MySQL column value must be decoded, decided from the column's
+/// declared type name.
+///
+/// Why type-directed rather than a blind try-chain: sqlx's MySQL integer
+/// compatibility is broad, so `try_get::<i16>` succeeds for a `BIGINT`
+/// holding a small value but fails once the value grows — the same column
+/// would emit different JSON types for different rows. `MySqlTypeInfo`
+/// exposes only `name()` publicly, which is sufficient because it already
+/// encodes signedness (`INT UNSIGNED`) and boolean-ness (`BOOLEAN`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MysqlCellKind {
+    /// Width in bits and signedness; drives the number-vs-string policy.
+    Int { bits: u8, signed: bool },
+    /// `BIT(M)` — a bitmask, rendered as a number (spec §4.1).
+    Bit,
+    Float,
+    Double,
+    Decimal,
+    Date,
+    Time,
+    DateTime,
+    Json,
+    Text,
+    Bytes,
+    Null,
+    /// Anything unrecognised (including `GEOMETRY`, which no sqlx decoder
+    /// accepts even with `chrono`/`bigdecimal` enabled).
+    Unknown,
+}
+
+/// Map a `sqlx` MySQL type name to its decode strategy.
+pub(crate) fn mysql_cell_kind(type_name: &str) -> MysqlCellKind {
+    use MysqlCellKind::*;
+    let t = type_name.trim().to_ascii_uppercase();
+    match t.as_str() {
+        "BOOLEAN" | "TINYINT" => Int { bits: 8, signed: true },
+        "TINYINT UNSIGNED" => Int { bits: 8, signed: false },
+        "SMALLINT" => Int { bits: 16, signed: true },
+        "SMALLINT UNSIGNED" => Int { bits: 16, signed: false },
+        "MEDIUMINT" => Int { bits: 24, signed: true },
+        "MEDIUMINT UNSIGNED" => Int { bits: 24, signed: false },
+        "INT" => Int { bits: 32, signed: true },
+        "INT UNSIGNED" => Int { bits: 32, signed: false },
+        "BIGINT" => Int { bits: 64, signed: true },
+        "BIGINT UNSIGNED" => Int { bits: 64, signed: false },
+        // YEAR is an unsigned 16-bit value; it needs the unsigned rung, not
+        // the signed one (int_compatible excludes UNSIGNED columns).
+        "YEAR" => Int { bits: 16, signed: false },
+        "BIT" => Bit,
+        "FLOAT" => Float,
+        "DOUBLE" => Double,
+        "DECIMAL" => Decimal,
+        "DATE" => Date,
+        "TIME" => Time,
+        // TIMESTAMP shares the Datetime wire type. Decoded naive on purpose:
+        // MySQL converts TIMESTAMP to/from the *session* time zone, so
+        // claiming UTC would assert something the value does not support.
+        "DATETIME" | "TIMESTAMP" => DateTime,
+        "JSON" => Json,
+        "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT"
+        | "ENUM" | "SET" => Text,
+        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => Bytes,
+        "NULL" => Null,
+        _ => Unknown,
+    }
+}
+
 /// Convert a sqlx MySql row cell to serde_json::Value (via the `json` feature).
 /// Shared with the DB-viewer commands (pub(crate)).
 pub(crate) fn mysql_cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {

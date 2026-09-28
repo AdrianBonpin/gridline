@@ -197,3 +197,61 @@ async fn mysql_decimal_and_date_decode_with_features_enabled() {
     let dt: chrono::NaiveDateTime = row.try_get(2).expect("DATETIME(6) must decode");
     assert_eq!(dt.to_string(), "2024-01-15 10:30:00.123456");
 }
+
+// ── mysql_cell_kind (pure) ──────────────────────────────────────────
+
+#[test]
+fn mysql_cell_kind_maps_every_type_name_sqlx_can_report() {
+    use MysqlCellKind::*;
+    // Every string here was observed from a live MySQL 8 server during the
+    // architect phase (ColumnType::name(flags, max_size)).
+    let cases: &[(&str, MysqlCellKind)] = &[
+        ("BOOLEAN", Int { bits: 8, signed: true }),
+        ("TINYINT", Int { bits: 8, signed: true }),
+        ("TINYINT UNSIGNED", Int { bits: 8, signed: false }),
+        ("SMALLINT", Int { bits: 16, signed: true }),
+        ("SMALLINT UNSIGNED", Int { bits: 16, signed: false }),
+        ("MEDIUMINT", Int { bits: 24, signed: true }),
+        ("MEDIUMINT UNSIGNED", Int { bits: 24, signed: false }),
+        ("INT", Int { bits: 32, signed: true }),
+        ("INT UNSIGNED", Int { bits: 32, signed: false }),
+        ("BIGINT", Int { bits: 64, signed: true }),
+        ("BIGINT UNSIGNED", Int { bits: 64, signed: false }),
+        ("YEAR", Int { bits: 16, signed: false }),
+        ("BIT", Bit),
+        ("FLOAT", Float),
+        ("DOUBLE", Double),
+        ("DECIMAL", Decimal),
+        ("DATE", Date),
+        ("TIME", Time),
+        ("DATETIME", DateTime),
+        ("TIMESTAMP", DateTime),
+        ("JSON", Json),
+        ("CHAR", Text),
+        ("VARCHAR", Text),
+        ("TEXT", Text),
+        ("TINYTEXT", Text),
+        ("MEDIUMTEXT", Text),
+        ("LONGTEXT", Text),
+        ("ENUM", Text),
+        ("SET", Text),
+        ("BINARY", Bytes),
+        ("VARBINARY", Bytes),
+        ("BLOB", Bytes),
+        ("TINYBLOB", Bytes),
+        ("MEDIUMBLOB", Bytes),
+        ("LONGBLOB", Bytes),
+        ("NULL", Null),
+        ("GEOMETRY", Unknown),
+        ("SOMETHING_NEW", Unknown),
+    ];
+    for (name, expected) in cases {
+        assert_eq!(&mysql_cell_kind(name), expected, "type name {name}");
+    }
+}
+
+#[test]
+fn mysql_cell_kind_is_case_insensitive_and_trims() {
+    assert_eq!(mysql_cell_kind("  bigint unsigned "), MysqlCellKind::Int { bits: 64, signed: false });
+    assert_eq!(mysql_cell_kind("Datetime"), MysqlCellKind::DateTime);
+}
