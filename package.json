@@ -8,6 +8,8 @@
     "tauri:dev": "bun run --filter gridline-desktop tauri:dev",
     "dev:www": "bun run --filter gridline-www dev",
     "build:www": "bun run --filter gridline-www build",
-    "test": "bun run --filter gridline-desktop test"
+    "test": "bun run --filter gridline-desktop test",
+    "icons": "bash scripts/regenerate-icons.sh",
+    "icons:verify": "bun scripts/verify-app-icon.mjs"
   }
 }
