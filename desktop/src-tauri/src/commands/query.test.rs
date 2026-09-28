@@ -255,3 +255,91 @@ fn mysql_cell_kind_is_case_insensitive_and_trims() {
     assert_eq!(mysql_cell_kind("  bigint unsigned "), MysqlCellKind::Int { bits: 64, signed: false });
     assert_eq!(mysql_cell_kind("Datetime"), MysqlCellKind::DateTime);
 }
+
+// ── mysql_cell_to_json: full type coverage (regression for #41) ─────
+
+#[tokio::test]
+#[ignore]
+async fn mysql_cell_to_json_decodes_every_type() {
+    use sqlx::Row;
+    let Some(mut conn) = mysql_test_connection().await else { return };
+
+    sqlx::query(
+        "CREATE TEMPORARY TABLE gl_decode_probe (
+           c_tiny TINYINT, c_tiny_u TINYINT UNSIGNED, c_bool BOOLEAN,
+           c_small SMALLINT, c_small_u SMALLINT UNSIGNED, c_medium MEDIUMINT,
+           c_int INT, c_int_u INT UNSIGNED, c_big BIGINT, c_big_u BIGINT UNSIGNED,
+           c_float FLOAT, c_double DOUBLE, c_decimal DECIMAL(10,2), c_bit BIT(8),
+           c_year YEAR, c_date DATE, c_time TIME, c_datetime DATETIME,
+           c_datetime6 DATETIME(6), c_timestamp TIMESTAMP NULL,
+           c_char CHAR(4), c_varchar VARCHAR(20), c_text TEXT,
+           c_binary BINARY(4), c_varbinary VARBINARY(8), c_blob BLOB,
+           c_json JSON, c_enum ENUM('a','b'), c_set SET('x','y'),
+           c_geometry GEOMETRY )",
+    )
+    .execute(&mut conn)
+    .await
+    .expect("create temporary table");
+
+    // c_int is 70000 so a 16-bit rung cannot hold it; c_big is small so a
+    // value-dependent chain would wrongly emit a number instead of a string.
+    sqlx::query(
+        "INSERT INTO gl_decode_probe VALUES (
+           1, 2, 1, 5, 6, 7, 70000, 9, 300, 4294967296,
+           11.5, 12.25, 13.75, b'10101010', 2024,
+           '2024-01-15', '10:30:00', '2024-01-15 10:30:00',
+           '2024-01-15 10:30:00.123456', '2024-01-15 10:30:00',
+           'abcd', 'hello', 'text value', 'WXYZ', 0x0102, 0x01020304,
+           JSON_OBJECT('k','v'), 'a', 'x,y', ST_GeomFromText('POINT(1 2)') )",
+    )
+    .execute(&mut conn)
+    .await
+    .expect("insert");
+
+    let row = sqlx::query("SELECT * FROM gl_decode_probe")
+        .fetch_one(&mut conn)
+        .await
+        .expect("select");
+
+    use serde_json::{json, Value};
+    let expected: Vec<(&str, Value)> = vec![
+        ("c_tiny", json!(1)),
+        ("c_tiny_u", json!(2)),
+        ("c_bool", json!(1)),
+        ("c_small", json!(5)),
+        ("c_small_u", json!(6)),
+        ("c_medium", json!(7)),
+        ("c_int", json!(70000)),
+        ("c_int_u", json!(9)),
+        ("c_big", Value::String("300".into())),
+        ("c_big_u", Value::String("4294967296".into())),
+        ("c_float", json!(11.5)),
+        ("c_double", json!(12.25)),
+        ("c_decimal", Value::String("13.75".into())),
+        ("c_bit", json!(170)),
+        ("c_year", json!(2024)),
+        ("c_date", Value::String("2024-01-15".into())),
+        ("c_time", Value::String("10:30:00".into())),
+        ("c_datetime", Value::String("2024-01-15 10:30:00".into())),
+        ("c_datetime6", Value::String("2024-01-15 10:30:00.123456".into())),
+        ("c_timestamp", Value::String("2024-01-15 10:30:00".into())),
+        ("c_char", Value::String("abcd".into())),
+        ("c_varchar", Value::String("hello".into())),
+        ("c_text", Value::String("text value".into())),
+        ("c_binary", Value::String("WXYZ".into())),
+        ("c_varbinary", Value::String("\u{1}\u{2}".into())),
+        ("c_blob", Value::String("\u{1}\u{2}\u{3}\u{4}".into())),
+        ("c_json", json!({"k": "v"})),
+        ("c_enum", Value::String("a".into())),
+        ("c_set", Value::String("x,y".into())),
+        // GEOMETRY has no sqlx decoder even with chrono/bigdecimal enabled;
+        // staying null is the documented limitation (spec §9).
+        ("c_geometry", Value::Null),
+    ];
+
+    assert_eq!(row.len(), expected.len(), "column count drifted from the fixture");
+    for (i, (name, want)) in expected.iter().enumerate() {
+        assert_eq!(row.columns()[i].name(), *name, "column order drifted");
+        assert_eq!(&mysql_cell_to_json(&row, i), want, "column {name} decoded wrong");
+    }
+}

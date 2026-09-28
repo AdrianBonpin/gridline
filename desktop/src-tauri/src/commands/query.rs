@@ -632,23 +632,125 @@ pub(crate) fn mysql_cell_kind(type_name: &str) -> MysqlCellKind {
     }
 }
 
-/// Convert a sqlx MySql row cell to serde_json::Value (via the `json` feature).
+/// Convert a sqlx MySql row cell to serde_json::Value, driven by the column's
+/// **declared** type (see [`mysql_cell_kind`]).
+///
+/// Type-directed rather than a blind try-chain because sqlx's MySQL integer
+/// compatibility is broad: `try_get::<i16>` succeeds for a `BIGINT` holding
+/// a small value and fails once the value grows, so a value-driven chain
+/// would emit different JSON types for different rows of one column.
 /// Shared with the DB-viewer commands (pub(crate)).
 pub(crate) fn mysql_cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
-    if let Ok(Some(v)) = row.try_get::<Option<serde_json::Value>, _>(i) {
-        return v;
+    use sqlx::{Row, TypeInfo, ValueRef};
+
+    // `MySqlTypeInfo.r#type`/`.flags` are `pub(crate)`, so the declared type is
+    // read through the public `name()`, which already distinguishes
+    // `INT UNSIGNED`, `BIGINT UNSIGNED` and `BOOLEAN` (TINYINT(1)).
+    let type_name = match row.try_get_raw(i) {
+        Ok(v) if !v.is_null() => v.type_info().name().to_string(),
+        // Genuine SQL NULL, or a column we cannot even describe.
+        _ => return serde_json::Value::Null,
+    };
+
+    match mysql_cell_kind(&type_name) {
+        MysqlCellKind::Int { bits, signed } => {
+            if signed {
+                match row.try_get::<i64, _>(i) {
+                    // <=32-bit fits a JS Number exactly; 64-bit is stringified
+                    // so the value survives the IPC boundary (matches PG).
+                    Ok(v) if bits <= 32 => serde_json::json!(v),
+                    Ok(v) => crate::commands::db_viewer::i64_to_json(v),
+                    Err(_) => serde_json::Value::Null,
+                }
+            } else {
+                match row.try_get::<u64, _>(i) {
+                    Ok(v) if bits <= 32 => serde_json::json!(v),
+                    Ok(v) => serde_json::Value::String(v.to_string()),
+                    Err(_) => serde_json::Value::Null,
+                }
+            }
+        }
+        MysqlCellKind::Bit => match row.try_get::<u64, _>(i) {
+            Ok(v) => serde_json::json!(v),
+            Err(_) => serde_json::Value::Null,
+        },
+        MysqlCellKind::Float => match row.try_get::<f32, _>(i) {
+            Ok(v) => serde_json::json!(v),
+            Err(_) => serde_json::Value::Null,
+        },
+        MysqlCellKind::Double => match row.try_get::<f64, _>(i) {
+            Ok(v) => serde_json::json!(v),
+            Err(_) => serde_json::Value::Null,
+        },
+        MysqlCellKind::Decimal => match row.try_get::<sqlx::types::BigDecimal, _>(i) {
+            // Stringified for the same reason as 64-bit ints: exact digits.
+            Ok(v) => serde_json::Value::String(v.to_string()),
+            Err(_) => serde_json::Value::Null,
+        },
+        // Temporal values are emitted naive, never as an instant: MySQL
+        // converts TIMESTAMP to and from the *session* time zone, so an
+        // explicit `Z` would assert something the value does not support.
+        MysqlCellKind::Date => match row.try_get::<chrono::NaiveDate, _>(i) {
+            Ok(v) => serde_json::Value::String(v.to_string()),
+            Err(_) => serde_json::Value::Null,
+        },
+        MysqlCellKind::Time => match row.try_get::<chrono::NaiveTime, _>(i) {
+            Ok(v) => serde_json::Value::String(v.to_string()),
+            Err(_) => serde_json::Value::Null,
+        },
+        MysqlCellKind::DateTime => {
+            // `try_get_unchecked` (not `try_get`) because sqlx's `NaiveDateTime`
+            // `Type`/`Compatible` impl matches `ColumnType::Datetime` only, so the
+            // checked path rejects a TIMESTAMP column even though both share the
+            // exact same wire format and `Decode` impl. Only the type-compat gate
+            // is bypassed here; the decode is the same one DATETIME uses.
+            match row.try_get_unchecked::<chrono::NaiveDateTime, _>(i) {
+                Ok(v) => serde_json::Value::String(v.to_string()),
+                Err(_) => serde_json::Value::Null,
+            }
+        }
+        MysqlCellKind::Json => row
+            .try_get::<serde_json::Value, _>(i)
+            .unwrap_or(serde_json::Value::Null),
+        MysqlCellKind::Text => mysql_text_to_json(row, i),
+        MysqlCellKind::Bytes => mysql_bytes_to_json(row, i),
+        MysqlCellKind::Null => serde_json::Value::Null,
+        MysqlCellKind::Unknown => mysql_unknown_to_json(row, i),
     }
-    if let Ok(s) = row.try_get::<Option<String>, _>(i) {
-        return s
-            .map(|s| serde_json::Value::String(s))
-            .unwrap_or(serde_json::Value::Null);
+}
+
+/// Char/varchar/text/enum/set: a UTF-8 string, falling back to a lossy
+/// decode for the odd VARBINARY-shaped metadata column.
+fn mysql_text_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
+    use sqlx::Row;
+    if let Ok(v) = row.try_get::<String, _>(i) {
+        return serde_json::Value::String(v);
     }
-    if let Ok(b) = row.try_get::<Option<Vec<u8>>, _>(i) {
-        return b
-            .map(|b| serde_json::Value::String(String::from_utf8_lossy(&b).into_owned()))
-            .unwrap_or(serde_json::Value::Null);
+    if let Ok(b) = row.try_get::<Vec<u8>, _>(i) {
+        return serde_json::Value::String(String::from_utf8_lossy(&b).into_owned());
     }
     serde_json::Value::Null
+}
+
+/// Binary/blob columns. Preserves the pre-existing lossy-UTF-8 rendering;
+/// changing binary presentation is explicitly out of scope (spec §3).
+fn mysql_bytes_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
+    use sqlx::Row;
+    if let Ok(b) = row.try_get::<Vec<u8>, _>(i) {
+        return serde_json::Value::String(String::from_utf8_lossy(&b).into_owned());
+    }
+    mysql_text_to_json(row, i)
+}
+
+/// Conservative fallback for a type we do not recognise — exactly the three
+/// decoders that were safe before this change, so an unknown type can never
+/// be worse than before (`GEOMETRY` lands here and stays null).
+fn mysql_unknown_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
+    use sqlx::Row;
+    if let Ok(v) = row.try_get::<serde_json::Value, _>(i) {
+        return v;
+    }
+    mysql_text_to_json(row, i)
 }
 
 async fn execute_mysql_query_on(
