@@ -33,7 +33,9 @@ tokio = { version = "1", features = ["full"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
 bytes = "1"
 futures-util = "0.3"
-sqlx = { version = "0.8", features = ["runtime-tokio", "mysql", "tls-rustls", "json"] }
+# chrono/bigdecimal: MySQL DECIMAL and DATE/TIME/DATETIME/TIMESTAMP have no
+# decoder without them, so those columns silently rendered as NULL (#41).
+sqlx = { version = "0.8", features = ["runtime-tokio", "mysql", "tls-rustls", "json", "chrono", "bigdecimal"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
 # async-ssh2 is not available at v0.4; using synchronous ssh2 via tokio::task::spawn_blocking per plan's fallback
 # vendored-openssl: link OpenSSL statically so the release binary has NO

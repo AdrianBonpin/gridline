@@ -132,3 +132,68 @@ async fn pg_multi_statement_live() {
 
     let _ = handle;
 }
+
+// ── sqlx type-feature coverage ──────────────────────────────────────
+
+/// Connect to the optional live MySQL test server. Returns `None` when the
+/// env vars are absent so the whole suite stays green without a server
+/// (matching the existing `#[ignore]`d integration-test convention).
+pub(crate) async fn mysql_test_connection() -> Option<sqlx::mysql::MySqlConnection> {
+    use sqlx::ConnectOptions;
+    let host = std::env::var("GRIDLINE_TEST_MYSQL_HOST").ok()?;
+    let port: u16 = std::env::var("GRIDLINE_TEST_MYSQL_PORT")
+        .ok()?
+        .parse()
+        .ok()?;
+    let user = std::env::var("GRIDLINE_TEST_MYSQL_USER").unwrap_or_else(|_| "root".into());
+    let pass = std::env::var("GRIDLINE_TEST_MYSQL_PASS").unwrap_or_default();
+    let db = std::env::var("GRIDLINE_TEST_MYSQL_DB").ok()?;
+    sqlx::mysql::MySqlConnectOptions::new()
+        .host(&host)
+        .port(port)
+        .username(&user)
+        .password(&pass)
+        .database(&db)
+        .ssl_mode(sqlx::mysql::MySqlSslMode::Disabled)
+        .disable_statement_logging()
+        .connect()
+        .await
+        .ok()
+}
+
+#[tokio::test]
+#[ignore]
+async fn mysql_decimal_and_date_decode_with_features_enabled() {
+    use sqlx::Row;
+    let Some(mut conn) = mysql_test_connection().await else { return };
+
+    sqlx::query(
+        "CREATE TEMPORARY TABLE gl_feature_probe (
+           c_decimal DECIMAL(20,4), c_date DATE, c_datetime DATETIME(6) )",
+    )
+    .execute(&mut conn)
+    .await
+    .expect("create temporary table");
+
+    sqlx::query(
+        "INSERT INTO gl_feature_probe VALUES (
+           12345678901234.5678, '2024-01-15', '2024-01-15 10:30:00.123456' )",
+    )
+    .execute(&mut conn)
+    .await
+    .expect("insert");
+
+    let row = sqlx::query("SELECT * FROM gl_feature_probe")
+        .fetch_one(&mut conn)
+        .await
+        .expect("select");
+
+    let dec: sqlx::types::BigDecimal = row.try_get(0).expect("DECIMAL must decode");
+    assert_eq!(dec.to_string(), "12345678901234.5678");
+
+    let date: chrono::NaiveDate = row.try_get(1).expect("DATE must decode");
+    assert_eq!(date, chrono::NaiveDate::from_ymd_opt(2024, 1, 15).unwrap());
+
+    let dt: chrono::NaiveDateTime = row.try_get(2).expect("DATETIME(6) must decode");
+    assert_eq!(dt.to_string(), "2024-01-15 10:30:00.123456");
+}
