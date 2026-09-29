@@ -192,6 +192,15 @@ pub fn has_executable_text(stmt: &str) -> bool {
                 skip_until(&chars, &mut i, |ch| ch == '\n');
             }
             '/' if peek(&chars, i + 1) == Some('*') => {
+                // MySQL executable comments (`/*! … */`, optionally
+                // version-gated like `/*!50003 … */`) are executed by the
+                // server, so a fragment that is only such a comment is still
+                // a statement. mysqldump wraps routine and trigger definitions
+                // in them with no surrounding SQL. Ordinary block comments
+                // remain skipped.
+                if peek(&chars, i + 2) == Some('!') {
+                    return true;
+                }
                 skip_block_comment(&chars, &mut i);
             }
             c if c.is_whitespace() => i += 1,
