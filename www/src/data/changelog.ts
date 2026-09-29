@@ -6,6 +6,15 @@ export interface ChangelogEntry {
 
 export const changelogEntries: ChangelogEntry[] = [
   {
+    version: "0.8.2",
+    date: "2026-09-29",
+    highlights: [
+      "MySQL columns now show their values. Every non-string MySQL type was decoding to NULL, so `id`/integer columns looked empty in the grid and the query editor — and it was not only integers: `DECIMAL`, `BIT`, `YEAR`, `DATE`, `TIME`, `DATETIME`, `DATETIME(6)`, `TIMESTAMP`, `FLOAT` and `DOUBLE` were affected too (21 of 30 types). Decoding is now driven by each column's declared type instead of a guess, 64-bit integers and `DECIMAL` travel as strings so no digits are lost, and `DATETIME(6)` keeps its microseconds. Temporal values are shown as stored, never silently shifted into another time zone.",
+      "MySQL restore now works against MySQL 8. It used to shell out to a bundled MariaDB client, which cannot authenticate with MySQL 8's default `caching_sha2_password`, so restore failed with `ERROR 1045` (or `ERROR 2026` once TLS was involved) while browsing worked fine. Restore now runs in-process over the same driver that browsing uses: it stops at the first error and tells you which statement failed, it can be cancelled, and it understands the `DELIMITER` directive so dumps containing triggers and stored routines apply correctly. The **Clean** toggle is now real — it drops only the objects the dump recreates, so an unrelated table in the target survives — and because MySQL DDL commits as it runs, the form warns that a failed restore cannot be rolled back.",
+      "`.sql` files can be opened with Gridline straight from your file manager. Right-click a script → Open With → Gridline (it appears as an alternate handler, so your default for `.sql` is left alone) and it opens in a query tab named after the file. Opening never executes anything — Run still goes through the destructive-query confirmation — and re-opening the same file focuses the existing tab without discarding edits. If no connection is open, the script is held and Home prompts you to pick one, so a double-click never dead-ends.",
+    ],
+  },
+  {
     version: "0.8.1",
     date: "2026-09-24",
     highlights: [
