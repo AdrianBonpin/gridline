@@ -343,3 +343,27 @@ async fn mysql_cell_to_json_decodes_every_type() {
         assert_eq!(&mysql_cell_to_json(&row, i), want, "column {name} decoded wrong");
     }
 }
+
+// ── statement-count policy ──────────────────────────────────────────
+
+#[test]
+fn statement_budget_allows_a_count_at_the_cap() {
+    assert!(check_statement_budget(MAX_STATEMENTS, MAX_STATEMENTS, false).is_ok());
+    assert!(check_statement_budget(MAX_RESTORE_STATEMENTS, MAX_RESTORE_STATEMENTS, true).is_ok());
+}
+
+#[test]
+fn interactive_over_budget_error_points_at_restore() {
+    let err = check_statement_budget(MAX_STATEMENTS + 1, MAX_STATEMENTS, false)
+        .expect_err("must reject");
+    assert!(err.contains("Tools"), "error must route to Tools → Restore; got {err:?}");
+    assert!(err.contains(&(MAX_STATEMENTS + 1).to_string()), "error must state the count; got {err:?}");
+}
+
+#[test]
+fn bulk_over_budget_error_states_the_limit_without_the_tool_hint() {
+    let err = check_statement_budget(MAX_RESTORE_STATEMENTS + 1, MAX_RESTORE_STATEMENTS, true)
+        .expect_err("must reject");
+    assert!(!err.contains("Tools"), "bulk path is already in Tools; got {err:?}");
+    assert!(err.contains(&MAX_RESTORE_STATEMENTS.to_string()), "got {err:?}");
+}

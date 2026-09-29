@@ -885,7 +885,33 @@ async fn execute_mysql_raw(
 // deliberately omitted because re-running a script would re-execute DML);
 // DML/DDL produce notices; the first error stops the run, prior sets survive.
 
-const MAX_STATEMENTS: usize = 50;
+/// Hard safety cap for an interactive multi-statement Run. Raised from 50
+/// because opening a `.sql` file and pressing Run is now a supported flow, and
+/// 50 rejected anything but toy scripts.
+pub(crate) const MAX_STATEMENTS: usize = 10_000;
+
+/// Cap for the deliberate bulk operation (Tools → Restore). Far higher than
+/// the interactive cap because it is an explicit, confirmed, cancellable
+/// operation bounded by the 100 MB file cap rather than by a keystroke.
+pub(crate) const MAX_RESTORE_STATEMENTS: usize = 1_000_000;
+
+/// Enforce a statement budget. `bulk` selects the restore wording: the
+/// interactive path tells the user where large scripts *should* run, while the
+/// bulk path must not point at a tool the user is already using.
+pub(crate) fn check_statement_budget(count: usize, cap: usize, bulk: bool) -> Result<(), String> {
+    if count <= cap {
+        return Ok(());
+    }
+    if bulk {
+        Err(format!(
+            "Script has {count} statements, exceeding the {cap} statement limit for a restore"
+        ))
+    } else {
+        Err(format!(
+            "Too many statements: {count} (max {cap}). For large scripts use Tools → Restore."
+        ))
+    }
+}
 
 pub(crate) enum StatementOutcome {
     Set(QueryResult),
@@ -1304,12 +1330,7 @@ pub async fn execute_query_multi(
     if statements.is_empty() {
         return Err("Query cannot be empty".to_string());
     }
-    if statements.len() > MAX_STATEMENTS {
-        return Err(format!(
-            "Too many statements: {} (max {MAX_STATEMENTS})",
-            statements.len()
-        ));
-    }
+    check_statement_budget(statements.len(), MAX_STATEMENTS, false)?;
 
     let mut result_sets: Vec<QueryResult> = Vec::new();
     let mut notices: Vec<StatementNotice> = Vec::new();
