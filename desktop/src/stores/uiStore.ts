@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ActiveView, DbType } from "../lib/types";
+import type { ActiveView, DbType, PendingSqlFile } from "../lib/types";
 
 interface UiState {
   searchQuery: string;
@@ -27,10 +27,14 @@ interface UiState {
   setPrefilledConnectionString: (value: string) => void;
   clearPrefilledConnectionString: () => void;
   setActiveConnectionId: (id: string | null) => void;
+  /** A `.sql` file opened from the OS while no connection was active. */
+  pendingSqlFile: PendingSqlFile | null;
+  setPendingSqlFile: (file: PendingSqlFile | null) => void;
+  clearPendingSqlFile: () => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeEnvironment: null, activeView: "home", selectedItemIds: [], prefilledConnectionString: null, activeConnectionId: null, settingsReturnView: null,
+  searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeEnvironment: null, activeView: "home", selectedItemIds: [], prefilledConnectionString: null, activeConnectionId: null, settingsReturnView: null, pendingSqlFile: null,
   setActiveView: (view) => set({ activeView: view }),
   openSettings: () => set((s) => ({
     settingsReturnView:
@@ -61,4 +65,6 @@ export const useUiStore = create<UiState>((set) => ({
   setPrefilledConnectionString: (value) => set({ prefilledConnectionString: value }),
   clearPrefilledConnectionString: () => set({ prefilledConnectionString: null }),
   setActiveConnectionId: (id) => set({ activeConnectionId: id }),
+  setPendingSqlFile: (file) => set({ pendingSqlFile: file }),
+  clearPendingSqlFile: () => set({ pendingSqlFile: null }),
 }));

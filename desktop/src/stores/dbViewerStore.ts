@@ -66,6 +66,8 @@ export interface ViewerTab {
   smartSortApplied: boolean;
   tabType: "table" | "query" | "object" | "objectForm";
   query?: string;
+  /** Set when the tab's text came from an OS-opened `.sql` file. */
+  filePath?: string;
   objectType?: ObjectType | null;
   objectItem?: unknown;
   form?: ViewerFormTabPayload;
@@ -127,7 +129,7 @@ interface DbViewerState {
 
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
-  openQueryTab: () => void;
+  openQueryTab: (initial?: { sql?: string; label?: string; filePath?: string }) => void;
   openObjectTab: (objectType: ObjectType, schema: string, name: string, item?: unknown) => void;
   openFormTab: (opts: {
     kind: ObjectKind;
@@ -262,13 +264,24 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set({ tabs: [...tabs, tab], activeTabId: tab.id });
   },
 
-  openQueryTab: () => {
+  openQueryTab: (initial) => {
     const { tabs, currentSchema } = get();
+
+    // Re-opening the same file focuses its tab instead of duplicating it, and
+    // deliberately does NOT overwrite the text — the user may have edited it.
+    if (initial?.filePath) {
+      const existing = tabs.find((t) => t.filePath === initial.filePath);
+      if (existing) {
+        set({ activeTabId: existing.id });
+        return;
+      }
+    }
+
     const queryCount = tabs.filter((t) => t.tabType === "query").length;
     const tab: ViewerTab = {
       id: `tab-${++tabCounter}`,
       schema: currentSchema ?? "public",
-      table: queryCount === 0 ? "Query" : `Query ${queryCount + 1}`,
+      table: initial?.label ?? (queryCount === 0 ? "Query" : `Query ${queryCount + 1}`),
       page: 1,
       pageSize: get().defaultPageSize,
       loading: false,
@@ -279,7 +292,8 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       hiddenColumns: [],
       smartSortApplied: false,
       tabType: "query",
-      query: "",
+      query: initial?.sql ?? "",
+      filePath: initial?.filePath,
     };
     set({ tabs: [...tabs, tab], activeTabId: tab.id });
   },

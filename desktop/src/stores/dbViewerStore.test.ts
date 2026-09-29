@@ -638,3 +638,46 @@ describe("roles slice", () => {
     expect(useDbViewerStore.getState().tabs.filter((x) => x.form?.kind === "table").length).toBe(1);
   });
 });
+
+describe("openQueryTab with an initial script", () => {
+  it("seeds the tab text and label from the payload", () => {
+    useDbViewerStore.setState({ tabs: [], activeTabId: null });
+
+    useDbViewerStore.getState().openQueryTab({
+      sql: "SELECT 1;",
+      label: "student_db.sql",
+      filePath: "/Users/me/student_db.sql",
+    });
+
+    const tab = useDbViewerStore.getState().tabs.slice(-1)[0]!;
+    expect(tab.tabType).toBe("query");
+    expect(tab.query).toBe("SELECT 1;");
+    expect(tab.table).toBe("student_db.sql");
+    expect(tab.filePath).toBe("/Users/me/student_db.sql");
+  });
+
+  it("focuses an existing tab for the same file instead of duplicating it", () => {
+    useDbViewerStore.setState({ tabs: [], activeTabId: null });
+    const payload = {
+      sql: "SELECT 1;",
+      label: "student_db.sql",
+      filePath: "/Users/me/student_db.sql",
+    };
+    useDbViewerStore.getState().openQueryTab(payload);
+    useDbViewerStore.getState().openQueryTab({ ...payload, sql: "SELECT 2;" });
+
+    const queryTabs = useDbViewerStore.getState().tabs.filter((t) => t.tabType === "query");
+    expect(queryTabs).toHaveLength(1);
+    // The already-open tab keeps its text: re-opening must not clobber edits.
+    expect(queryTabs[0].query).toBe("SELECT 1;");
+  });
+
+  it("still opens a plain empty tab when called with no payload", () => {
+    useDbViewerStore.setState({ tabs: [], activeTabId: null });
+    useDbViewerStore.getState().openQueryTab();
+    const tab = useDbViewerStore.getState().tabs.slice(-1)[0]!;
+    expect(tab.tabType).toBe("query");
+    expect(tab.query).toBe("");
+    expect(tab.filePath).toBeUndefined();
+  });
+});

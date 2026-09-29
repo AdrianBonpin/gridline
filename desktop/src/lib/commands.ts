@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreOptions, SqliteBackupOptions, SqliteRestoreOptions, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreOptions, SqliteBackupOptions, SqliteRestoreOptions, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult, PendingSqlFile } from "./types";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 import type { ChangePayload } from "./changePayload";
 import type { DiffReport } from "./types";
@@ -294,6 +294,11 @@ export async function executeQueryMulti(
   pageSize: number,
 ): Promise<MultiQueryResult> {
   return invoke<MultiQueryResult>("execute_query_multi", { connectionId, query, page, pageSize });
+}
+
+/** Drain the OS-delivered `.sql` open requests buffered in the Rust backend. */
+export async function takePendingSqlFiles(): Promise<PendingSqlFile[]> {
+  return invoke<PendingSqlFile[]>("take_pending_sql_files");
 }
 
 export async function exportQueryToFile(
