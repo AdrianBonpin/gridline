@@ -9,7 +9,9 @@ import { NewConnectionScreen } from "./components/connections/NewConnectionScree
 import { ErrorBanner } from "./components/ui/ErrorBanner";
 import { ToastContainer } from "./components/ui/Toast";
 import { DbViewerScreen } from "./components/db-viewer/DbViewerScreen";
+import { PendingSqlFileBanner } from "./components/layout/PendingSqlFileBanner";
 import { useAppearance } from "./hooks/useAppearance";
+import { useSqlFileOpen } from "./hooks/useSqlFileOpen";
 import { isMacOS } from "./lib/platform";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -36,6 +38,7 @@ export default function App() {
     const clearPrefilledConnectionString = useUiStore((s) => s.clearPrefilledConnectionString);
 
     useAppearance(settings?.theme ?? "system", settings?.font_size ?? "medium", settings?.accent_color ?? "#2563EB");
+    useSqlFileOpen();
 
     useEffect(() => {
         loadConnections();
@@ -90,6 +93,7 @@ export default function App() {
                         className="h-7 shrink-0 bg-canvas select-none"
                     />
                 )}
+            <PendingSqlFileBanner />
             <div className="flex-1 min-h-0">
                 {connectionError && (
                     <div className="px-6 pt-4">
