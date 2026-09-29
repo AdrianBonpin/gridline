@@ -34,7 +34,7 @@ fn is_pg_cancel_error(e: &tokio_postgres::Error) -> bool {
     e.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED)
 }
 
-fn is_mysql_cancel_error(e: &sqlx::Error) -> bool {
+pub(crate) fn is_mysql_cancel_error(e: &sqlx::Error) -> bool {
     match e.as_database_error().and_then(|d| d.code()) {
         Some(code) if code == "1317" => true, // ER_QUERY_INTERRUPTED (KILL QUERY)
         _ => e.to_string().to_lowercase().contains("interrupted"),
@@ -1536,6 +1536,10 @@ pub async fn cancel_query(
             .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))
         }
         Some(crate::cancel::CancelHandle::MySql(m)) => {
+            // Record the request before the KILL lands: the in-process restore
+            // engine polls this flag between statements, and the killed
+            // statement's error is the only other signal.
+            state.cancel_registry.mark_cancelled(&connection_id);
             let id = m
                 .conn_id
                 .ok_or_else(|| "No active query on this connection".to_string())?;
