@@ -10,11 +10,10 @@ import {
     detectPgTools,
     pgRestore,
     getSchemas,
-    detectMysqlTools,
     mysqlRestore,
     sqliteRestore,
 } from "../../lib/commands";
-import type { PgToolStatus, MySqlToolStatus, BackupJob } from "../../lib/types";
+import type { PgToolStatus, BackupJob } from "../../lib/types";
 
 interface RestorePageProps {
     connectionId: string;
@@ -60,7 +59,6 @@ export function RestorePage({ connectionId }: RestorePageProps) {
     const [schema, setSchema] = useState("");
     const [confirmed, setConfirmed] = useState(false);
     const [pgToolStatus, setPgToolStatus] = useState<PgToolStatus | null>(null);
-    const [mysqlToolStatus, setMysqlToolStatus] = useState<MySqlToolStatus | null>(null);
     const [checkingTools, setCheckingTools] = useState(true);
     const [availableSchemas, setAvailableSchemas] = useState<string[]>([]);
 
@@ -93,7 +91,6 @@ export function RestorePage({ connectionId }: RestorePageProps) {
         setCheckingTools(true);
         setConfirmed(false);
         setPgToolStatus(null);
-        setMysqlToolStatus(null);
         setAvailableSchemas([]);
 
         if (isPg) {
@@ -115,19 +112,10 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                 .then((schemas) => setAvailableSchemas(schemas))
                 .catch(() => setAvailableSchemas([]));
         } else if (isMysql) {
-            detectMysqlTools()
-                .then((status) => setMysqlToolStatus(status))
-                .catch(() =>
-                    setMysqlToolStatus({
-                        mysqldumpFound: false,
-                        mysqlFound: false,
-                        mysqldumpVersion: null,
-                        mysqlVersion: null,
-                        mysqldumpSource: null,
-                        mysqlSource: null,
-                    }),
-                )
-                .finally(() => setCheckingTools(false));
+            // MySQL restore runs in-process over the sqlx driver connection, so
+            // there is no client to probe for or wait on here (Backup/Sync
+            // still probe via detectMysqlTools for mysqldump).
+            setCheckingTools(false);
 
             getSchemas(connectionId)
                 .then((schemas) => setAvailableSchemas(schemas))
@@ -214,16 +202,15 @@ export function RestorePage({ connectionId }: RestorePageProps) {
         runWithProgress,
     ]);
 
+    // pg_restore is still required for PostgreSQL. MySQL restore runs in-process
+    // via the sqlx driver, so a missing mariadb/mysql client must not gate it —
+    // that client could never authenticate to MySQL 8 anyway (#41 follow-up).
     const toolsMissing = isPg
         ? pgToolStatus && !pgToolStatus.pg_restore_found
-        : isMysql
-          ? mysqlToolStatus && !mysqlToolStatus.mysqlFound
-          : false;
+        : false;
     const toolsBundled = isPg
         ? pgToolStatus?.pg_restore_source === "bundled"
-        : isMysql
-          ? mysqlToolStatus?.mysqlSource === "bundled"
-          : false;
+        : false;
     const canStart = filePath && confirmed && !isRunning;
 
     const checkingMessage = isPg
@@ -282,6 +269,13 @@ export function RestorePage({ connectionId }: RestorePageProps) {
 
                     {!checkingTools && !toolsMissing && (
                         <>
+                            {isMysql && (
+                                <p className="text-[11px] text-text-muted/70 -mb-2">
+                                    Restores run in-process over the driver connection — no MySQL client
+                                    installation required.
+                                </p>
+                            )}
+
                             {/* Configuration card */}
                             <div className="p-5 space-y-5">
                                 {/* Format (PostgreSQL only) */}
@@ -379,12 +373,21 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                             disabled={isPg && format === "plain"}
                                             className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer disabled:cursor-not-allowed"
                                         />
-                                        <span className="text-sm text-text-muted group-hover:text-text transition-colors">
-                                            Clean{" "}
-                                            <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
-                                                DROP before CREATE
-                                            </code>
-                                        </span>
+                                        {isMysql ? (
+                                            <span className="text-sm text-text-muted group-hover:text-text transition-colors">
+                                                Clean{" "}
+                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
+                                                    drops only the objects this file defines
+                                                </code>
+                                            </span>
+                                        ) : (
+                                            <span className="text-sm text-text-muted group-hover:text-text transition-colors">
+                                                Clean{" "}
+                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
+                                                    DROP before CREATE
+                                                </code>
+                                            </span>
+                                        )}
                                     </label>
                                 )}
                                 {isPg && format === "plain" && (
@@ -414,6 +417,12 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                         be undone.
                                     </span>
                                 </label>
+                                {isMysql && (
+                                    <p className="mt-2 text-[11px] text-red-400/80">
+                                        MySQL DDL commits as it runs and can't be rolled back — a failed
+                                        restore may leave this database partially applied.
+                                    </p>
+                                )}
                             </div>
 
                             {/* Progress */}
