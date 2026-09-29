@@ -599,6 +599,133 @@ pub fn run_mysql_sync(
 }
 
 // ---------------------------------------------------------------------------
+// Native MySQL restore engine (in-process via sqlx — no CLI, no subprocess)
+// ---------------------------------------------------------------------------
+
+/// Restore reads from disk, so it is capped at the existing CSV/JSON import
+/// limit (100 MB) rather than the 5 MB *editor* cap — a file too large to open
+/// in the editor must still be restorable (spec §2).
+pub const MAX_RESTORE_FILE_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Inputs for one native restore run. A struct rather than a long argument
+/// list so the headless core stays readable and directly testable.
+pub struct MySqlRestoreRun<'a> {
+    pub database: &'a str,
+    pub statements: &'a [String],
+    pub clean: bool,
+}
+
+/// Progress units for a restore: every statement, plus one for the clean
+/// drop phase so the fraction never jumps backwards.
+pub fn restore_progress_total(statement_count: usize, clean: bool) -> usize {
+    statement_count + usize::from(clean)
+}
+
+/// The error a failed restore reports. Includes the position so the user can
+/// find the statement in their file, and never echoes the statement text
+/// (SQL must not be logged — project guardrail).
+pub fn format_restore_statement_error(index_1based: usize, total: usize, detail: &str) -> String {
+    format!("Statement {index_1based} of {total} failed: {detail}")
+}
+
+/// Map a driver error for the restore path: a `KILL QUERY` cancellation must
+/// read as a cancellation, not as a broken statement.
+fn restore_statement_error(e: &sqlx::Error) -> String {
+    if crate::commands::query::is_mysql_cancel_error(e) {
+        "Query cancelled".to_string()
+    } else {
+        sanitize_error(&format!("{e}"))
+    }
+}
+
+/// Execute an already-split restore script over one live MySQL connection.
+///
+/// Stop-at-first-error by contract: MySQL DDL is non-transactional and
+/// auto-commits, so there is nothing to roll back and continuing past a
+/// failure would compound an already-partial restore (spec §6).
+pub async fn run_mysql_restore_on(
+    conn: &mut sqlx::mysql::MySqlConnection,
+    run: MySqlRestoreRun<'_>,
+    on_progress: &mut (dyn FnMut(usize, usize) + Send),
+    is_cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<(), String> {
+    crate::commands::query::check_statement_budget(
+        run.statements.len(),
+        crate::commands::query::MAX_RESTORE_STATEMENTS,
+        true,
+    )?;
+
+    // The form lets the user target a database other than the one this
+    // connection defaults to, so select it explicitly.
+    exec_restore_statement(
+        conn,
+        &format!("USE {}", crate::db::mysql::mysql_quote_ident(run.database)),
+    )
+    .await
+    .map_err(|e| sanitize_error(&format!("{e}")))?;
+
+    let total = restore_progress_total(run.statements.len(), run.clean);
+    let mut done = 0usize;
+
+    if run.clean {
+        let drops = crate::db::mysql_clean::plan_clean_drops(run.database, run.statements);
+        if !drops.is_empty() {
+            // Foreign keys off for the drop phase, so object ordering cannot
+            // fail the restore; restored on the same session right after.
+            exec_restore_statement(conn, "SET FOREIGN_KEY_CHECKS = 0")
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            for drop_sql in &drops {
+                if is_cancelled() {
+                    return Err("Query cancelled".to_string());
+                }
+                exec_restore_statement(conn, drop_sql)
+                    .await
+                    .map_err(|e| restore_statement_error(&e))?;
+            }
+            exec_restore_statement(conn, "SET FOREIGN_KEY_CHECKS = 1")
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+        }
+        done += 1;
+        on_progress(done, total);
+    }
+
+    for (idx, stmt) in run.statements.iter().enumerate() {
+        if is_cancelled() {
+            return Err("Query cancelled".to_string());
+        }
+        if let Err(e) = exec_restore_statement(conn, stmt).await {
+            if crate::commands::query::is_mysql_cancel_error(&e) {
+                return Err("Query cancelled".to_string());
+            }
+            return Err(format_restore_statement_error(
+                idx + 1,
+                run.statements.len(),
+                &sanitize_error(&format!("{e}")),
+            ));
+        }
+        done += 1;
+        on_progress(done, total);
+    }
+    Ok(())
+}
+
+/// Run a single restore statement, preserving the driver error so the caller
+/// can distinguish a cancellation from a genuine statement failure.
+///
+/// Uses the *simple* query protocol (a bare string through `Executor`), not the
+/// prepared-statement protocol: MySQL rejects several restore statements
+/// (`USE`, `SET`, some DDL) with error 1295 when prepared.
+async fn exec_restore_statement(
+    conn: &mut sqlx::mysql::MySqlConnection,
+    sql: &str,
+) -> Result<(), sqlx::Error> {
+    use sqlx::Executor;
+    conn.execute(sql).await.map(|_| ())
+}
+
+// ---------------------------------------------------------------------------
 // Tauri commands (thin wrappers: store lookup + keychain + event emission)
 // ---------------------------------------------------------------------------
 
@@ -901,20 +1028,134 @@ pub async fn mysql_restore(
             .unwrap_or_default();
 
     let (host, port, via_tunnel) = mysql_endpoint(&state, &connection_id, &conn);
-    let params = MySqlConnParams::new(
-        host,
-        port,
-        conn.username.clone().unwrap_or_else(|| "root".into()),
-        options.database.clone(),
-        password,
+
+    // Native restore: no tool resolution, no subprocess, no MYSQL_PWD in a
+    // child environment. The sqlx driver handles MySQL 8 auth and TLS.
+    let statements = {
+        let bytes = std::fs::metadata(&options.file_path)
+            .map_err(|e| format!("Cannot read restore file: {e}"))?
+            .len();
+        if bytes > MAX_RESTORE_FILE_BYTES {
+            return Err(format!(
+                "Restore file is {} MB; the limit is {} MB",
+                bytes / (1024 * 1024),
+                MAX_RESTORE_FILE_BYTES / (1024 * 1024)
+            ));
+        }
+        let text = std::fs::read_to_string(&options.file_path)
+            .map_err(|e| format!("Cannot read restore file: {e}"))?;
+        let statements = crate::db::sql_split::split_statements(&text);
+        crate::commands::query::check_statement_budget(
+            statements.len(),
+            crate::commands::query::MAX_RESTORE_STATEMENTS,
+            true,
+        )?;
+        statements
+    };
+
+    let database = options.database.clone();
+    let clean = options.clean;
+    let original_host = conn.host.clone();
+    let ssl_mode = conn.ssl_mode.clone();
+    let ssl_ca = conn.ssl_ca_path.clone();
+    let username = conn.username.clone().unwrap_or_else(|| "root".into());
+
+    // Real cancellation: a per-restore flag that the existing `cancel_query`
+    // command sets, plus the restore session's MySQL thread id registered so
+    // `KILL QUERY` aborts the in-flight statement. Cleared before each run so a
+    // stale request from a previous operation cannot abort this one.
+    let cancel_flag = state.cancel_registry.cancel_flag(&connection_id);
+    cancel_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    let cancel_opts = crate::commands::db_viewer::mysql_connect_options(
+        &host,
+        port as u16,
+        &username,
+        &password,
+        &database,
+        &original_host,
+        ssl_mode.as_deref(),
+        ssl_ca.as_deref(),
+        via_tunnel,
     );
-    let tools = resolve_mysql_tool_paths(&app_handle);
-    let tls = if via_tunnel { Some("REQUIRED") } else { None };
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
-    tokio::task::spawn_blocking(move || {
-        let result = run_mysql_restore(&params, &options, &tools, tls);
+    let connection_id_for_cancel = connection_id.clone();
+
+    tokio::spawn(async move {
+        let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let mut emit_progress = |done: usize, total: usize| {
+            // Throttle: a 50k-statement dump must not flood the IPC channel.
+            if last_emit.elapsed() < std::time::Duration::from_millis(200) && done < total {
+                return;
+            }
+            last_emit = std::time::Instant::now();
+            let _ = app_handle_clone.emit(
+                "backup-progress",
+                BackupProgressEvent {
+                    job_id: job_id_clone.clone(),
+                    status: "running".into(),
+                    progress: Some(done as f64 / total.max(1) as f64),
+                    output_line: Some(format!("Statement {done} of {total}")),
+                    error: None,
+                },
+            );
+        };
+
+        let is_cancelled = {
+            let flag = cancel_flag.clone();
+            move || flag.load(std::sync::atomic::Ordering::SeqCst)
+        };
+
+        let result = async {
+            let mut mconn = crate::commands::db_viewer::open_mysql_connection(
+                &host,
+                port as u16,
+                &username,
+                &password,
+                &database,
+                &original_host,
+                ssl_mode.as_deref(),
+                ssl_ca.as_deref(),
+                via_tunnel,
+            )
+            .await?;
+
+            // Register the restore session so the UI's `cancel_query` can
+            // `KILL QUERY` it (mirrors how browsing registers pooled conns).
+            // The registry is reached through the app handle because it is not
+            // `Clone`.
+            let registry = app_handle_clone.state::<crate::AppState>();
+            let restore_conn_id: i64 =
+                sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+                    .fetch_one(&mut mconn)
+                    .await
+                    .unwrap_or(-1);
+            registry.cancel_registry.set_mysql(
+                &connection_id_for_cancel,
+                crate::cancel::MySqlCancel {
+                    conn_id: Some(restore_conn_id),
+                    connect_options: cancel_opts,
+                },
+            );
+
+            let r = run_mysql_restore_on(
+                &mut mconn,
+                MySqlRestoreRun { database: &database, statements: &statements, clean },
+                &mut emit_progress,
+                &is_cancelled,
+            )
+            .await;
+
+            registry
+                .cancel_registry
+                .set_mysql_conn_id(&connection_id_for_cancel, None);
+            registry.cancel_registry.clear_cancelled(&connection_id_for_cancel);
+            r
+        }
+        .await;
+
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 

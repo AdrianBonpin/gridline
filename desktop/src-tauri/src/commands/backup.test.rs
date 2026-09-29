@@ -532,3 +532,100 @@ fn mysql_env_uses_mysql_pwd_not_password_arg() {
     let args = build_mysql_dump_args(&MySqlConnParams::new("h".into(), 3306, "u".into(), "db".into(), "p".into()), &opts);
     assert!(args.iter().all(|a| !a.starts_with("--password")));
 }
+
+// ── native MySQL restore: error reporting contract ──────────────────
+
+#[test]
+fn restore_failure_names_the_statement_position() {
+    // The user must be able to find the offending statement in their file.
+    let err = format_restore_statement_error(3, 10, "syntax error near 'CREAT'");
+    assert_eq!(err, "Statement 3 of 10 failed: syntax error near 'CREAT'");
+}
+
+#[test]
+fn restore_progress_total_counts_the_clean_phase() {
+    // clean adds one progress unit (the drop phase) so the bar never resets.
+    assert_eq!(restore_progress_total(5, false), 5);
+    assert_eq!(restore_progress_total(5, true), 6);
+}
+
+#[tokio::test]
+#[ignore]
+async fn mysql_native_restore_applies_a_script_and_honours_clean() {
+    use sqlx::ConnectOptions;
+    use sqlx::Connection;
+
+    let host = match std::env::var("GRIDLINE_TEST_MYSQL_HOST") { Ok(v) => v, Err(_) => return };
+    let port: u16 = std::env::var("GRIDLINE_TEST_MYSQL_PORT").unwrap_or_else(|_| "3306".into()).parse().unwrap();
+    let user = std::env::var("GRIDLINE_TEST_MYSQL_USER").unwrap_or_else(|_| "root".into());
+    let pass = std::env::var("GRIDLINE_TEST_MYSQL_PASS").unwrap_or_default();
+    let db = match std::env::var("GRIDLINE_TEST_MYSQL_DB") { Ok(v) => v, Err(_) => return };
+
+    let mut conn = sqlx::mysql::MySqlConnectOptions::new()
+        .host(&host).port(port).username(&user).password(&pass).database(&db)
+        .ssl_mode(sqlx::mysql::MySqlSslMode::Disabled)
+        .disable_statement_logging()
+        .connect().await.expect("connect");
+
+    // Scratch table, removed again at the end, so the live DB is never harmed.
+    let table = "gl_restore_probe";
+    sqlx::query(&format!("DROP TABLE IF EXISTS `{db}`.`{table}`"))
+        .execute(&mut conn).await.expect("pre-clean");
+
+    let script = format!(
+        "CREATE TABLE `{table}` (id INT PRIMARY KEY, name VARCHAR(20));\n\
+         INSERT INTO `{table}` VALUES (1, 'first');"
+    );
+    let statements = crate::db::sql_split::split_statements(&script);
+
+    let mut events: Vec<(usize, usize)> = Vec::new();
+    let mut on_progress = |done: usize, total: usize| events.push((done, total));
+    let never = || false;
+
+    run_mysql_restore_on(
+        &mut conn,
+        MySqlRestoreRun { database: &db, statements: &statements, clean: true },
+        &mut on_progress,
+        &never,
+    ).await.expect("first restore");
+
+    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM `{db}`.`{table}`"))
+        .fetch_one(&mut conn).await.expect("count");
+    assert_eq!(count, 1);
+    assert_eq!(events.last().copied(), Some((statements.len() + 1, statements.len() + 1)));
+
+    // Second run with clean: the table must be dropped and recreated, so the
+    // insert cannot collide with the existing primary key.
+    let mut events2: Vec<(usize, usize)> = Vec::new();
+    let mut on_progress2 = |done: usize, total: usize| events2.push((done, total));
+    run_mysql_restore_on(
+        &mut conn,
+        MySqlRestoreRun { database: &db, statements: &statements, clean: true },
+        &mut on_progress2,
+        &never,
+    ).await.expect("clean restore must not hit a duplicate key");
+
+    let count2: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM `{db}`.`{table}`"))
+        .fetch_one(&mut conn).await.expect("count2");
+    assert_eq!(count2, 1, "clean restore must replace, not append");
+
+    // A statement that cannot succeed must fail and name its position.
+    let bad = crate::db::sql_split::split_statements("SELECT 1;\nSELECT * FROM gl_no_such_table_xyz;");
+    let mut noop = |_: usize, _: usize| {};
+    let err = run_mysql_restore_on(
+        &mut conn,
+        MySqlRestoreRun { database: &db, statements: &bad, clean: false },
+        &mut noop,
+        &never,
+    ).await.expect_err("must fail");
+    assert!(err.starts_with("Statement 2 of 2 failed:"), "got {err:?}");
+
+    let _ = conn.close().await;
+    let mut cleanup = sqlx::mysql::MySqlConnectOptions::new()
+        .host(&host).port(port).username(&user).password(&pass).database(&db)
+        .ssl_mode(sqlx::mysql::MySqlSslMode::Disabled).disable_statement_logging()
+        .connect().await.expect("reconnect");
+    sqlx::query(&format!("DROP TABLE IF EXISTS `{db}`.`{table}`"))
+        .execute(&mut cleanup).await.expect("cleanup");
+    let _ = cleanup.close().await;
+}
