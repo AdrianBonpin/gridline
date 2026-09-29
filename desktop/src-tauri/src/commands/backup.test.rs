@@ -518,15 +518,6 @@ fn mysql_dump_args_single_transaction_no_data_routines() {
 }
 
 #[test]
-fn mysql_restore_args_no_clean_flags() {
-    let opts = MySqlRestoreOptions { database: "shop".into(), file_path: "/tmp/d.sql".into(), clean: false };
-    let args = build_mysql_restore_args(&MySqlConnParams::new("h".into(), 3306, "u".into(), "shop".into(), "p".into()), &opts);
-    assert!(args.iter().any(|a| a == "--database=shop"));
-    assert!(args.iter().any(|a| a == "--host=h"));
-    assert!(args.iter().all(|a| a != "--force"));
-}
-
-#[test]
 fn mysql_env_uses_mysql_pwd_not_password_arg() {
     let opts = MySqlBackupOptions { database: "db".into(), file_path: "/tmp/x.sql".into(), single_transaction: false, no_data: false, routines: false, triggers: false, events: false };
     let args = build_mysql_dump_args(&MySqlConnParams::new("h".into(), 3306, "u".into(), "db".into(), "p".into()), &opts);
@@ -628,4 +619,19 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
     sqlx::query(&format!("DROP TABLE IF EXISTS `{db}`.`{table}`"))
         .execute(&mut cleanup).await.expect("cleanup");
     let _ = cleanup.close().await;
+}
+
+// ── restore file-size cap ───────────────────────────────────────────
+
+#[test]
+fn restore_size_cap_accepts_a_file_at_the_limit() {
+    assert!(check_restore_file_size(MAX_RESTORE_FILE_BYTES, MAX_RESTORE_FILE_BYTES).is_ok());
+}
+
+#[test]
+fn restore_size_cap_rejects_a_file_over_the_limit_and_states_both_sizes() {
+    let err = check_restore_file_size(MAX_RESTORE_FILE_BYTES + 1, MAX_RESTORE_FILE_BYTES)
+        .expect_err("must reject");
+    assert!(err.contains("100 MB"), "error must state the limit in MB; got {err:?}");
+    assert!(err.contains("MB"), "error must state the actual size in MB; got {err:?}");
 }

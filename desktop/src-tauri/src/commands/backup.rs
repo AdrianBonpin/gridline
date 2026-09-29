@@ -516,12 +516,6 @@ pub fn build_mysql_dump_args(conn: &MySqlConnParams, options: &MySqlBackupOption
     a
 }
 
-pub fn build_mysql_restore_args(conn: &MySqlConnParams, options: &MySqlRestoreOptions) -> Vec<String> {
-    let mut a = base_mysql_args(conn);
-    a.push(format!("--database={}", options.database));
-    a
-}
-
 /// System-first mariadb-dump/mariadb (bundled fallback in resources/mysql_tools).
 pub fn resolve_mysql_tool(app: &AppHandle, tool: &str) -> (String, Option<String>) {
     let system_ok = Command::new(tool).arg("--version").output().is_ok();
@@ -552,22 +546,6 @@ pub fn run_mysql_dump(
         args.push(format!("--ssl-mode={m}"));
     }
     let out = Command::new(&tools.mysqldump).env("MYSQL_PWD", &conn.password).args(&args).output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() { Ok(()) } else { Err(sanitize_error(&String::from_utf8_lossy(&out.stderr))) }
-}
-
-pub fn run_mysql_restore(
-    conn: &MySqlConnParams,
-    options: &MySqlRestoreOptions,
-    tools: &MySqlToolPaths,
-    tls_mode: Option<&str>,
-) -> Result<(), String> {
-    let mut args = build_mysql_restore_args(conn, options);
-    if let Some(m) = tls_mode {
-        args.push(format!("--ssl-mode={m}"));
-    }
-    let file = std::fs::File::open(&options.file_path).map_err(|e| format!("open dump: {e}"))?;
-    let out = Command::new(&tools.mysql).env("MYSQL_PWD", &conn.password).args(&args).stdin(Stdio::from(file)).output()
         .map_err(|e| e.to_string())?;
     if out.status.success() { Ok(()) } else { Err(sanitize_error(&String::from_utf8_lossy(&out.stderr))) }
 }
@@ -606,6 +584,20 @@ pub fn run_mysql_sync(
 /// limit (100 MB) rather than the 5 MB *editor* cap — a file too large to open
 /// in the editor must still be restorable (spec §2).
 pub const MAX_RESTORE_FILE_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Enforce the restore size cap. Extracted from the command so the boundary is
+/// testable; restore reads from disk, so it uses the 100 MB bulk cap rather
+/// than the 5 MB *editor* cap (spec §2).
+pub fn check_restore_file_size(bytes: u64, cap: u64) -> Result<(), String> {
+    if bytes <= cap {
+        return Ok(());
+    }
+    Err(format!(
+        "Restore file is {} MB; the limit is {} MB",
+        bytes.div_ceil(1024 * 1024),
+        cap / (1024 * 1024)
+    ))
+}
 
 /// Inputs for one native restore run. A struct rather than a long argument
 /// list so the headless core stays readable and directly testable.
@@ -1035,13 +1027,7 @@ pub async fn mysql_restore(
         let bytes = std::fs::metadata(&options.file_path)
             .map_err(|e| format!("Cannot read restore file: {e}"))?
             .len();
-        if bytes > MAX_RESTORE_FILE_BYTES {
-            return Err(format!(
-                "Restore file is {} MB; the limit is {} MB",
-                bytes / (1024 * 1024),
-                MAX_RESTORE_FILE_BYTES / (1024 * 1024)
-            ));
-        }
+        check_restore_file_size(bytes, MAX_RESTORE_FILE_BYTES)?;
         let text = std::fs::read_to_string(&options.file_path)
             .map_err(|e| format!("Cannot read restore file: {e}"))?;
         let statements = crate::db::sql_split::split_statements(&text);
