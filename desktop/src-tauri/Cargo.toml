@@ -61,3 +61,10 @@ security-framework-sys = "2.17"
 # (already a transitive dep of security-framework; pinned to the same 0.10 line)
 core-foundation = "0.10"
 
+# Windows/Linux deliver an OS "open with" request as argv. Without this a
+# second double-click would launch a second app instead of forwarding the path
+# to the running one. macOS needs no equivalent: LaunchServices routes to the
+# running app via RunEvent::Opened.
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
+

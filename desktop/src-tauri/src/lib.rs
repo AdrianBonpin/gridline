@@ -13,7 +13,7 @@ use commands::ssh::{Ssh2Backend, SshTunnelManager};
 use db::pool::ConnectionPoolManager;
 use std::sync::{Arc, Mutex as StdMutex};
 use store::Store;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 pub struct AppState {
     pub db_store: StdMutex<Store>,
@@ -39,11 +39,32 @@ pub fn run() {
     // another provider is already installed).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_keyring_store::init())
+        // OS "open with" paths are queued here before the webview exists.
+        .manage(crate::commands::open_files::PendingOpenFiles::default());
+
+    // Shadowed, not `mut`: on macOS this cfg block is compiled out, so a
+    // mutable binding would only earn an `unused_mut` warning. The plugin
+    // itself stays a Windows/Linux-only, target-scoped dependency.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        let pending = app.state::<crate::commands::open_files::PendingOpenFiles>();
+        let mut accepted = false;
+        for arg in argv.iter().skip(1) {
+            if crate::commands::open_files::accept_path(&pending, arg) {
+                accepted = true;
+            }
+        }
+        if accepted {
+            let _ = app.emit("sql-file-opened", ());
+        }
+    }));
+
+    builder
         .setup(move |app| {
             // Open the local store under the OS app-data directory. When the
             // app is launched from Finder/LaunchServices the working directory
@@ -58,6 +79,14 @@ pub fn run() {
                 .map_err(|e| format!("failed to create app data dir: {e}"))?;
             let store =
                 Store::open(&data_dir.join("gridline.db").to_string_lossy()).expect("failed to open db");
+
+            // Cold-start "open with": the path arrived as a process argument
+            // before the webview existed, so queue it here. macOS uses
+            // RunEvent::Opened instead.
+            for arg in std::env::args().skip(1) {
+                let pending = app.state::<crate::commands::open_files::PendingOpenFiles>();
+                let _ = crate::commands::open_files::accept_path(&pending, &arg);
+            }
 
             app.manage(AppState {
                 db_store: StdMutex::new(store),
@@ -178,6 +207,7 @@ pub fn run() {
             query::execute_query_multi,
             query_export::export_query_to_file,
             query::cancel_query,
+            crate::commands::open_files::take_pending_sql_files,
             query::get_query_history,
             query::clear_query_history,
             query::set_history_favorite,
@@ -188,16 +218,34 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(|app_handle, event| match event {
+            // macOS: Finder / LaunchServices "open with". File URLs only.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Opened { urls } => {
+                let pending = app_handle
+                    .state::<crate::commands::open_files::PendingOpenFiles>();
+                let mut accepted = false;
+                for url in urls {
+                    if let Ok(path) = url.to_file_path() {
+                        if crate::commands::open_files::accept_path(
+                            &pending,
+                            &path.to_string_lossy(),
+                        ) {
+                            accepted = true;
+                        }
+                    }
+                }
+                if accepted {
+                    let _ = app_handle.emit("sql-file-opened", ());
+                }
+            }
             // Close all SSH tunnels on exit: ExitRequested fires before the
             // event loop ends, Exit fires after it has.
-            if matches!(
-                event,
-                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-            ) {
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 if let Ok(mut mgr) = app_handle.state::<AppState>().ssh_manager.lock() {
                     mgr.close_all();
                 }
             }
+            _ => {}
         });
 }
