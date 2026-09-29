@@ -7,6 +7,7 @@ pub mod import_export;
 pub mod keychain;
 pub mod maintenance;
 pub mod objects;
+pub mod open_files;
 pub mod query;
 pub mod query_export;
 pub mod schema_diff;
