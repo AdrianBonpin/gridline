@@ -941,6 +941,102 @@ where
     Ok((client, handle))
 }
 
+/// Apply Gridline's MySQL TLS policy to connect options.
+///
+/// Extracted from `run_mysql_connect` so the native restore path connects
+/// *exactly* as browsing does. That equivalence is the whole point of the fix:
+/// the sqlx driver reaches MySQL 8 with `caching_sha2_password` and handles
+/// TLS in-process, where the bundled MariaDB client cannot.
+pub(crate) fn apply_mysql_tls(
+    mut opts: sqlx::mysql::MySqlConnectOptions,
+    original_host: &str,
+    ssl_mode: Option<&str>,
+    ssl_ca_path: Option<&str>,
+    via_tunnel: bool,
+) -> sqlx::mysql::MySqlConnectOptions {
+    use sqlx::mysql::MySqlSslMode;
+
+    // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
+    // degrade to encrypt-only `require`. Direct connections honor the mode.
+    let decision = crate::commands::ssh::effective_tls_decision(
+        crate::db::tls::tls_decision_for(original_host, ssl_mode),
+        via_tunnel,
+    );
+    match decision {
+        crate::db::tls::TlsDecision::Disable => {
+            opts = opts.ssl_mode(MySqlSslMode::Disabled);
+        }
+        crate::db::tls::TlsDecision::Require => {
+            opts = opts.ssl_mode(MySqlSslMode::Required);
+        }
+        crate::db::tls::TlsDecision::Verify => {
+            // sqlx 0.8 has no VerifyFull: verify-ca -> VerifyCa (chain only),
+            // verify-full -> VerifyIdentity (chain + hostname).
+            match ssl_mode {
+                Some("verify-ca") => opts = opts.ssl_mode(MySqlSslMode::VerifyCa),
+                _ => opts = opts.ssl_mode(MySqlSslMode::VerifyIdentity),
+            }
+            if let Some(ca) = ssl_ca_path {
+                opts = opts.ssl_ca(ca);
+            }
+        }
+    }
+    opts
+}
+
+/// Build the final MySQL connect options (base params + TLS policy) for a
+/// headless, non-pooled connection.
+pub(crate) fn mysql_connect_options(
+    host: &str,
+    port: u16,
+    username: &str,
+    password: &str,
+    database: &str,
+    original_host: &str,
+    ssl_mode: Option<&str>,
+    ssl_ca_path: Option<&str>,
+    via_tunnel: bool,
+) -> sqlx::mysql::MySqlConnectOptions {
+    let opts = sqlx::mysql::MySqlConnectOptions::new()
+        .host(host)
+        .port(port)
+        .username(username)
+        .password(password)
+        .database(database);
+    apply_mysql_tls(opts, original_host, ssl_mode, ssl_ca_path, via_tunnel)
+}
+
+/// Open a single standalone MySQL connection for a non-browsing operation
+/// (currently: native restore). Deliberately not pooled — the restore owns the
+/// session so `USE` and `FOREIGN_KEY_CHECKS` stay coherent for its whole run.
+pub(crate) async fn open_mysql_connection(
+    host: &str,
+    port: u16,
+    username: &str,
+    password: &str,
+    database: &str,
+    original_host: &str,
+    ssl_mode: Option<&str>,
+    ssl_ca_path: Option<&str>,
+    via_tunnel: bool,
+) -> Result<sqlx::mysql::MySqlConnection, String> {
+    use sqlx::ConnectOptions;
+    let opts = mysql_connect_options(
+        host,
+        port,
+        username,
+        password,
+        database,
+        original_host,
+        ssl_mode,
+        ssl_ca_path,
+        via_tunnel,
+    );
+    opts.connect()
+        .await
+        .map_err(|e| sanitize_error(&format!("MySQL connection failed: {e}")))
+}
+
 /// Headless MySQL connect (no Tauri `State`). Opens an SSH tunnel when
 /// configured (binding 127.0.0.1 only), maps SSL modes, and registers a
 /// `DbHandle::MySql` pool. Errors are sanitized so no `mysql://user:pass@host`
@@ -952,7 +1048,7 @@ pub(crate) async fn run_mysql_connect(
     pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
     cancel_registry: &crate::cancel::CancelRegistry,
 ) -> Result<(), String> {
-    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
+    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
     if config.host.trim().is_empty() {
         return Err("host is required".to_string());
     }
@@ -995,38 +1091,22 @@ pub(crate) async fn run_mysql_connect(
         via_tunnel = false;
     }
 
-    let mut opts = MySqlConnectOptions::new()
+    let opts = MySqlConnectOptions::new()
         .host(&target_host)
         .port(target_port)
         .username(config.username.as_deref().unwrap_or("root"))
         .password(config.password.as_deref().unwrap_or(""))
         .database(config.database.as_deref().unwrap_or("mysql"));
 
-    // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
-    // degrade to encrypt-only `require`. Direct connections honor the mode.
-    let decision = crate::commands::ssh::effective_tls_decision(
-        crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref()),
+    // TLS: shared with the native restore path so browsing and restore make
+    // identical TLS decisions.
+    let opts = apply_mysql_tls(
+        opts,
+        &config.host,
+        config.ssl_mode.as_deref(),
+        config.ssl_ca_path.as_deref(),
         via_tunnel,
     );
-    match decision {
-        crate::db::tls::TlsDecision::Disable => {
-            opts = opts.ssl_mode(MySqlSslMode::Disabled);
-        }
-        crate::db::tls::TlsDecision::Require => {
-            opts = opts.ssl_mode(MySqlSslMode::Required);
-        }
-        crate::db::tls::TlsDecision::Verify => {
-            // sqlx 0.8 has no VerifyFull: verify-ca -> VerifyCa (chain only),
-            // verify-full -> VerifyIdentity (chain + hostname).
-            match config.ssl_mode.as_deref() {
-                Some("verify-ca") => opts = opts.ssl_mode(MySqlSslMode::VerifyCa),
-                _ => opts = opts.ssl_mode(MySqlSslMode::VerifyIdentity),
-            }
-            if let Some(ca) = config.ssl_ca_path.as_deref() {
-                opts = opts.ssl_ca(ca);
-            }
-        }
-    }
 
     // Clone the (already final) options before `connect_with` consumes them so
     // `cancel_query` can open its own connection to run `KILL QUERY ?`.

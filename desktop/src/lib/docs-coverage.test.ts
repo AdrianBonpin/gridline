@@ -73,4 +73,10 @@ describe("v0.8.1 docs coverage", () => {
   it("landing.js platform download links point to v0.8.1", () => {
     expect(landing).toContain('const version = "0.8.1"');
   });
+  it("AGENTS.md documents the native MySQL restore and the .sql association", () => {
+    // These claims would actively mislead the next contributor if they were
+    // missing, which is why they are asserted rather than trusted to review.
+    expect(agents).toMatch(/\.sql/);
+    expect(agents.toLowerCase()).toContain("in-process");
+  });
 });

@@ -27,6 +27,16 @@
     "active": true,
     "targets": "all",
     "resources": ["resources/pg_tools/*", "resources/mysql_tools/*"],
+    "fileAssociations": [
+      {
+        "ext": ["sql"],
+        "name": "SQL Script",
+        "description": "SQL script",
+        "mimeType": "application/sql",
+        "role": "Editor",
+        "rank": "Alternate"
+      }
+    ],
     "macOS": {
       "signingIdentity": "-",
       "hardenedRuntime": true,

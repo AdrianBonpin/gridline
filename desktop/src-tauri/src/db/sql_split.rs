@@ -19,9 +19,24 @@ pub fn split_statements(sql: &str) -> Vec<String> {
     let mut stmts: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut i = 0usize;
+    // MySQL's client-side `DELIMITER` directive. Default matches the SQL
+    // standard terminator so behaviour is unchanged when no directive appears.
+    let mut delimiter: Vec<char> = vec![';'];
 
     while i < chars.len() {
+        // A `DELIMITER` line is a client directive, not SQL. Only recognised
+        // at the start of a line: quoted regions, block comments and line
+        // comments are copied atomically below, so a directive inside any of
+        // them can never reach this check.
+        if i == 0 || chars[i - 1] == '\n' {
+            if let Some((end, token)) = match_delimiter_directive(&chars, i) {
+                delimiter = token.chars().collect();
+                i = end;
+                continue;
+            }
+        }
         let c = chars[i];
+        let at_delimiter = starts_with(&chars, i, &delimiter);
         match c {
             '\'' | '"' | '`' => {
                 copy_quoted(&chars, &mut i, &mut current, c);
@@ -31,6 +46,13 @@ pub fn split_statements(sql: &str) -> Vec<String> {
             }
             '/' if peek(&chars, i + 1) == Some('*') => {
                 copy_block_comment(&chars, &mut i, &mut current);
+            }
+            _ if at_delimiter => {
+                if has_executable_text(&current) {
+                    stmts.push(current.trim().to_string());
+                }
+                current.clear();
+                i += delimiter.len();
             }
             '$' => {
                 if let Some(end) = dollar_quote_end(&chars, i) {
@@ -44,13 +66,6 @@ pub fn split_statements(sql: &str) -> Vec<String> {
                     current.push(c);
                     i += 1;
                 }
-            }
-            ';' => {
-                if has_executable_text(&current) {
-                    stmts.push(current.trim().to_string());
-                }
-                current.clear();
-                i += 1;
             }
             _ => {
                 current.push(c);
@@ -177,6 +192,15 @@ pub fn has_executable_text(stmt: &str) -> bool {
                 skip_until(&chars, &mut i, |ch| ch == '\n');
             }
             '/' if peek(&chars, i + 1) == Some('*') => {
+                // MySQL executable comments (`/*! … */`, optionally
+                // version-gated like `/*!50003 … */`) are executed by the
+                // server, so a fragment that is only such a comment is still
+                // a statement. mysqldump wraps routine and trigger definitions
+                // in them with no surrounding SQL. Ordinary block comments
+                // remain skipped.
+                if peek(&chars, i + 2) == Some('!') {
+                    return true;
+                }
                 skip_block_comment(&chars, &mut i);
             }
             c if c.is_whitespace() => i += 1,
@@ -205,6 +229,54 @@ fn skip_block_comment(chars: &[char], i: &mut usize) {
         }
         *i += 1;
     }
+}
+
+/// True when `chars[i..]` begins with `pat`.
+fn starts_with(chars: &[char], i: usize, pat: &[char]) -> bool {
+    !pat.is_empty() && i + pat.len() <= chars.len() && chars[i..i + pat.len()] == *pat
+}
+
+/// Match a MySQL client `DELIMITER <token>` directive that occupies a whole
+/// line. Returns the index just past the directive's newline and the new
+/// delimiter token. Conservative: anything other than
+/// `^[ \t]*DELIMITER[ \t]+<token>[ \t]*$` is left as ordinary text.
+fn match_delimiter_directive(chars: &[char], i: usize) -> Option<(usize, String)> {
+    let mut j = i;
+    while j < chars.len() && matches!(chars[j], ' ' | '\t') {
+        j += 1;
+    }
+    for kw in ['D', 'E', 'L', 'I', 'M', 'I', 'T', 'E', 'R'] {
+        if j >= chars.len() || chars[j].to_ascii_uppercase() != kw {
+            return None;
+        }
+        j += 1;
+    }
+    if j >= chars.len() || !matches!(chars[j], ' ' | '\t') {
+        return None; // `DELIMITERx` is not a directive
+    }
+    while j < chars.len() && matches!(chars[j], ' ' | '\t') {
+        j += 1;
+    }
+    let start = j;
+    while j < chars.len() && !matches!(chars[j], ' ' | '\t' | '\r' | '\n') {
+        j += 1;
+    }
+    if start == j {
+        return None; // no token
+    }
+    let token: String = chars[start..j].iter().collect();
+    // The rest of the line must be blank, otherwise this is not a directive.
+    let mut k = j;
+    while k < chars.len() && matches!(chars[k], ' ' | '\t') {
+        k += 1;
+    }
+    if k < chars.len() && !matches!(chars[k], '\r' | '\n') {
+        return None;
+    }
+    while k < chars.len() && matches!(chars[k], '\r' | '\n') {
+        k += 1;
+    }
+    Some((k, token))
 }
 
 #[cfg(test)]

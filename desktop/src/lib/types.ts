@@ -528,3 +528,10 @@ export interface DiffReport {
   target_label: string;
   truncated: boolean;
 }
+
+/** An OS-delivered `.sql` open request, already validated and read in Rust. */
+export interface PendingSqlFile {
+  path: string;
+  name: string;
+  content: string;
+}

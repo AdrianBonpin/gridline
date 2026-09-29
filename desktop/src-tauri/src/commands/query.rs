@@ -34,7 +34,7 @@ fn is_pg_cancel_error(e: &tokio_postgres::Error) -> bool {
     e.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED)
 }
 
-fn is_mysql_cancel_error(e: &sqlx::Error) -> bool {
+pub(crate) fn is_mysql_cancel_error(e: &sqlx::Error) -> bool {
     match e.as_database_error().and_then(|d| d.code()) {
         Some(code) if code == "1317" => true, // ER_QUERY_INTERRUPTED (KILL QUERY)
         _ => e.to_string().to_lowercase().contains("interrupted"),
@@ -565,23 +565,192 @@ pub(crate) fn mysql_wrap_count(query: &str) -> String {
     format!("SELECT COUNT(*) FROM ({}) AS _gridline_cnt", query.trim())
 }
 
-/// Convert a sqlx MySql row cell to serde_json::Value (via the `json` feature).
+/// How a MySQL column value must be decoded, decided from the column's
+/// declared type name.
+///
+/// Why type-directed rather than a blind try-chain: sqlx's MySQL integer
+/// compatibility is broad, so `try_get::<i16>` succeeds for a `BIGINT`
+/// holding a small value but fails once the value grows — the same column
+/// would emit different JSON types for different rows. `MySqlTypeInfo`
+/// exposes only `name()` publicly, which is sufficient because it already
+/// encodes signedness (`INT UNSIGNED`) and boolean-ness (`BOOLEAN`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MysqlCellKind {
+    /// Width in bits and signedness; drives the number-vs-string policy.
+    Int { bits: u8, signed: bool },
+    /// `BIT(M)` — a bitmask, rendered as a number (spec §4.1).
+    Bit,
+    Float,
+    Double,
+    Decimal,
+    Date,
+    Time,
+    DateTime,
+    Json,
+    Text,
+    Bytes,
+    Null,
+    /// Anything unrecognised (including `GEOMETRY`, which no sqlx decoder
+    /// accepts even with `chrono`/`bigdecimal` enabled).
+    Unknown,
+}
+
+/// Map a `sqlx` MySQL type name to its decode strategy.
+pub(crate) fn mysql_cell_kind(type_name: &str) -> MysqlCellKind {
+    use MysqlCellKind::*;
+    let t = type_name.trim().to_ascii_uppercase();
+    match t.as_str() {
+        "BOOLEAN" | "TINYINT" => Int { bits: 8, signed: true },
+        "TINYINT UNSIGNED" => Int { bits: 8, signed: false },
+        "SMALLINT" => Int { bits: 16, signed: true },
+        "SMALLINT UNSIGNED" => Int { bits: 16, signed: false },
+        "MEDIUMINT" => Int { bits: 24, signed: true },
+        "MEDIUMINT UNSIGNED" => Int { bits: 24, signed: false },
+        "INT" => Int { bits: 32, signed: true },
+        "INT UNSIGNED" => Int { bits: 32, signed: false },
+        "BIGINT" => Int { bits: 64, signed: true },
+        "BIGINT UNSIGNED" => Int { bits: 64, signed: false },
+        // YEAR is an unsigned 16-bit value; it needs the unsigned rung, not
+        // the signed one (int_compatible excludes UNSIGNED columns).
+        "YEAR" => Int { bits: 16, signed: false },
+        "BIT" => Bit,
+        "FLOAT" => Float,
+        "DOUBLE" => Double,
+        "DECIMAL" => Decimal,
+        "DATE" => Date,
+        "TIME" => Time,
+        // TIMESTAMP shares the Datetime wire type. Decoded naive on purpose:
+        // MySQL converts TIMESTAMP to/from the *session* time zone, so
+        // claiming UTC would assert something the value does not support.
+        "DATETIME" | "TIMESTAMP" => DateTime,
+        "JSON" => Json,
+        "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT"
+        | "ENUM" | "SET" => Text,
+        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => Bytes,
+        "NULL" => Null,
+        _ => Unknown,
+    }
+}
+
+/// Convert a sqlx MySql row cell to serde_json::Value, driven by the column's
+/// **declared** type (see [`mysql_cell_kind`]).
+///
+/// Type-directed rather than a blind try-chain because sqlx's MySQL integer
+/// compatibility is broad: `try_get::<i16>` succeeds for a `BIGINT` holding
+/// a small value and fails once the value grows, so a value-driven chain
+/// would emit different JSON types for different rows of one column.
 /// Shared with the DB-viewer commands (pub(crate)).
 pub(crate) fn mysql_cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
-    if let Ok(Some(v)) = row.try_get::<Option<serde_json::Value>, _>(i) {
-        return v;
+    use sqlx::{Row, TypeInfo, ValueRef};
+
+    // `MySqlTypeInfo.r#type`/`.flags` are `pub(crate)`, so the declared type is
+    // read through the public `name()`, which already distinguishes
+    // `INT UNSIGNED`, `BIGINT UNSIGNED` and `BOOLEAN` (TINYINT(1)).
+    let type_name = match row.try_get_raw(i) {
+        Ok(v) if !v.is_null() => v.type_info().name().to_string(),
+        // Genuine SQL NULL, or a column we cannot even describe.
+        _ => return serde_json::Value::Null,
+    };
+
+    match mysql_cell_kind(&type_name) {
+        MysqlCellKind::Int { bits, signed } => {
+            if signed {
+                match row.try_get::<i64, _>(i) {
+                    // <=32-bit fits a JS Number exactly; 64-bit is stringified
+                    // so the value survives the IPC boundary (matches PG).
+                    Ok(v) if bits <= 32 => serde_json::json!(v),
+                    Ok(v) => crate::commands::db_viewer::i64_to_json(v),
+                    Err(_) => serde_json::Value::Null,
+                }
+            } else {
+                match row.try_get::<u64, _>(i) {
+                    Ok(v) if bits <= 32 => serde_json::json!(v),
+                    Ok(v) => serde_json::Value::String(v.to_string()),
+                    Err(_) => serde_json::Value::Null,
+                }
+            }
+        }
+        MysqlCellKind::Bit => match row.try_get::<u64, _>(i) {
+            Ok(v) => serde_json::json!(v),
+            Err(_) => serde_json::Value::Null,
+        },
+        MysqlCellKind::Float => match row.try_get::<f32, _>(i) {
+            Ok(v) => serde_json::json!(v),
+            Err(_) => serde_json::Value::Null,
+        },
+        MysqlCellKind::Double => match row.try_get::<f64, _>(i) {
+            Ok(v) => serde_json::json!(v),
+            Err(_) => serde_json::Value::Null,
+        },
+        MysqlCellKind::Decimal => match row.try_get::<sqlx::types::BigDecimal, _>(i) {
+            // Stringified for the same reason as 64-bit ints: exact digits.
+            Ok(v) => serde_json::Value::String(v.to_string()),
+            Err(_) => serde_json::Value::Null,
+        },
+        // Temporal values are emitted naive, never as an instant: MySQL
+        // converts TIMESTAMP to and from the *session* time zone, so an
+        // explicit `Z` would assert something the value does not support.
+        MysqlCellKind::Date => match row.try_get::<chrono::NaiveDate, _>(i) {
+            Ok(v) => serde_json::Value::String(v.to_string()),
+            Err(_) => serde_json::Value::Null,
+        },
+        MysqlCellKind::Time => match row.try_get::<chrono::NaiveTime, _>(i) {
+            Ok(v) => serde_json::Value::String(v.to_string()),
+            Err(_) => serde_json::Value::Null,
+        },
+        MysqlCellKind::DateTime => {
+            // `try_get_unchecked` (not `try_get`) because sqlx's `NaiveDateTime`
+            // `Type`/`Compatible` impl matches `ColumnType::Datetime` only, so the
+            // checked path rejects a TIMESTAMP column even though both share the
+            // exact same wire format and `Decode` impl. Only the type-compat gate
+            // is bypassed here; the decode is the same one DATETIME uses.
+            match row.try_get_unchecked::<chrono::NaiveDateTime, _>(i) {
+                Ok(v) => serde_json::Value::String(v.to_string()),
+                Err(_) => serde_json::Value::Null,
+            }
+        }
+        MysqlCellKind::Json => row
+            .try_get::<serde_json::Value, _>(i)
+            .unwrap_or(serde_json::Value::Null),
+        MysqlCellKind::Text => mysql_text_to_json(row, i),
+        MysqlCellKind::Bytes => mysql_bytes_to_json(row, i),
+        MysqlCellKind::Null => serde_json::Value::Null,
+        MysqlCellKind::Unknown => mysql_unknown_to_json(row, i),
     }
-    if let Ok(s) = row.try_get::<Option<String>, _>(i) {
-        return s
-            .map(|s| serde_json::Value::String(s))
-            .unwrap_or(serde_json::Value::Null);
+}
+
+/// Char/varchar/text/enum/set: a UTF-8 string, falling back to a lossy
+/// decode for the odd VARBINARY-shaped metadata column.
+fn mysql_text_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
+    use sqlx::Row;
+    if let Ok(v) = row.try_get::<String, _>(i) {
+        return serde_json::Value::String(v);
     }
-    if let Ok(b) = row.try_get::<Option<Vec<u8>>, _>(i) {
-        return b
-            .map(|b| serde_json::Value::String(String::from_utf8_lossy(&b).into_owned()))
-            .unwrap_or(serde_json::Value::Null);
+    if let Ok(b) = row.try_get::<Vec<u8>, _>(i) {
+        return serde_json::Value::String(String::from_utf8_lossy(&b).into_owned());
     }
     serde_json::Value::Null
+}
+
+/// Binary/blob columns. Preserves the pre-existing lossy-UTF-8 rendering;
+/// changing binary presentation is explicitly out of scope (spec §3).
+fn mysql_bytes_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
+    use sqlx::Row;
+    if let Ok(b) = row.try_get::<Vec<u8>, _>(i) {
+        return serde_json::Value::String(String::from_utf8_lossy(&b).into_owned());
+    }
+    mysql_text_to_json(row, i)
+}
+
+/// Conservative fallback for a type we do not recognise — exactly the three
+/// decoders that were safe before this change, so an unknown type can never
+/// be worse than before (`GEOMETRY` lands here and stays null).
+fn mysql_unknown_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
+    use sqlx::Row;
+    if let Ok(v) = row.try_get::<serde_json::Value, _>(i) {
+        return v;
+    }
+    mysql_text_to_json(row, i)
 }
 
 async fn execute_mysql_query_on(
@@ -716,7 +885,33 @@ async fn execute_mysql_raw(
 // deliberately omitted because re-running a script would re-execute DML);
 // DML/DDL produce notices; the first error stops the run, prior sets survive.
 
-const MAX_STATEMENTS: usize = 50;
+/// Hard safety cap for an interactive multi-statement Run. Raised from 50
+/// because opening a `.sql` file and pressing Run is now a supported flow, and
+/// 50 rejected anything but toy scripts.
+pub(crate) const MAX_STATEMENTS: usize = 10_000;
+
+/// Cap for the deliberate bulk operation (Tools → Restore). Far higher than
+/// the interactive cap because it is an explicit, confirmed, cancellable
+/// operation bounded by the 100 MB file cap rather than by a keystroke.
+pub(crate) const MAX_RESTORE_STATEMENTS: usize = 1_000_000;
+
+/// Enforce a statement budget. `bulk` selects the restore wording: the
+/// interactive path tells the user where large scripts *should* run, while the
+/// bulk path must not point at a tool the user is already using.
+pub(crate) fn check_statement_budget(count: usize, cap: usize, bulk: bool) -> Result<(), String> {
+    if count <= cap {
+        return Ok(());
+    }
+    if bulk {
+        Err(format!(
+            "Script has {count} statements, exceeding the {cap} statement limit for a restore"
+        ))
+    } else {
+        Err(format!(
+            "Too many statements: {count} (max {cap}). For large scripts use Tools → Restore."
+        ))
+    }
+}
 
 pub(crate) enum StatementOutcome {
     Set(QueryResult),
@@ -1135,12 +1330,7 @@ pub async fn execute_query_multi(
     if statements.is_empty() {
         return Err("Query cannot be empty".to_string());
     }
-    if statements.len() > MAX_STATEMENTS {
-        return Err(format!(
-            "Too many statements: {} (max {MAX_STATEMENTS})",
-            statements.len()
-        ));
-    }
+    check_statement_budget(statements.len(), MAX_STATEMENTS, false)?;
 
     let mut result_sets: Vec<QueryResult> = Vec::new();
     let mut notices: Vec<StatementNotice> = Vec::new();
@@ -1346,6 +1536,10 @@ pub async fn cancel_query(
             .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))
         }
         Some(crate::cancel::CancelHandle::MySql(m)) => {
+            // Record the request before the KILL lands: the in-process restore
+            // engine polls this flag between statements, and the killed
+            // statement's error is the only other signal.
+            state.cancel_registry.mark_cancelled(&connection_id);
             let id = m
                 .conn_id
                 .ok_or_else(|| "No active query on this connection".to_string())?;

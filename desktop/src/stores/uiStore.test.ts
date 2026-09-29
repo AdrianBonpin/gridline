@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useUiStore } from "./uiStore";
 
-beforeEach(() => useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeEnvironment: null, activeView: "home", prefilledConnectionString: null, activeConnectionId: null, settingsReturnView: null }));
+beforeEach(() => useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeEnvironment: null, activeView: "home", prefilledConnectionString: null, activeConnectionId: null, settingsReturnView: null, pendingSqlFile: null }));
 
 describe("uiStore", () => {
   it("starts on home view", () => expect(useUiStore.getState().activeView).toBe("home"));
@@ -93,5 +93,20 @@ describe("uiStore", () => {
     useUiStore.getState().closeSettings();
     expect(useUiStore.getState().activeView).toBe("home");
     expect(useUiStore.getState().settingsReturnView).toBeNull();
+  });
+});
+
+describe("pending SQL file stash", () => {
+  it("stores and clears a file awaiting a connection", () => {
+    const file = { path: "/tmp/a.sql", name: "a.sql", content: "SELECT 1;" };
+    useUiStore.getState().setPendingSqlFile(file);
+    expect(useUiStore.getState().pendingSqlFile).toEqual(file);
+
+    useUiStore.getState().clearPendingSqlFile();
+    expect(useUiStore.getState().pendingSqlFile).toBeNull();
+  });
+
+  it("defaults to no pending file", () => {
+    expect(useUiStore.getState().pendingSqlFile).toBeNull();
   });
 });

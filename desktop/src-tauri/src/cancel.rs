@@ -1,6 +1,7 @@
 //! Per-connection cancellation handles, stored independently of the pool
 //! lock so `cancel_query` can dispatch while a long query holds the pool mutex.
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::InterruptHandle;
@@ -59,11 +60,52 @@ pub enum CancelHandle {
 #[derive(Default)]
 pub struct CancelRegistry {
     map: Mutex<HashMap<String, CancelHandle>>,
+    /// Live "cancel requested" flags, keyed by connection id. `cancel_query`
+    /// sets one for MySQL; long-running in-process operations (currently the
+    /// native restore engine) poll it between statements and clear it when
+    /// they finish. Kept in a separate map from the handles so it needs no
+    /// `Clone` on the registry and survives handle replacement.
+    flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 impl CancelRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Get (or create) the cancellation flag for a connection. Polling callers
+    /// should clear it before starting and after finishing.
+    pub fn cancel_flag(&self, id: &str) -> Arc<AtomicBool> {
+        self.flags
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// Mark a connection as cancel-requested. Called by `cancel_query` before
+    /// it sends the driver-specific cancel so in-process consumers observe the
+    /// request even when the driver surfaces it as an unrecognized error.
+    pub fn mark_cancelled(&self, id: &str) {
+        self.cancel_flag(id).store(true, Ordering::SeqCst);
+    }
+
+    /// Whether a cancel has been requested for this connection.
+    pub fn is_cancelled(&self, id: &str) -> bool {
+        self.flags
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|f| f.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }
+
+    /// Clear the cancel-requested flag for this connection.
+    pub fn clear_cancelled(&self, id: &str) {
+        if let Some(f) = self.flags.lock().unwrap().get(id) {
+            f.store(false, Ordering::SeqCst);
+        }
     }
 
     pub fn set_pg(&self, id: &str, c: PgCancel) {
@@ -155,6 +197,21 @@ mod tests {
             Some(CancelHandle::MySql(m)) => assert_eq!(m.conn_id, Some(2)),
             _ => panic!("expected MySql"),
         }
+    }
+
+    #[test]
+    fn cancel_flag_is_tracked_per_connection() {
+        let reg = CancelRegistry::new();
+        assert!(!reg.is_cancelled("c1"));
+        reg.mark_cancelled("c1");
+        assert!(reg.is_cancelled("c1"));
+        assert!(!reg.is_cancelled("c2"), "flag must not leak across connections");
+        reg.clear_cancelled("c1");
+        assert!(!reg.is_cancelled("c1"));
+        // The same Arc is shared between getter and setter.
+        let flag = reg.cancel_flag("c1");
+        reg.mark_cancelled("c1");
+        assert!(flag.load(Ordering::SeqCst));
     }
 
     fn fake_opts() -> sqlx::mysql::MySqlConnectOptions {

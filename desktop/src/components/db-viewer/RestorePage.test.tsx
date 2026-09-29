@@ -64,4 +64,41 @@ describe("RestorePage DB-aware", () => {
     expect(screen.queryByText(/pg_restore/i)).toBeNull();
     expect(screen.queryByText(/mysqldump/i)).toBeNull();
   });
+
+  it("renders the MySQL restore form even when no MySQL client is installed", async () => {
+    // Restore is in-process since Task 7, so a missing mariadb/mysql client must
+    // no longer hide the form.
+    mockConnections.push({ id: "c4", db_type: "mysql", name: "m", database: "db1" });
+    vi.spyOn(commands, "detectMysqlTools").mockResolvedValue({
+      mysqldumpFound: false,
+      mysqlFound: false,
+      mysqldumpVersion: null,
+      mysqlVersion: null,
+      mysqldumpSource: null,
+      mysqlSource: null,
+    });
+    render(<RestorePage connectionId="c4" />);
+
+    // The tools check is async; wait until the configuration card is actually up.
+    await waitFor(() => expect(screen.getByText(/Backup File/i)).toBeInTheDocument());
+    expect(screen.getByText(/no MySQL client installation required/i)).toBeTruthy();
+  });
+
+  it("explains what Clean does for MySQL", async () => {
+    mockConnections.push({ id: "c5", db_type: "mysql", name: "m", database: "db1" });
+    vi.spyOn(commands, "detectMysqlTools").mockResolvedValue(mysqlToolsOk);
+    render(<RestorePage connectionId="c5" />);
+
+    await waitFor(() => expect(screen.getByText(/Backup File/i)).toBeInTheDocument());
+    expect(screen.getByText(/only the objects this file defines/i)).toBeTruthy();
+  });
+
+  it("warns that a failed MySQL restore cannot be rolled back", async () => {
+    mockConnections.push({ id: "c6", db_type: "mysql", name: "m", database: "db1" });
+    vi.spyOn(commands, "detectMysqlTools").mockResolvedValue(mysqlToolsOk);
+    render(<RestorePage connectionId="c6" />);
+
+    await waitFor(() => expect(screen.getByText(/Backup File/i)).toBeInTheDocument());
+    expect(screen.getByText(/can't be rolled back/i)).toBeTruthy();
+  });
 });

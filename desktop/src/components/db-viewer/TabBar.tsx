@@ -251,7 +251,7 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
       <div className="flex shrink-0 items-center gap-1.5 border-l border-border px-2">
         <button
           type="button"
-          onClick={openQueryTab}
+          onClick={() => openQueryTab()}
           aria-label="New query tab"
           className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover cursor-pointer"
         >
