@@ -253,7 +253,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                     )}
 
                     {toolsMissing && !toolsBundled && (
-                        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-4 space-y-2">
+                        <div className="bg-amber-500/10 border border-amber-500/30 px-4 py-4 space-y-2">
                             <p className="text-amber-300 text-sm font-semibold">
                                 {isPg ? "pg_restore not found" : "mysql client not found"}
                             </p>
@@ -269,7 +269,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                         className="text-amber-200/70 hover:text-amber-100"
                                     />
                                 </div>
-                                <pre className="text-xs text-amber-100 bg-amber-500/10 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed">
+                                <pre className="text-xs text-amber-100 bg-amber-500/10 p-3 whitespace-pre-wrap font-mono leading-relaxed">
                                     {installInstructions}
                                 </pre>
                             </div>
@@ -298,7 +298,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                             onChange={(e) =>
                                                 setFormat(e.target.value)
                                             }
-                                            className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
+                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
                                         >
                                             <option value="custom">
                                                 Custom Archive
@@ -330,7 +330,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                         <button
                                             type="button"
                                             onClick={handlePickFile}
-                                            className="flex items-center justify-center w-9 h-9 rounded-lg border border-border bg-surface text-text-muted hover:text-text hover:bg-surface-raised hover:border-border-hover transition-colors cursor-pointer shrink-0"
+                                            className="flex items-center justify-center w-9 h-9 border border-border bg-surface text-text-muted hover:text-text hover:bg-surface-raised hover:border-border-hover transition-colors cursor-pointer shrink-0"
                                             aria-label="Browse for file"
                                         >
                                             <FileSearch size={15} />
@@ -352,7 +352,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                             onChange={(e) =>
                                                 setSchema(e.target.value)
                                             }
-                                            className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
+                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
                                         >
                                             <option value="">All schemas</option>
                                             {availableSchemas.map((s) => (
@@ -380,19 +380,19 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                                 setClean(e.target.checked)
                                             }
                                             disabled={isPg && format === "plain"}
-                                            className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer disabled:cursor-not-allowed"
+                                            className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer disabled:cursor-not-allowed"
                                         />
                                         {isMysql ? (
                                             <span className="text-sm text-text-muted group-hover:text-text transition-colors">
                                                 Clean{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
+                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
                                                     drops only the objects this file defines
                                                 </code>
                                             </span>
                                         ) : (
                                             <span className="text-sm text-text-muted group-hover:text-text transition-colors">
                                                 Clean{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
+                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
                                                     DROP before CREATE
                                                 </code>
                                             </span>
@@ -417,7 +417,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                         onChange={(e) =>
                                             setConfirmed(e.target.checked)
                                         }
-                                        className="mt-0.5 rounded bg-surface border-border accent-red-500 w-4 h-4 cursor-pointer"
+                                        className="mt-0.5 bg-surface border-border accent-red-500 w-4 h-4 cursor-pointer"
                                         data-testid="restore-confirm-checkbox"
                                     />
                                     <span className="text-sm text-red-300/90 leading-relaxed">

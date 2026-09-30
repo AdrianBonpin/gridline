@@ -331,7 +331,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                     )}
 
                     {toolsMissing && !toolsBundled && (
-                        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-4 space-y-2">
+                        <div className="bg-amber-500/10 border border-amber-500/30 px-4 py-4 space-y-2">
                             <p className="text-amber-300 text-sm font-semibold">
                                 {isPg ? "pg_dump not found" : "mysqldump not found"}
                             </p>
@@ -354,7 +354,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                         className="text-amber-200/70 hover:text-amber-100"
                                     />
                                 </div>
-                                <pre className="text-xs text-amber-100 bg-amber-500/10 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed">
+                                <pre className="text-xs text-amber-100 bg-amber-500/10 p-3 whitespace-pre-wrap font-mono leading-relaxed">
                                     {installInstructions}
                                 </pre>
                             </div>
@@ -384,7 +384,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                                     e.target.value as BackupFormat,
                                                 )
                                             }
-                                            className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
+                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
                                         >
                                             <option value="custom">
                                                 Custom Archive
@@ -425,7 +425,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                         <button
                                             type="button"
                                             onClick={handlePickFile}
-                                            className="flex items-center justify-center w-9 h-9 rounded-lg border border-border bg-surface text-text-muted hover:text-text hover:bg-surface-raised hover:border-border-hover transition-colors cursor-pointer shrink-0"
+                                            className="flex items-center justify-center w-9 h-9 border border-border bg-surface text-text-muted hover:text-text hover:bg-surface-raised hover:border-border-hover transition-colors cursor-pointer shrink-0"
                                             aria-label="Browse for file"
                                         >
                                             <FolderOpen size={15} />
@@ -447,7 +447,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                             onChange={(e) =>
                                                 setSchema(e.target.value)
                                             }
-                                            className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
+                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
                                         >
                                             <option value="">All schemas</option>
                                             {availableSchemas.map((s) => (
@@ -468,11 +468,11 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                             onChange={(e) =>
                                                 setNoOwner(e.target.checked)
                                             }
-                                            className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                            className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
                                         />
                                         <span className="text-sm text-text-muted group-hover:text-text transition-colors">
                                             No Owner{" "}
-                                            <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
+                                            <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
                                                 --no-owner
                                             </code>
                                         </span>
@@ -489,11 +489,11 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                                 onChange={(e) =>
                                                     setSingleTransaction(e.target.checked)
                                                 }
-                                                className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                                className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
                                             />
                                             <span className="text-sm text-text-muted group-hover:text-text transition-colors">
                                                 Single Transaction{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
+                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
                                                     --single-transaction
                                                 </code>
                                             </span>
@@ -505,11 +505,11 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                                 onChange={(e) =>
                                                     setNoData(e.target.checked)
                                                 }
-                                                className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                                className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
                                             />
                                             <span className="text-sm text-text-muted group-hover:text-text transition-colors">
                                                 No Data{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
+                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
                                                     --no-data
                                                 </code>
                                             </span>
@@ -521,11 +521,11 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                                 onChange={(e) =>
                                                     setRoutines(e.target.checked)
                                                 }
-                                                className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                                className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
                                             />
                                             <span className="text-sm text-text-muted group-hover:text-text transition-colors">
                                                 Routines{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
+                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
                                                     --routines
                                                 </code>
                                             </span>
@@ -537,11 +537,11 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                                 onChange={(e) =>
                                                     setTriggers(e.target.checked)
                                                 }
-                                                className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                                className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
                                             />
                                             <span className="text-sm text-text-muted group-hover:text-text transition-colors">
                                                 Triggers{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
+                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
                                                     --triggers
                                                 </code>
                                             </span>
@@ -553,11 +553,11 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                                 onChange={(e) =>
                                                     setEvents(e.target.checked)
                                                 }
-                                                className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                                className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
                                             />
                                             <span className="text-sm text-text-muted group-hover:text-text transition-colors">
                                                 Events{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
+                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
                                                     --events
                                                 </code>
                                             </span>

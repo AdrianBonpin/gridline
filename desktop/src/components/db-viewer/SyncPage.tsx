@@ -236,7 +236,7 @@ export function SyncPage() {
                     )}
 
                     {toolsMissing && !toolsBundled && (
-                        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-4 space-y-2">
+                        <div className="bg-amber-500/10 border border-amber-500/30 px-4 py-4 space-y-2">
                             <p className="text-amber-300 text-sm font-semibold">
                                 {isPg
                                     ? "PostgreSQL tools not found"
@@ -287,7 +287,7 @@ export function SyncPage() {
                                                 );
                                                 setTargetConnectionId("");
                                             }}
-                                            className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
+                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
                                         >
                                             <option value="">
                                                 Select source...
@@ -315,7 +315,7 @@ export function SyncPage() {
                                                 )
                                             }
                                             disabled={!sourceConnectionId}
-                                            className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                                         >
                                             <option value="">
                                                 {sourceConnectionId
@@ -352,7 +352,7 @@ export function SyncPage() {
                                                 setSchema(e.target.value)
                                             }
                                             disabled={!sourceConnectionId}
-                                            className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                                         >
                                             <option value="">
                                                 {sourceConnectionId
@@ -400,7 +400,7 @@ export function SyncPage() {
                                         onChange={(e) =>
                                             setConfirmed(e.target.checked)
                                         }
-                                        className="mt-0.5 rounded bg-surface border-border accent-red-500 w-4 h-4 cursor-pointer"
+                                        className="mt-0.5 bg-surface border-border accent-red-500 w-4 h-4 cursor-pointer"
                                         data-testid="sync-confirm-checkbox"
                                     />
                                     <span className="text-sm text-red-300/90 leading-relaxed">
