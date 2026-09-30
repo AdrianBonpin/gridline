@@ -3,6 +3,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::db::tool_resolver::{self, ToolRequest, ToolResolution};
 use crate::models::backup::*;
 
 // ---------------------------------------------------------------------------
@@ -53,32 +54,66 @@ fn sanitize_error(s: &str) -> String {
     crate::commands::test_connection::sanitize_error(s)
 }
 
-fn bundled_bin_name(tool: &str) -> String {
-    if cfg!(windows) { format!("{tool}.exe") } else { tool.to_string() }
-}
+/// Tauri-facing one-shot resolution with the process-lifetime cache.
+/// `force` bypasses the cache for an explicit user re-check.
+fn resolve_request(app: &AppHandle, request: &ToolRequest, force: bool) -> ToolResolution {
+    let key = request.cache_key();
+    if !force {
+        if let Some(hit) = tool_resolver::cache_get(&key) {
+            return hit;
+        }
+    }
 
-/// Pure resolution decision (unit-testable): system > bundled > bare name.
-fn pick_tool(system_ok: bool, bundled: Option<&str>, tool: &str) -> (String, Option<String>) {
-    if system_ok { return (tool.to_string(), Some("system".to_string())); }
-    if let Some(b) = bundled { return (b.to_string(), Some("bundled".to_string())); }
-    (tool.to_string(), None)
+    let resource_dir = app.path().resource_dir().ok();
+    let bundled = resource_dir
+        .as_ref()
+        .map(|rd| tool_resolver::bundled_tool_path(rd, request.subdir, request.bundled_name()));
+    let trusted = tool_resolver::trusted_dirs();
+    let start = std::time::Instant::now();
+    let probe = |p: &std::path::Path| {
+        tool_resolver::probe_within(start, tool_resolver::AGGREGATE_DEADLINE, p)
+    };
+    let resolved = tool_resolver::resolve_with(
+        request,
+        &trusted,
+        &tool_resolver::path_lookup,
+        bundled.as_deref(),
+        probe,
+    );
+    let version = resolved
+        .as_ref()
+        .and_then(|r| tool_resolver::version_of(&r.program));
+    let bundled_available = bundled
+        .as_deref()
+        .map(tool_resolver::bundled_present)
+        .unwrap_or(false);
+
+    let out = ToolResolution {
+        resolved,
+        bundled_path: bundled,
+        bundled_available,
+        version,
+    };
+    tool_resolver::cache_put(&key, out.clone());
+    out
 }
 
 /// System-first, bundled-fallback resolver. Returns (command_to_invoke, source).
 pub fn resolve_tool(app: &AppHandle, tool: &str) -> (String, Option<String>) {
-    let system_ok = Command::new(tool).arg("--version").output().is_ok();
-    let bundled = app.path().resource_dir().ok()
-        .map(|rd| rd.join("pg_tools").join(bundled_bin_name(tool)))
-        .filter(|p| p.exists())
-        .map(|p| p.to_string_lossy().to_string());
-    pick_tool(system_ok, bundled.as_deref(), tool)
+    match tool_resolver::pg_request(tool) {
+        Some(request) => {
+            tool_resolver::adapt_resolution(&resolve_request(app, &request, false), tool)
+        }
+        None => (tool.to_string(), None),
+    }
 }
 
 pub fn resolve_tool_paths(app: &AppHandle) -> PgToolPaths {
-    let (d, _) = resolve_tool(app, "pg_dump");
-    let (r, _) = resolve_tool(app, "pg_restore");
-    let (p, _) = resolve_tool(app, "psql");
-    PgToolPaths { pg_dump: d, pg_restore: r, psql: p }
+    PgToolPaths {
+        pg_dump: resolve_tool(app, "pg_dump").0,
+        pg_restore: resolve_tool(app, "pg_restore").0,
+        psql: resolve_tool(app, "psql").0,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -516,20 +551,21 @@ pub fn build_mysql_dump_args(conn: &MySqlConnParams, options: &MySqlBackupOption
     a
 }
 
-/// System-first mariadb-dump/mariadb (bundled fallback in resources/mysql_tools).
+/// System-first mariadb-dump/mysqldump resolution (bundled fallback).
 pub fn resolve_mysql_tool(app: &AppHandle, tool: &str) -> (String, Option<String>) {
-    let system_ok = Command::new(tool).arg("--version").output().is_ok();
-    let bundled = app.path().resource_dir().ok()
-        .map(|rd| rd.join("mysql_tools").join(bundled_bin_name(tool)))
-        .filter(|p| p.exists())
-        .map(|p| p.to_string_lossy().to_string());
-    pick_tool(system_ok, bundled.as_deref(), tool)
+    match tool_resolver::mysql_request(tool) {
+        Some(request) => {
+            tool_resolver::adapt_resolution(&resolve_request(app, &request, false), tool)
+        }
+        None => (tool.to_string(), None),
+    }
 }
 
 pub fn resolve_mysql_tool_paths(app: &AppHandle) -> MySqlToolPaths {
-    let (d, _) = resolve_mysql_tool(app, "mariadb-dump");
-    let (m, _) = resolve_mysql_tool(app, "mariadb");
-    MySqlToolPaths { mysqldump: d, mysql: m }
+    MySqlToolPaths {
+        mysqldump: resolve_mysql_tool(app, "mariadb-dump").0,
+        mysql: resolve_mysql_tool(app, "mariadb").0,
+    }
 }
 
 /// Headless core: spawn dump with MYSQL_PWD env. `tls_mode` (e.g. `REQUIRED`)

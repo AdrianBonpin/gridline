@@ -131,6 +131,15 @@ pub fn mysql_client_request() -> ToolRequest {
     ToolRequest::new("mysql_tools", &["mariadb", "mysql"])
 }
 
+/// Maps a MySQL tool name to its request; `None` for unknown names.
+pub fn mysql_request(tool: &str) -> Option<ToolRequest> {
+    match tool {
+        "mariadb-dump" | "mysqldump" => Some(mysql_dump_request()),
+        "mariadb" | "mysql" => Some(mysql_client_request()),
+        _ => None,
+    }
+}
+
 /// The bundled binary path for a role. Note the nested
 /// `BUNDLED_RESOURCE_PREFIX` component — this is the issue #44 fix.
 pub fn bundled_tool_path(resource_dir: &Path, subdir: &str, bin: &str) -> PathBuf {

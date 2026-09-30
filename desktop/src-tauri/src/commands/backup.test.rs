@@ -406,19 +406,6 @@ fn integration_plain_dump_restore() {
 // Tool resolution (Task 2.1: system-first, bundled-fallback)
 // ------------------------------------------------------------------
 
-#[test]
-fn pick_tool_prefers_system_then_bundled_then_bare() {
-    assert_eq!(pick_tool(true, None, "pg_dump"), ("pg_dump".to_string(), Some("system".into())));
-    assert_eq!(pick_tool(false, Some("/r/pg_dump"), "pg_dump"), ("/r/pg_dump".to_string(), Some("bundled".into())));
-    assert_eq!(pick_tool(false, None, "pg_dump"), ("pg_dump".to_string(), None));
-}
-
-#[test]
-fn bundled_bin_name_appends_exe_on_windows() {
-    let name = bundled_bin_name("pg_dump");
-    if cfg!(windows) { assert_eq!(name, "pg_dump.exe"); } else { assert_eq!(name, "pg_dump"); }
-}
-
 // ------------------------------------------------------------------
 // SQLite .dump / restore / sync core (Task 2.2)
 // ------------------------------------------------------------------

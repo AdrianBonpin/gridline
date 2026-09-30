@@ -392,3 +392,12 @@ fn bundled_present_is_true_only_for_a_regular_file() {
     std::fs::write(&file, b"x").unwrap();
     assert!(bundled_present(&file));
 }
+
+#[test]
+fn mysql_request_maps_known_tool_names() {
+    assert_eq!(mysql_request("mariadb-dump").unwrap(), mysql_dump_request());
+    assert_eq!(mysql_request("mysqldump").unwrap(), mysql_dump_request());
+    assert_eq!(mysql_request("mariadb").unwrap(), mysql_client_request());
+    assert_eq!(mysql_request("mysql").unwrap(), mysql_client_request());
+    assert!(mysql_request("mysqladmin").is_none());
+}
