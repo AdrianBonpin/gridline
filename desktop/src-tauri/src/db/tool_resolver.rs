@@ -209,6 +209,67 @@ pub fn probe_within(start: Instant, deadline: Duration, program: &Path) -> bool 
     probe(program)
 }
 
+/// Ordered, injectable resolution.
+///
+/// 1. every trusted absolute directory, for each candidate name in order;
+/// 2. the inherited `PATH`, for each candidate name in order;
+/// 3. the bundled binary.
+///
+/// `probe_fn` decides whether a candidate is runnable, so tests never touch
+/// the real filesystem. The aggregate deadline is enforced by the caller's
+/// `probe_fn` (see `probe_within`).
+pub fn resolve_with<F>(
+    request: &ToolRequest,
+    trusted: &[PathBuf],
+    path_lookup: &dyn Fn(&str) -> Option<PathBuf>,
+    bundled: Option<&Path>,
+    mut probe_fn: F,
+) -> Option<Resolution>
+where
+    F: FnMut(&Path) -> bool,
+{
+    for dir in trusted {
+        for name in &request.names {
+            let candidate = dir.join(bundled_bin_name(name));
+            if probe_fn(&candidate) {
+                return Some(Resolution {
+                    program: candidate.to_string_lossy().to_string(),
+                    source: ToolSource::TrustedDir,
+                    name: (*name).to_string(),
+                });
+            }
+        }
+    }
+
+    for name in &request.names {
+        if let Some(found) = path_lookup(name) {
+            if probe_fn(&found) {
+                return Some(Resolution {
+                    program: found.to_string_lossy().to_string(),
+                    source: ToolSource::Path,
+                    name: (*name).to_string(),
+                });
+            }
+        }
+    }
+
+    if let Some(bundled) = bundled {
+        if probe_fn(bundled) {
+            let name = bundled
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| request.bundled_name().to_string());
+            return Some(Resolution {
+                program: bundled.to_string_lossy().to_string(),
+                source: ToolSource::Bundled,
+                name,
+            });
+        }
+    }
+
+    None
+}
+
 /// Read the first non-empty line of `<program> --version` (stdout, else stderr).
 pub fn version_of(program: &str) -> Option<String> {
     let out = Command::new(program).arg("--version").output().ok()?;

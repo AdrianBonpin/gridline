@@ -173,6 +173,74 @@ fn probe_within_returns_false_once_the_aggregate_deadline_passed() {
     assert!(probe_within(Instant::now(), Duration::from_secs(3), &tool));
 }
 
+#[test]
+fn resolve_prefers_a_trusted_dir_and_the_first_candidate_name() {
+    let req = mysql_dump_request();
+    let trusted = vec![PathBuf::from("/trusted")];
+    let path_lookup = |_n: &str| -> Option<PathBuf> { None };
+    let r = resolve_with(&req, &trusted, &path_lookup, None, |_p: &Path| true).unwrap();
+    assert_eq!(r.source, ToolSource::TrustedDir);
+    assert_eq!(r.name, "mariadb-dump");
+    assert_eq!(r.program, format!("/trusted/{}", bundled_bin_name("mariadb-dump")));
+}
+
+#[test]
+fn resolve_falls_through_to_the_inherited_path() {
+    let req = mysql_dump_request();
+    let trusted = vec![PathBuf::from("/trusted")];
+    let path_lookup = |name: &str| -> Option<PathBuf> {
+        if name == "mysqldump" { Some(PathBuf::from("/usr/bin/mysqldump")) } else { None }
+    };
+    let probe = |p: &Path| p == Path::new("/usr/bin/mysqldump");
+    let r = resolve_with(&req, &trusted, &path_lookup, None, probe).unwrap();
+    assert_eq!(r.source, ToolSource::Path);
+    assert_eq!(r.name, "mysqldump");
+    assert_eq!(r.program, "/usr/bin/mysqldump");
+}
+
+#[test]
+fn resolve_prefers_any_system_tool_over_the_bundled_one() {
+    let req = mysql_dump_request();
+    let trusted = vec![PathBuf::from("/trusted")];
+    let path_lookup = |_n: &str| -> Option<PathBuf> { None };
+    let bundled = Path::new("/rd/resources/mysql_tools/mariadb-dump");
+    let probe = |p: &Path| p != bundled; // only the trusted candidate runs
+    let r = resolve_with(&req, &trusted, &path_lookup, Some(bundled), probe).unwrap();
+    assert_eq!(r.source, ToolSource::TrustedDir);
+}
+
+#[test]
+fn resolve_uses_the_bundled_binary_when_no_system_tool_runs() {
+    let req = mysql_dump_request();
+    let bundled = Path::new("/rd/resources/mysql_tools/mariadb-dump");
+    let path_lookup = |_n: &str| -> Option<PathBuf> { None };
+    let probe = |p: &Path| p == bundled;
+    let r = resolve_with(&req, &[], &path_lookup, Some(bundled), probe).unwrap();
+    assert_eq!(r.source, ToolSource::Bundled);
+    assert_eq!(r.name, "mariadb-dump");
+    assert_eq!(r.program, "/rd/resources/mysql_tools/mariadb-dump");
+}
+
+#[test]
+fn resolve_skips_a_candidate_that_fails_the_probe() {
+    let req = mysql_dump_request();
+    let trusted = vec![PathBuf::from("/trusted")];
+    let target = PathBuf::from("/trusted").join(bundled_bin_name("mysqldump"));
+    let probe = move |p: &Path| p == target.as_path();
+    let path_lookup = |_n: &str| -> Option<PathBuf> { None };
+    let r = resolve_with(&req, &trusted, &path_lookup, None, probe).unwrap();
+    assert_eq!(r.name, "mysqldump");
+    assert_eq!(r.source, ToolSource::TrustedDir);
+}
+
+#[test]
+fn resolve_returns_none_when_nothing_runs() {
+    let req = mysql_dump_request();
+    let path_lookup = |_n: &str| -> Option<PathBuf> { None };
+    let r = resolve_with(&req, &[PathBuf::from("/trusted")], &path_lookup, Some(Path::new("/rd/x")), |_p: &Path| false);
+    assert!(r.is_none());
+}
+
 #[cfg(unix)]
 fn write_exe(path: &Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
