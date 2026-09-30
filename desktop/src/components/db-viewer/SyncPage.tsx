@@ -59,16 +59,15 @@ export function SyncPage() {
     }, [activeJob, notify]);
 
     // Tool detection: depends on the selected source connection's DB type
-    useEffect(() => {
-        setPgToolStatus(null);
-        setMysqlToolStatus(null);
-        setConfirmed(false);
-
-        if (isPg) {
-            setCheckingTools(true);
-            detectPgTools()
-                .then((status) => setPgToolStatus(status))
-                .catch(() =>
+    const checkTools = useCallback(
+        async (force: boolean) => {
+            setPgToolStatus(null);
+            setMysqlToolStatus(null);
+            if (isPg) {
+                setCheckingTools(true);
+                try {
+                    setPgToolStatus(await detectPgTools(force));
+                } catch {
                     setPgToolStatus({
                         pg_dump_found: false,
                         pg_restore_found: false,
@@ -76,14 +75,15 @@ export function SyncPage() {
                         pg_restore_version: null,
                         pg_dump_source: null,
                         pg_restore_source: null,
-                    }),
-                )
-                .finally(() => setCheckingTools(false));
-        } else if (isMysql) {
-            setCheckingTools(true);
-            detectMysqlTools()
-                .then((status) => setMysqlToolStatus(status))
-                .catch(() =>
+                    });
+                } finally {
+                    setCheckingTools(false);
+                }
+            } else if (isMysql) {
+                setCheckingTools(true);
+                try {
+                    setMysqlToolStatus(await detectMysqlTools(force));
+                } catch {
                     setMysqlToolStatus({
                         mysqldumpFound: false,
                         mysqlFound: false,
@@ -91,11 +91,19 @@ export function SyncPage() {
                         mysqlVersion: null,
                         mysqldumpSource: null,
                         mysqlSource: null,
-                    }),
-                )
-                .finally(() => setCheckingTools(false));
-        }
-    }, [isPg, isMysql]);
+                    });
+                } finally {
+                    setCheckingTools(false);
+                }
+            }
+        },
+        [isPg, isMysql],
+    );
+
+    useEffect(() => {
+        setConfirmed(false);
+        void checkTools(false);
+    }, [checkTools]);
 
     // Fetch schemas from the source connection when it changes
     useEffect(() => {
@@ -204,6 +212,15 @@ export function SyncPage() {
                 <span className="text-[11px] text-text-muted">
                     Transfer data between databases via pipe
                 </span>
+                {(isPg || isMysql) && (
+                    <button
+                        type="button"
+                        onClick={() => void checkTools(true)}
+                        className="ml-auto text-[11px] text-text-muted hover:text-text transition-colors"
+                    >
+                        Check again
+                    </button>
+                )}
             </div>
 
             {/* Content */}
@@ -241,6 +258,11 @@ export function SyncPage() {
                                 )}
                                 {isMysql && !mysqlToolStatus?.mysqlFound && (
                                     <li>mysql is missing.</li>
+                                )}
+                                {isMysql && mysqlToolStatus?.mysqlResolvedName && (
+                                    <li className="text-amber-200/50">
+                                        Resolved MySQL client: {mysqlToolStatus.mysqlResolvedName}
+                                    </li>
                                 )}
                             </ul>
                         </div>

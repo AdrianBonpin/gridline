@@ -60,3 +60,49 @@ describe("SyncPage DB-aware", () => {
     expect(options).not.toContain("sq1");
   });
 });
+
+describe("SyncPage tool re-check", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockConnections.length = 0;
+    useBackupStore.setState({ jobs: [], activeJobId: null, progress: 0 });
+    useNotificationStore.setState({ notifications: [] });
+  });
+
+  it("re-checks MySQL tools with force when Check again is clicked", async () => {
+    mockConnections.push(
+      { id: "my1", db_type: "mysql", name: "MySQL 1", database: "db1" },
+      { id: "my2", db_type: "mysql", name: "MySQL 2", database: "db2" },
+    );
+    vi.spyOn(commands, "detectPgTools").mockResolvedValue(pgToolsOk);
+    const spy = vi.spyOn(commands, "detectMysqlTools").mockResolvedValue(mysqlToolsOk);
+    vi.spyOn(commands, "getSchemas").mockResolvedValue([]);
+    render(<SyncPage />);
+    const [sourceSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    fireEvent.change(sourceSelect, { target: { value: "my1" } });
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(false));
+    fireEvent.click(screen.getByRole("button", { name: /check again/i }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(true));
+  });
+
+  it("lists the specific missing MySQL role", async () => {
+    mockConnections.push(
+      { id: "my1", db_type: "mysql", name: "MySQL 1", database: "db1" },
+      { id: "my2", db_type: "mysql", name: "MySQL 2", database: "db2" },
+    );
+    vi.spyOn(commands, "detectPgTools").mockResolvedValue(pgToolsOk);
+    vi.spyOn(commands, "detectMysqlTools").mockResolvedValue({
+      mysqldumpFound: false,
+      mysqlFound: true,
+      mysqldumpVersion: null,
+      mysqlVersion: "8.0",
+      mysqldumpSource: null,
+      mysqlSource: "system",
+    });
+    vi.spyOn(commands, "getSchemas").mockResolvedValue([]);
+    render(<SyncPage />);
+    const [sourceSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    fireEvent.change(sourceSelect, { target: { value: "my1" } });
+    await waitFor(() => expect(screen.getByText(/mysqldump is missing/i)).toBeTruthy());
+  });
+});
