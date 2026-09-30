@@ -132,15 +132,44 @@ fn build_pg_restore_args_with_schema() {
 // ------------------------------------------------------------------
 
 #[test]
-fn detect_pg_tools_does_not_panic() {
-    // detect_pg_tools needs a Tauri AppHandle; the headless core keeps the
-    // status-shaping logic testable without one.
-    let status = build_pg_tool_status("pg_dump", "pg_restore", None, None);
-    // May or may not find tools, but the call itself must not panic
-    let _ = status.pg_dump_found;
-    let _ = status.pg_restore_found;
-    let _ = status.pg_dump_version;
-    let _ = status.pg_restore_version;
+fn build_pg_tool_status_reflects_resolutions() {
+    let dump = ToolResolution {
+        resolved: Some(crate::db::tool_resolver::Resolution {
+            program: "/opt/homebrew/bin/mariadb-dump".into(),
+            source: crate::db::tool_resolver::ToolSource::TrustedDir,
+            name: "pg_dump".into(),
+        }),
+        bundled_path: Some(std::path::PathBuf::from("/app/resources/pg_tools/pg_dump")),
+        bundled_available: true,
+        version: Some("pg_dump (PostgreSQL) 16.4".into()),
+    };
+    let status = build_pg_tool_status(&dump, &ToolResolution::none());
+    assert!(status.pg_dump_found);
+    assert!(!status.pg_restore_found);
+    assert_eq!(status.pg_dump_source.as_deref(), Some("system"));
+    assert_eq!(status.pg_dump_resolved_name.as_deref(), Some("pg_dump"));
+    assert!(status.pg_dump_bundled_available);
+    assert!(!status.pg_restore_bundled_available);
+}
+
+#[test]
+fn build_mysql_tool_status_reports_the_resolved_dump_name() {
+    let dump = ToolResolution {
+        resolved: Some(crate::db::tool_resolver::Resolution {
+            program: "/opt/homebrew/bin/mariadb-dump".into(),
+            source: crate::db::tool_resolver::ToolSource::TrustedDir,
+            name: "mariadb-dump".into(),
+        }),
+        bundled_path: Some(std::path::PathBuf::from("/app/resources/mysql_tools/mariadb-dump")),
+        bundled_available: true,
+        version: Some("mariadb-dump 11.4.5-MariaDB".into()),
+    };
+    let status = build_mysql_tool_status(&dump, &ToolResolution::none());
+    assert!(status.mysqldump_found);
+    assert!(!status.mysql_found);
+    assert_eq!(status.mysqldump_resolved_name.as_deref(), Some("mariadb-dump"));
+    assert!(status.mysqldump_is_mariadb);
+    assert!(!status.mysql_bundled_available);
 }
 
 #[test]
@@ -152,6 +181,10 @@ fn pg_tool_status_serialization() {
         pg_restore_version: None,
         pg_dump_source: None,
         pg_restore_source: None,
+        pg_dump_resolved_name: Some("pg_dump".into()),
+        pg_restore_resolved_name: None,
+        pg_dump_bundled_available: true,
+        pg_restore_bundled_available: false,
     };
     let json = serde_json::to_string(&status).unwrap();
     assert!(json.contains("pg_dump_found"));
@@ -171,6 +204,7 @@ fn backup_progress_event_completed() {
         progress: Some(1.0),
         output_line: None,
         error: None,
+        warning: None,
     };
     let json = serde_json::to_string(&evt).unwrap();
     assert!(json.contains("\"completed\""));
@@ -185,10 +219,39 @@ fn backup_progress_event_failed() {
         progress: None,
         output_line: None,
         error: Some("connection refused".into()),
+        warning: None,
     };
     let json = serde_json::to_string(&evt).unwrap();
     assert!(json.contains("\"failed\""));
     assert!(json.contains("\"connection refused\""));
+}
+
+#[test]
+fn backup_progress_event_serializes_a_non_fatal_warning() {
+    let evt = BackupProgressEvent {
+        job_id: "job-warn".into(),
+        status: "running".into(),
+        progress: Some(0.0),
+        output_line: None,
+        error: None,
+        warning: Some("Client/server version mismatch: …".into()),
+    };
+    let json = serde_json::to_string(&evt).unwrap();
+    assert!(json.contains("\"warning\":\"Client/server version mismatch"), "{json}");
+}
+
+#[test]
+fn backup_progress_event_serializes_a_null_warning_when_absent() {
+    let evt = BackupProgressEvent {
+        job_id: "job-quiet".into(),
+        status: "completed".into(),
+        progress: Some(1.0),
+        output_line: None,
+        error: None,
+        warning: None,
+    };
+    let json = serde_json::to_string(&evt).unwrap();
+    assert!(json.contains("\"warning\":null"), "{json}");
 }
 
 // ------------------------------------------------------------------
@@ -406,19 +469,6 @@ fn integration_plain_dump_restore() {
 // Tool resolution (Task 2.1: system-first, bundled-fallback)
 // ------------------------------------------------------------------
 
-#[test]
-fn pick_tool_prefers_system_then_bundled_then_bare() {
-    assert_eq!(pick_tool(true, None, "pg_dump"), ("pg_dump".to_string(), Some("system".into())));
-    assert_eq!(pick_tool(false, Some("/r/pg_dump"), "pg_dump"), ("/r/pg_dump".to_string(), Some("bundled".into())));
-    assert_eq!(pick_tool(false, None, "pg_dump"), ("pg_dump".to_string(), None));
-}
-
-#[test]
-fn bundled_bin_name_appends_exe_on_windows() {
-    let name = bundled_bin_name("pg_dump");
-    if cfg!(windows) { assert_eq!(name, "pg_dump.exe"); } else { assert_eq!(name, "pg_dump"); }
-}
-
 // ------------------------------------------------------------------
 // SQLite .dump / restore / sync core (Task 2.2)
 // ------------------------------------------------------------------
@@ -507,11 +557,20 @@ fn mysql_dump_args_single_transaction_no_data_routines() {
         database: "shop".into(), file_path: "/tmp/d.sql".into(),
         single_transaction: true, no_data: true, routines: true, triggers: false, events: false,
     };
-    let args = build_mysql_dump_args(&MySqlConnParams::new("h".into(), 3306, "u".into(), "shop".into(), "p".into()), &opts);
+    let args = build_mysql_dump_args(
+        &MySqlConnParams::new("h".into(), 3306, "u".into(), "shop".into(), "p".into()),
+        &opts,
+        false,
+    );
     assert!(args.iter().any(|a| a == "--single-transaction"));
     assert!(args.iter().any(|a| a == "--no-data"));
     assert!(args.iter().any(|a| a == "--routines"));
-    assert!(args.iter().any(|a| a == "--databases=shop"));
+    // `--databases` is a BOOLEAN flag: the database name must be a separate
+    // positional argument. `--databases=shop` is rejected by clients as
+    // "invalid value 'shop'".
+    let i = args.iter().position(|a| a == "--databases").expect("--databases flag");
+    assert_eq!(args[i + 1], "shop");
+    assert!(!args.iter().any(|a| a.starts_with("--databases=")), "{args:?}");
     assert!(args.iter().any(|a| a == "--result-file=/tmp/d.sql"));
     // no --password on the command line (uses MYSQL_PWD env)
     assert!(args.iter().all(|a| !a.starts_with("--password")));
@@ -520,8 +579,91 @@ fn mysql_dump_args_single_transaction_no_data_routines() {
 #[test]
 fn mysql_env_uses_mysql_pwd_not_password_arg() {
     let opts = MySqlBackupOptions { database: "db".into(), file_path: "/tmp/x.sql".into(), single_transaction: false, no_data: false, routines: false, triggers: false, events: false };
-    let args = build_mysql_dump_args(&MySqlConnParams::new("h".into(), 3306, "u".into(), "db".into(), "p".into()), &opts);
+    let args = build_mysql_dump_args(
+        &MySqlConnParams::new("h".into(), 3306, "u".into(), "db".into(), "p".into()),
+        &opts,
+        false,
+    );
     assert!(args.iter().all(|a| !a.starts_with("--password")));
+}
+
+#[test]
+fn mysql_dump_args_omit_column_statistics_for_mariadb_clients() {
+    // The bundled client is MariaDB 11.4.5 and rejects the MySQL-8-only option
+    // with `unknown option '--skip-column-statistics'`, aborting the dump.
+    let opts = MySqlBackupOptions {
+        database: "shop".into(), file_path: "/tmp/d.sql".into(),
+        single_transaction: true, no_data: false, routines: true, triggers: true, events: false,
+    };
+    let conn = MySqlConnParams::new("h".into(), 3306, "u".into(), "shop".into(), "p".into());
+    let mariadb = build_mysql_dump_args(&conn, &opts, true);
+    assert!(!mariadb.iter().any(|a| a == "--skip-column-statistics"), "{mariadb:?}");
+    let mysql = build_mysql_dump_args(&conn, &opts, false);
+    assert!(mysql.iter().any(|a| a == "--skip-column-statistics"), "{mysql:?}");
+}
+
+#[test]
+fn tls_args_map_ssl_mode_only_for_mysql_clients() {
+    // MySQL clients take `--ssl-mode=<mode>`; MariaDB clients have no such
+    // option and use the boolean `--ssl`.
+    assert_eq!(tls_args_for_client(false, Some("REQUIRED")), vec!["--ssl-mode=REQUIRED".to_string()]);
+    assert_eq!(tls_args_for_client(true, Some("REQUIRED")), vec!["--ssl".to_string()]);
+    assert_eq!(tls_args_for_client(false, None), Vec::<String>::new());
+    assert_eq!(tls_args_for_client(true, None), Vec::<String>::new());
+    assert_eq!(tls_args_for_client(true, Some("DISABLED")), Vec::<String>::new());
+}
+
+#[test]
+fn client_is_mariadb_reads_the_version_banner() {
+    // A program that cannot be executed must not panic — it reports false
+    // (keep the MySQL-only flags), and the dump fails at spawn anyway.
+    assert!(!client_is_mariadb("/nonexistent/definitely-not-a-tool"));
+}
+
+/// Regression guard for the bundled fallback path: the args we generate must be
+/// *accepted* by the real bundled MariaDB client. It spawns the staged binary
+/// against a closed port and requires the failure to be a CONNECTION error —
+/// never an option-parsing error. No live server needed.
+///
+/// The binaries are gitignored (the release workflow downloads them), so when
+/// they are not staged this test logs loudly and returns instead of failing.
+#[test]
+fn bundled_mariadb_dump_accepts_our_generated_args() {
+    let bundled = std::path::PathBuf::from(format!(
+        "{}/resources/mysql_tools",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .join(crate::db::tool_resolver::bundled_bin_name("mariadb-dump"));
+    if !bundled.is_file() {
+        eprintln!(
+            "SKIPPED bundled_mariadb_dump_accepts_our_generated_args: {bundled:?} is not staged \
+             (run the release workflow's tool-staging step to enable this guard)"
+        );
+        return;
+    }
+
+    let conn = MySqlConnParams::new("127.0.0.1".into(), 1, "root".into(), "mysql".into(), "unused".into());
+    let opts = MySqlBackupOptions {
+        database: "mysql".into(),
+        file_path: std::env::temp_dir().join("gridline_args_guard.sql").to_string_lossy().to_string(),
+        single_transaction: true, no_data: false, routines: true, triggers: true, events: false,
+    };
+    assert!(client_is_mariadb(bundled.to_str().unwrap()), "the bundled dump tool must be MariaDB's");
+
+    let mut args = build_mysql_dump_args(&conn, &opts, true);
+    args.extend(tls_args_for_client(true, Some("REQUIRED")));
+
+    let out = std::process::Command::new(&bundled).args(&args).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    // "unknown option" covers `--skip-column-statistics`; "unknown variable"
+    // covers `--ssl-mode` (MariaDB's own wording for the same class of mistake).
+    assert!(!err.contains("unknown option"), "bundled client rejected an option: {err}");
+    assert!(!err.contains("unknown variable"), "bundled client rejected an option: {err}");
+    assert!(!err.contains("invalid value"), "bundled client rejected an option value: {err}");
+    assert!(
+        err.contains("2002") || err.contains("can't connect") || err.contains("connection refused"),
+        "expected a connection failure (port 1 is closed), got: {err}"
+    );
 }
 
 // ── native MySQL restore: error reporting contract ──────────────────
@@ -634,4 +776,92 @@ fn restore_size_cap_rejects_a_file_over_the_limit_and_states_both_sizes() {
         .expect_err("must reject");
     assert!(err.contains("100 MB"), "error must state the limit in MB; got {err:?}");
     assert!(err.contains("MB"), "error must state the actual size in MB; got {err:?}");
+}
+
+// ── live MySQL dump: system tool vs. bundled tool ───────────────────
+//
+// Issue #44: the app reported "mysqldump not found" even with MySQL
+// client tools installed. These two #[ignore]d tests exercise the real
+// `run_mysql_dump` against a live server — once via a tool the shared
+// resolver found as a *system* client, once via the *bundled* MariaDB
+// client — so both provenance paths are covered end to end.
+//
+// Run with:
+//
+//   GRIDLINE_TEST_MYSQL_HOST=... GRIDLINE_TEST_MYSQL_PORT=... \
+//   GRIDLINE_TEST_MYSQL_USER=... GRIDLINE_TEST_MYSQL_DB=... \
+//   GRIDLINE_TEST_MYSQL_PASSWORD=... \
+//   cargo test --lib live_mysql_dump -- --ignored --nocapture
+
+fn mysql_conn_from_env(prefix: &str) -> MySqlConnParams {
+    MySqlConnParams::new(
+        env(&format!("{prefix}_HOST")),
+        env(&format!("{prefix}_PORT")).parse().unwrap(),
+        env(&format!("{prefix}_USER")),
+        env(&format!("{prefix}_DB")),
+        env(&format!("{prefix}_PASSWORD")),
+    )
+}
+
+fn live_mysql_dump_opts(conn: &MySqlConnParams, file_name: &str) -> MySqlBackupOptions {
+    MySqlBackupOptions {
+        database: conn.database.clone(),
+        file_path: std::env::temp_dir().join(file_name).to_string_lossy().to_string(),
+        single_transaction: true,
+        no_data: false,
+        routines: true,
+        triggers: true,
+        events: false,
+    }
+}
+
+/// Requires GRIDLINE_TEST_MYSQL_{HOST,PORT,USER,DB,PASSWORD} and a system
+/// mariadb-dump/mysqldump on this machine.
+#[test]
+#[ignore]
+fn live_mysql_dump_with_a_system_tool() {
+    let conn = mysql_conn_from_env("GRIDLINE_TEST_MYSQL");
+    let opts = live_mysql_dump_opts(&conn, "gridline_live_mysql_system.sql");
+    let req = crate::db::tool_resolver::mysql_dump_request();
+    let trusted = crate::db::tool_resolver::trusted_dirs();
+    let resolved = crate::db::tool_resolver::resolve_with(
+        &req,
+        &trusted,
+        &crate::db::tool_resolver::path_lookup,
+        None,
+        crate::db::tool_resolver::probe,
+    )
+    .expect("no system mariadb-dump/mysqldump resolved");
+    eprintln!("resolved: {} ({})", resolved.program, resolved.source.as_str());
+    let tools = MySqlToolPaths {
+        mysqldump: resolved.program.clone(),
+        mysql: resolved.program.clone(),
+    };
+    run_mysql_dump(&conn, &opts, &tools, None).expect("dump failed");
+    let len = std::fs::metadata(&opts.file_path).unwrap().len();
+    assert!(len > 0, "dump file is empty");
+    let _ = std::fs::remove_file(&opts.file_path);
+}
+
+/// Requires GRIDLINE_TEST_MYSQL_* and a staged `resources/mysql_tools` tree.
+#[test]
+#[ignore]
+fn live_mysql_dump_with_the_bundled_tool() {
+    let conn = mysql_conn_from_env("GRIDLINE_TEST_MYSQL");
+    let opts = live_mysql_dump_opts(&conn, "gridline_live_mysql_bundled.sql");
+    let bundled = std::path::PathBuf::from(format!(
+        "{}/resources/mysql_tools",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .join(crate::db::tool_resolver::bundled_bin_name("mariadb-dump"));
+    assert!(bundled.is_file(), "bundled mariadb-dump not staged at {bundled:?}");
+    assert!(crate::db::tool_resolver::probe(&bundled), "bundled mariadb-dump does not run");
+    let tools = MySqlToolPaths {
+        mysqldump: bundled.to_string_lossy().to_string(),
+        mysql: bundled.to_string_lossy().to_string(),
+    };
+    run_mysql_dump(&conn, &opts, &tools, None).expect("bundled dump failed");
+    let len = std::fs::metadata(&opts.file_path).unwrap().len();
+    assert!(len > 0, "bundled dump file is empty");
+    let _ = std::fs::remove_file(&opts.file_path);
 }

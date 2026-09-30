@@ -4,6 +4,7 @@ import { describe, it, expect } from "vitest";
 import agents from "../../../AGENTS.md?raw";
 import readme from "../../../README.md?raw";
 import landing from "../../../www/public/landing.js?raw";
+import roadmap from "../../../ROADMAP.md?raw";
 
 describe("v0.8.2 docs coverage", () => {
   it("AGENTS.md marks inline cell editing complete", () => {
@@ -78,5 +79,19 @@ describe("v0.8.2 docs coverage", () => {
     // missing, which is why they are asserted rather than trusted to review.
     expect(agents).toMatch(/\.sql/);
     expect(agents.toLowerCase()).toContain("in-process");
+  });
+});
+
+describe("v0.8.3 tool resolver docs", () => {
+  it("AGENTS.md documents the unified resolver and the nested resource path", () => {
+    expect(agents).toContain("tool_resolver");
+    expect(agents).toContain("resources/pg_tools");
+    expect(agents).toContain("resources/mysql_tools");
+  });
+  it("AGENTS.md documents that both engines share the resolver", () => {
+    expect(agents).toMatch(/mariadb-dump.*mysqldump|mysqldump.*mariadb-dump/s);
+  });
+  it("ROADMAP describes MySQL backup via mariadb-dump/mysqldump", () => {
+    expect(roadmap).toContain("mariadb-dump");
   });
 });

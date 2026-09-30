@@ -1,8 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { FileSearch, Upload } from "lucide-react";
+import { FolderOpen, Upload } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Button } from "../ui/Button";
+import { CopyButton } from "../ui/CopyButton";
 import { BackupProgress } from "./BackupProgress";
+import {
+    FormRow,
+    FormSectionHeader,
+    inputClass,
+    controlClass,
+} from "./objects/formRow";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { useConnectionStore } from "../../stores/connectionStore";
@@ -212,6 +218,9 @@ export function RestorePage({ connectionId }: RestorePageProps) {
         ? pgToolStatus?.pg_restore_source === "bundled"
         : false;
     const canStart = filePath && confirmed && !isRunning;
+    const installInstructions = getPlatformInstructions(
+        isPg ? PG_INSTALL_INSTRUCTIONS : MYSQL_INSTALL_INSTRUCTIONS,
+    );
 
     const checkingMessage = isPg
         ? "Checking for pg_restore..."
@@ -225,233 +234,226 @@ export function RestorePage({ connectionId }: RestorePageProps) {
           ? "Restore a database from a SQL dump"
           : "Restore a database from a backup file";
 
+    const cleanDisabled = isPg && format === "plain";
+    const restoreToolResolvedName =
+        pgToolStatus?.pg_restore_resolved_name ?? "pg_restore";
+
     return (
-        <div className="flex flex-col h-full">
+        <div className="flex h-full flex-col">
             {/* Toolbar header */}
-            <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
-                <Upload size={14} className="text-accent" />
-                <span className="text-xs font-medium text-text">Restore</span>
-                <span className="text-[11px] text-text-muted">
-                    {headerDescription}
-                </span>
+            <div className="flex items-center justify-between border-b border-border px-4 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                    <Upload size={14} className="text-accent" />
+                    <span className="text-xs font-medium text-text">Restore</span>
+                    <span className="text-[11px] text-text-muted">
+                        {headerDescription}
+                    </span>
+                </div>
+                <div className="flex items-center gap-2">
+                    {!checkingTools && !toolsMissing && (
+                        <button
+                            type="button"
+                            onClick={() => void handleStartRestore()}
+                            disabled={!canStart}
+                            className="inline-flex items-center rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                        >
+                            <Upload size={14} className="mr-1.5" />
+                            {isRunning ? "Restoring..." : "Start Restore"}
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto">
-                <div className="max-w-lg mx-auto space-y-6 outline outline-border">
-                    {/* Tool check */}
-                    {checkingTools && checkingMessage && (
-                        <div className="glass p-4 text-center">
-                            <p className="text-sm text-text-muted">
-                                {checkingMessage}
-                            </p>
-                        </div>
-                    )}
+            <div className="flex-1 overflow-auto">
+                {/* Tool check */}
+                {checkingTools && checkingMessage && (
+                    <div className="px-4 py-3 text-sm text-text-muted">
+                        {checkingMessage}
+                    </div>
+                )}
 
-                    {toolsMissing && !toolsBundled && (
-                        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-4 space-y-2">
-                            <p className="text-amber-300 text-sm font-semibold">
-                                {isPg ? "pg_restore not found" : "mysql client not found"}
-                            </p>
+                {toolsMissing && !toolsBundled && (
+                    <div className="border-b border-border bg-amber-500/10 px-4 py-3 space-y-2">
+                        <p className="text-amber-300 text-sm font-semibold">
+                            {isPg ? "pg_restore not found" : "mysql client not found"}
+                        </p>
+                        <p className="text-amber-200/80 text-xs leading-relaxed">
+                            Gridline ships its own {isPg ? "PostgreSQL" : "MySQL"}{" "}
+                            client tools. This build could not locate or run them, so
+                            a manual install is needed:
+                        </p>
+                        {pgToolStatus?.pg_restore_bundled_available && (
                             <p className="text-amber-200/80 text-xs leading-relaxed">
-                                The {isPg ? "PostgreSQL" : "MySQL"} client tools are required for
-                                backup/restore operations. Install them using:
+                                A bundled copy is present but could not run — reinstall
+                                Gridline, or install the tools below.
                             </p>
-                            <pre className="text-xs text-amber-100 bg-amber-500/10 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed">
-                                {getPlatformInstructions(
-                                    isPg
-                                        ? PG_INSTALL_INSTRUCTIONS
-                                        : MYSQL_INSTALL_INSTRUCTIONS,
-                                )}
+                        )}
+                        <div className="space-y-1">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-[11px] text-amber-200/60">
+                                    Install
+                                </span>
+                                <CopyButton
+                                    text={installInstructions}
+                                    className="text-amber-200/70 hover:text-amber-100"
+                                />
+                            </div>
+                            <pre className="text-xs text-amber-100 bg-amber-500/10 p-3 whitespace-pre-wrap font-mono leading-relaxed">
+                                {installInstructions}
                             </pre>
                         </div>
-                    )}
+                    </div>
+                )}
 
-                    {!checkingTools && !toolsMissing && (
-                        <>
+                {!checkingTools && !toolsMissing && (
+                    <>
+                        {/* Restore tool */}
+                        {isPg && pgToolStatus?.pg_restore_found && (
+                            <FormRow label="Tool">
+                                <span className="px-3 font-heading text-xs text-text">
+                                    Using{" "}
+                                    {pgToolStatus.pg_restore_source === "bundled"
+                                        ? "bundled"
+                                        : "system"}{" "}
+                                    {restoreToolResolvedName}
+                                </span>
+                            </FormRow>
+                        )}
+
+                        {isMysql && (
+                            <FormRow label="Tool">
+                                <span className="px-3 font-heading text-xs text-text">
+                                    Restores run in-process over the driver connection —
+                                    no MySQL client installation required
+                                </span>
+                            </FormRow>
+                        )}
+
+                        {/* Format (PostgreSQL only) */}
+                        {isPg && (
+                            <FormRow label="Format">
+                                <select
+                                    value={format}
+                                    onChange={(e) => setFormat(e.target.value)}
+                                    className={`${controlClass} mr-3`}
+                                >
+                                    <option value="custom">Custom Archive</option>
+                                    <option value="plain">Plain SQL</option>
+                                    <option value="tar">Tarball</option>
+                                    <option value="directory">Directory</option>
+                                </select>
+                            </FormRow>
+                        )}
+
+                        {/* Backup file */}
+                        <FormRow label="Backup file">
+                            <input
+                                type="text"
+                                value={filePath}
+                                onChange={(e) => setFilePath(e.target.value)}
+                                placeholder="/path/to/backup.dump"
+                                className={inputClass}
+                            />
+                            <button
+                                type="button"
+                                onClick={handlePickFile}
+                                aria-label="Browse for file"
+                                className="mr-2 flex h-6 w-6 shrink-0 items-center justify-center border border-border bg-surface text-text-muted hover:text-text hover:bg-surface-raised hover:border-border-hover transition-colors cursor-pointer"
+                            >
+                                <FolderOpen size={13} />
+                            </button>
+                        </FormRow>
+
+                        {/* Schema (optional) */}
+                        {(isPg || isMysql) && (
+                            <FormRow label="Schema">
+                                <select
+                                    value={schema}
+                                    onChange={(e) => setSchema(e.target.value)}
+                                    className={`${controlClass} mr-3`}
+                                >
+                                    <option value="">All schemas</option>
+                                    {availableSchemas.map((s) => (
+                                        <option key={s} value={s}>
+                                            {s}
+                                        </option>
+                                    ))}
+                                </select>
+                            </FormRow>
+                        )}
+
+                        <FormSectionHeader label="Options" />
+
+                        {/* Clean toggle */}
+                        <FormRow label="Clean">
+                            <label
+                                className={`flex w-full items-center gap-2.5 px-3 py-2 cursor-pointer group ${
+                                    cleanDisabled
+                                        ? "opacity-40 pointer-events-none"
+                                        : ""
+                                }`}
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={clean}
+                                    onChange={(e) => setClean(e.target.checked)}
+                                    disabled={cleanDisabled}
+                                    className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer disabled:cursor-not-allowed"
+                                />
+                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
+                                    {isMysql
+                                        ? "drops only the objects this file defines"
+                                        : "DROP before CREATE"}
+                                </code>
+                            </label>
+                        </FormRow>
+
+                        {isPg && format === "plain" && (
+                            <div className="border-b border-border px-4 py-2 text-[11px] text-text-muted/70">
+                                Plain SQL restores run via psql and don't support
+                                DROP-before-CREATE. Use Custom Archive for clean
+                                restores.
+                            </div>
+                        )}
+
+                        {/* Destructive confirmation */}
+                        <div className="border-b border-border bg-red-500/5 px-4 py-3 space-y-2">
+                            <label className="flex items-start gap-3 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={confirmed}
+                                    onChange={(e) => setConfirmed(e.target.checked)}
+                                    className="mt-0.5 bg-surface border-border accent-red-500 w-4 h-4 cursor-pointer"
+                                    data-testid="restore-confirm-checkbox"
+                                />
+                                <span className="text-sm text-red-300/90 leading-relaxed">
+                                    I understand this will overwrite data on the target
+                                    database. This action cannot be undone.
+                                </span>
+                            </label>
                             {isMysql && (
-                                <p className="text-[11px] text-text-muted/70 -mb-2">
-                                    Restores run in-process over the driver connection — no MySQL client
-                                    installation required.
+                                <p className="text-[11px] text-red-400/80">
+                                    MySQL DDL commits as it runs and can't be rolled
+                                    back — a failed restore may leave this database
+                                    partially applied.
                                 </p>
                             )}
+                        </div>
 
-                            {/* Configuration card */}
-                            <div className="p-5 space-y-5">
-                                {/* Format (PostgreSQL only) */}
-                                {isPg && (
-                                    <div className="space-y-1">
-                                        <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
-                                            Format
-                                        </label>
-                                        <select
-                                            value={format}
-                                            onChange={(e) =>
-                                                setFormat(e.target.value)
-                                            }
-                                            className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
-                                        >
-                                            <option value="custom">
-                                                Custom Archive
-                                            </option>
-                                            <option value="plain">Plain SQL</option>
-                                            <option value="tar">Tarball</option>
-                                            <option value="directory">
-                                                Directory
-                                            </option>
-                                        </select>
-                                    </div>
-                                )}
-
-                                {/* Backup file */}
-                                <div className="space-y-1 w-full">
-                                    <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
-                                        Backup File
-                                    </label>
-                                    <div className="flex gap-2">
-                                        <input
-                                            type="text"
-                                            value={filePath}
-                                            onChange={(e) =>
-                                                setFilePath(e.target.value)
-                                            }
-                                            placeholder="/path/to/backup.dump"
-                                            className="flex-1 px-4 py-2 text-sm text-text placeholder-text-muted/50 border-b border-border focus:border-accent focus:outline-none transition-colors"
-                                        />
-                                        <button
-                                            type="button"
-                                            onClick={handlePickFile}
-                                            className="flex items-center justify-center w-9 h-9 rounded-lg border border-border bg-surface text-text-muted hover:text-text hover:bg-surface-raised hover:border-border-hover transition-colors cursor-pointer shrink-0"
-                                            aria-label="Browse for file"
-                                        >
-                                            <FileSearch size={15} />
-                                        </button>
-                                    </div>
-                                </div>
-
-                                {/* Schema (optional) */}
-                                {(isPg || isMysql) && (
-                                    <div className="space-y-1">
-                                        <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
-                                            Schema{" "}
-                                            <span className="font-normal normal-case tracking-normal">
-                                                (optional)
-                                            </span>
-                                        </label>
-                                        <select
-                                            value={schema}
-                                            onChange={(e) =>
-                                                setSchema(e.target.value)
-                                            }
-                                            className="w-full rounded-lg bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
-                                        >
-                                            <option value="">All schemas</option>
-                                            {availableSchemas.map((s) => (
-                                                <option key={s} value={s}>
-                                                    {s}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                )}
-
-                                {/* Clean toggle */}
-                                {(isPg || isMysql || isSqlite) && (
-                                    <label
-                                        className={`flex items-center gap-2.5 cursor-pointer group ${
-                                            isPg && format === "plain"
-                                                ? "opacity-40 pointer-events-none"
-                                                : ""
-                                        }`}
-                                    >
-                                        <input
-                                            type="checkbox"
-                                            checked={clean}
-                                            onChange={(e) =>
-                                                setClean(e.target.checked)
-                                            }
-                                            disabled={isPg && format === "plain"}
-                                            className="rounded bg-surface border-border accent-accent w-4 h-4 cursor-pointer disabled:cursor-not-allowed"
-                                        />
-                                        {isMysql ? (
-                                            <span className="text-sm text-text-muted group-hover:text-text transition-colors">
-                                                Clean{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
-                                                    drops only the objects this file defines
-                                                </code>
-                                            </span>
-                                        ) : (
-                                            <span className="text-sm text-text-muted group-hover:text-text transition-colors">
-                                                Clean{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised rounded px-1.5 py-0.5">
-                                                    DROP before CREATE
-                                                </code>
-                                            </span>
-                                        )}
-                                    </label>
-                                )}
-                                {isPg && format === "plain" && (
-                                    <p className="text-[11px] text-text-muted/70 -mt-3">
-                                        Plain SQL restores run via psql and don't
-                                        support DROP-before-CREATE. Use Custom
-                                        Archive for clean restores.
-                                    </p>
-                                )}
+                        {/* Progress */}
+                        {activeJob && (
+                            <div className="px-4 py-3">
+                                <BackupProgress
+                                    progress={activeJob.status === "completed" ? 100 : 50}
+                                    jobType="restore"
+                                    status={activeJob.status}
+                                    errorMessage={activeJob.error_message ?? undefined}
+                                />
                             </div>
-
-                            {/* Destructive confirmation */}
-                            <div className="bg-red-500/5 border border-red-500/20 px-4 py-3">
-                                <label className="flex items-start gap-3 cursor-pointer">
-                                    <input
-                                        type="checkbox"
-                                        checked={confirmed}
-                                        onChange={(e) =>
-                                            setConfirmed(e.target.checked)
-                                        }
-                                        className="mt-0.5 rounded bg-surface border-border accent-red-500 w-4 h-4 cursor-pointer"
-                                        data-testid="restore-confirm-checkbox"
-                                    />
-                                    <span className="text-sm text-red-300/90 leading-relaxed">
-                                        I understand this will overwrite data on
-                                        the target database. This action cannot
-                                        be undone.
-                                    </span>
-                                </label>
-                                {isMysql && (
-                                    <p className="mt-2 text-[11px] text-red-400/80">
-                                        MySQL DDL commits as it runs and can't be rolled back — a failed
-                                        restore may leave this database partially applied.
-                                    </p>
-                                )}
-                            </div>
-
-                            {/* Progress */}
-                            {activeJob && (
-                                <div className="px-4">
-                                    <BackupProgress
-                                        progress={activeJob.status === "completed" ? 100 : 50}
-                                        jobType="restore"
-                                        status={activeJob.status}
-                                        errorMessage={activeJob.error_message ?? undefined}
-                                    />
-                                </div>
-                            )}
-
-                            {/* Actions */}
-                            <div className="flex justify-end pb-2 pr-2">
-                                <Button
-                                    onClick={handleStartRestore}
-                                    disabled={!canStart}
-                                >
-                                    <Upload size={14} className="mr-1.5" />
-                                    {isRunning
-                                        ? "Restoring..."
-                                        : "Start Restore"}
-                                </Button>
-                            </div>
-                        </>
-                    )}
-                </div>
+                        )}
+                    </>
+                )}
             </div>
         </div>
     );

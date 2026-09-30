@@ -3,6 +3,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::db::tool_resolver::{self, ToolRequest, ToolResolution};
 use crate::models::backup::*;
 
 // ---------------------------------------------------------------------------
@@ -40,74 +41,106 @@ impl PgConnParams {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn get_version(tool: &str) -> Option<String> {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-}
-
 fn sanitize_error(s: &str) -> String {
     crate::commands::test_connection::sanitize_error(s)
 }
 
-fn bundled_bin_name(tool: &str) -> String {
-    if cfg!(windows) { format!("{tool}.exe") } else { tool.to_string() }
-}
+/// Tauri-facing one-shot resolution with the process-lifetime cache.
+/// `force` bypasses the cache for an explicit user re-check.
+fn resolve_request(app: &AppHandle, request: &ToolRequest, force: bool) -> ToolResolution {
+    let key = request.cache_key();
+    if !force {
+        if let Some(hit) = tool_resolver::cache_get(&key) {
+            return hit;
+        }
+    }
 
-/// Pure resolution decision (unit-testable): system > bundled > bare name.
-fn pick_tool(system_ok: bool, bundled: Option<&str>, tool: &str) -> (String, Option<String>) {
-    if system_ok { return (tool.to_string(), Some("system".to_string())); }
-    if let Some(b) = bundled { return (b.to_string(), Some("bundled".to_string())); }
-    (tool.to_string(), None)
+    let resource_dir = app.path().resource_dir().ok();
+    let bundled = resource_dir
+        .as_ref()
+        .map(|rd| tool_resolver::bundled_tool_path(rd, request.subdir, request.bundled_name()));
+    let trusted = tool_resolver::trusted_dirs();
+    let start = std::time::Instant::now();
+    let probe = |p: &std::path::Path| {
+        tool_resolver::probe_within(start, tool_resolver::AGGREGATE_DEADLINE, p)
+    };
+    let resolved = tool_resolver::resolve_with(
+        request,
+        &trusted,
+        &tool_resolver::path_lookup,
+        bundled.as_deref(),
+        probe,
+    );
+    let version = resolved
+        .as_ref()
+        .and_then(|r| tool_resolver::version_of(&r.program));
+    let bundled_available = bundled
+        .as_deref()
+        .map(tool_resolver::bundled_present)
+        .unwrap_or(false);
+
+    let out = ToolResolution {
+        resolved,
+        bundled_path: bundled,
+        bundled_available,
+        version,
+    };
+    tool_resolver::cache_put(&key, out.clone());
+    out
 }
 
 /// System-first, bundled-fallback resolver. Returns (command_to_invoke, source).
 pub fn resolve_tool(app: &AppHandle, tool: &str) -> (String, Option<String>) {
-    let system_ok = Command::new(tool).arg("--version").output().is_ok();
-    let bundled = app.path().resource_dir().ok()
-        .map(|rd| rd.join("pg_tools").join(bundled_bin_name(tool)))
-        .filter(|p| p.exists())
-        .map(|p| p.to_string_lossy().to_string());
-    pick_tool(system_ok, bundled.as_deref(), tool)
+    match tool_resolver::pg_request(tool) {
+        Some(request) => {
+            tool_resolver::adapt_resolution(&resolve_request(app, &request, false), tool)
+        }
+        None => (tool.to_string(), None),
+    }
 }
 
 pub fn resolve_tool_paths(app: &AppHandle) -> PgToolPaths {
-    let (d, _) = resolve_tool(app, "pg_dump");
-    let (r, _) = resolve_tool(app, "pg_restore");
-    let (p, _) = resolve_tool(app, "psql");
-    PgToolPaths { pg_dump: d, pg_restore: r, psql: p }
+    PgToolPaths {
+        pg_dump: resolve_tool(app, "pg_dump").0,
+        pg_restore: resolve_tool(app, "pg_restore").0,
+        psql: resolve_tool(app, "psql").0,
+    }
 }
 
 // ---------------------------------------------------------------------------
 // detect_pg_tools
 // ---------------------------------------------------------------------------
 
-/// Shapes the tool status from resolved tool paths + sources. Headless so the
-/// Tauri command stays thin and the status logic stays unit-testable.
-fn build_pg_tool_status(
-    dump: &str,
-    restore: &str,
-    dump_src: Option<String>,
-    restore_src: Option<String>,
-) -> PgToolStatus {
+/// Shapes both PG statuses from resolved tools. Headless so the Tauri command
+/// stays thin and the shaping logic stays unit-testable.
+fn build_pg_tool_status(dump: &ToolResolution, restore: &ToolResolution) -> PgToolStatus {
     PgToolStatus {
-        pg_dump_found: Command::new(dump).arg("--version").output().is_ok(),
-        pg_restore_found: Command::new(restore).arg("--version").output().is_ok(),
-        pg_dump_version: get_version(dump),
-        pg_restore_version: get_version(restore),
-        pg_dump_source: dump_src,
-        pg_restore_source: restore_src,
+        pg_dump_found: dump.resolved.is_some(),
+        pg_restore_found: restore.resolved.is_some(),
+        pg_dump_version: dump.version.clone(),
+        pg_restore_version: restore.version.clone(),
+        pg_dump_source: dump.resolved.as_ref().map(|r| r.source.as_str().to_string()),
+        pg_restore_source: restore.resolved.as_ref().map(|r| r.source.as_str().to_string()),
+        pg_dump_resolved_name: dump.resolved.as_ref().map(|r| r.name.clone()),
+        pg_restore_resolved_name: restore.resolved.as_ref().map(|r| r.name.clone()),
+        pg_dump_bundled_available: dump.bundled_available,
+        pg_restore_bundled_available: restore.bundled_available,
     }
 }
 
+/// Detection runs off the UI thread and can be forced past the cache.
 #[tauri::command]
-pub fn detect_pg_tools(app_handle: AppHandle) -> PgToolStatus {
-    let (dump, dump_src) = resolve_tool(&app_handle, "pg_dump");
-    let (restore, restore_src) = resolve_tool(&app_handle, "pg_restore");
-    build_pg_tool_status(&dump, &restore, dump_src, restore_src)
+pub async fn detect_pg_tools(force: Option<bool>, app_handle: AppHandle) -> PgToolStatus {
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        let dump = resolve_request(&app_handle, &tool_resolver::pg_dump_request(), force);
+        let restore = resolve_request(&app_handle, &tool_resolver::pg_restore_request(), force);
+        build_pg_tool_status(&dump, &restore)
+    })
+    .await
+    .unwrap_or_else(|_| {
+        build_pg_tool_status(&ToolResolution::none(), &ToolResolution::none())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -501,50 +534,109 @@ fn base_mysql_args(conn: &MySqlConnParams) -> Vec<String> {
     ]
 }
 
+/// Whether a resolved client is MariaDB's. MariaDB's clients print a
+/// `...-MariaDB...` banner from `--version`; MySQL's print the Oracle banner.
+/// This matters because MariaDB's clients — including the `mysqldump`/`mysql`
+/// compatibility names some MariaDB packages ship — reject several MySQL-only
+/// options with "unknown option", aborting the dump before it connects.
+/// Probed once per program and cached for the process.
+fn client_is_mariadb(program: &str) -> bool {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, bool>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    if let Ok(map) = cache.lock() {
+        if let Some(hit) = map.get(program) {
+            return *hit;
+        }
+    }
+
+    let is_mariadb = Command::new(program)
+        .arg("--version")
+        .output()
+        .map(|o| {
+            let mut text = String::from_utf8_lossy(&o.stdout).to_string();
+            text.push_str(&String::from_utf8_lossy(&o.stderr));
+            text.contains("MariaDB")
+        })
+        .unwrap_or(false);
+
+    if let Ok(mut map) = cache.lock() {
+        map.insert(program.to_string(), is_mariadb);
+    }
+    is_mariadb
+}
+
+/// TLS flags for a dump client. MySQL's clients take `--ssl-mode=<mode>`;
+/// MariaDB's have no `--ssl-mode` and use the boolean `--ssl`, which is the
+/// equivalent of the only mode this code path uses (`REQUIRED`).
+pub fn tls_args_for_client(client_is_mariadb: bool, tls_mode: Option<&str>) -> Vec<String> {
+    match (client_is_mariadb, tls_mode) {
+        (true, Some("REQUIRED")) => vec!["--ssl".into()],
+        (true, _) => Vec::new(),
+        (false, Some(m)) => vec![format!("--ssl-mode={m}")],
+        (false, None) => Vec::new(),
+    }
+}
+
 /// `mariadb-dump`/`mysqldump` args. Passwords go via MYSQL_PWD env (set by the
 /// command), NEVER --password (process-list visibility).
-pub fn build_mysql_dump_args(conn: &MySqlConnParams, options: &MySqlBackupOptions) -> Vec<String> {
+///
+/// `client_is_mariadb` gates the MySQL-only options: MariaDB's dump rejects
+/// `--skip-column-statistics`. `--databases` is always emitted as a boolean
+/// flag followed by the database name — `--databases=<db>` is rejected by
+/// clients as an invalid value.
+pub fn build_mysql_dump_args(
+    conn: &MySqlConnParams,
+    options: &MySqlBackupOptions,
+    client_is_mariadb: bool,
+) -> Vec<String> {
     let mut a = base_mysql_args(conn);
     if options.single_transaction { a.push("--single-transaction".into()); }
     if options.no_data { a.push("--no-data".into()); }
     if options.routines { a.push("--routines".into()); }
     if options.triggers { a.push("--triggers".into()); }
     if options.events { a.push("--events".into()); }
-    a.push(format!("--databases={}", options.database));
+    a.push("--databases".into());
+    a.push(options.database.clone());
     a.push(format!("--result-file={}", options.file_path));
-    a.push("--skip-column-statistics".into());
+    if !client_is_mariadb {
+        a.push("--skip-column-statistics".into());
+    }
     a
 }
 
-/// System-first mariadb-dump/mariadb (bundled fallback in resources/mysql_tools).
+/// System-first mariadb-dump/mysqldump resolution (bundled fallback).
 pub fn resolve_mysql_tool(app: &AppHandle, tool: &str) -> (String, Option<String>) {
-    let system_ok = Command::new(tool).arg("--version").output().is_ok();
-    let bundled = app.path().resource_dir().ok()
-        .map(|rd| rd.join("mysql_tools").join(bundled_bin_name(tool)))
-        .filter(|p| p.exists())
-        .map(|p| p.to_string_lossy().to_string());
-    pick_tool(system_ok, bundled.as_deref(), tool)
+    match tool_resolver::mysql_request(tool) {
+        Some(request) => {
+            tool_resolver::adapt_resolution(&resolve_request(app, &request, false), tool)
+        }
+        None => (tool.to_string(), None),
+    }
 }
 
 pub fn resolve_mysql_tool_paths(app: &AppHandle) -> MySqlToolPaths {
-    let (d, _) = resolve_mysql_tool(app, "mariadb-dump");
-    let (m, _) = resolve_mysql_tool(app, "mariadb");
-    MySqlToolPaths { mysqldump: d, mysql: m }
+    MySqlToolPaths {
+        mysqldump: resolve_mysql_tool(app, "mariadb-dump").0,
+        mysql: resolve_mysql_tool(app, "mariadb").0,
+    }
 }
 
 /// Headless core: spawn dump with MYSQL_PWD env. `tls_mode` (e.g. `REQUIRED`)
-/// is appended as `--ssl-mode=` when routing through an SSH tunnel. (Live
-/// behavior = #[ignore] integration test.)
+/// is translated per client — `--ssl-mode=` on MySQL clients, `--ssl` on
+/// MariaDB's (see `tls_args_for_client`) when routing through an SSH tunnel.
+/// (Live behavior = #[ignore] integration test.)
 pub fn run_mysql_dump(
     conn: &MySqlConnParams,
     options: &MySqlBackupOptions,
     tools: &MySqlToolPaths,
     tls_mode: Option<&str>,
 ) -> Result<(), String> {
-    let mut args = build_mysql_dump_args(conn, options);
-    if let Some(m) = tls_mode {
-        args.push(format!("--ssl-mode={m}"));
-    }
+    let is_mariadb = client_is_mariadb(&tools.mysqldump);
+    let mut args = build_mysql_dump_args(conn, options, is_mariadb);
+    args.extend(tls_args_for_client(is_mariadb, tls_mode));
     let out = Command::new(&tools.mysqldump).env("MYSQL_PWD", &conn.password).args(&args).output()
         .map_err(|e| e.to_string())?;
     if out.status.success() { Ok(()) } else { Err(sanitize_error(&String::from_utf8_lossy(&out.stderr))) }
@@ -556,13 +648,13 @@ pub fn run_mysql_sync(
     tools: &MySqlToolPaths,
     tls_mode: Option<&str>,
 ) -> Result<(), String> {
+    let is_mariadb = client_is_mariadb(&tools.mysqldump);
     let mut dump_args = base_mysql_args(source);
     dump_args.push("--single-transaction".into());
     dump_args.push("--add-drop-table".into());
-    dump_args.push(format!("--databases={}", source.database));
-    if let Some(m) = tls_mode {
-        dump_args.push(format!("--ssl-mode={m}"));
-    }
+    dump_args.push("--databases".into());
+    dump_args.push(source.database.clone());
+    dump_args.extend(tls_args_for_client(is_mariadb, tls_mode));
     let mut dump = Command::new(&tools.mysqldump).env("MYSQL_PWD", &source.password).args(&dump_args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("dump: {e}"))?;
     let stdout = dump.stdout.take().unwrap();
     let mut restore_args = base_mysql_args(target);
@@ -729,6 +821,7 @@ fn emit_result(app_handle: &AppHandle, job_id: &str, result: Result<(), String>)
             progress: Some(1.0),
             output_line: None,
             error: None,
+            warning: None,
         },
         Err(e) => BackupProgressEvent {
             job_id: job_id.to_string(),
@@ -736,6 +829,7 @@ fn emit_result(app_handle: &AppHandle, job_id: &str, result: Result<(), String>)
             progress: None,
             output_line: None,
             error: Some(e),
+            warning: None,
         },
     };
     let _ = app_handle.emit("backup-progress", event);
@@ -924,18 +1018,38 @@ pub async fn db_sync(
 // MySQL dump / restore / sync commands (v0.7.8)
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
-pub fn detect_mysql_tools(app_handle: AppHandle) -> MySqlToolStatus {
-    let (d, ds) = resolve_mysql_tool(&app_handle, "mariadb-dump");
-    let (m, ms) = resolve_mysql_tool(&app_handle, "mariadb");
+fn build_mysql_tool_status(dump: &ToolResolution, client: &ToolResolution) -> MySqlToolStatus {
     MySqlToolStatus {
-        mysqldump_found: Command::new(&d).arg("--version").output().is_ok(),
-        mysql_found: Command::new(&m).arg("--version").output().is_ok(),
-        mysqldump_version: get_version(&d),
-        mysql_version: get_version(&m),
-        mysqldump_source: ds,
-        mysql_source: ms,
+        mysqldump_found: dump.resolved.is_some(),
+        mysql_found: client.resolved.is_some(),
+        mysqldump_version: dump.version.clone(),
+        mysql_version: client.version.clone(),
+        mysqldump_source: dump.resolved.as_ref().map(|r| r.source.as_str().to_string()),
+        mysql_source: client.resolved.as_ref().map(|r| r.source.as_str().to_string()),
+        mysqldump_resolved_name: dump.resolved.as_ref().map(|r| r.name.clone()),
+        mysql_resolved_name: client.resolved.as_ref().map(|r| r.name.clone()),
+        mysqldump_is_mariadb: dump
+            .resolved
+            .as_ref()
+            .map(|r| r.name.starts_with("mariadb"))
+            .unwrap_or(false),
+        mysqldump_bundled_available: dump.bundled_available,
+        mysql_bundled_available: client.bundled_available,
     }
+}
+
+#[tauri::command]
+pub async fn detect_mysql_tools(force: Option<bool>, app_handle: AppHandle) -> MySqlToolStatus {
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        let dump = resolve_request(&app_handle, &tool_resolver::mysql_dump_request(), force);
+        let client = resolve_request(&app_handle, &tool_resolver::mysql_client_request(), force);
+        build_mysql_tool_status(&dump, &client)
+    })
+    .await
+    .unwrap_or_else(|_| {
+        build_mysql_tool_status(&ToolResolution::none(), &ToolResolution::none())
+    })
 }
 
 /// Resolve (host, port, via_tunnel) for a MySQL connection, routing through the
@@ -950,6 +1064,68 @@ fn mysql_endpoint(
         return ("127.0.0.1".into(), port as i64, true);
     }
     (conn.host.clone(), conn.port.unwrap_or(3306), false)
+}
+
+/// Advisory server version for the compatibility check. Fail-open by design:
+/// any error (TLS, SSH tunnel, auth) returns `None`, and the dump proceeds.
+async fn mysql_server_version(
+    host: &str,
+    port: i64,
+    via_tunnel: bool,
+    conn: &crate::models::Connection,
+    password: &str,
+) -> Option<String> {
+    let database = conn.database.clone().unwrap_or_default();
+    let original_host = conn.host.clone();
+    let ssl_mode = conn.ssl_mode.clone();
+    let ssl_ca = conn.ssl_ca_path.clone();
+    let username = conn.username.clone().unwrap_or_else(|| "root".into());
+    let mut c = crate::commands::db_viewer::open_mysql_connection(
+        host,
+        port as u16,
+        &username,
+        password,
+        &database,
+        &original_host,
+        ssl_mode.as_deref(),
+        ssl_ca.as_deref(),
+        via_tunnel,
+    )
+    .await
+    .ok()?;
+    sqlx::query_scalar::<_, String>("SELECT VERSION()")
+        .fetch_one(&mut c)
+        .await
+        .ok()
+}
+
+/// Emit the advisory warning when the resolved dump client is clearly older
+/// than the server. Never returns an error — the job always proceeds.
+async fn maybe_emit_version_warning(
+    app_handle: &AppHandle,
+    job_id: &str,
+    resolution: &ToolResolution,
+    server_version: Option<String>,
+) {
+    let (Some(client_version), Some(tool)) = (&resolution.version, &resolution.resolved) else {
+        return;
+    };
+    let Some(server_version) = server_version else { return };
+    let Some(warning) = tool_resolver::warning_for(client_version, &server_version, &tool.name)
+    else {
+        return;
+    };
+    let _ = app_handle.emit(
+        "backup-progress",
+        BackupProgressEvent {
+            job_id: job_id.to_string(),
+            status: "running".into(),
+            progress: Some(0.0),
+            output_line: None,
+            error: None,
+            warning: Some(warning),
+        },
+    );
 }
 
 #[tauri::command]
@@ -976,6 +1152,15 @@ pub async fn mysql_dump(
             .unwrap_or_default();
 
     let (host, port, via_tunnel) = mysql_endpoint(&state, &connection_id, &conn);
+    // Advisory client/server compatibility check — never blocks the job, and
+    // only pays for a connection when the resolved client reported a version.
+    let dump_resolution = resolve_request(&app_handle, &tool_resolver::mysql_dump_request(), false);
+    let server_version = if dump_resolution.version.is_some() {
+        mysql_server_version(&host, port, via_tunnel, &conn, &password).await
+    } else {
+        None
+    };
+    maybe_emit_version_warning(&app_handle, &job_id, &dump_resolution, server_version).await;
     let params = MySqlConnParams::new(
         host,
         port,
@@ -1085,6 +1270,7 @@ pub async fn mysql_restore(
                     progress: Some(done as f64 / total.max(1) as f64),
                     output_line: Some(format!("Statement {done} of {total}")),
                     error: None,
+                    warning: None,
                 },
             );
         };
@@ -1197,6 +1383,23 @@ pub async fn mysql_sync(
 
     let (src_host, src_port, src_via_tunnel) = mysql_endpoint(&state, &source_conn.id, &source_conn);
     let (tgt_host, tgt_port, tgt_via_tunnel) = mysql_endpoint(&state, &target_conn.id, &target_conn);
+
+    // Advisory client/server compatibility check — never blocks the job, and
+    // only pays for a connection when the resolved client reported a version.
+    let dump_resolution = resolve_request(&app_handle, &tool_resolver::mysql_dump_request(), false);
+    let server_version = if dump_resolution.version.is_some() {
+        mysql_server_version(
+            &src_host,
+            src_port,
+            src_via_tunnel,
+            &source_conn,
+            &src_password,
+        )
+        .await
+    } else {
+        None
+    };
+    maybe_emit_version_warning(&app_handle, &job_id, &dump_resolution, server_version).await;
 
     let source = MySqlConnParams::new(
         src_host,

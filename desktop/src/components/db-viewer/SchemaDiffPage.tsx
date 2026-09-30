@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Play, Copy, AlertTriangle, GitCompare } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { compareSchemas, getSchemas, getDatabases } from "../../lib/commands";
+import { controlClass } from "./objects/formRow";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import type { DiffItem, DiffReport } from "../../lib/types";
@@ -25,9 +26,9 @@ function familyOf(dbType: string): string {
 
 function SchemaDiffItemCard({ item }: { item: DiffItem }) {
   return (
-    <div className="rounded-lg border border-border bg-surface p-2 text-xs">
+    <div className="border border-border bg-surface p-3 text-xs">
       <div className="flex items-center gap-2">
-        <span className={`rounded border px-1.5 py-0.5 ${KIND_BADGE[item.kind]}`}>{item.kind}</span>
+        <span className={`border px-1.5 py-0.5 ${KIND_BADGE[item.kind]}`}>{item.kind}</span>
         <span className="text-text">{item.name}</span>
         {item.destructive && (
           <span className="flex items-center gap-1 text-text-muted">
@@ -43,7 +44,7 @@ function SchemaDiffItemCard({ item }: { item: DiffItem }) {
       {item.sync_sql.length > 0 && (
         <details className="mt-1.5">
           <summary className="cursor-pointer text-text-muted">SQL</summary>
-          <pre className="mt-1 rounded bg-surface-raised p-2 overflow-x-auto text-[11px]">{item.sync_sql.join("\n")}</pre>
+          <pre className="mt-1 bg-surface-raised p-2 overflow-x-auto text-[11px]">{item.sync_sql.join("\n")}</pre>
           <button
             type="button"
             onClick={() => void navigator.clipboard?.writeText(item.sync_sql.join("\n"))}
@@ -165,8 +166,8 @@ export function SchemaDiffPage({ connectionId }: { connectionId: string }) {
     : 0;
 
   return (
-    <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
-      <div className="px-3 pt-3 pb-3 border-b border-border shrink-0 space-y-2">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="border-b border-border px-4 py-2 shrink-0 space-y-2">
         <div className="flex items-center gap-2 text-xs">
           <GitCompare size={14} className="text-text-muted" />
           <span className="text-text-muted">Compare a source connection's schema against this connection (same engine family).</span>
@@ -175,7 +176,7 @@ export function SchemaDiffPage({ connectionId }: { connectionId: string }) {
           <select
             value={sourceId}
             onChange={(e) => void pickSource(e.target.value)}
-            className="rounded-lg bg-surface-raised border border-border px-2 py-1"
+            className={`${controlClass} max-w-56`}
             aria-label="Source connection"
           >
             <option value="">Source connection…</option>
@@ -187,7 +188,7 @@ export function SchemaDiffPage({ connectionId }: { connectionId: string }) {
             value={sourceSchema}
             onChange={(e) => setSourceSchema(e.target.value)}
             disabled={!sourceId}
-            className="rounded-lg bg-surface-raised border border-border px-2 py-1 disabled:opacity-50"
+            className={`${controlClass} max-w-56 disabled:opacity-50 disabled:cursor-not-allowed`}
             aria-label="Source schema"
           >
             {sourceSchemas.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -196,7 +197,7 @@ export function SchemaDiffPage({ connectionId }: { connectionId: string }) {
           <select
             value={targetSchema}
             onChange={(e) => setTargetSchema(e.target.value)}
-            className="rounded-lg bg-surface-raised border border-border px-2 py-1"
+            className={`${controlClass} max-w-56`}
             aria-label="Target schema"
           >
             <option value={targetSchema}>{targetSchema}</option>
@@ -205,7 +206,7 @@ export function SchemaDiffPage({ connectionId }: { connectionId: string }) {
             type="button"
             onClick={() => void runDiff()}
             disabled={running || !sourceId || !sourceSchema}
-            className="flex items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-accent-foreground disabled:opacity-50 cursor-pointer"
+            className="inline-flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
           >
             <Play size={13} /> {running ? "Diffing…" : "Run diff"}
           </button>
@@ -213,7 +214,7 @@ export function SchemaDiffPage({ connectionId }: { connectionId: string }) {
             <button
               type="button"
               onClick={stageAll}
-              className="rounded-lg bg-surface-raised border border-border px-2.5 py-1 hover:bg-surface cursor-pointer"
+              className="bg-surface-raised border border-border px-3 py-1.5 text-xs text-text hover:bg-surface cursor-pointer"
             >
               Stage {stageableCount} safe item{stageableCount === 1 ? "" : "s"}
             </button>
@@ -222,7 +223,7 @@ export function SchemaDiffPage({ connectionId }: { connectionId: string }) {
             <button
               type="button"
               onClick={copyAll}
-              className="flex items-center gap-1 rounded-lg bg-surface-raised border border-border px-2.5 py-1 hover:bg-surface cursor-pointer"
+              className="inline-flex items-center gap-1 bg-surface-raised border border-border px-3 py-1.5 text-xs text-text hover:bg-surface cursor-pointer"
             >
               <Copy size={13} /> Copy all SQL
             </button>
@@ -236,7 +237,7 @@ export function SchemaDiffPage({ connectionId }: { connectionId: string }) {
         {error && <div className="text-xs text-red-400" role="alert">{error}</div>}
       </div>
 
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-4">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-4">
         {report && report.items.length === 0 && (
           <div className="text-xs text-text-muted">Schemas are identical — no differences found.</div>
         )}

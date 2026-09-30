@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { BackupPage } from "./BackupPage";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -82,5 +82,106 @@ describe("BackupPage DB-aware", () => {
     render(<BackupPage connectionId="c3" />);
     await waitFor(() => expect(screen.queryByText(/checking for pg_dump/i)).not.toBeInTheDocument());
     expect(screen.getByText("Custom Archive")).toBeTruthy();
+  });
+});
+
+describe("BackupPage tool provenance and re-check", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockConnections.length = 0;
+    useBackupStore.setState({ jobs: [], activeJobId: null, progress: 0 });
+    useNotificationStore.setState({ notifications: [] });
+    vi.spyOn(commands, "getSchemas").mockResolvedValue([]);
+  });
+
+  it("shows the resolved tool and its source", async () => {
+    mockConnections.push({ id: "c1", db_type: "mysql", name: "m", database: "db1" });
+    vi.spyOn(commands, "detectMysqlTools").mockResolvedValue({
+      mysqldumpFound: true,
+      mysqlFound: true,
+      mysqldumpVersion: "mariadb-dump 11.4.5-MariaDB",
+      mysqlVersion: "mariadb 11.4.5-MariaDB",
+      mysqldumpSource: "bundled",
+      mysqlSource: "bundled",
+      mysqldumpResolvedName: "mariadb-dump",
+      mysqlResolvedName: "mariadb",
+      mysqldumpBundledAvailable: true,
+      mysqlBundledAvailable: true,
+    });
+    render(<BackupPage connectionId="c1" />);
+    await waitFor(() => expect(screen.getByText(/Using bundled mariadb-dump/)).toBeTruthy());
+  });
+
+  it("re-checks with force when Check again is clicked", async () => {
+    mockConnections.push({ id: "c2", db_type: "mysql", name: "m", database: "db1" });
+    const spy = vi.spyOn(commands, "detectMysqlTools").mockResolvedValue({
+      mysqldumpFound: false,
+      mysqlFound: false,
+      mysqldumpVersion: null,
+      mysqlVersion: null,
+      mysqldumpSource: null,
+      mysqlSource: null,
+    });
+    render(<BackupPage connectionId="c2" />);
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(false));
+    fireEvent.click(screen.getByRole("button", { name: /check again/i }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(true));
+  });
+
+  it("explains when the bundled tool is present but could not run", async () => {
+    mockConnections.push({ id: "c3", db_type: "mysql", name: "m", database: "db1" });
+    vi.spyOn(commands, "detectMysqlTools").mockResolvedValue({
+      mysqldumpFound: false,
+      mysqlFound: false,
+      mysqldumpVersion: null,
+      mysqlVersion: null,
+      mysqldumpSource: null,
+      mysqlSource: null,
+      mysqldumpBundledAvailable: true,
+      mysqlBundledAvailable: false,
+    });
+    render(<BackupPage connectionId="c3" />);
+    await waitFor(() =>
+      expect(screen.getByText(/bundled copy is present but could not run/i)).toBeTruthy(),
+    );
+  });
+
+  it("shows install instructions when nothing resolves at all", async () => {
+    mockConnections.push({ id: "c4", db_type: "mysql", name: "m", database: "db1" });
+    vi.spyOn(commands, "detectMysqlTools").mockResolvedValue({
+      mysqldumpFound: false,
+      mysqlFound: false,
+      mysqldumpVersion: null,
+      mysqlVersion: null,
+      mysqldumpSource: null,
+      mysqlSource: null,
+      mysqldumpBundledAvailable: false,
+    });
+    render(<BackupPage connectionId="c4" />);
+    await waitFor(() => expect(screen.getByText(/mysql-client/)).toBeTruthy());
+  });
+
+  it("offers a copy button for the install command", async () => {
+    mockConnections.push({ id: "c-copy", db_type: "mysql", name: "m", database: "db1" });
+    vi.spyOn(commands, "detectMysqlTools").mockResolvedValue({
+      mysqldumpFound: false,
+      mysqlFound: false,
+      mysqldumpVersion: null,
+      mysqlVersion: null,
+      mysqldumpSource: null,
+      mysqlSource: null,
+      mysqldumpBundledAvailable: false,
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn() },
+      configurable: true,
+      writable: true,
+    });
+    render(<BackupPage connectionId="c-copy" />);
+    const btn = await screen.findByTitle("Copy to clipboard");
+    fireEvent.click(btn);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("mysql-client"),
+    );
   });
 });

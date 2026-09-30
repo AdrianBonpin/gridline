@@ -325,6 +325,10 @@ export interface PgToolStatus {
   pg_restore_version: string | null;
   pg_dump_source: string | null;
   pg_restore_source: string | null;
+  pg_dump_resolved_name?: string | null;
+  pg_restore_resolved_name?: string | null;
+  pg_dump_bundled_available?: boolean;
+  pg_restore_bundled_available?: boolean;
 }
 
 // ─── Backup Types: MySQL / SQLite / Settings (v0.7.8) ───────────
@@ -338,6 +342,11 @@ export interface MySqlToolStatus {
   mysqlVersion: string | null;
   mysqldumpSource: string | null;
   mysqlSource: string | null;
+  mysqldumpResolvedName?: string | null;
+  mysqlResolvedName?: string | null;
+  mysqldumpIsMariaDb?: boolean;
+  mysqldumpBundledAvailable?: boolean;
+  mysqlBundledAvailable?: boolean;
 }
 
 export interface MySqlBackupOptions {

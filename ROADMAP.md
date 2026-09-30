@@ -134,7 +134,7 @@ Still deferred from 0.7.0, slated for this bucket:
 ## ✅ Shipped (0.7.8)
 
 - **SQLite `.dump` support** — backup a SQLite database to a portable SQL dump and restore it back, matching the pg_dump UX
-- **Backup / Restore / Sync for MySQL & SQLite** — the pg-only tooling extended: MySQL backup/restore via `mysqldump` (system-first) and DB-to-DB sync beyond PostgreSQL
+- **Backup / Restore / Sync for MySQL & SQLite** — the pg-only tooling extended: MySQL backup via the resolved `mariadb-dump`/`mysqldump` client (system-first, bundled fallback) with a native in-process restore, plus DB-to-DB sync beyond PostgreSQL
 - **Excel (.xlsx) export** — alongside CSV/JSON/SQL/Markdown in the grid export toolbar
 - **Cancel long-running queries** — per-connection cancel button (`pg_cancel_backend` and equivalents) instead of waiting or killing the app
 - **Settings export / import** — share theme, accent, editor options, page sizes, and defaults across machines (JSON file)
