@@ -127,9 +127,35 @@ pub fn mysql_client_request() -> ToolRequest {
     ToolRequest::new("mysql_tools", &["mariadb", "mysql"])
 }
 
-// `OsStr` is used by `path_lookup_in` in Task 2; keep the import meaningful.
-#[allow(dead_code)]
-fn _os_str_marker(_: &OsStr) {}
+/// The bundled binary path for a role. Note the nested
+/// `BUNDLED_RESOURCE_PREFIX` component — this is the issue #44 fix.
+pub fn bundled_tool_path(resource_dir: &Path, subdir: &str, bin: &str) -> PathBuf {
+    resource_dir
+        .join(BUNDLED_RESOURCE_PREFIX)
+        .join(subdir)
+        .join(bundled_bin_name(bin))
+}
+
+/// Locate `name` on a `PATH`-shaped value without invoking a shell.
+pub fn path_lookup_in(name: &str, path_var: &OsStr) -> Option<PathBuf> {
+    let file = bundled_bin_name(name);
+    for dir in std::env::split_paths(path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(&file);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Locate `name` on the inherited `PATH`.
+pub fn path_lookup(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    path_lookup_in(name, &path_var)
+}
 
 #[cfg(test)]
 #[path = "tool_resolver.test.rs"]

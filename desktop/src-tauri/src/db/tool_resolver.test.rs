@@ -63,3 +63,69 @@ fn trusted_dirs_include_usr_bin_on_linux() {
 fn trusted_dirs_are_empty_on_windows() {
     assert!(trusted_dirs().is_empty());
 }
+
+#[test]
+fn bundled_tool_path_includes_the_nested_resources_prefix() {
+    // THE BUG FROM ISSUE #44: the shipped app stores the tool at
+    // <resource_dir>/resources/mysql_tools/mariadb-dump, never at
+    // <resource_dir>/mysql_tools/mariadb-dump.
+    let p = bundled_tool_path(Path::new("/app/Contents/Resources"), "mysql_tools", "mariadb-dump");
+    assert_eq!(
+        p,
+        PathBuf::from("/app/Contents/Resources/resources/mysql_tools").join(bundled_bin_name("mariadb-dump"))
+    );
+    assert!(p.to_string_lossy().ends_with("resources/mysql_tools/mariadb-dump"));
+}
+
+#[test]
+fn bundled_tool_path_works_for_postgres_tools_too() {
+    let p = bundled_tool_path(Path::new("/app/Contents/Resources"), "pg_tools", "pg_dump");
+    assert!(p.to_string_lossy().ends_with("resources/pg_tools/pg_dump"));
+}
+
+#[test]
+fn bundled_prefix_matches_tauri_config_resources() {
+    let conf = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json"))
+        .expect("tauri.conf.json must be readable");
+    let json: serde_json::Value = serde_json::from_str(&conf).unwrap();
+    let resources = json["bundle"]["resources"]
+        .as_array()
+        .expect("bundle.resources must be an array");
+    assert!(!resources.is_empty(), "bundle.resources must not be empty");
+    for entry in resources {
+        let glob = entry.as_str().unwrap();
+        let top = Path::new(glob).components().next().unwrap();
+        assert_eq!(
+            top.as_os_str().to_str().unwrap(),
+            BUNDLED_RESOURCE_PREFIX,
+            "resource glob `{glob}` must start with `{BUNDLED_RESOURCE_PREFIX}/`"
+        );
+    }
+}
+
+#[test]
+fn path_lookup_finds_an_executable_by_name() {
+    let dir = unique_dir();
+    let exe = dir.join(bundled_bin_name("mysqldump"));
+    std::fs::write(&exe, b"").unwrap();
+    let path_var = std::env::join_paths([&dir]).unwrap();
+    assert_eq!(path_lookup_in("mysqldump", &path_var), Some(exe));
+}
+
+#[test]
+fn path_lookup_skips_empty_entries_and_missing_names() {
+    let dir = unique_dir();
+    let path_var = std::env::join_paths([PathBuf::from(""), dir.clone()]).unwrap();
+    assert_eq!(path_lookup_in("definitely-absent-tool", &path_var), None);
+}
+
+fn unique_dir() -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir()
+        .join(format!("gridline_tool_resolver_{}_{}", std::process::id(), nanos));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
