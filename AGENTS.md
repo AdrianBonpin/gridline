@@ -161,29 +161,9 @@ bun run --filter gridline-desktop build            # Desktop production build
 bun run dev:www                                    # Website dev server (Astro)
 bun run build:www                                  # Website static build (www/dist/)
 bun run test                                       # Desktop frontend tests (vitest)
-bun run icons                                      # Regenerate desktop/src-tauri/icons/* from icon.svg
-bun run icons:verify                                # Check the macOS icon isn't rendered on a legacy plate
 cargo build                                        # Rust backend only (from desktop/src-tauri/)
 cargo test                                         # Rust tests (from desktop/src-tauri/)
 ```
-
-### App icon
-
-`desktop/src-tauri/icons/icon.svg` is the source of truth; every PNG/ICNS/ICO beside it is generated output.
-
-Regenerate **only** through the script — never with a bare `tauri icon`:
-
-```bash
-bun run icons          # tauri icon -> temp dir, copy back the desktop set, then fix the ICNS
-bun run icons:verify   # asserts AppKit renders the icon cleanly at 16px..512px
-```
-
-Two reasons the wrapper is mandatory:
-
-1. `tauri icon` takes one output directory for all platforms, so running it in place would drop generated `android/` and `ios/` trees into the desktop-only icons directory. The script generates into a temp dir and copies back just the desktop files.
-2. `tauri icon` emits legacy `is32`/`s8mk`/`il32`/`l8mk` (+ `ic12`) representations. **macOS 26+ then draws a grey "legacy plate" behind the icon for every render size below ~72px** — a white border around the app icon in the Dock and in any launcher that resolves icons via `NSWorkspace.icon(forFile:)` (Spotlight, Vicinae, Raycast). `scripts/fix-icns.mjs` strips those chunks, which makes the icon render cleanly at every size.
-
-`scripts/verify-app-icon.mjs` is the regression check for that: it builds a throwaway `.app` around the committed `icon.icns`, asks AppKit for the icon (the same call launchers make) and fails if any size comes back plated. Run it after touching icons, and after bumping Tauri (a newer `tauri icon` may change what it emits).
 
 ### Branch & PR workflow
 
