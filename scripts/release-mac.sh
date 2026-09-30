@@ -9,7 +9,7 @@
 # signed build without spending CI minutes, or when Actions is unavailable.
 #
 # Usage:
-#   TAG=v0.8.2 ./scripts/release-mac.sh
+#   TAG=v0.8.3 ./scripts/release-mac.sh
 #
 # The release is keyed by tag: the Actions job creates the draft on a tag push,
 # and this script finds it (creating it only if it somehow doesn't exist) and

@@ -15,6 +15,12 @@ function mockClipboard(writeText: (text: string) => Promise<void>) {
  * `window.unhandledrejection` for rejections originating in the environment, so
  * the process event is the only reliable signal that a failed clipboard write
  * escaped the click handler.
+ *
+ * `match` narrows the capture to this test's own error. It is required, not a
+ * convenience: the listener is process-global, and Vitest runs several test
+ * files in the same worker process — without a filter another file's rejection
+ * would be recorded here and fail this test. Filtering keeps the assertion
+ * precise ("did *our* rejection escape?") instead of order-dependent.
  */
 interface UnhandledRejectionEmitter {
   on(event: "unhandledRejection", listener: (reason: unknown) => void): void;
@@ -25,10 +31,10 @@ const nodeProcess = (
   globalThis as unknown as { process?: UnhandledRejectionEmitter }
 ).process;
 
-function captureUnhandledRejections() {
+function captureUnhandledRejections(match: string) {
   const seen: unknown[] = [];
   const listener = (reason: unknown) => {
-    seen.push(reason);
+    if (String(reason).includes(match)) seen.push(reason);
   };
   nodeProcess?.on("unhandledRejection", listener);
   return {
@@ -96,17 +102,20 @@ describe("CopyButton", () => {
   it("stays quiet when the clipboard rejects", async () => {
     const rejected = vi.fn().mockRejectedValue(new Error("NotAllowedError"));
     mockClipboard(rejected);
-    const unhandled = captureUnhandledRejections();
+    const unhandled = captureUnhandledRejections("NotAllowedError");
 
-    render(<CopyButton text="brew install libpq" />);
-    fireEvent.click(screen.getByTitle("Copy to clipboard"));
+    try {
+      render(<CopyButton text="brew install libpq" />);
+      fireEvent.click(screen.getByTitle("Copy to clipboard"));
 
-    await waitFor(() => expect(rejected).toHaveBeenCalled());
-    await drain();
+      await waitFor(() => expect(rejected).toHaveBeenCalled());
+      await drain();
 
-    expect(screen.getByTitle("Copy to clipboard").textContent).toBe("Copy");
-    expect(unhandled.seen).toEqual([]);
-    unhandled.stop();
+      expect(screen.getByTitle("Copy to clipboard").textContent).toBe("Copy");
+      expect(unhandled.seen).toEqual([]);
+    } finally {
+      unhandled.stop();
+    }
   });
 
   it("stays quiet when the clipboard API is unavailable", async () => {
@@ -115,18 +124,21 @@ describe("CopyButton", () => {
       configurable: true,
       writable: true,
     });
-    const unhandled = captureUnhandledRejections();
+    const unhandled = captureUnhandledRejections("writeText");
 
-    render(<CopyButton text="brew install libpq" />);
-    expect(() =>
-      fireEvent.click(screen.getByTitle("Copy to clipboard")),
-    ).not.toThrow();
+    try {
+      render(<CopyButton text="brew install libpq" />);
+      expect(() =>
+        fireEvent.click(screen.getByTitle("Copy to clipboard")),
+      ).not.toThrow();
 
-    await drain();
+      await drain();
 
-    expect(screen.getByTitle("Copy to clipboard").textContent).toBe("Copy");
-    expect(unhandled.seen).toEqual([]);
-    unhandled.stop();
+      expect(screen.getByTitle("Copy to clipboard").textContent).toBe("Copy");
+      expect(unhandled.seen).toEqual([]);
+    } finally {
+      unhandled.stop();
+    }
   });
 
   it("uses a custom label for the accessible name", () => {
