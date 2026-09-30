@@ -281,6 +281,71 @@ pub fn version_of(program: &str) -> Option<String> {
     if stderr.is_empty() { None } else { Some(stderr) }
 }
 
+/// Lenient major-version extraction. Scans for numeric groups, unwraps the
+/// legacy MariaDB `5.5.5-<real>-MariaDB` compatibility prefix, and returns
+/// `None` when there is no number at all.
+pub fn parse_major(version: &str) -> Option<u32> {
+    let mut nums: Vec<u32> = Vec::new();
+    let mut cur = String::new();
+    for ch in version.chars() {
+        if ch.is_ascii_digit() {
+            cur.push(ch);
+            continue;
+        }
+        if !cur.is_empty() {
+            nums.push(cur.parse::<u32>().ok()?);
+            cur.clear();
+            // `6` is the only magic number here: it caps how many groups an
+            // adversarial/advertising version string can make us collect
+            // (we only ever read the first four).
+            if nums.len() == 6 {
+                break;
+            }
+        }
+    }
+    if !cur.is_empty() {
+        if let Ok(n) = cur.parse::<u32>() {
+            nums.push(n);
+        }
+    }
+    if nums.is_empty() {
+        return None;
+    }
+    if nums.len() >= 4 && nums[0] == 5 && nums[1] == 5 && nums[2] == 5 {
+        return Some(nums[3]);
+    }
+    Some(nums[0])
+}
+
+/// Client/server version relationship. Advisory only — never an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compat {
+    Ok,
+    /// The client's major version is below the server's.
+    ClientOlder,
+    /// Either version could not be parsed.
+    Unknown,
+}
+
+pub fn compat(client: Option<u32>, server: Option<u32>) -> Compat {
+    match (client, server) {
+        (Some(c), Some(s)) if s > c => Compat::ClientOlder,
+        (Some(_), Some(_)) => Compat::Ok,
+        _ => Compat::Unknown,
+    }
+}
+
+/// Non-blocking warning text, or `None` when there is nothing to say.
+pub fn warning_for(client_version: &str, server_version: &str, client_name: &str) -> Option<String> {
+    match compat(parse_major(client_version), parse_major(server_version)) {
+        Compat::ClientOlder => Some(format!(
+            "Client/server version mismatch: the resolved dump tool `{client_name}` reports {client_version}, \
+but the server is {server_version}. The backup may fail or omit data — installing a matching MySQL client is recommended."
+        )),
+        Compat::Ok | Compat::Unknown => None,
+    }
+}
+
 #[cfg(test)]
 #[path = "tool_resolver.test.rs"]
 mod tests;

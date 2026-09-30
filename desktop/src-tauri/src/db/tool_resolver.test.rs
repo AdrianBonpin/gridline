@@ -260,3 +260,80 @@ fn unique_dir() -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+#[test]
+fn parse_major_handles_common_version_strings() {
+    assert_eq!(parse_major("8.0.36"), Some(8));
+    assert_eq!(parse_major("8.4.0"), Some(8));
+    assert_eq!(parse_major("11.4.5-MariaDB"), Some(11));
+    assert_eq!(parse_major("5.7.44-log"), Some(5));
+    assert_eq!(parse_major("26.7.0"), Some(26));
+    assert_eq!(parse_major("mariadb-dump from 11.4.5-MariaDB, client 10.19"), Some(11));
+}
+
+#[test]
+fn parse_major_unwraps_the_legacy_mariadb_compat_prefix() {
+    // MariaDB historically reported 5.5.5-<real version>-MariaDB for compat
+    // with MySQL-era clients; the real major is the 4th group.
+    assert_eq!(parse_major("5.5.5-10.4.11-MariaDB"), Some(10));
+    assert_eq!(parse_major("5.5.5-10.11.6-MariaDB-log"), Some(10));
+    // A genuine 5.5.5 has only three groups and must stay 5.
+    assert_eq!(parse_major("5.5.5"), Some(5));
+}
+
+#[test]
+fn parse_major_returns_none_for_garbage() {
+    assert_eq!(parse_major("no digits here"), None);
+    assert_eq!(parse_major(""), None);
+}
+
+#[test]
+fn compat_flags_only_a_clearly_older_client() {
+    assert_eq!(compat(Some(8), Some(26)), Compat::ClientOlder);
+    assert_eq!(compat(Some(11), Some(8)), Compat::Ok);
+    assert_eq!(compat(Some(8), Some(8)), Compat::Ok);
+    assert_eq!(compat(None, Some(8)), Compat::Unknown);
+    assert_eq!(compat(Some(8), None), Compat::Unknown);
+}
+
+#[test]
+fn warning_for_is_silent_unless_the_client_is_older() {
+    assert!(warning_for("mariadb-dump 11.4.5-MariaDB", "8.0.36", "mariadb-dump").is_none());
+    assert!(warning_for("unknown", "8.0.36", "mariadb-dump").is_none());
+    let w = warning_for("mariadb-dump 11.4.5-MariaDB", "26.7.0", "mariadb-dump").unwrap();
+    assert!(w.contains("11.4.5-MariaDB"), "{w}");
+    assert!(w.contains("26.7.0"), "{w}");
+    assert!(w.contains("mariadb-dump"), "{w}");
+    // The `\` continuation in the format literal must not leave stray leading
+    // indentation, so assert the exact single-line render (no newline, no run
+    // of consecutive spaces).
+    assert!(!w.contains('\n'), "warning must be one line: {w:?}");
+    assert!(!w.contains("  "), "warning must not contain double spaces: {w:?}");
+    assert_eq!(
+        w,
+        concat!(
+            "Client/server version mismatch: the resolved dump tool `mariadb-dump` reports ",
+            "mariadb-dump 11.4.5-MariaDB, but the server is 26.7.0. ",
+            "The backup may fail or omit data — installing a matching MySQL client is recommended."
+        )
+    );
+}
+
+#[test]
+fn parse_major_never_panics_on_hostile_input() {
+    // A digit group that overflows u32 yields None, never a panic.
+    assert_eq!(parse_major("99999999999999999999.1.1"), None);
+    assert_eq!(parse_major(&"9".repeat(4096)), None);
+    // Non-ASCII digits, unicode and control characters are simply skipped.
+    assert_eq!(parse_major("\u{fc}nicode ٨.٠.٣٦"), None);
+    assert_eq!(parse_major("\u{1F600}"), None);
+    assert_eq!(parse_major("\u{0}\u{1}\u{2}"), None);
+    assert_eq!(parse_major("....."), None);
+    // Long adversarial input: the group collector is capped at six, and only
+    // the first group decides the major.
+    assert_eq!(parse_major(&"1.2.3.4.".repeat(1000)), Some(1));
+    // An overflowing *trailing* group is skipped by the final flush, so a
+    // genuine-looking `5.5.5` prefix still yields 5 rather than panicking.
+    // Harmless: no real tool prints such a version, and the result is advisory.
+    assert_eq!(parse_major("5.5.5-99999999999999999999"), Some(5));
+}
