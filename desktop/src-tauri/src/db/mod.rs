@@ -6,6 +6,7 @@ pub mod object_crud;
 pub mod object_ddl;
 pub mod pool;
 pub mod tls;
+pub mod tool_resolver;
 pub mod schema_diff;
 
 #[allow(unused_imports)]
