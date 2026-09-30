@@ -147,8 +147,8 @@ export async function refreshConnection(connectionId: string): Promise<void> {
 
 // ─── Backup / Restore / Sync ──────────────────────────────────
 
-export async function detectPgTools(): Promise<PgToolStatus> {
-  return invoke<PgToolStatus>("detect_pg_tools");
+export async function detectPgTools(force = false): Promise<PgToolStatus> {
+  return invoke<PgToolStatus>("detect_pg_tools", { force });
 }
 
 export async function pgDump(connectionId: string, options: BackupOptions): Promise<string> {
@@ -169,8 +169,8 @@ export async function cancelQuery(connectionId: string): Promise<void> {
   return invoke<void>("cancel_query", { connectionId });
 }
 
-export async function detectMysqlTools(): Promise<MySqlToolStatus> {
-  return invoke<MySqlToolStatus>("detect_mysql_tools");
+export async function detectMysqlTools(force = false): Promise<MySqlToolStatus> {
+  return invoke<MySqlToolStatus>("detect_mysql_tools", { force });
 }
 
 export async function mysqlDump(connectionId: string, options: MySqlBackupOptions): Promise<string> {

@@ -433,3 +433,14 @@ describe("v0.7.8 command wrappers exist", () => {
     }
   });
 });
+
+describe("tool detection wrappers forward the force flag", () => {
+  it("passes force=true so an explicit re-check bypasses the Rust cache", async () => {
+    const { detectMysqlTools, detectPgTools } = await import("./commands");
+    vi.mocked(invoke).mockClear();
+    await detectMysqlTools(true);
+    expect(invoke).toHaveBeenCalledWith("detect_mysql_tools", { force: true });
+    await detectPgTools(true);
+    expect(invoke).toHaveBeenCalledWith("detect_pg_tools", { force: true });
+  });
+});

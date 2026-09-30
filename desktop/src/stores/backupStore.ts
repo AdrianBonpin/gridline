@@ -1,11 +1,13 @@
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
 import type { BackupJob } from "../lib/types";
+import { useNotificationStore } from "./notificationStore";
 
 interface BackupJobEvent {
   job_id: string;
   status: "running" | "completed" | "failed";
   error?: string | null;
+  warning?: string | null;
 }
 
 interface BackupStore {
@@ -71,7 +73,10 @@ export const useBackupStore = create<BackupStore>((set, get) => ({
 
   initListener: async () => {
     await listen<BackupJobEvent>("backup-progress", (event) => {
-      const { job_id, status, error } = event.payload;
+      const { job_id, status, error, warning } = event.payload;
+      if (warning) {
+        useNotificationStore.getState().notify(warning, "info");
+      }
       if (status === "completed") {
         get().completeJob(job_id);
       } else if (status === "failed") {
