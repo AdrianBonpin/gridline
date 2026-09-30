@@ -225,7 +225,7 @@ export function SyncPage() {
 
             {/* Content */}
             <div className="flex-1 overflow-y-auto">
-                <div className="space-y-6 outline outline-border">
+                <div className="space-y-6 outline outline-border p-3">
                     {/* Tool check */}
                     {checkingTools && checkingMessage && (
                         <div className="glass p-4 text-center">
