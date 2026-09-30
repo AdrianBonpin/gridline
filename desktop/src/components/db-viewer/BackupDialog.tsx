@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { AnimatedModal } from "../ui/AnimatedModal";
 import { Button } from "../ui/Button";
+import { CopyButton } from "../ui/CopyButton";
 import { Select } from "../ui/Select";
 import { BackupProgress } from "./BackupProgress";
 import { useBackupStore } from "../../stores/backupStore";
@@ -108,6 +109,7 @@ export function BackupDialog({ open, connectionId, onClose }: BackupDialogProps)
   }, [filePath, format, schema, noOwner, connectionId, startJob, notify, onClose]);
 
   const toolsMissing = toolStatus && !toolStatus.pg_dump_found;
+  const installInstructions = getPlatformInstructions();
 
   return (
     <AnimatedModal open={open} onClose={onClose}>
@@ -124,9 +126,18 @@ export function BackupDialog({ open, connectionId, onClose }: BackupDialogProps)
             <p className="text-amber-200/80 text-xs">
               The PostgreSQL client tools are required for backup/restore operations. Install them using:
             </p>
-            <pre className="text-xs text-amber-100 bg-amber-500/10 rounded p-2 whitespace-pre-wrap">
-              {getPlatformInstructions()}
-            </pre>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] text-amber-200/60">Install</span>
+                <CopyButton
+                  text={installInstructions}
+                  className="text-amber-200/70 hover:text-amber-100"
+                />
+              </div>
+              <pre className="text-xs text-amber-100 bg-amber-500/10 rounded p-2 whitespace-pre-wrap">
+                {installInstructions}
+              </pre>
+            </div>
           </div>
         )}
 

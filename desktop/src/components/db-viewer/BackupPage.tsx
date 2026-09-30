@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Download, FolderOpen, HardDrive } from "lucide-react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "../ui/Button";
+import { CopyButton } from "../ui/CopyButton";
 import { BackupProgress } from "./BackupProgress";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -281,6 +282,9 @@ export function BackupPage({ connectionId }: BackupPageProps) {
         ? pgToolStatus?.pg_dump_bundled_available
         : mysqlToolStatus?.mysqldumpBundledAvailable;
     const dumpFallbackName = isPg ? "pg_dump" : "mysqldump";
+    const installInstructions = getPlatformInstructions(
+        isPg ? PG_INSTALL_INSTRUCTIONS : MYSQL_INSTALL_INSTRUCTIONS,
+    );
 
     const checkingMessage = isPg
         ? "Checking for pg_dump..."
@@ -342,13 +346,18 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                     Gridline, or install the tools below.
                                 </p>
                             )}
-                            <pre className="text-xs text-amber-100 bg-amber-500/10 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed">
-                                {getPlatformInstructions(
-                                    isPg
-                                        ? PG_INSTALL_INSTRUCTIONS
-                                        : MYSQL_INSTALL_INSTRUCTIONS,
-                                )}
-                            </pre>
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[11px] text-amber-200/60">Install</span>
+                                    <CopyButton
+                                        text={installInstructions}
+                                        className="text-amber-200/70 hover:text-amber-100"
+                                    />
+                                </div>
+                                <pre className="text-xs text-amber-100 bg-amber-500/10 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed">
+                                    {installInstructions}
+                                </pre>
+                            </div>
                         </div>
                     )}
 

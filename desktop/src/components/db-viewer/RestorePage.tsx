@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { FileSearch, Upload } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "../ui/Button";
+import { CopyButton } from "../ui/CopyButton";
 import { BackupProgress } from "./BackupProgress";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -212,6 +213,9 @@ export function RestorePage({ connectionId }: RestorePageProps) {
         ? pgToolStatus?.pg_restore_source === "bundled"
         : false;
     const canStart = filePath && confirmed && !isRunning;
+    const installInstructions = getPlatformInstructions(
+        isPg ? PG_INSTALL_INSTRUCTIONS : MYSQL_INSTALL_INSTRUCTIONS,
+    );
 
     const checkingMessage = isPg
         ? "Checking for pg_restore..."
@@ -257,13 +261,18 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                 The {isPg ? "PostgreSQL" : "MySQL"} client tools are required for
                                 backup/restore operations. Install them using:
                             </p>
-                            <pre className="text-xs text-amber-100 bg-amber-500/10 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed">
-                                {getPlatformInstructions(
-                                    isPg
-                                        ? PG_INSTALL_INSTRUCTIONS
-                                        : MYSQL_INSTALL_INSTRUCTIONS,
-                                )}
-                            </pre>
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[11px] text-amber-200/60">Install</span>
+                                    <CopyButton
+                                        text={installInstructions}
+                                        className="text-amber-200/70 hover:text-amber-100"
+                                    />
+                                </div>
+                                <pre className="text-xs text-amber-100 bg-amber-500/10 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed">
+                                    {installInstructions}
+                                </pre>
+                            </div>
                         </div>
                     )}
 

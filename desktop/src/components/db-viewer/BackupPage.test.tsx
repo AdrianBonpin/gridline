@@ -160,4 +160,28 @@ describe("BackupPage tool provenance and re-check", () => {
     render(<BackupPage connectionId="c4" />);
     await waitFor(() => expect(screen.getByText(/mysql-client/)).toBeTruthy());
   });
+
+  it("offers a copy button for the install command", async () => {
+    mockConnections.push({ id: "c-copy", db_type: "mysql", name: "m", database: "db1" });
+    vi.spyOn(commands, "detectMysqlTools").mockResolvedValue({
+      mysqldumpFound: false,
+      mysqlFound: false,
+      mysqldumpVersion: null,
+      mysqlVersion: null,
+      mysqldumpSource: null,
+      mysqlSource: null,
+      mysqldumpBundledAvailable: false,
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn() },
+      configurable: true,
+      writable: true,
+    });
+    render(<BackupPage connectionId="c-copy" />);
+    const btn = await screen.findByTitle("Copy to clipboard");
+    fireEvent.click(btn);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("mysql-client"),
+    );
+  });
 });
