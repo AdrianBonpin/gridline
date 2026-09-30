@@ -98,16 +98,16 @@ export function BackupPage({ connectionId }: BackupPageProps) {
         }
     }, [activeJob, notify]);
 
-    useEffect(() => {
-        setCheckingTools(true);
-        setPgToolStatus(null);
-        setMysqlToolStatus(null);
-        setAvailableSchemas([]);
+    const checkTools = useCallback(
+        async (force: boolean) => {
+            setCheckingTools(true);
+            setPgToolStatus(null);
+            setMysqlToolStatus(null);
 
-        if (isPg) {
-            detectPgTools()
-                .then((status) => setPgToolStatus(status))
-                .catch(() =>
+            if (isPg) {
+                try {
+                    setPgToolStatus(await detectPgTools(force));
+                } catch {
                     setPgToolStatus({
                         pg_dump_found: false,
                         pg_restore_found: false,
@@ -115,17 +115,14 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                         pg_restore_version: null,
                         pg_dump_source: null,
                         pg_restore_source: null,
-                    }),
-                )
-                .finally(() => setCheckingTools(false));
-
-            getSchemas(connectionId)
-                .then((schemas) => setAvailableSchemas(schemas))
-                .catch(() => setAvailableSchemas([]));
-        } else if (isMysql) {
-            detectMysqlTools()
-                .then((status) => setMysqlToolStatus(status))
-                .catch(() =>
+                    });
+                } finally {
+                    setCheckingTools(false);
+                }
+            } else if (isMysql) {
+                try {
+                    setMysqlToolStatus(await detectMysqlTools(force));
+                } catch {
                     setMysqlToolStatus({
                         mysqldumpFound: false,
                         mysqlFound: false,
@@ -133,17 +130,26 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                         mysqlVersion: null,
                         mysqldumpSource: null,
                         mysqlSource: null,
-                    }),
-                )
-                .finally(() => setCheckingTools(false));
+                    });
+                } finally {
+                    setCheckingTools(false);
+                }
+            } else {
+                setCheckingTools(false);
+            }
+        },
+        [isPg, isMysql],
+    );
 
+    useEffect(() => {
+        setAvailableSchemas([]);
+        void checkTools(false);
+        if (isPg || isMysql) {
             getSchemas(connectionId)
                 .then((schemas) => setAvailableSchemas(schemas))
                 .catch(() => setAvailableSchemas([]));
-        } else {
-            setCheckingTools(false);
         }
-    }, [connectionId, isPg, isMysql]);
+    }, [connectionId, isPg, isMysql, checkTools]);
 
     const handlePickFile = useCallback(async () => {
         let defaultPath = "backup";
@@ -262,6 +268,20 @@ export function BackupPage({ connectionId }: BackupPageProps) {
           ? mysqlToolStatus?.mysqldumpSource === "bundled"
           : false;
 
+    const dumpToolFound = isPg
+        ? pgToolStatus?.pg_dump_found
+        : mysqlToolStatus?.mysqldumpFound;
+    const dumpSource = isPg
+        ? pgToolStatus?.pg_dump_source
+        : mysqlToolStatus?.mysqldumpSource;
+    const dumpResolvedName = isPg
+        ? pgToolStatus?.pg_dump_resolved_name
+        : mysqlToolStatus?.mysqldumpResolvedName;
+    const bundledPresent = isPg
+        ? pgToolStatus?.pg_dump_bundled_available
+        : mysqlToolStatus?.mysqldumpBundledAvailable;
+    const dumpFallbackName = isPg ? "pg_dump" : "mysqldump";
+
     const checkingMessage = isPg
         ? "Checking for pg_dump..."
         : isMysql
@@ -283,6 +303,15 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                 <span className="text-[11px] text-text-muted">
                     {headerDescription}
                 </span>
+                {(isPg || isMysql) && (
+                    <button
+                        type="button"
+                        onClick={() => void checkTools(true)}
+                        className="ml-auto text-[11px] text-text-muted hover:text-text transition-colors"
+                    >
+                        Check again
+                    </button>
+                )}
             </div>
 
             {/* Content */}
@@ -303,9 +332,16 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                 {isPg ? "pg_dump not found" : "mysqldump not found"}
                             </p>
                             <p className="text-amber-200/80 text-xs leading-relaxed">
-                                The {isPg ? "PostgreSQL" : "MySQL"} client tools are required for
-                                backup/restore operations. Install them using:
+                                Gridline ships its own {isPg ? "PostgreSQL" : "MySQL"} client
+                                tools. This build could not locate or run them, so a manual
+                                install is needed:
                             </p>
+                            {bundledPresent && (
+                                <p className="text-amber-200/80 text-xs leading-relaxed">
+                                    A bundled copy is present but could not run — reinstall
+                                    Gridline, or install the tools below.
+                                </p>
+                            )}
                             <pre className="text-xs text-amber-100 bg-amber-500/10 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed">
                                 {getPlatformInstructions(
                                     isPg
@@ -318,6 +354,12 @@ export function BackupPage({ connectionId }: BackupPageProps) {
 
                     {!checkingTools && !toolsMissing && (
                         <>
+                            {dumpToolFound && (
+                                <p className="text-[11px] text-text-muted/80">
+                                    Using {dumpSource === "bundled" ? "bundled" : "system"}{" "}
+                                    {dumpResolvedName ?? dumpFallbackName}
+                                </p>
+                            )}
                             {/* Configuration card */}
                             <div className="p-5 space-y-5">
                                 {/* Format */}
