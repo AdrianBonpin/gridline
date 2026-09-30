@@ -534,18 +534,76 @@ fn base_mysql_args(conn: &MySqlConnParams) -> Vec<String> {
     ]
 }
 
+/// Whether a resolved client is MariaDB's. MariaDB's clients print a
+/// `...-MariaDB...` banner from `--version`; MySQL's print the Oracle banner.
+/// This matters because MariaDB's clients — including the `mysqldump`/`mysql`
+/// compatibility names some MariaDB packages ship — reject several MySQL-only
+/// options with "unknown option", aborting the dump before it connects.
+/// Probed once per program and cached for the process.
+fn client_is_mariadb(program: &str) -> bool {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, bool>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    if let Ok(map) = cache.lock() {
+        if let Some(hit) = map.get(program) {
+            return *hit;
+        }
+    }
+
+    let is_mariadb = Command::new(program)
+        .arg("--version")
+        .output()
+        .map(|o| {
+            let mut text = String::from_utf8_lossy(&o.stdout).to_string();
+            text.push_str(&String::from_utf8_lossy(&o.stderr));
+            text.contains("MariaDB")
+        })
+        .unwrap_or(false);
+
+    if let Ok(mut map) = cache.lock() {
+        map.insert(program.to_string(), is_mariadb);
+    }
+    is_mariadb
+}
+
+/// TLS flags for a dump client. MySQL's clients take `--ssl-mode=<mode>`;
+/// MariaDB's have no `--ssl-mode` and use the boolean `--ssl`, which is the
+/// equivalent of the only mode this code path uses (`REQUIRED`).
+pub fn tls_args_for_client(client_is_mariadb: bool, tls_mode: Option<&str>) -> Vec<String> {
+    match (client_is_mariadb, tls_mode) {
+        (true, Some("REQUIRED")) => vec!["--ssl".into()],
+        (true, _) => Vec::new(),
+        (false, Some(m)) => vec![format!("--ssl-mode={m}")],
+        (false, None) => Vec::new(),
+    }
+}
+
 /// `mariadb-dump`/`mysqldump` args. Passwords go via MYSQL_PWD env (set by the
 /// command), NEVER --password (process-list visibility).
-pub fn build_mysql_dump_args(conn: &MySqlConnParams, options: &MySqlBackupOptions) -> Vec<String> {
+///
+/// `client_is_mariadb` gates the MySQL-only options: MariaDB's dump rejects
+/// `--skip-column-statistics`. `--databases` is always emitted as a boolean
+/// flag followed by the database name — `--databases=<db>` is rejected by
+/// clients as an invalid value.
+pub fn build_mysql_dump_args(
+    conn: &MySqlConnParams,
+    options: &MySqlBackupOptions,
+    client_is_mariadb: bool,
+) -> Vec<String> {
     let mut a = base_mysql_args(conn);
     if options.single_transaction { a.push("--single-transaction".into()); }
     if options.no_data { a.push("--no-data".into()); }
     if options.routines { a.push("--routines".into()); }
     if options.triggers { a.push("--triggers".into()); }
     if options.events { a.push("--events".into()); }
-    a.push(format!("--databases={}", options.database));
+    a.push("--databases".into());
+    a.push(options.database.clone());
     a.push(format!("--result-file={}", options.file_path));
-    a.push("--skip-column-statistics".into());
+    if !client_is_mariadb {
+        a.push("--skip-column-statistics".into());
+    }
     a
 }
 
@@ -567,18 +625,18 @@ pub fn resolve_mysql_tool_paths(app: &AppHandle) -> MySqlToolPaths {
 }
 
 /// Headless core: spawn dump with MYSQL_PWD env. `tls_mode` (e.g. `REQUIRED`)
-/// is appended as `--ssl-mode=` when routing through an SSH tunnel. (Live
-/// behavior = #[ignore] integration test.)
+/// is translated per client — `--ssl-mode=` on MySQL clients, `--ssl` on
+/// MariaDB's (see `tls_args_for_client`) when routing through an SSH tunnel.
+/// (Live behavior = #[ignore] integration test.)
 pub fn run_mysql_dump(
     conn: &MySqlConnParams,
     options: &MySqlBackupOptions,
     tools: &MySqlToolPaths,
     tls_mode: Option<&str>,
 ) -> Result<(), String> {
-    let mut args = build_mysql_dump_args(conn, options);
-    if let Some(m) = tls_mode {
-        args.push(format!("--ssl-mode={m}"));
-    }
+    let is_mariadb = client_is_mariadb(&tools.mysqldump);
+    let mut args = build_mysql_dump_args(conn, options, is_mariadb);
+    args.extend(tls_args_for_client(is_mariadb, tls_mode));
     let out = Command::new(&tools.mysqldump).env("MYSQL_PWD", &conn.password).args(&args).output()
         .map_err(|e| e.to_string())?;
     if out.status.success() { Ok(()) } else { Err(sanitize_error(&String::from_utf8_lossy(&out.stderr))) }
@@ -590,13 +648,13 @@ pub fn run_mysql_sync(
     tools: &MySqlToolPaths,
     tls_mode: Option<&str>,
 ) -> Result<(), String> {
+    let is_mariadb = client_is_mariadb(&tools.mysqldump);
     let mut dump_args = base_mysql_args(source);
     dump_args.push("--single-transaction".into());
     dump_args.push("--add-drop-table".into());
-    dump_args.push(format!("--databases={}", source.database));
-    if let Some(m) = tls_mode {
-        dump_args.push(format!("--ssl-mode={m}"));
-    }
+    dump_args.push("--databases".into());
+    dump_args.push(source.database.clone());
+    dump_args.extend(tls_args_for_client(is_mariadb, tls_mode));
     let mut dump = Command::new(&tools.mysqldump).env("MYSQL_PWD", &source.password).args(&dump_args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("dump: {e}"))?;
     let stdout = dump.stdout.take().unwrap();
     let mut restore_args = base_mysql_args(target);
