@@ -119,6 +119,69 @@ fn path_lookup_skips_empty_entries_and_missing_names() {
     assert_eq!(path_lookup_in("definitely-absent-tool", &path_var), None);
 }
 
+#[test]
+fn probe_rejects_a_missing_file_and_a_directory() {
+    let dir = unique_dir();
+    assert!(!probe(&dir.join("absent-tool")));
+    assert!(!probe(&dir), "a directory must never be reported as a runnable tool");
+}
+
+#[cfg(unix)]
+#[test]
+fn run_version_is_true_for_zero_exit_and_false_for_nonzero() {
+    let ok = unique_dir().join("ok_tool");
+    write_exe(&ok, "#!/bin/sh\nexit 0\n");
+    assert!(run_version(&ok, Duration::from_secs(1)));
+
+    let bad = unique_dir().join("bad_tool");
+    write_exe(&bad, "#!/bin/sh\nexit 3\n");
+    assert!(!run_version(&bad, Duration::from_secs(1)));
+}
+
+#[cfg(unix)]
+#[test]
+fn run_version_kills_a_hung_process_at_the_timeout() {
+    let slow = unique_dir().join("slow_tool");
+    write_exe(&slow, "#!/bin/sh\nsleep 5\n");
+    assert!(!run_version(&slow, Duration::from_millis(50)));
+}
+
+#[cfg(unix)]
+#[test]
+fn probe_accepts_a_runnable_script() {
+    let tool = unique_dir().join(bundled_bin_name("mariadb-dump"));
+    write_exe(&tool, "#!/bin/sh\necho 'mariadb-dump 11.4.5-MariaDB'\nexit 0\n");
+    assert!(probe(&tool));
+}
+
+#[cfg(unix)]
+#[test]
+fn version_of_reads_the_version_from_stdout() {
+    let tool = unique_dir().join("versioned_tool");
+    write_exe(&tool, "#!/bin/sh\necho 'mariadb-dump 11.4.5-MariaDB'\n");
+    let v = version_of(tool.to_str().unwrap()).unwrap();
+    assert!(v.contains("11.4.5-MariaDB"), "got {v}");
+}
+
+#[cfg(unix)]
+#[test]
+fn probe_within_returns_false_once_the_aggregate_deadline_passed() {
+    let tool = unique_dir().join("ok_tool");
+    write_exe(&tool, "#!/bin/sh\nexit 0\n");
+    let past = Instant::now() - Duration::from_secs(10);
+    assert!(!probe_within(past, Duration::from_secs(3), &tool));
+    assert!(probe_within(Instant::now(), Duration::from_secs(3), &tool));
+}
+
+#[cfg(unix)]
+fn write_exe(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, body).unwrap();
+    let mut perms = std::fs::metadata(path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(path, perms).unwrap();
+}
+
 fn unique_dir() -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

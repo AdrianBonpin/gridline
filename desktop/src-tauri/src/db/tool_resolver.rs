@@ -9,6 +9,8 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// The nested directory component Tauri injects when copying
 /// `bundle.resources`. Pinned by `bundled_prefix_matches_tauri_config_resources`.
@@ -155,6 +157,67 @@ pub fn path_lookup_in(name: &str, path_var: &OsStr) -> Option<PathBuf> {
 pub fn path_lookup(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     path_lookup_in(name, &path_var)
+}
+
+/// Per-probe timeout. `--version` returns in milliseconds; this only guards a
+/// pathological binary.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Aggregate deadline for one detection pass across all candidates.
+pub const AGGREGATE_DEADLINE: Duration = Duration::from_secs(3);
+
+/// Run `<program> --version` with a bounded wait. The child's stdio is
+/// discarded — output is read separately by `version_of`.
+pub fn run_version(program: &Path, timeout: Duration) -> bool {
+    let mut cmd = Command::new(program);
+    cmd.arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                return false;
+            }
+        }
+    }
+}
+
+/// A tool candidate counts only when it is a regular file AND runs.
+pub fn probe(program: &Path) -> bool {
+    program.is_file() && run_version(program, PROBE_TIMEOUT)
+}
+
+/// A probe that stops running anything once the aggregate deadline is crossed.
+pub fn probe_within(start: Instant, deadline: Duration, program: &Path) -> bool {
+    if start.elapsed() >= deadline {
+        return false;
+    }
+    probe(program)
+}
+
+/// Read the first non-empty line of `<program> --version` (stdout, else stderr).
+pub fn version_of(program: &str) -> Option<String> {
+    let out = Command::new(program).arg("--version").output().ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return Some(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if stderr.is_empty() { None } else { Some(stderr) }
 }
 
 #[cfg(test)]
