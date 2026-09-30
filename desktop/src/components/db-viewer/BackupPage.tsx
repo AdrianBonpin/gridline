@@ -1,9 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Download, FolderOpen, HardDrive } from "lucide-react";
 import { save } from "@tauri-apps/plugin-dialog";
-import { Button } from "../ui/Button";
 import { CopyButton } from "../ui/CopyButton";
 import { BackupProgress } from "./BackupProgress";
+import {
+    FormRow,
+    FormSectionHeader,
+    inputClass,
+    controlClass,
+} from "./objects/formRow";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { useConnectionStore } from "../../stores/connectionStore";
@@ -299,298 +304,259 @@ export function BackupPage({ connectionId }: BackupPageProps) {
           : "Create a database backup";
 
     return (
-        <div className="flex flex-col h-full">
+        <div className="flex h-full flex-col">
             {/* Toolbar header */}
-            <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
-                <HardDrive size={14} className="text-accent" />
-                <span className="text-xs font-medium text-text">Backup</span>
-                <span className="text-[11px] text-text-muted">
-                    {headerDescription}
-                </span>
-                {(isPg || isMysql) && (
-                    <button
-                        type="button"
-                        onClick={() => void checkTools(true)}
-                        className="ml-auto text-[11px] text-text-muted hover:text-text transition-colors"
-                    >
-                        Check again
-                    </button>
-                )}
+            <div className="flex items-center justify-between border-b border-border px-4 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                    <HardDrive size={14} className="text-accent" />
+                    <span className="text-xs font-medium text-text">Backup</span>
+                    <span className="text-[11px] text-text-muted">
+                        {headerDescription}
+                    </span>
+                </div>
+                <div className="flex items-center gap-2">
+                    {(isPg || isMysql) && (
+                        <button
+                            type="button"
+                            onClick={() => void checkTools(true)}
+                            className="text-[11px] text-text-muted hover:text-text transition-colors cursor-pointer"
+                        >
+                            Check again
+                        </button>
+                    )}
+                    {!checkingTools && !toolsMissing && (
+                        <button
+                            type="button"
+                            onClick={() => void handleStartBackup()}
+                            disabled={isRunning || !filePath}
+                            className="inline-flex items-center rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                        >
+                            <Download size={14} className="mr-1.5" />
+                            {isRunning ? "Backing up..." : "Start Backup"}
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto">
-                <div className="space-y-6 outline outline-border p-3">
-                    {/* Tool check */}
-                    {checkingTools && checkingMessage && (
-                        <div className="glass p-4 text-center">
-                            <p className="text-sm text-text-muted">
-                                {checkingMessage}
-                            </p>
-                        </div>
-                    )}
+            <div className="flex-1 overflow-auto">
+                {/* Tool check */}
+                {checkingTools && checkingMessage && (
+                    <div className="px-4 py-3 text-sm text-text-muted">
+                        {checkingMessage}
+                    </div>
+                )}
 
-                    {toolsMissing && !toolsBundled && (
-                        <div className="bg-amber-500/10 border border-amber-500/30 px-4 py-4 space-y-2">
-                            <p className="text-amber-300 text-sm font-semibold">
-                                {isPg ? "pg_dump not found" : "mysqldump not found"}
-                            </p>
+                {toolsMissing && !toolsBundled && (
+                    <div className="border-b border-border bg-amber-500/10 px-4 py-3 space-y-2">
+                        <p className="text-amber-300 text-sm font-semibold">
+                            {isPg ? "pg_dump not found" : "mysqldump not found"}
+                        </p>
+                        <p className="text-amber-200/80 text-xs leading-relaxed">
+                            Gridline ships its own {isPg ? "PostgreSQL" : "MySQL"} client
+                            tools. This build could not locate or run them, so a manual
+                            install is needed:
+                        </p>
+                        {bundledPresent && (
                             <p className="text-amber-200/80 text-xs leading-relaxed">
-                                Gridline ships its own {isPg ? "PostgreSQL" : "MySQL"} client
-                                tools. This build could not locate or run them, so a manual
-                                install is needed:
+                                A bundled copy is present but could not run — reinstall
+                                Gridline, or install the tools below.
                             </p>
-                            {bundledPresent && (
-                                <p className="text-amber-200/80 text-xs leading-relaxed">
-                                    A bundled copy is present but could not run — reinstall
-                                    Gridline, or install the tools below.
-                                </p>
-                            )}
-                            <div className="space-y-1">
-                                <div className="flex items-center justify-between gap-2">
-                                    <span className="text-[11px] text-amber-200/60">Install</span>
-                                    <CopyButton
-                                        text={installInstructions}
-                                        className="text-amber-200/70 hover:text-amber-100"
-                                    />
-                                </div>
-                                <pre className="text-xs text-amber-100 bg-amber-500/10 p-3 whitespace-pre-wrap font-mono leading-relaxed">
-                                    {installInstructions}
-                                </pre>
+                        )}
+                        <div className="space-y-1">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-[11px] text-amber-200/60">Install</span>
+                                <CopyButton
+                                    text={installInstructions}
+                                    className="text-amber-200/70 hover:text-amber-100"
+                                />
                             </div>
+                            <pre className="text-xs text-amber-100 bg-amber-500/10 p-3 whitespace-pre-wrap font-mono leading-relaxed">
+                                {installInstructions}
+                            </pre>
                         </div>
-                    )}
+                    </div>
+                )}
 
-                    {!checkingTools && !toolsMissing && (
-                        <>
-                            {dumpToolFound && (
-                                <p className="text-[11px] text-text-muted/80">
+                {!checkingTools && !toolsMissing && (
+                    <>
+                        {dumpToolFound && (
+                            <FormRow label="Tool">
+                                <span className="px-3 font-heading text-xs text-text">
                                     Using {dumpSource === "bundled" ? "bundled" : "system"}{" "}
                                     {dumpResolvedName ?? dumpFallbackName}
-                                </p>
-                            )}
-                            {/* Configuration card */}
-                            <div className="p-5 space-y-5">
-                                {/* Format */}
-                                {isPg ? (
-                                    <div className="space-y-1">
-                                        <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
-                                            Format
-                                        </label>
-                                        <select
-                                            value={format}
-                                            onChange={(e) =>
-                                                setFormat(
-                                                    e.target.value as BackupFormat,
-                                                )
-                                            }
-                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
-                                        >
-                                            <option value="custom">
-                                                Custom Archive
-                                            </option>
-                                            <option value="plain">Plain SQL</option>
-                                            <option value="tar">Tarball</option>
-                                            <option value="directory">
-                                                Directory
-                                            </option>
-                                        </select>
-                                    </div>
-                                ) : isMysql ? (
-                                    <div className="space-y-1">
-                                        <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
-                                            Format
-                                        </label>
-                                        <div className="text-sm text-text py-2">
-                                            Plain SQL
-                                        </div>
-                                    </div>
-                                ) : null}
+                                </span>
+                            </FormRow>
+                        )}
 
-                                {/* Output file */}
-                                <div className="space-y-1 w-full">
-                                    <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
-                                        Output File
-                                    </label>
-                                    <div className="flex gap-2">
-                                        <input
-                                            type="text"
-                                            value={filePath}
-                                            onChange={(e) =>
-                                                setFilePath(e.target.value)
-                                            }
-                                            placeholder="/path/to/backup.dump"
-                                            className="flex-1 px-4 py-2 text-sm text-text placeholder-text-muted/50 border-b border-border focus:border-accent focus:outline-none transition-colors"
-                                        />
-                                        <button
-                                            type="button"
-                                            onClick={handlePickFile}
-                                            className="flex items-center justify-center w-9 h-9 border border-border bg-surface text-text-muted hover:text-text hover:bg-surface-raised hover:border-border-hover transition-colors cursor-pointer shrink-0"
-                                            aria-label="Browse for file"
-                                        >
-                                            <FolderOpen size={15} />
-                                        </button>
-                                    </div>
-                                </div>
+                        {/* Format */}
+                        {isPg ? (
+                            <FormRow label="Format">
+                                <select
+                                    value={format}
+                                    onChange={(e) =>
+                                        setFormat(e.target.value as BackupFormat)
+                                    }
+                                    className={`${controlClass} mr-3`}
+                                >
+                                    <option value="custom">Custom Archive</option>
+                                    <option value="plain">Plain SQL</option>
+                                    <option value="tar">Tarball</option>
+                                    <option value="directory">Directory</option>
+                                </select>
+                            </FormRow>
+                        ) : isMysql ? (
+                            <FormRow label="Format">
+                                <span className="px-3 font-heading text-xs text-text">
+                                    Plain SQL
+                                </span>
+                            </FormRow>
+                        ) : null}
 
-                                {/* Schema (optional) */}
-                                {(isPg || isMysql) && (
-                                    <div className="space-y-1">
-                                        <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
-                                            Schema{" "}
-                                            <span className="font-normal normal-case tracking-normal">
-                                                (optional)
-                                            </span>
-                                        </label>
-                                        <select
-                                            value={schema}
-                                            onChange={(e) =>
-                                                setSchema(e.target.value)
-                                            }
-                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
-                                        >
-                                            <option value="">All schemas</option>
-                                            {availableSchemas.map((s) => (
-                                                <option key={s} value={s}>
-                                                    {s}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                )}
+                        {/* Output file */}
+                        <FormRow label="Output file">
+                            <input
+                                type="text"
+                                value={filePath}
+                                onChange={(e) => setFilePath(e.target.value)}
+                                placeholder="/path/to/backup.dump"
+                                className={inputClass}
+                            />
+                            <button
+                                type="button"
+                                onClick={handlePickFile}
+                                aria-label="Browse for file"
+                                className="mr-2 flex h-6 w-6 shrink-0 items-center justify-center border border-border bg-surface text-text-muted hover:text-text hover:bg-surface-raised hover:border-border-hover transition-colors cursor-pointer"
+                            >
+                                <FolderOpen size={13} />
+                            </button>
+                        </FormRow>
 
-                                {/* PostgreSQL: no-owner toggle */}
-                                {isPg && (
-                                    <label className="flex items-center gap-2.5 cursor-pointer group">
+                        {/* Schema */}
+                        {(isPg || isMysql) && (
+                            <FormRow label="Schema">
+                                <select
+                                    value={schema}
+                                    onChange={(e) => setSchema(e.target.value)}
+                                    className={`${controlClass} mr-3`}
+                                >
+                                    <option value="">All schemas</option>
+                                    {availableSchemas.map((s) => (
+                                        <option key={s} value={s}>
+                                            {s}
+                                        </option>
+                                    ))}
+                                </select>
+                            </FormRow>
+                        )}
+
+                        {(isPg || isMysql) && (
+                            <FormSectionHeader label="Options" />
+                        )}
+
+                        {/* PostgreSQL: no-owner toggle */}
+                        {isPg && (
+                            <FormRow label="No owner">
+                                <label className="flex w-full items-center gap-2.5 px-3 py-2 cursor-pointer group">
+                                    <input
+                                        type="checkbox"
+                                        checked={noOwner}
+                                        onChange={(e) => setNoOwner(e.target.checked)}
+                                        className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                    />
+                                    <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
+                                        --no-owner
+                                    </code>
+                                </label>
+                            </FormRow>
+                        )}
+
+                        {/* MySQL: option toggles */}
+                        {isMysql && (
+                            <>
+                                <FormRow label="Single transaction">
+                                    <label className="flex w-full items-center gap-2.5 px-3 py-2 cursor-pointer group">
                                         <input
                                             type="checkbox"
-                                            checked={noOwner}
+                                            checked={singleTransaction}
                                             onChange={(e) =>
-                                                setNoOwner(e.target.checked)
+                                                setSingleTransaction(e.target.checked)
                                             }
                                             className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
                                         />
-                                        <span className="text-sm text-text-muted group-hover:text-text transition-colors">
-                                            No Owner{" "}
-                                            <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
-                                                --no-owner
-                                            </code>
-                                        </span>
+                                        <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
+                                            --single-transaction
+                                        </code>
                                     </label>
-                                )}
+                                </FormRow>
+                                <FormRow label="No data">
+                                    <label className="flex w-full items-center gap-2.5 px-3 py-2 cursor-pointer group">
+                                        <input
+                                            type="checkbox"
+                                            checked={noData}
+                                            onChange={(e) => setNoData(e.target.checked)}
+                                            className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                        />
+                                        <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
+                                            --no-data
+                                        </code>
+                                    </label>
+                                </FormRow>
+                                <FormRow label="Routines">
+                                    <label className="flex w-full items-center gap-2.5 px-3 py-2 cursor-pointer group">
+                                        <input
+                                            type="checkbox"
+                                            checked={routines}
+                                            onChange={(e) => setRoutines(e.target.checked)}
+                                            className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                        />
+                                        <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
+                                            --routines
+                                        </code>
+                                    </label>
+                                </FormRow>
+                                <FormRow label="Triggers">
+                                    <label className="flex w-full items-center gap-2.5 px-3 py-2 cursor-pointer group">
+                                        <input
+                                            type="checkbox"
+                                            checked={triggers}
+                                            onChange={(e) => setTriggers(e.target.checked)}
+                                            className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                        />
+                                        <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
+                                            --triggers
+                                        </code>
+                                    </label>
+                                </FormRow>
+                                <FormRow label="Events">
+                                    <label className="flex w-full items-center gap-2.5 px-3 py-2 cursor-pointer group">
+                                        <input
+                                            type="checkbox"
+                                            checked={events}
+                                            onChange={(e) => setEvents(e.target.checked)}
+                                            className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
+                                        />
+                                        <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
+                                            --events
+                                        </code>
+                                    </label>
+                                </FormRow>
+                            </>
+                        )}
 
-                                {/* MySQL: option toggles */}
-                                {isMysql && (
-                                    <div className="space-y-2">
-                                        <label className="flex items-center gap-2.5 cursor-pointer group">
-                                            <input
-                                                type="checkbox"
-                                                checked={singleTransaction}
-                                                onChange={(e) =>
-                                                    setSingleTransaction(e.target.checked)
-                                                }
-                                                className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
-                                            />
-                                            <span className="text-sm text-text-muted group-hover:text-text transition-colors">
-                                                Single Transaction{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
-                                                    --single-transaction
-                                                </code>
-                                            </span>
-                                        </label>
-                                        <label className="flex items-center gap-2.5 cursor-pointer group">
-                                            <input
-                                                type="checkbox"
-                                                checked={noData}
-                                                onChange={(e) =>
-                                                    setNoData(e.target.checked)
-                                                }
-                                                className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
-                                            />
-                                            <span className="text-sm text-text-muted group-hover:text-text transition-colors">
-                                                No Data{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
-                                                    --no-data
-                                                </code>
-                                            </span>
-                                        </label>
-                                        <label className="flex items-center gap-2.5 cursor-pointer group">
-                                            <input
-                                                type="checkbox"
-                                                checked={routines}
-                                                onChange={(e) =>
-                                                    setRoutines(e.target.checked)
-                                                }
-                                                className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
-                                            />
-                                            <span className="text-sm text-text-muted group-hover:text-text transition-colors">
-                                                Routines{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
-                                                    --routines
-                                                </code>
-                                            </span>
-                                        </label>
-                                        <label className="flex items-center gap-2.5 cursor-pointer group">
-                                            <input
-                                                type="checkbox"
-                                                checked={triggers}
-                                                onChange={(e) =>
-                                                    setTriggers(e.target.checked)
-                                                }
-                                                className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
-                                            />
-                                            <span className="text-sm text-text-muted group-hover:text-text transition-colors">
-                                                Triggers{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
-                                                    --triggers
-                                                </code>
-                                            </span>
-                                        </label>
-                                        <label className="flex items-center gap-2.5 cursor-pointer group">
-                                            <input
-                                                type="checkbox"
-                                                checked={events}
-                                                onChange={(e) =>
-                                                    setEvents(e.target.checked)
-                                                }
-                                                className="bg-surface border-border accent-accent w-4 h-4 cursor-pointer"
-                                            />
-                                            <span className="text-sm text-text-muted group-hover:text-text transition-colors">
-                                                Events{" "}
-                                                <code className="text-[11px] text-text-muted/60 bg-surface-raised px-1.5 py-0.5">
-                                                    --events
-                                                </code>
-                                            </span>
-                                        </label>
-                                    </div>
-                                )}
+                        {/* Progress */}
+                        {activeJob && (
+                            <div className="px-4 py-3">
+                                <BackupProgress
+                                    progress={activeJob.status === "completed" ? 100 : 50}
+                                    jobType="dump"
+                                    status={activeJob.status}
+                                    errorMessage={activeJob.error_message ?? undefined}
+                                />
                             </div>
-
-                            {/* Progress */}
-                            {activeJob && (
-                                <div className="px-4">
-                                    <BackupProgress
-                                        progress={activeJob.status === "completed" ? 100 : 50}
-                                        jobType="dump"
-                                        status={activeJob.status}
-                                        errorMessage={activeJob.error_message ?? undefined}
-                                    />
-                                </div>
-                            )}
-
-                            {/* Actions */}
-                            <div className="flex justify-end pb-2 pr-2">
-                                <Button
-                                    onClick={handleStartBackup}
-                                    disabled={isRunning || !filePath}
-                                >
-                                    <Download size={14} className="mr-1.5" />
-                                    {isRunning ? "Backing up..." : "Start Backup"}
-                                </Button>
-                            </div>
-                        </>
-                    )}
-                </div>
+                        )}
+                    </>
+                )}
             </div>
         </div>
     );
