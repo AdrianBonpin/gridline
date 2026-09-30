@@ -41,15 +41,6 @@ impl PgConnParams {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn get_version(tool: &str) -> Option<String> {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-}
-
 fn sanitize_error(s: &str) -> String {
     crate::commands::test_connection::sanitize_error(s)
 }
@@ -120,29 +111,36 @@ pub fn resolve_tool_paths(app: &AppHandle) -> PgToolPaths {
 // detect_pg_tools
 // ---------------------------------------------------------------------------
 
-/// Shapes the tool status from resolved tool paths + sources. Headless so the
-/// Tauri command stays thin and the status logic stays unit-testable.
-fn build_pg_tool_status(
-    dump: &str,
-    restore: &str,
-    dump_src: Option<String>,
-    restore_src: Option<String>,
-) -> PgToolStatus {
+/// Shapes both PG statuses from resolved tools. Headless so the Tauri command
+/// stays thin and the shaping logic stays unit-testable.
+fn build_pg_tool_status(dump: &ToolResolution, restore: &ToolResolution) -> PgToolStatus {
     PgToolStatus {
-        pg_dump_found: Command::new(dump).arg("--version").output().is_ok(),
-        pg_restore_found: Command::new(restore).arg("--version").output().is_ok(),
-        pg_dump_version: get_version(dump),
-        pg_restore_version: get_version(restore),
-        pg_dump_source: dump_src,
-        pg_restore_source: restore_src,
+        pg_dump_found: dump.resolved.is_some(),
+        pg_restore_found: restore.resolved.is_some(),
+        pg_dump_version: dump.version.clone(),
+        pg_restore_version: restore.version.clone(),
+        pg_dump_source: dump.resolved.as_ref().map(|r| r.source.as_str().to_string()),
+        pg_restore_source: restore.resolved.as_ref().map(|r| r.source.as_str().to_string()),
+        pg_dump_resolved_name: dump.resolved.as_ref().map(|r| r.name.clone()),
+        pg_restore_resolved_name: restore.resolved.as_ref().map(|r| r.name.clone()),
+        pg_dump_bundled_available: dump.bundled_available,
+        pg_restore_bundled_available: restore.bundled_available,
     }
 }
 
+/// Detection runs off the UI thread and can be forced past the cache.
 #[tauri::command]
-pub fn detect_pg_tools(app_handle: AppHandle) -> PgToolStatus {
-    let (dump, dump_src) = resolve_tool(&app_handle, "pg_dump");
-    let (restore, restore_src) = resolve_tool(&app_handle, "pg_restore");
-    build_pg_tool_status(&dump, &restore, dump_src, restore_src)
+pub async fn detect_pg_tools(force: Option<bool>, app_handle: AppHandle) -> PgToolStatus {
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        let dump = resolve_request(&app_handle, &tool_resolver::pg_dump_request(), force);
+        let restore = resolve_request(&app_handle, &tool_resolver::pg_restore_request(), force);
+        build_pg_tool_status(&dump, &restore)
+    })
+    .await
+    .unwrap_or_else(|_| {
+        build_pg_tool_status(&ToolResolution::none(), &ToolResolution::none())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -960,18 +958,38 @@ pub async fn db_sync(
 // MySQL dump / restore / sync commands (v0.7.8)
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
-pub fn detect_mysql_tools(app_handle: AppHandle) -> MySqlToolStatus {
-    let (d, ds) = resolve_mysql_tool(&app_handle, "mariadb-dump");
-    let (m, ms) = resolve_mysql_tool(&app_handle, "mariadb");
+fn build_mysql_tool_status(dump: &ToolResolution, client: &ToolResolution) -> MySqlToolStatus {
     MySqlToolStatus {
-        mysqldump_found: Command::new(&d).arg("--version").output().is_ok(),
-        mysql_found: Command::new(&m).arg("--version").output().is_ok(),
-        mysqldump_version: get_version(&d),
-        mysql_version: get_version(&m),
-        mysqldump_source: ds,
-        mysql_source: ms,
+        mysqldump_found: dump.resolved.is_some(),
+        mysql_found: client.resolved.is_some(),
+        mysqldump_version: dump.version.clone(),
+        mysql_version: client.version.clone(),
+        mysqldump_source: dump.resolved.as_ref().map(|r| r.source.as_str().to_string()),
+        mysql_source: client.resolved.as_ref().map(|r| r.source.as_str().to_string()),
+        mysqldump_resolved_name: dump.resolved.as_ref().map(|r| r.name.clone()),
+        mysql_resolved_name: client.resolved.as_ref().map(|r| r.name.clone()),
+        mysqldump_is_mariadb: dump
+            .resolved
+            .as_ref()
+            .map(|r| r.name.starts_with("mariadb"))
+            .unwrap_or(false),
+        mysqldump_bundled_available: dump.bundled_available,
+        mysql_bundled_available: client.bundled_available,
     }
+}
+
+#[tauri::command]
+pub async fn detect_mysql_tools(force: Option<bool>, app_handle: AppHandle) -> MySqlToolStatus {
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        let dump = resolve_request(&app_handle, &tool_resolver::mysql_dump_request(), force);
+        let client = resolve_request(&app_handle, &tool_resolver::mysql_client_request(), force);
+        build_mysql_tool_status(&dump, &client)
+    })
+    .await
+    .unwrap_or_else(|_| {
+        build_mysql_tool_status(&ToolResolution::none(), &ToolResolution::none())
+    })
 }
 
 /// Resolve (host, port, via_tunnel) for a MySQL connection, routing through the

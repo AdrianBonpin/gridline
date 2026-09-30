@@ -42,6 +42,12 @@ pub struct PgToolStatus {
     pub pg_restore_version: Option<String>,
     pub pg_dump_source: Option<String>,    // "system" | "bundled" | None
     pub pg_restore_source: Option<String>,
+    /// The binary name that actually resolved (`mariadb-dump`, `mysqldump`, …).
+    pub pg_dump_resolved_name: Option<String>,
+    pub pg_restore_resolved_name: Option<String>,
+    /// Whether a bundled file exists at the expected path (runnable or not).
+    pub pg_dump_bundled_available: bool,
+    pub pg_restore_bundled_available: bool,
 }
 
 /// Resolved on-disk paths for the three client tools (system-first, bundled-fallback).
@@ -111,6 +117,12 @@ pub struct MySqlToolStatus {
     pub mysql_version: Option<String>,
     pub mysqldump_source: Option<String>,
     pub mysql_source: Option<String>,
+    pub mysqldump_resolved_name: Option<String>,
+    pub mysql_resolved_name: Option<String>,
+    /// True when the dump tool that resolved is MariaDB's `mariadb-dump`.
+    pub mysqldump_is_mariadb: bool,
+    pub mysqldump_bundled_available: bool,
+    pub mysql_bundled_available: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -185,7 +197,11 @@ mod tests {
     fn pg_tool_status_reports_source() {
         let s = PgToolStatus { pg_dump_found: true, pg_restore_found: true,
             pg_dump_version: Some("pg_dump 16".into()), pg_restore_version: Some("pg_restore 16".into()),
-            pg_dump_source: Some("system".into()), pg_restore_source: Some("bundled".into()) };
+            pg_dump_source: Some("system".into()), pg_restore_source: Some("bundled".into()),
+            pg_dump_resolved_name: Some("pg_dump".into()),
+            pg_restore_resolved_name: None,
+            pg_dump_bundled_available: true,
+            pg_restore_bundled_available: false };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"pg_dump_source\":\"system\""));
         assert!(json.contains("\"pg_restore_source\":\"bundled\""));
@@ -225,6 +241,11 @@ mod tests {
             mysql_version: Some("mariadb 10.6".into()),
             mysqldump_source: Some("bundled".into()),
             mysql_source: Some("system".into()),
+            mysqldump_resolved_name: Some("mariadb-dump".into()),
+            mysql_resolved_name: Some("mariadb".into()),
+            mysqldump_is_mariadb: true,
+            mysqldump_bundled_available: true,
+            mysql_bundled_available: true,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mysqldumpSource\":\"bundled\""));

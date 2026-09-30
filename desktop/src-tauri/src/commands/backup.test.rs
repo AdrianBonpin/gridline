@@ -132,15 +132,44 @@ fn build_pg_restore_args_with_schema() {
 // ------------------------------------------------------------------
 
 #[test]
-fn detect_pg_tools_does_not_panic() {
-    // detect_pg_tools needs a Tauri AppHandle; the headless core keeps the
-    // status-shaping logic testable without one.
-    let status = build_pg_tool_status("pg_dump", "pg_restore", None, None);
-    // May or may not find tools, but the call itself must not panic
-    let _ = status.pg_dump_found;
-    let _ = status.pg_restore_found;
-    let _ = status.pg_dump_version;
-    let _ = status.pg_restore_version;
+fn build_pg_tool_status_reflects_resolutions() {
+    let dump = ToolResolution {
+        resolved: Some(crate::db::tool_resolver::Resolution {
+            program: "/opt/homebrew/bin/mariadb-dump".into(),
+            source: crate::db::tool_resolver::ToolSource::TrustedDir,
+            name: "pg_dump".into(),
+        }),
+        bundled_path: Some(std::path::PathBuf::from("/app/resources/pg_tools/pg_dump")),
+        bundled_available: true,
+        version: Some("pg_dump (PostgreSQL) 16.4".into()),
+    };
+    let status = build_pg_tool_status(&dump, &ToolResolution::none());
+    assert!(status.pg_dump_found);
+    assert!(!status.pg_restore_found);
+    assert_eq!(status.pg_dump_source.as_deref(), Some("system"));
+    assert_eq!(status.pg_dump_resolved_name.as_deref(), Some("pg_dump"));
+    assert!(status.pg_dump_bundled_available);
+    assert!(!status.pg_restore_bundled_available);
+}
+
+#[test]
+fn build_mysql_tool_status_reports_the_resolved_dump_name() {
+    let dump = ToolResolution {
+        resolved: Some(crate::db::tool_resolver::Resolution {
+            program: "/opt/homebrew/bin/mariadb-dump".into(),
+            source: crate::db::tool_resolver::ToolSource::TrustedDir,
+            name: "mariadb-dump".into(),
+        }),
+        bundled_path: Some(std::path::PathBuf::from("/app/resources/mysql_tools/mariadb-dump")),
+        bundled_available: true,
+        version: Some("mariadb-dump 11.4.5-MariaDB".into()),
+    };
+    let status = build_mysql_tool_status(&dump, &ToolResolution::none());
+    assert!(status.mysqldump_found);
+    assert!(!status.mysql_found);
+    assert_eq!(status.mysqldump_resolved_name.as_deref(), Some("mariadb-dump"));
+    assert!(status.mysqldump_is_mariadb);
+    assert!(!status.mysql_bundled_available);
 }
 
 #[test]
@@ -152,6 +181,10 @@ fn pg_tool_status_serialization() {
         pg_restore_version: None,
         pg_dump_source: None,
         pg_restore_source: None,
+        pg_dump_resolved_name: Some("pg_dump".into()),
+        pg_restore_resolved_name: None,
+        pg_dump_bundled_available: true,
+        pg_restore_bundled_available: false,
     };
     let json = serde_json::to_string(&status).unwrap();
     assert!(json.contains("pg_dump_found"));
