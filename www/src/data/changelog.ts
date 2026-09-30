@@ -6,6 +6,16 @@ export interface ChangelogEntry {
 
 export const changelogEntries: ChangelogEntry[] = [
   {
+    version: "0.8.3",
+    date: "2026-09-30",
+    highlights: [
+      "External tools are found again, and this is the fix for issue #44 — Gridline reported “mysqldump not found” even with the tools installed, for three independent reasons. The bundled binaries were looked up one directory too high (`<resource_dir>/mysql_tools` instead of the `<resource_dir>/resources/mysql_tools` Tauri actually bundles), which silently disabled the bundled fallback for PostgreSQL as well as MySQL; a macOS GUI app inherits launchd's minimal `PATH` rather than your shell's, so Homebrew's `/opt/homebrew/bin` was invisible; and only `mariadb-dump`/`mariadb` were ever probed, never `mysqldump`/`mysql` — which is what `brew install mysql-client` actually installs. Both engines now resolve through one ordered chain: trusted absolute directories (Homebrew, MacPorts, Postgres.app, `/usr/local`), then your inherited `PATH`, then the bundled copy, where a candidate counts only if it is a real file that runs `--version`. Results are cached, and an explicit **Check again** re-detects.",
+      "The bundled MySQL client works too. The dump step was passing MySQL-only options to the bundled MariaDB binary (`--databases=<db>`, `--skip-column-statistics`, `--ssl-mode=…`), so the job aborted at option parsing before it ever connected. Options are now tailored per client — MariaDB clients get `--ssl` and a positional `--databases` — so backup and DB sync succeed with either client.",
+      "Backup, Restore, DB Sync and Schema Diff now tell you which tool they are using and where it came from (`Using system mysqldump`, `Using bundled mariadb-dump`), say so explicitly when a bundled copy is present but cannot run, and let you copy the install command in one click. A dump client whose major version is older than the server's produces a **non-blocking** warning at job start instead of silence. Those four pages also moved onto the same form layout the Objects view uses.",
+      "The app icon is back to its previous rendering — at the maintainer's request the macOS “legacy plate” strip added in #40 was reverted, so the Dock and launcher icon can show a light border again below roughly 72px.",
+    ],
+  },
+  {
     version: "0.8.2",
     date: "2026-09-29",
     highlights: [

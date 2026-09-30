@@ -30,16 +30,16 @@
 
 ## Download
 
-Grab the installer for your OS from the [latest release](https://github.com/AdrianBonpin/gridline/releases/latest) — the links below point at the current release (**v0.8.2**):
+Grab the installer for your OS from the [latest release](https://github.com/AdrianBonpin/gridline/releases/latest) — the links below point at the current release (**v0.8.3**):
 
 | OS                           | Architecture                 | Download                                                                                                                             |
 | :--------------------------- | :--------------------------- | :----------------------------------------------------------------------------------------------------------------------------------- |
-| **macOS**                    | Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.8.2_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline_0.8.2_aarch64.dmg)         |
-| **macOS**                    | Intel                        | [Gridline_0.8.2_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline_0.8.2_x64.dmg)                 |
-| **Windows**                  | x64                          | [Gridline_0.8.2_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline_0.8.2_x64-setup.exe)     |
-| **Debian / Ubuntu**          | amd64                        | [Gridline_0.8.2_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline_0.8.2_amd64.deb)             |
-| **Fedora / RHEL / openSUSE** | x86_64                       | [Gridline-0.8.2-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline-0.8.2-1.x86_64.rpm)       |
-| **Other Linux**              | amd64                        | [Gridline_0.8.2_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline_0.8.2_amd64.AppImage)   |
+| **macOS**                    | Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.8.3_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_aarch64.dmg)         |
+| **macOS**                    | Intel                        | [Gridline_0.8.3_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_x64.dmg)                 |
+| **Windows**                  | x64                          | [Gridline_0.8.3_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_x64-setup.exe)     |
+| **Debian / Ubuntu**          | amd64                        | [Gridline_0.8.3_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_amd64.deb)             |
+| **Fedora / RHEL / openSUSE** | x86_64                       | [Gridline-0.8.3-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline-0.8.3-1.x86_64.rpm)       |
+| **Other Linux**              | amd64                        | [Gridline_0.8.3_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_amd64.AppImage)   |
 
 **macOS via Homebrew** (recommended for Mac users):
 
@@ -57,7 +57,7 @@ The cask installs the app directly. The DMGs are Developer-ID signed and notariz
 > **macOS first launch:** Gridline is Developer-ID signed and notarized, so macOS opens it without a Gatekeeper prompt. Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below.
 
 <!--
-  MAINTENANCE: These links are STATIC (versioned) — they point at the v0.8.2
+  MAINTENANCE: These links are STATIC (versioned) — they point at the v0.8.3
   release assets, not at a moving "latest" target. On every new release,
   update BOTH tables here (Download + Which file should I download?) to the
   new version's asset names, which are tauri-action's default naming:
@@ -101,6 +101,8 @@ Gridline is built for developers and small teams who manage multiple database en
 
 <details>
 <summary>View the full changelog</summary>
+
+- **v0.8.3** — **Your installed database tools are found again** ([issue #44](https://github.com/AdrianBonpin/gridline/issues/44)): Gridline reported *"mysqldump not found"* even when the tools were installed, for three separate reasons — the bundled binaries were looked up one directory too high (`<resource_dir>/mysql_tools` instead of the `<resource_dir>/resources/mysql_tools` the installer actually bundles, which silently disabled the bundled fallback for PostgreSQL too), a macOS GUI app inherits launchd's minimal `PATH` rather than your shell's, and only `mariadb-dump`/`mariadb` were ever probed — never `mysqldump`/`mysql`, which is what `brew install mysql-client` installs. Both engines now resolve through one ordered chain (trusted absolute directories → your `PATH` → bundled), a candidate counts only if it is a real file that runs `--version`, and an explicit **Check again** re-detects on demand. **The bundled MySQL client now actually runs**: backup and sync were passing MySQL-only options (`--databases=<db>`, `--skip-column-statistics`, `--ssl-mode=…`) to the bundled MariaDB binary, so the job died at option parsing before connecting; options are now tailored per client. **Backup, Restore, DB Sync and Schema Diff say which tool they use and where it came from** (`Using system mysqldump`, `Using bundled mariadb-dump`), explain a bundled copy that is present but cannot run, offer one-click copy of the install command, warn non-blockingly when the dump client's major version is older than the server's, and share the Objects view's form layout. **The app icon is back to its previous rendering** — the macOS "legacy plate" strip from #40 was reverted at the maintainer's request.
 
 - **v0.8.2** — **MySQL values actually show up**: every non-string MySQL column — ids and other integers, `DECIMAL`, `BIT`, `YEAR`, `DATE`/`TIME`/`DATETIME`/`TIMESTAMP`, `FLOAT`/`DOUBLE` — was rendering as `NULL`, so primary-key columns looked empty; all 30 column types now decode by their declared type, with 64-bit integers and `DECIMAL` carried as strings so no digits are lost and `DATETIME(6)` keeping its microseconds. **MySQL restore works against MySQL 8** — it no longer shells out to a bundled MariaDB client (which cannot authenticate with `caching_sha2_password`), running in-process over the same driver browsing uses, stopping at the first error with the failing statement's position, cancellable, and `DELIMITER`-aware so dumps with triggers and stored routines apply. **The `Clean` toggle is now real**: it drops only the objects the dump recreates, so an unrelated table in the target survives — and since MySQL DDL auto-commits, the Restore form warns a failed restore cannot be rolled back. **`.sql` files open with Gridline**: right-click → Open With loads the script into a query tab named after the file; it never runs on open (Run still confirms anything destructive), and with no connection open the file is held with a prompt until you pick one.
 
@@ -348,16 +350,16 @@ Gridline's macOS builds are **Developer-ID signed and notarized by GitHub Action
 
 #### Which file should I download?
 
-Each release contains **one file per platform** — you only need the one that matches your computer. The links below point at the current release (**v0.8.2**):
+Each release contains **one file per platform** — you only need the one that matches your computer. The links below point at the current release (**v0.8.3**):
 
 | Your system                            | Download this                                                                                                                                | Notes                                                            |
 | :------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------- |
-| macOS **Apple Silicon** (M1/M2/M3/M4…) | [Gridline_0.8.2_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline_0.8.2_aarch64.dmg)                 | `aarch64` = Apple's own chip                                     |
-| macOS **Intel**                        | [Gridline_0.8.2_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline_0.8.2_x64.dmg)                         | `x64` = Intel/AMD                                                |
-| **Windows** (most PCs)                 | [Gridline_0.8.2_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline_0.8.2_x64-setup.exe)             | The `.msi` is an alternate installer (for enterprises/IT admins) |
-| **Debian / Ubuntu**                    | [Gridline_0.8.2_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline_0.8.2_amd64.deb)                     | Install: `sudo apt install ./Gridline_0.8.2_amd64.deb`           |
-| **Fedora / RHEL / openSUSE**           | [Gridline-0.8.2-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline-0.8.2-1.x86_64.rpm)               | Install: `sudo dnf install Gridline-0.8.2-1.x86_64.rpm`          |
-| **Any other Linux**                    | [Gridline_0.8.2_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.2/Gridline_0.8.2_amd64.AppImage)           | Works on every distro: `chmod +x` the file, then double-click it |
+| macOS **Apple Silicon** (M1/M2/M3/M4…) | [Gridline_0.8.3_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_aarch64.dmg)                 | `aarch64` = Apple's own chip                                     |
+| macOS **Intel**                        | [Gridline_0.8.3_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_x64.dmg)                         | `x64` = Intel/AMD                                                |
+| **Windows** (most PCs)                 | [Gridline_0.8.3_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_x64-setup.exe)             | The `.msi` is an alternate installer (for enterprises/IT admins) |
+| **Debian / Ubuntu**                    | [Gridline_0.8.3_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_amd64.deb)                     | Install: `sudo apt install ./Gridline_0.8.3_amd64.deb`           |
+| **Fedora / RHEL / openSUSE**           | [Gridline-0.8.3-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline-0.8.3-1.x86_64.rpm)               | Install: `sudo dnf install Gridline-0.8.3-1.x86_64.rpm`          |
+| **Any other Linux**                    | [Gridline_0.8.3_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_amd64.AppImage)           | Works on every distro: `chmod +x` the file, then double-click it |
 
 **Not sure if your Mac is Intel or Apple Silicon?** Click the **Apple menu** → **About This Mac**. If it shows "Apple M1/M2/M3/M4…" download the `aarch64` file; if it shows an Intel chip, download `x64`. Downloading the wrong one won't run.
 
