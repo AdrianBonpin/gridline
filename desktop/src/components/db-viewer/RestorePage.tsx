@@ -238,7 +238,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
 
             {/* Content */}
             <div className="flex-1 overflow-y-auto">
-                <div className="max-w-lg mx-auto space-y-6 outline outline-border">
+                <div className="space-y-6 outline outline-border">
                     {/* Tool check */}
                     {checkingTools && checkingMessage && (
                         <div className="glass p-4 text-center">
