@@ -7,9 +7,11 @@
 //! directories first, then the inherited PATH, then bundled — and probes both
 //! `mariadb-dump`/`mysqldump` style names.
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// The nested directory component Tauri injects when copying
@@ -343,6 +345,59 @@ pub fn warning_for(client_version: &str, server_version: &str, client_name: &str
 but the server is {server_version}. The backup may fail or omit data — installing a matching MySQL client is recommended."
         )),
         Compat::Ok | Compat::Unknown => None,
+    }
+}
+
+/// Everything one detection pass knows about a tool role.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolResolution {
+    pub resolved: Option<Resolution>,
+    pub bundled_path: Option<PathBuf>,
+    /// Whether the bundled file exists — regardless of whether it runs. Lets
+    /// the UI say "ships with the app but could not run" instead of "absent".
+    pub bundled_available: bool,
+    pub version: Option<String>,
+}
+
+impl ToolResolution {
+    pub fn none() -> Self {
+        Self { resolved: None, bundled_path: None, bundled_available: false, version: None }
+    }
+}
+
+/// Whether a bundled tool file exists at `path`.
+pub fn bundled_present(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Shape the existing resolver call sites expect: `(command, source)`.
+pub fn adapt_resolution(res: &ToolResolution, fallback_name: &str) -> (String, Option<String>) {
+    match &res.resolved {
+        Some(r) => (r.program.clone(), Some(r.source.as_str().to_string())),
+        None => (fallback_name.to_string(), None),
+    }
+}
+
+// Cache is keyed by `ToolRequest::cache_key()` and holds no secrets.
+static CACHE: OnceLock<Mutex<HashMap<String, ToolResolution>>> = OnceLock::new();
+
+fn cache() -> &'static Mutex<HashMap<String, ToolResolution>> {
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn cache_get(key: &str) -> Option<ToolResolution> {
+    cache().lock().ok()?.get(key).cloned()
+}
+
+pub fn cache_put(key: &str, value: ToolResolution) {
+    if let Ok(mut map) = cache().lock() {
+        map.insert(key.to_string(), value);
+    }
+}
+
+pub fn cache_clear() {
+    if let Ok(mut map) = cache().lock() {
+        map.clear();
     }
 }
 

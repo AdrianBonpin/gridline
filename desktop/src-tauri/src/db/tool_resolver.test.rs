@@ -337,3 +337,58 @@ fn parse_major_never_panics_on_hostile_input() {
     // Harmless: no real tool prints such a version, and the result is advisory.
     assert_eq!(parse_major("5.5.5-99999999999999999999"), Some(5));
 }
+
+#[test]
+fn adapt_resolution_returns_program_and_source() {
+    let res = ToolResolution {
+        resolved: Some(Resolution {
+            program: "/x/mariadb-dump".into(),
+            source: ToolSource::Bundled,
+            name: "mariadb-dump".into(),
+        }),
+        bundled_path: Some(PathBuf::from("/x/mariadb-dump")),
+        bundled_available: true,
+        version: Some("11.4.5".into()),
+    };
+    assert_eq!(
+        adapt_resolution(&res, "mariadb-dump"),
+        ("/x/mariadb-dump".to_string(), Some("bundled".to_string()))
+    );
+}
+
+#[test]
+fn adapt_resolution_falls_back_to_the_requested_name() {
+    assert_eq!(
+        adapt_resolution(&ToolResolution::none(), "pg_dump"),
+        ("pg_dump".to_string(), None)
+    );
+}
+
+#[test]
+fn cache_round_trips_and_clears() {
+    cache_clear();
+    let res = ToolResolution {
+        resolved: Some(Resolution {
+            program: "/c/tool".into(),
+            source: ToolSource::Path,
+            name: "tool".into(),
+        }),
+        bundled_path: None,
+        bundled_available: false,
+        version: None,
+    };
+    assert!(cache_get("k_task6_unique").is_none());
+    cache_put("k_task6_unique", res.clone());
+    assert_eq!(cache_get("k_task6_unique"), Some(res));
+    cache_clear();
+    assert!(cache_get("k_task6_unique").is_none());
+}
+
+#[test]
+fn bundled_present_is_true_only_for_a_regular_file() {
+    let dir = unique_dir();
+    assert!(!bundled_present(&dir), "a directory is not a present bundled tool");
+    let file = dir.join("mariadb-dump");
+    std::fs::write(&file, b"x").unwrap();
+    assert!(bundled_present(&file));
+}
