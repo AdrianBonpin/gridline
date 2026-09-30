@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ArrowLeftRight, Database } from "lucide-react";
-import { Button } from "../ui/Button";
+import { ArrowLeftRight } from "lucide-react";
 import { BackupProgress } from "./BackupProgress";
+import {
+    FormRow,
+    FormSectionHeader,
+    controlClass,
+} from "./objects/formRow";
 import { useBackupStore } from "../../stores/backupStore";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -203,242 +207,205 @@ export function SyncPage() {
         ? connections.filter((c) => c.db_type === dbType)
         : [];
 
+    const sourceName =
+        connections.find((c) => c.id === sourceConnectionId)?.name ??
+        sourceConnectionId;
+    const targetName =
+        connections.find((c) => c.id === targetConnectionId)?.name ??
+        targetConnectionId;
+
     return (
-        <div className="flex flex-col h-full">
+        <div className="flex h-full flex-col">
             {/* Toolbar header */}
-            <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
-                <ArrowLeftRight size={14} className="text-accent" />
-                <span className="text-xs font-medium text-text">DB Sync</span>
-                <span className="text-[11px] text-text-muted">
-                    Transfer data between databases via pipe
-                </span>
-                {(isPg || isMysql) && (
-                    <button
-                        type="button"
-                        onClick={() => void checkTools(true)}
-                        className="ml-auto text-[11px] text-text-muted hover:text-text transition-colors"
-                    >
-                        Check again
-                    </button>
-                )}
+            <div className="flex items-center justify-between border-b border-border px-4 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                    <ArrowLeftRight size={14} className="text-accent" />
+                    <span className="text-xs font-medium text-text">DB Sync</span>
+                    <span className="text-[11px] text-text-muted">
+                        Transfer data between databases via pipe
+                    </span>
+                </div>
+                <div className="flex items-center gap-2">
+                    {(isPg || isMysql) && (
+                        <button
+                            type="button"
+                            onClick={() => void checkTools(true)}
+                            className="text-[11px] text-text-muted hover:text-text transition-colors cursor-pointer"
+                        >
+                            Check again
+                        </button>
+                    )}
+                    {!checkingTools && !toolsMissing && (
+                        <button
+                            type="button"
+                            onClick={() => void handleStartSync()}
+                            disabled={!canStart}
+                            className="inline-flex items-center rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                        >
+                            <ArrowLeftRight size={14} className="mr-1.5" />
+                            {isRunning ? "Syncing..." : "Start Sync"}
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto">
-                <div className="space-y-6 outline outline-border p-3">
-                    {/* Tool check */}
-                    {checkingTools && checkingMessage && (
-                        <div className="glass p-4 text-center">
-                            <p className="text-sm text-text-muted">
-                                {checkingMessage}
-                            </p>
-                        </div>
-                    )}
+            <div className="flex-1 overflow-auto">
+                {/* Tool check */}
+                {checkingTools && checkingMessage && (
+                    <div className="px-4 py-3 text-sm text-text-muted">
+                        {checkingMessage}
+                    </div>
+                )}
 
-                    {toolsMissing && !toolsBundled && (
-                        <div className="bg-amber-500/10 border border-amber-500/30 px-4 py-4 space-y-2">
-                            <p className="text-amber-300 text-sm font-semibold">
-                                {isPg
-                                    ? "PostgreSQL tools not found"
-                                    : "MySQL tools not found"}
-                            </p>
-                            <p className="text-amber-200/80 text-xs leading-relaxed">
-                                Both {isPg ? "pg_dump and pg_restore" : "mysqldump and mysql"} are required for
-                                database sync.
-                            </p>
-                            <ul className="list-disc list-inside text-xs text-amber-200/70 space-y-0.5">
-                                {isPg && !pgToolStatus?.pg_dump_found && (
-                                    <li>pg_dump is missing.</li>
-                                )}
-                                {isPg && !pgToolStatus?.pg_restore_found && (
-                                    <li>pg_restore is missing.</li>
-                                )}
-                                {isMysql && !mysqlToolStatus?.mysqldumpFound && (
-                                    <li>mysqldump is missing.</li>
-                                )}
-                                {isMysql && !mysqlToolStatus?.mysqlFound && (
-                                    <li>mysql is missing.</li>
-                                )}
-                                {isMysql && mysqlToolStatus?.mysqlResolvedName && (
-                                    <li className="text-amber-200/50">
-                                        Resolved MySQL client: {mysqlToolStatus.mysqlResolvedName}
-                                    </li>
-                                )}
-                            </ul>
-                        </div>
-                    )}
-
-                    {!checkingTools && !toolsMissing && (
-                        <>
-                            {/* Configuration card */}
-                            <div className="p-5 space-y-5">
-                                {/* Source & Target connection pickers */}
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-1">
-                                        <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium flex items-center gap-1">
-                                            <Database size={11} />
-                                            Source
-                                        </label>
-                                        <select
-                                            value={sourceConnectionId}
-                                            onChange={(e) => {
-                                                setSourceConnectionId(
-                                                    e.target.value,
-                                                );
-                                                setTargetConnectionId("");
-                                            }}
-                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer"
-                                        >
-                                            <option value="">
-                                                Select source...
-                                            </option>
-                                            {connections.map((c) => (
-                                                <option
-                                                    key={c.id}
-                                                    value={c.id}
-                                                >
-                                                    {c.name}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                    <div className="space-y-1">
-                                        <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium flex items-center gap-1">
-                                            <Database size={11} />
-                                            Target
-                                        </label>
-                                        <select
-                                            value={targetConnectionId}
-                                            onChange={(e) =>
-                                                setTargetConnectionId(
-                                                    e.target.value,
-                                                )
-                                            }
-                                            disabled={!sourceConnectionId}
-                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                                        >
-                                            <option value="">
-                                                {sourceConnectionId
-                                                    ? "Select target..."
-                                                    : "Select a source first"}
-                                            </option>
-                                            {targetConnections.map((c) => (
-                                                <option
-                                                    key={c.id}
-                                                    value={c.id}
-                                                    disabled={
-                                                        c.id === sourceConnectionId
-                                                    }
-                                                >
-                                                    {c.name}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                </div>
-
-                                {/* Schema (optional) */}
-                                {(isPg || isMysql) && (
-                                    <div className="space-y-1">
-                                        <label className="text-[11px] uppercase tracking-wider text-text-muted font-medium">
-                                            Schema{" "}
-                                            <span className="font-normal normal-case tracking-normal">
-                                                (optional)
-                                            </span>
-                                        </label>
-                                        <select
-                                            value={schema}
-                                            onChange={(e) =>
-                                                setSchema(e.target.value)
-                                            }
-                                            disabled={!sourceConnectionId}
-                                            className="w-full bg-surface border border-border px-3 py-2 text-sm text-text focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                                        >
-                                            <option value="">
-                                                {sourceConnectionId
-                                                    ? "All schemas"
-                                                    : "Select a source first"}
-                                            </option>
-                                            {availableSchemas.map((s) => (
-                                                <option key={s} value={s}>
-                                                    {s}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                )}
-
-                                {/* Flow indicator */}
-                                {sourceConnectionId && targetConnectionId && (
-                                    <div className="flex items-center gap-3 text-[11px] text-text-muted">
-                                        <span className="font-medium text-text">
-                                            {connections.find(
-                                                (c) =>
-                                                    c.id === sourceConnectionId,
-                                            )?.name ?? sourceConnectionId}
-                                        </span>
-                                        <ArrowLeftRight
-                                            size={12}
-                                            className="text-accent shrink-0"
-                                        />
-                                        <span className="font-medium text-text">
-                                            {connections.find(
-                                                (c) =>
-                                                    c.id === targetConnectionId,
-                                            )?.name ?? targetConnectionId}
-                                        </span>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Destructive confirmation */}
-                            <div className="bg-red-500/5 border border-red-500/20 px-4 py-3">
-                                <label className="flex items-start gap-3 cursor-pointer">
-                                    <input
-                                        type="checkbox"
-                                        checked={confirmed}
-                                        onChange={(e) =>
-                                            setConfirmed(e.target.checked)
-                                        }
-                                        className="mt-0.5 bg-surface border-border accent-red-500 w-4 h-4 cursor-pointer"
-                                        data-testid="sync-confirm-checkbox"
-                                    />
-                                    <span className="text-sm text-red-300/90 leading-relaxed">
-                                        I understand this will overwrite data on
-                                        the target database. This action cannot
-                                        be undone.
-                                    </span>
-                                </label>
-                            </div>
-
-                            {/* Progress */}
-                            {activeJob && (
-                                <div className="px-4">
-                                    <BackupProgress
-                                        progress={activeJob.status === "completed" ? 100 : 50}
-                                        jobType="sync"
-                                        status={activeJob.status}
-                                        errorMessage={activeJob.error_message ?? undefined}
-                                    />
-                                </div>
+                {toolsMissing && !toolsBundled && (
+                    <div className="border-b border-border bg-amber-500/10 px-4 py-3 space-y-2">
+                        <p className="text-amber-300 text-sm font-semibold">
+                            {isPg
+                                ? "PostgreSQL tools not found"
+                                : "MySQL tools not found"}
+                        </p>
+                        <p className="text-amber-200/80 text-xs leading-relaxed">
+                            Both {isPg ? "pg_dump and pg_restore" : "mysqldump and mysql"} are required for
+                            database sync.
+                        </p>
+                        <ul className="list-disc list-inside text-xs text-amber-200/70 space-y-0.5">
+                            {isPg && !pgToolStatus?.pg_dump_found && (
+                                <li>pg_dump is missing.</li>
                             )}
+                            {isPg && !pgToolStatus?.pg_restore_found && (
+                                <li>pg_restore is missing.</li>
+                            )}
+                            {isMysql && !mysqlToolStatus?.mysqldumpFound && (
+                                <li>mysqldump is missing.</li>
+                            )}
+                            {isMysql && !mysqlToolStatus?.mysqlFound && (
+                                <li>mysql is missing.</li>
+                            )}
+                            {isMysql && mysqlToolStatus?.mysqlResolvedName && (
+                                <li className="text-amber-200/50">
+                                    Resolved MySQL client: {mysqlToolStatus.mysqlResolvedName}
+                                </li>
+                            )}
+                        </ul>
+                    </div>
+                )}
 
-                            {/* Actions */}
-                            <div className="flex justify-end pb-2 pr-2">
-                                <Button
-                                    onClick={handleStartSync}
-                                    disabled={!canStart}
-                                >
+                {!checkingTools && !toolsMissing && (
+                    <>
+                        <FormSectionHeader label="Connections" />
+
+                        {/* Source connection */}
+                        <FormRow label="Source">
+                            <select
+                                value={sourceConnectionId}
+                                onChange={(e) => {
+                                    setSourceConnectionId(e.target.value);
+                                    setTargetConnectionId("");
+                                }}
+                                className={`${controlClass} mr-3`}
+                            >
+                                <option value="">Select source...</option>
+                                {connections.map((c) => (
+                                    <option key={c.id} value={c.id}>
+                                        {c.name}
+                                    </option>
+                                ))}
+                            </select>
+                        </FormRow>
+
+                        {/* Target connection — filtered to the source's db type */}
+                        <FormRow label="Target">
+                            <select
+                                value={targetConnectionId}
+                                onChange={(e) => setTargetConnectionId(e.target.value)}
+                                disabled={!sourceConnectionId}
+                                className={`${controlClass} mr-3 disabled:opacity-40 disabled:cursor-not-allowed`}
+                            >
+                                <option value="">
+                                    {sourceConnectionId
+                                        ? "Select target..."
+                                        : "Select a source first"}
+                                </option>
+                                {targetConnections.map((c) => (
+                                    <option
+                                        key={c.id}
+                                        value={c.id}
+                                        disabled={c.id === sourceConnectionId}
+                                    >
+                                        {c.name}
+                                    </option>
+                                ))}
+                            </select>
+                        </FormRow>
+
+                        {/* Flow indicator */}
+                        {sourceConnectionId && targetConnectionId && (
+                            <FormRow label="Flow">
+                                <div className="flex items-center gap-3 px-3 py-2 text-[11px] text-text-muted">
+                                    <span className="font-medium text-text">
+                                        {sourceName}
+                                    </span>
                                     <ArrowLeftRight
-                                        size={14}
-                                        className="mr-1.5"
+                                        size={12}
+                                        className="text-accent shrink-0"
                                     />
-                                    {isRunning ? "Syncing..." : "Start Sync"}
-                                </Button>
+                                    <span className="font-medium text-text">
+                                        {targetName}
+                                    </span>
+                                </div>
+                            </FormRow>
+                        )}
+
+                        {/* Schema (optional) */}
+                        {(isPg || isMysql) && (
+                            <FormRow label="Schema">
+                                <select
+                                    value={schema}
+                                    onChange={(e) => setSchema(e.target.value)}
+                                    className={`${controlClass} mr-3`}
+                                >
+                                    <option value="">All schemas</option>
+                                    {availableSchemas.map((s) => (
+                                        <option key={s} value={s}>
+                                            {s}
+                                        </option>
+                                    ))}
+                                </select>
+                            </FormRow>
+                        )}
+
+                        {/* Destructive confirmation */}
+                        <div className="border-b border-border bg-red-500/5 px-4 py-3 space-y-2">
+                            <label className="flex items-start gap-3 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={confirmed}
+                                    onChange={(e) => setConfirmed(e.target.checked)}
+                                    className="mt-0.5 bg-surface border-border accent-red-500 w-4 h-4 cursor-pointer"
+                                    data-testid="sync-confirm-checkbox"
+                                />
+                                <span className="text-sm text-red-300/90 leading-relaxed">
+                                    I understand this will overwrite data on
+                                    the target database. This action cannot
+                                    be undone.
+                                </span>
+                            </label>
+                        </div>
+
+                        {/* Progress */}
+                        {activeJob && (
+                            <div className="px-4 py-3">
+                                <BackupProgress
+                                    progress={activeJob.status === "completed" ? 100 : 50}
+                                    jobType="sync"
+                                    status={activeJob.status}
+                                    errorMessage={activeJob.error_message ?? undefined}
+                                />
                             </div>
-                        </>
-                    )}
-                </div>
+                        )}
+                    </>
+                )}
             </div>
         </div>
     );
