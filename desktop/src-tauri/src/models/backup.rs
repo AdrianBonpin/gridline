@@ -153,6 +153,9 @@ pub struct BackupProgressEvent {
     pub progress: Option<f64>,
     pub output_line: Option<String>,
     pub error: Option<String>,
+    /// Non-fatal advisory message (e.g. a client/server version mismatch).
+    /// `None` for ordinary progress events.
+    pub warning: Option<String>,
 }
 
 #[cfg(test)]

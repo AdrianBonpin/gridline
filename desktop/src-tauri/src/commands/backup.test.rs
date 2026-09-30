@@ -204,6 +204,7 @@ fn backup_progress_event_completed() {
         progress: Some(1.0),
         output_line: None,
         error: None,
+        warning: None,
     };
     let json = serde_json::to_string(&evt).unwrap();
     assert!(json.contains("\"completed\""));
@@ -218,10 +219,39 @@ fn backup_progress_event_failed() {
         progress: None,
         output_line: None,
         error: Some("connection refused".into()),
+        warning: None,
     };
     let json = serde_json::to_string(&evt).unwrap();
     assert!(json.contains("\"failed\""));
     assert!(json.contains("\"connection refused\""));
+}
+
+#[test]
+fn backup_progress_event_serializes_a_non_fatal_warning() {
+    let evt = BackupProgressEvent {
+        job_id: "job-warn".into(),
+        status: "running".into(),
+        progress: Some(0.0),
+        output_line: None,
+        error: None,
+        warning: Some("Client/server version mismatch: …".into()),
+    };
+    let json = serde_json::to_string(&evt).unwrap();
+    assert!(json.contains("\"warning\":\"Client/server version mismatch"), "{json}");
+}
+
+#[test]
+fn backup_progress_event_serializes_a_null_warning_when_absent() {
+    let evt = BackupProgressEvent {
+        job_id: "job-quiet".into(),
+        status: "completed".into(),
+        progress: Some(1.0),
+        output_line: None,
+        error: None,
+        warning: None,
+    };
+    let json = serde_json::to_string(&evt).unwrap();
+    assert!(json.contains("\"warning\":null"), "{json}");
 }
 
 // ------------------------------------------------------------------

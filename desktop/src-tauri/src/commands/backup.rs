@@ -763,6 +763,7 @@ fn emit_result(app_handle: &AppHandle, job_id: &str, result: Result<(), String>)
             progress: Some(1.0),
             output_line: None,
             error: None,
+            warning: None,
         },
         Err(e) => BackupProgressEvent {
             job_id: job_id.to_string(),
@@ -770,6 +771,7 @@ fn emit_result(app_handle: &AppHandle, job_id: &str, result: Result<(), String>)
             progress: None,
             output_line: None,
             error: Some(e),
+            warning: None,
         },
     };
     let _ = app_handle.emit("backup-progress", event);
@@ -1006,6 +1008,68 @@ fn mysql_endpoint(
     (conn.host.clone(), conn.port.unwrap_or(3306), false)
 }
 
+/// Advisory server version for the compatibility check. Fail-open by design:
+/// any error (TLS, SSH tunnel, auth) returns `None`, and the dump proceeds.
+async fn mysql_server_version(
+    host: &str,
+    port: i64,
+    via_tunnel: bool,
+    conn: &crate::models::Connection,
+    password: &str,
+) -> Option<String> {
+    let database = conn.database.clone().unwrap_or_default();
+    let original_host = conn.host.clone();
+    let ssl_mode = conn.ssl_mode.clone();
+    let ssl_ca = conn.ssl_ca_path.clone();
+    let username = conn.username.clone().unwrap_or_else(|| "root".into());
+    let mut c = crate::commands::db_viewer::open_mysql_connection(
+        host,
+        port as u16,
+        &username,
+        password,
+        &database,
+        &original_host,
+        ssl_mode.as_deref(),
+        ssl_ca.as_deref(),
+        via_tunnel,
+    )
+    .await
+    .ok()?;
+    sqlx::query_scalar::<_, String>("SELECT VERSION()")
+        .fetch_one(&mut c)
+        .await
+        .ok()
+}
+
+/// Emit the advisory warning when the resolved dump client is clearly older
+/// than the server. Never returns an error — the job always proceeds.
+async fn maybe_emit_version_warning(
+    app_handle: &AppHandle,
+    job_id: &str,
+    resolution: &ToolResolution,
+    server_version: Option<String>,
+) {
+    let (Some(client_version), Some(tool)) = (&resolution.version, &resolution.resolved) else {
+        return;
+    };
+    let Some(server_version) = server_version else { return };
+    let Some(warning) = tool_resolver::warning_for(client_version, &server_version, &tool.name)
+    else {
+        return;
+    };
+    let _ = app_handle.emit(
+        "backup-progress",
+        BackupProgressEvent {
+            job_id: job_id.to_string(),
+            status: "running".into(),
+            progress: Some(0.0),
+            output_line: None,
+            error: None,
+            warning: Some(warning),
+        },
+    );
+}
+
 #[tauri::command]
 pub async fn mysql_dump(
     connection_id: String,
@@ -1030,6 +1094,15 @@ pub async fn mysql_dump(
             .unwrap_or_default();
 
     let (host, port, via_tunnel) = mysql_endpoint(&state, &connection_id, &conn);
+    // Advisory client/server compatibility check — never blocks the job, and
+    // only pays for a connection when the resolved client reported a version.
+    let dump_resolution = resolve_request(&app_handle, &tool_resolver::mysql_dump_request(), false);
+    let server_version = if dump_resolution.version.is_some() {
+        mysql_server_version(&host, port, via_tunnel, &conn, &password).await
+    } else {
+        None
+    };
+    maybe_emit_version_warning(&app_handle, &job_id, &dump_resolution, server_version).await;
     let params = MySqlConnParams::new(
         host,
         port,
@@ -1139,6 +1212,7 @@ pub async fn mysql_restore(
                     progress: Some(done as f64 / total.max(1) as f64),
                     output_line: Some(format!("Statement {done} of {total}")),
                     error: None,
+                    warning: None,
                 },
             );
         };
@@ -1251,6 +1325,23 @@ pub async fn mysql_sync(
 
     let (src_host, src_port, src_via_tunnel) = mysql_endpoint(&state, &source_conn.id, &source_conn);
     let (tgt_host, tgt_port, tgt_via_tunnel) = mysql_endpoint(&state, &target_conn.id, &target_conn);
+
+    // Advisory client/server compatibility check — never blocks the job, and
+    // only pays for a connection when the resolved client reported a version.
+    let dump_resolution = resolve_request(&app_handle, &tool_resolver::mysql_dump_request(), false);
+    let server_version = if dump_resolution.version.is_some() {
+        mysql_server_version(
+            &src_host,
+            src_port,
+            src_via_tunnel,
+            &source_conn,
+            &src_password,
+        )
+        .await
+    } else {
+        None
+    };
+    maybe_emit_version_warning(&app_handle, &job_id, &dump_resolution, server_version).await;
 
     let source = MySqlConnParams::new(
         src_host,
