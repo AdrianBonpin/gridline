@@ -236,6 +236,7 @@ pub fn run_pg_restore(conn: &PgConnParams, options: &RestoreOptions, tools: &PgT
     if options.format == "plain" {
         let result = Command::new(&tools.psql)
             .env("PGPASSWORD", &conn.password)
+            .args(["--no-psqlrc", "--set=ON_ERROR_STOP=1"])
             .args([
                 format!("--host={}", conn.host),
                 format!("--port={}", conn.port),
@@ -253,6 +254,7 @@ pub fn run_pg_restore(conn: &PgConnParams, options: &RestoreOptions, tools: &PgT
     }
 
     let mut args = build_restore_args(conn, options);
+    args.push("--exit-on-error".into());
     args.push(options.file_path.clone());
 
     let result = Command::new(&tools.pg_restore)

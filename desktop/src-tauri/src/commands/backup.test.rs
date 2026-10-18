@@ -547,6 +547,99 @@ fn sqlite_restore_clean_drops_existing() {
     assert_eq!(names, vec!["Alice".to_string(), "Bob".to_string()]);
 }
 
+#[cfg(unix)]
+fn write_executable_script(name: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = std::env::temp_dir().join(format!(
+        "gridline_{name}_{}.sh",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(&path, body).unwrap();
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn plain_postgres_restore_stops_on_script_errors() {
+    let psql = write_executable_script(
+        "psql_restore",
+        r#"#!/bin/sh
+no_rc=0
+on_error_stop=0
+for arg in "$@"; do
+  [ "$arg" = "--no-psqlrc" ] && no_rc=1
+  [ "$arg" = "--set=ON_ERROR_STOP=1" ] && on_error_stop=1
+done
+[ "$no_rc" -eq 1 ] && [ "$on_error_stop" -eq 1 ] && exit 3
+exit 0
+"#,
+    );
+    let conn = PgConnParams::new(
+        "localhost".into(),
+        5432,
+        "test".into(),
+        "db".into(),
+        "".into(),
+    );
+    let options = RestoreOptions {
+        format: "plain".into(),
+        file_path: "/tmp/synthetic.sql".into(),
+        clean: false,
+        schema: None,
+    };
+    let tools = PgToolPaths {
+        pg_dump: String::new(),
+        pg_restore: String::new(),
+        psql: psql.to_string_lossy().into_owned(),
+    };
+
+    let result = run_pg_restore(&conn, &options, &tools);
+    let _ = std::fs::remove_file(psql);
+
+    assert!(result.is_err(), "got {result:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn archive_postgres_restore_stops_on_first_error() {
+    let pg_restore = write_executable_script(
+        "pg_restore",
+        r#"#!/bin/sh
+for arg in "$@"; do
+  [ "$arg" = "--exit-on-error" ] && exit 1
+done
+exit 0
+"#,
+    );
+    let conn = PgConnParams::new(
+        "localhost".into(),
+        5432,
+        "test".into(),
+        "db".into(),
+        "".into(),
+    );
+    let options = RestoreOptions {
+        format: "custom".into(),
+        file_path: "/tmp/synthetic.dump".into(),
+        clean: false,
+        schema: None,
+    };
+    let tools = PgToolPaths {
+        pg_dump: String::new(),
+        pg_restore: pg_restore.to_string_lossy().into_owned(),
+        psql: String::new(),
+    };
+
+    let result = run_pg_restore(&conn, &options, &tools);
+    let _ = std::fs::remove_file(pg_restore);
+
+    assert!(result.is_err(), "got {result:?}");
+}
+
 // ------------------------------------------------------------------
 // MySQL dump / restore / sync arg building (Task 2.3)
 // ------------------------------------------------------------------
