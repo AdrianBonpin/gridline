@@ -668,7 +668,8 @@ pub fn run_mysql_sync(
     restore_args.push(format!("--database={}", target.database));
     let restore = Command::new(&tools.mysql).env("MYSQL_PWD", &target.password).args(&restore_args).stdin(stdout).output();
     let dump_status = dump.wait();
-    let dump_stderr = String::from_utf8_lossy(&stderr_reader.join().unwrap_or_default()).into_owned();
+    let dump_stderr =
+        String::from_utf8_lossy(&stderr_reader.join().unwrap_or_default()).into_owned();
     let dump_status = dump_status.map_err(|e| format!("dump: {e}"))?;
     if !dump_status.success() {
         return Err(format!("dump: {}", sanitize_error(&dump_stderr)));

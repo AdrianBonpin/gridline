@@ -647,9 +647,8 @@ fn mysql_sync_mock(dump_body: &str) -> MySqlSyncMock {
     let dump_args = dir.join("dump-args");
     let restore_args = dir.join("restore-args");
     let restored_sql = dir.join("restored-sql");
-    let shell_quote = |path: &std::path::Path| {
-        format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
-    };
+    let shell_quote =
+        |path: &std::path::Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
 
     let dump_script = format!(
         "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'mysqldump MySQL'; exit 0; fi\nprintf '%s\\n' \"$@\" > {}\n{}\n",
@@ -704,7 +703,9 @@ fn mysql_sync_restores_source_objects_into_the_selected_target() {
     assert!(!dump_args.lines().any(|arg| arg == "--databases"));
     assert!(dump_args.lines().any(|arg| arg == "source_db"));
     let restore_args = std::fs::read_to_string(&mock.restore_args).unwrap();
-    assert!(restore_args.lines().any(|arg| arg == "--database=target_db"));
+    assert!(restore_args
+        .lines()
+        .any(|arg| arg == "--database=target_db"));
     let restored_sql = std::fs::read_to_string(&mock.restored_sql).unwrap();
     assert!(!restored_sql.contains("USE source_db"), "{restored_sql}");
     assert!(restored_sql.contains("CREATE TABLE inventory"));
@@ -713,7 +714,9 @@ fn mysql_sync_restores_source_objects_into_the_selected_target() {
 #[cfg(unix)]
 #[test]
 fn mysql_sync_reports_a_failed_dump_even_when_restore_succeeds() {
-    let mock = mysql_sync_mock("test \"$MYSQL_PWD\" = source-secret || exit 80\necho 'partial dump'\nexit 17");
+    let mock = mysql_sync_mock(
+        "test \"$MYSQL_PWD\" = source-secret || exit 80\necho 'partial dump'\nexit 17",
+    );
     let source = MySqlConnParams::new(
         "source.example".into(),
         3306,
