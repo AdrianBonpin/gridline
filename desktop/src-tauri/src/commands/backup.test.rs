@@ -551,10 +551,7 @@ fn sqlite_restore_clean_drops_existing() {
 fn write_executable_script(name: &str, body: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
-    let path = std::env::temp_dir().join(format!(
-        "gridline_{name}_{}.sh",
-        uuid::Uuid::new_v4()
-    ));
+    let path = std::env::temp_dir().join(format!("gridline_{name}_{}.sh", uuid::Uuid::new_v4()));
     std::fs::write(&path, body).unwrap();
     let mut permissions = std::fs::metadata(&path).unwrap().permissions();
     permissions.set_mode(0o700);

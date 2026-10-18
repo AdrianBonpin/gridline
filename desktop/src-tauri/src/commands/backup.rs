@@ -232,7 +232,11 @@ pub fn run_pg_dump(conn: &PgConnParams, options: &BackupOptions, tools: &PgToolP
 /// Plain-format dumps are SQL text and cannot be read by `pg_restore` — they
 /// are executed with `psql` instead. The `clean` option is only honored for
 /// archive formats (custom/tar/directory); the UI disables it for plain.
-pub fn run_pg_restore(conn: &PgConnParams, options: &RestoreOptions, tools: &PgToolPaths) -> Result<(), String> {
+pub fn run_pg_restore(
+    conn: &PgConnParams,
+    options: &RestoreOptions,
+    tools: &PgToolPaths,
+) -> Result<(), String> {
     if options.format == "plain" {
         let result = Command::new(&tools.psql)
             .env("PGPASSWORD", &conn.password)
