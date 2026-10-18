@@ -620,6 +620,120 @@ fn client_is_mariadb_reads_the_version_banner() {
     assert!(!client_is_mariadb("/nonexistent/definitely-not-a-tool"));
 }
 
+#[cfg(unix)]
+struct MySqlSyncMock {
+    dir: std::path::PathBuf,
+    tools: MySqlToolPaths,
+    dump_args: std::path::PathBuf,
+    restore_args: std::path::PathBuf,
+    restored_sql: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for MySqlSyncMock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[cfg(unix)]
+fn mysql_sync_mock(dump_body: &str) -> MySqlSyncMock {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!("gridline-mysql-sync-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let dump = dir.join("mysqldump");
+    let mysql = dir.join("mysql");
+    let dump_args = dir.join("dump-args");
+    let restore_args = dir.join("restore-args");
+    let restored_sql = dir.join("restored-sql");
+    let shell_quote = |path: &std::path::Path| {
+        format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+    };
+
+    let dump_script = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'mysqldump MySQL'; exit 0; fi\nprintf '%s\\n' \"$@\" > {}\n{}\n",
+        shell_quote(&dump_args), dump_body
+    );
+    std::fs::write(&dump, dump_script).unwrap();
+    std::fs::set_permissions(&dump, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let mysql_script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\ntest \"$MYSQL_PWD\" = target-secret || exit 81\ncat > {}\n",
+        shell_quote(&restore_args), shell_quote(&restored_sql)
+    );
+    std::fs::write(&mysql, mysql_script).unwrap();
+    std::fs::set_permissions(&mysql, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    MySqlSyncMock {
+        dir,
+        tools: MySqlToolPaths {
+            mysqldump: dump.to_string_lossy().into_owned(),
+            mysql: mysql.to_string_lossy().into_owned(),
+        },
+        dump_args,
+        restore_args,
+        restored_sql,
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn mysql_sync_restores_source_objects_into_the_selected_target() {
+    let mock = mysql_sync_mock(
+        "test \"$MYSQL_PWD\" = source-secret || exit 80\nfor arg in \"$@\"; do\n  if [ \"$arg\" = \"--databases\" ]; then\n    echo 'CREATE DATABASE source_db;'\n    echo 'USE source_db;'\n  fi\ndone\necho 'CREATE TABLE inventory (id INT);'",
+    );
+    let source = MySqlConnParams::new(
+        "source.example".into(),
+        3306,
+        "source_user".into(),
+        "source_db".into(),
+        "source-secret".into(),
+    );
+    let target = MySqlConnParams::new(
+        "target.example".into(),
+        3306,
+        "target_user".into(),
+        "target_db".into(),
+        "target-secret".into(),
+    );
+
+    run_mysql_sync(&source, &target, &mock.tools, None).unwrap();
+
+    let dump_args = std::fs::read_to_string(&mock.dump_args).unwrap();
+    assert!(!dump_args.lines().any(|arg| arg == "--databases"));
+    assert!(dump_args.lines().any(|arg| arg == "source_db"));
+    let restore_args = std::fs::read_to_string(&mock.restore_args).unwrap();
+    assert!(restore_args.lines().any(|arg| arg == "--database=target_db"));
+    let restored_sql = std::fs::read_to_string(&mock.restored_sql).unwrap();
+    assert!(!restored_sql.contains("USE source_db"), "{restored_sql}");
+    assert!(restored_sql.contains("CREATE TABLE inventory"));
+}
+
+#[cfg(unix)]
+#[test]
+fn mysql_sync_reports_a_failed_dump_even_when_restore_succeeds() {
+    let mock = mysql_sync_mock("test \"$MYSQL_PWD\" = source-secret || exit 80\necho 'partial dump'\nexit 17");
+    let source = MySqlConnParams::new(
+        "source.example".into(),
+        3306,
+        "source_user".into(),
+        "source_db".into(),
+        "source-secret".into(),
+    );
+    let target = MySqlConnParams::new(
+        "target.example".into(),
+        3306,
+        "target_user".into(),
+        "target_db".into(),
+        "target-secret".into(),
+    );
+
+    let result = run_mysql_sync(&source, &target, &mock.tools, None);
+
+    assert!(result.is_err(), "a partial dump must fail the sync");
+}
+
 /// Regression guard for the bundled fallback path: the args we generate must be
 /// *accepted* by the real bundled MariaDB client. It spawns the staged binary
 /// against a closed port and requires the failure to be a CONNECTION error —

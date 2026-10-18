@@ -1,5 +1,5 @@
 use rusqlite::{types::ValueRef, Connection};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -652,15 +652,27 @@ pub fn run_mysql_sync(
     let mut dump_args = base_mysql_args(source);
     dump_args.push("--single-transaction".into());
     dump_args.push("--add-drop-table".into());
-    dump_args.push("--databases".into());
+    // `--databases` writes CREATE DATABASE and USE statements that can override
+    // the database selected by the restore client.
     dump_args.push(source.database.clone());
     dump_args.extend(tls_args_for_client(is_mariadb, tls_mode));
     let mut dump = Command::new(&tools.mysqldump).env("MYSQL_PWD", &source.password).args(&dump_args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("dump: {e}"))?;
     let stdout = dump.stdout.take().unwrap();
+    let mut stderr = dump.stderr.take().unwrap();
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
     let mut restore_args = base_mysql_args(target);
     restore_args.push(format!("--database={}", target.database));
     let restore = Command::new(&tools.mysql).env("MYSQL_PWD", &target.password).args(&restore_args).stdin(stdout).output();
-    let _ = dump.wait();
+    let dump_status = dump.wait();
+    let dump_stderr = String::from_utf8_lossy(&stderr_reader.join().unwrap_or_default()).into_owned();
+    let dump_status = dump_status.map_err(|e| format!("dump: {e}"))?;
+    if !dump_status.success() {
+        return Err(format!("dump: {}", sanitize_error(&dump_stderr)));
+    }
     match restore {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => Err(format!("restore: {}", sanitize_error(&String::from_utf8_lossy(&o.stderr)))),
