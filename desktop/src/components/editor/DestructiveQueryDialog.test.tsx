@@ -37,4 +37,51 @@ describe("DestructiveQueryDialog", () => {
     const displayed = screen.getByText(/DROP TABLE/);
     expect(displayed.textContent!.length).toBeLessThan(longQuery.length + 20);
   });
+
+  it("names the offending statement in a multi-statement script", () => {
+    render(
+      <DestructiveQueryDialog
+        open={true}
+        query="SELECT 1; DROP TABLE demo;"
+        statementIndex={2}
+        statementCount={2}
+        reason="schema"
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const detail = screen.getByTestId("destructive-statement-detail");
+    expect(detail).toHaveTextContent("Statement 2 of 2");
+    expect(detail).toHaveTextContent(/schema-modifying/i);
+  });
+
+  it("explains an unverifiable statement", () => {
+    render(
+      <DestructiveQueryDialog
+        open={true}
+        query="CALL refresh_all();"
+        statementIndex={1}
+        statementCount={1}
+        reason="unknown"
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const detail = screen.getByTestId("destructive-statement-detail");
+    expect(detail).toHaveTextContent(/could not be verified as read-only/i);
+    // A single-statement script has no "statement N of M" prefix.
+    expect(detail).not.toHaveTextContent(/Statement 1 of 1/);
+  });
+
+  it("renders no detail row when no analysis is supplied (backwards compatible)", () => {
+    render(
+      <DestructiveQueryDialog
+        open={true}
+        query="DROP TABLE users"
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId("destructive-statement-detail")).toBeNull();
+  });
 });
