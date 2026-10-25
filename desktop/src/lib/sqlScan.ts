@@ -213,3 +213,141 @@ export function splitStatements(sql: string): string[] {
   flush();
   return statements;
 }
+
+// --- classification ---------------------------------------------------------
+
+/**
+ * Verbs that never change data or schema. Allowlist-based on purpose: an
+ * unlisted verb falls through to `unknown`, which asks for confirmation
+ * (issue #50: "ask for confirmation when classification is uncertain").
+ */
+const READ_VERBS = new Set([
+  "SELECT", "VALUES", "TABLE", "SHOW", "DESCRIBE", "DESC", "EXPLAIN",
+  "SET", "RESET", "BEGIN", "START", "COMMIT", "END", "ROLLBACK", "ABORT",
+  "SAVEPOINT", "RELEASE", "ANALYZE", "VACUUM", "REINDEX", "CLUSTER",
+  "CHECKPOINT", "DECLARE", "FETCH", "MOVE", "CLOSE", "LISTEN", "UNLISTEN",
+  "NOTIFY", "LOCK", "UNLOCK", "DISCARD", "DEALLOCATE", "PREPARE", "PRAGMA",
+  "USE", "HELP",
+]);
+
+/** Verbs that change rows. */
+const WRITE_VERBS = new Set([
+  "INSERT", "UPDATE", "DELETE", "REPLACE", "MERGE", "UPSERT", "LOAD",
+]);
+
+/**
+ * Verbs that change schema. `TRUNCATE` lives here (not in WRITE_VERBS) to
+ * preserve the documented behaviour that the object tree refreshes after a
+ * schema-modifying run — `TRUNCATE` is still destructive, so it prompts
+ * either way.
+ */
+const SCHEMA_VERBS = new Set([
+  "CREATE", "DROP", "ALTER", "RENAME", "COMMENT", "GRANT", "REVOKE",
+  "REFRESH", "IMPORT", "TRUNCATE",
+]);
+
+/** Verbs inside a `WITH` chain that make the whole statement a write. */
+const CTE_WRITE_VERBS = new Set(["INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE"]);
+
+export type StatementKind = "read" | "write" | "schema" | "unknown";
+
+export interface ScriptAnalysis {
+  /** True when running this script needs an explicit confirmation. */
+  destructive: boolean;
+  /** 1-based index of the first statement needing confirmation, else null. */
+  firstDestructiveIndex: number | null;
+  totalStatements: number;
+  reason: "write" | "schema" | "unknown" | null;
+}
+
+/**
+ * Every bare word in `sql`, uppercased, with quoted regions, comments and
+ * dollar-quoted bodies skipped. This is what makes keyword detection
+ * immune to `SELECT 'DROP TABLE t'`.
+ */
+export function scanWords(sql: string): string[] {
+  const chars: Chars = Array.from(sql);
+  const words: string[] = [];
+  let i = 0;
+  while (i < chars.length) {
+    const c = chars[i];
+    if (c === "'" || c === '"' || c === "`") {
+      i = readQuoted(chars, i, c).next;
+      continue;
+    }
+    if (c === "-" && chars[i + 1] === "-") {
+      i = readUntil(chars, i, (ch) => ch === "\n").next;
+      continue;
+    }
+    if (c === "/" && chars[i + 1] === "*") {
+      i = readBlockComment(chars, i).next;
+      continue;
+    }
+    if (c === "$") {
+      const end = dollarQuoteEnd(chars, i);
+      if (end !== null) {
+        i = end;
+        continue;
+      }
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      let word = "";
+      while (i < chars.length && /[A-Za-z0-9_$]/.test(chars[i])) {
+        word += chars[i];
+        i += 1;
+      }
+      words.push(word.toUpperCase());
+      continue;
+    }
+    i += 1;
+  }
+  return words;
+}
+
+/** Classify a single statement. See `SCRIPT_DESTRUCTIVE_REASONS` for the reasons. */
+export function classifyStatement(stmt: string): StatementKind {
+  const words = scanWords(stmt);
+  if (words.length === 0) return "read"; // nothing executes
+
+  const first = words[0];
+  if (first === "WITH") {
+    // A data-modifying CTE can sit anywhere in the chain, e.g.
+    //   WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d
+    // which writes even though the trailing verb is SELECT. Fail closed.
+    return words.slice(1).some((word) => CTE_WRITE_VERBS.has(word)) ? "write" : "read";
+  }
+  if (SCHEMA_VERBS.has(first)) return "schema";
+  if (WRITE_VERBS.has(first)) return "write";
+  if (READ_VERBS.has(first)) return "read";
+  return "unknown";
+}
+
+/**
+ * Inspect **every** statement in the script, not just the first one.
+ * `SELECT 1; DROP TABLE demo;` must prompt (issue #50).
+ */
+export function analyzeScript(sql: string): ScriptAnalysis {
+  const statements = splitStatements(sql);
+  for (let index = 0; index < statements.length; index += 1) {
+    const kind = classifyStatement(statements[index]);
+    if (kind === "write" || kind === "schema" || kind === "unknown") {
+      return {
+        destructive: true,
+        firstDestructiveIndex: index + 1,
+        totalStatements: statements.length,
+        reason: kind,
+      };
+    }
+  }
+  return {
+    destructive: false,
+    firstDestructiveIndex: null,
+    totalStatements: statements.length,
+    reason: null,
+  };
+}
+
+/** True when ANY statement in `sql` changes schema (drives the tree refresh). */
+export function hasSchemaModifyingStatement(sql: string): boolean {
+  return splitStatements(sql).some((stmt) => classifyStatement(stmt) === "schema");
+}
