@@ -23,8 +23,8 @@ pub struct AppState {
 }
 
 use commands::{
-    backup, connections, db_viewer, demo, folders, import_export, keychain, maintenance, objects, query,
-    query_export, schema_diff, schema_graph, settings, tags,
+    backup, connections, db_viewer, demo, folders, import_export, keychain, maintenance, objects,
+    query, query_export, schema_diff, schema_graph, settings, tags,
 };
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -77,8 +77,8 @@ pub fn run() {
                 .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
             std::fs::create_dir_all(&data_dir)
                 .map_err(|e| format!("failed to create app data dir: {e}"))?;
-            let store =
-                Store::open(&data_dir.join("gridline.db").to_string_lossy()).expect("failed to open db");
+            let store = Store::open(&data_dir.join("gridline.db").to_string_lossy())
+                .expect("failed to open db");
 
             // Cold-start "open with": the path arrived as a process argument
             // before the webview existed, so queue it here. macOS uses
@@ -175,7 +175,10 @@ pub fn run() {
             objects::build_object_ddl,
             objects::build_rebuild_script,
             objects::get_available_extensions,
-            objects::get_roles, objects::get_role_privileges, objects::get_table_rebuild_readiness, objects::get_tablespaces,
+            objects::get_roles,
+            objects::get_role_privileges,
+            objects::get_table_rebuild_readiness,
+            objects::get_tablespaces,
             maintenance::run_maintenance,
             keychain::save_connection_password,
             keychain::get_connection_password,
@@ -222,8 +225,7 @@ pub fn run() {
             // macOS: Finder / LaunchServices "open with". File URLs only.
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Opened { urls } => {
-                let pending = app_handle
-                    .state::<crate::commands::open_files::PendingOpenFiles>();
+                let pending = app_handle.state::<crate::commands::open_files::PendingOpenFiles>();
                 let mut accepted = false;
                 for url in urls {
                     if let Ok(path) = url.to_file_path() {

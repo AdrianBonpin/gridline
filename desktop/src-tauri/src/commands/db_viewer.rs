@@ -9,9 +9,9 @@ use crate::models::db_viewer::{
     HypertableListResponse, IndexInfo, QueryResult, SequenceInfo, TableInfo, TriggerInfo,
 };
 use bytes::BytesMut;
+use sqlx::Row;
 use std::collections::HashMap;
 use std::error::Error;
-use sqlx::Row;
 use tauri::State;
 use tokio_postgres::types::{Format, IsNull, ToSql, Type};
 
@@ -1372,8 +1372,8 @@ pub async fn get_schemas(
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
             let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-            // MySQL has no separate schema layer — databases play the role of
-            // schemas, so the schema selector mirrors the database list.
+                               // MySQL has no separate schema layer — databases play the role of
+                               // schemas, so the schema selector mirrors the database list.
             let rows = sqlx::query(&crate::db::mysql::mysql_databases_query())
                 .fetch_all(pool)
                 .await
@@ -1436,8 +1436,8 @@ pub(crate) async fn get_tables_inner(
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
             let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-            // 2 columns (name, type) when a schema is given; 3 (+ schema)
-            // when not — hence sqlx::query + try_get, not query_as.
+                               // 2 columns (name, type) when a schema is given; 3 (+ schema)
+                               // when not — hence sqlx::query + try_get, not query_as.
             let query = crate::db::introspection::mysql_tables_query(schema);
             let rows = sqlx::query(&query)
                 .fetch_all(pool)
@@ -1502,10 +1502,11 @@ pub(crate) async fn mysql_load_columns(
             let data_type = crate::db::mysql::mysql_row_string(r, 1);
             let is_nullable = crate::db::mysql::mysql_row_string(r, 2);
             let column_key = crate::db::mysql::mysql_row_string(r, 3);
-            let default_value: Option<String> = r
-                .try_get::<String, _>(4)
-                .ok()
-                .or_else(|| r.try_get::<Vec<u8>, _>(4).ok().map(|b| String::from_utf8_lossy(&b).into_owned()));
+            let default_value: Option<String> = r.try_get::<String, _>(4).ok().or_else(|| {
+                r.try_get::<Vec<u8>, _>(4)
+                    .ok()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+            });
             let extra = crate::db::mysql::mysql_row_string(r, 5);
             let is_pk = column_key == "PRI";
             let is_generated = extra.to_ascii_uppercase().contains("GENERATED");
@@ -1973,7 +1974,11 @@ ORDER BY c.ordinal_position"#;
             let visible_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
             let default_sort = crate::db::mysql::mysql_default_sort(&visible_names).to_string();
             let data_query = crate::db::mysql::mysql_select_data_query(
-                schema, table, &filters, &sorts, &default_sort,
+                schema,
+                table,
+                &filters,
+                &sorts,
+                &default_sort,
             );
 
             let mut q = sqlx::query(&data_query);
@@ -2053,7 +2058,10 @@ pub(crate) async fn get_table_columns_inner(
         None => return Err("Connection not found".into()),
     };
     let rows = client
-        .query(&crate::db::introspection::pg_columns_query(schema, table), &[])
+        .query(
+            &crate::db::introspection::pg_columns_query(schema, table),
+            &[],
+        )
         .await
         .map_err(|e| sanitize_error(&format!("{e}")))?;
     Ok(rows
@@ -2287,8 +2295,8 @@ ORDER BY c.ordinal_position"#;
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
             let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-            // The request already resolves the referenced table/column (the
-            // frontend reads `fk_ref`); fetch the referenced row directly.
+                               // The request already resolves the referenced table/column (the
+                               // frontend reads `fk_ref`); fetch the referenced row directly.
             let columns = mysql_load_columns(pool, &schema, &table).await?;
             let qualified = format!(
                 "{}.{}",
@@ -2600,8 +2608,7 @@ pub(crate) async fn execute_change_inner(
                         columns,
                         rows.len(),
                     );
-                    let params: Vec<serde_json::Value> =
-                        rows.iter().flatten().cloned().collect();
+                    let params: Vec<serde_json::Value> = rows.iter().flatten().cloned().collect();
                     // Bulk insert affects many rows — skip the single-row
                     // affected-count guard.
                     bind_mysql_params(sqlx::query(&sql), &params)
@@ -2672,8 +2679,8 @@ pub async fn refresh_connection(
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
             let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-            // Verify reachability (the sqlx pool reconnects transparently); the
-            // frontend re-issues getDatabases/getSchemas/getTables afterwards.
+                               // Verify reachability (the sqlx pool reconnects transparently); the
+                               // frontend re-issues getDatabases/getSchemas/getTables afterwards.
             sqlx::query_scalar::<_, i64>("SELECT 1")
                 .fetch_one(pool)
                 .await
@@ -3004,7 +3011,7 @@ pub async fn get_table_ddl(
         Some(DbHandle::Sqlite(conn)) => get_sqlite_ddl(conn, &table),
         Some(DbHandle::MySql(pool)) => {
             let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-            // SHOW CREATE TABLE returns (Table, Create Table); take the DDL.
+                               // SHOW CREATE TABLE returns (Table, Create Table); take the DDL.
             let row = sqlx::query(&crate::db::mysql::mysql_ddl_query(&schema, &table))
                 .fetch_one(pool)
                 .await
@@ -3049,7 +3056,14 @@ pub async fn get_table_ddl(
             let pg_dump_path = crate::commands::backup::resolve_tool(&app, "pg_dump").0;
             let ddl = tokio::task::spawn_blocking(move || {
                 get_pg_ddl_via_dump(
-                    &schema, &table, &dump_host, dump_port, &user, &db, &password, &pg_dump_path,
+                    &schema,
+                    &table,
+                    &dump_host,
+                    dump_port,
+                    &user,
+                    &db,
+                    &password,
+                    &pg_dump_path,
                 )
             })
             .await
@@ -3545,11 +3559,7 @@ mod tests {
             Type::DATE,
             Type::TIME,
         ] {
-            assert!(
-                PgText::accepts(&ty),
-                "PgText must accept {:?}",
-                ty
-            );
+            assert!(PgText::accepts(&ty), "PgText must accept {:?}", ty);
         }
         // Sanity: a native String must NOT accept a non-text type (proving the
         // root cause this fix addresses).
@@ -3638,7 +3648,13 @@ mod tests {
 
     #[test]
     fn mysql_system_dbs_are_filtered() {
-        let all = vec!["information_schema", "mysql", "performance_schema", "sys", "shop"];
+        let all = vec![
+            "information_schema",
+            "mysql",
+            "performance_schema",
+            "sys",
+            "shop",
+        ];
         let filtered: Vec<&str> = all
             .into_iter()
             .filter(|d| !crate::db::mysql::MYSQL_SYSTEM_DBS.contains(d))
@@ -3652,7 +3668,10 @@ mod tests {
         let data = vec![("name".to_string(), serde_json::json!("x"))];
         let (sql, _params) =
             crate::db::mysql::mysql_build_update_sql("shop", "orders", &pk, &data).unwrap();
-        assert_eq!(sql, "UPDATE `shop`.`orders` SET `name` = ? WHERE `id` = ? LIMIT 1");
+        assert_eq!(
+            sql,
+            "UPDATE `shop`.`orders` SET `name` = ? WHERE `id` = ? LIMIT 1"
+        );
     }
 
     #[tokio::test]
@@ -3733,9 +3752,14 @@ mod tests {
         let pm = fresh_pool_manager().await;
         let reg = crate::cancel::CancelRegistry::new();
         let id = format!("mysql-it-{}", uuid::Uuid::new_v4());
-        run_mysql_connect(&id, &cfg, &ssh, &pm, &reg).await.expect("connect");
+        run_mysql_connect(&id, &cfg, &ssh, &pm, &reg)
+            .await
+            .expect("connect");
         let tables = get_tables_inner(&pm, &id, Some(&db)).await.expect("tables");
-        assert!(!tables.is_empty(), "test DB must contain at least one table");
+        assert!(
+            !tables.is_empty(),
+            "test DB must contain at least one table"
+        );
         let first = &tables[0];
         let data = get_table_data_inner(
             &pm,

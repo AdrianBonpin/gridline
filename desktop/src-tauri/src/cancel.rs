@@ -41,7 +41,9 @@ pub struct SqliteCancel {
 
 impl SqliteCancel {
     pub fn new(handle: InterruptHandle) -> Self {
-        Self { handle: Arc::new(handle) }
+        Self {
+            handle: Arc::new(handle),
+        }
     }
     pub fn interrupt(&self) {
         self.handle.interrupt();
@@ -191,8 +193,20 @@ mod tests {
     #[test]
     fn mysql_overwrites_single_active_slot() {
         let reg = CancelRegistry::new();
-        reg.set_mysql("c1", MySqlCancel { conn_id: Some(1), connect_options: fake_opts() });
-        reg.set_mysql("c1", MySqlCancel { conn_id: Some(2), connect_options: fake_opts() });
+        reg.set_mysql(
+            "c1",
+            MySqlCancel {
+                conn_id: Some(1),
+                connect_options: fake_opts(),
+            },
+        );
+        reg.set_mysql(
+            "c1",
+            MySqlCancel {
+                conn_id: Some(2),
+                connect_options: fake_opts(),
+            },
+        );
         match reg.get("c1") {
             Some(CancelHandle::MySql(m)) => assert_eq!(m.conn_id, Some(2)),
             _ => panic!("expected MySql"),
@@ -205,7 +219,10 @@ mod tests {
         assert!(!reg.is_cancelled("c1"));
         reg.mark_cancelled("c1");
         assert!(reg.is_cancelled("c1"));
-        assert!(!reg.is_cancelled("c2"), "flag must not leak across connections");
+        assert!(
+            !reg.is_cancelled("c2"),
+            "flag must not leak across connections"
+        );
         reg.clear_cancelled("c1");
         assert!(!reg.is_cancelled("c1"));
         // The same Arc is shared between getter and setter.
@@ -216,6 +233,10 @@ mod tests {
 
     fn fake_opts() -> sqlx::mysql::MySqlConnectOptions {
         sqlx::mysql::MySqlConnectOptions::new()
-            .host("127.0.0.1").port(1).username("u").password("p").database("d")
+            .host("127.0.0.1")
+            .port(1)
+            .username("u")
+            .password("p")
+            .database("d")
     }
 }

@@ -576,7 +576,10 @@ impl Store {
     }
 
     /// Bulk-write settings keys in one transaction (used by settings import).
-    pub fn apply_settings(&self, map: &std::collections::HashMap<String, String>) -> Result<(), String> {
+    pub fn apply_settings(
+        &self,
+        map: &std::collections::HashMap<String, String>,
+    ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
         for (k, v) in map.iter() {

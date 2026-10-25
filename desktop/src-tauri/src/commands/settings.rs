@@ -37,7 +37,10 @@ pub fn update_setting(
 /// `get_settings` filters back to `None`).
 fn settings_to_kv(s: &crate::models::Settings) -> HashMap<String, String> {
     let mut m = HashMap::new();
-    m.insert("confirm_before_delete".into(), s.confirm_before_delete.to_string());
+    m.insert(
+        "confirm_before_delete".into(),
+        s.confirm_before_delete.to_string(),
+    );
     if let Some(f) = &s.default_folder_id {
         m.insert("default_folder_id".into(), f.clone());
     } else {
@@ -46,7 +49,10 @@ fn settings_to_kv(s: &crate::models::Settings) -> HashMap<String, String> {
     m.insert("theme".into(), s.theme.clone());
     m.insert("font_size".into(), s.font_size.clone());
     m.insert("accent_color".into(), s.accent_color.clone());
-    m.insert("table_refresh_rate".into(), s.table_refresh_rate.to_string());
+    m.insert(
+        "table_refresh_rate".into(),
+        s.table_refresh_rate.to_string(),
+    );
     m.insert("table_page_size".into(), s.table_page_size.to_string());
     m.insert("editor_font_size".into(), s.editor_font_size.to_string());
     m.insert("editor_font_family".into(), s.editor_font_family.clone());
@@ -78,10 +84,7 @@ pub fn export_settings(state: tauri::State<crate::AppState>) -> Result<String, S
 }
 
 #[tauri::command]
-pub fn import_settings(
-    json: String,
-    state: tauri::State<crate::AppState>,
-) -> Result<(), String> {
+pub fn import_settings(json: String, state: tauri::State<crate::AppState>) -> Result<(), String> {
     let env: crate::models::settings::SettingsExport =
         serde_json::from_str(&json).map_err(|e| format!("invalid settings file: {e}"))?;
     let map = settings_to_kv(&env.settings);
@@ -126,12 +129,26 @@ mod tests {
     #[test]
     fn settings_export_envelope_camel_case() {
         use std::collections::HashMap;
-        let env = crate::models::settings::SettingsExport { schema_version: 1, settings: crate::models::Settings {
-            confirm_before_delete: true, default_folder_id: None, theme: "dark".into(), font_size: "medium".into(),
-            default_ports: HashMap::new(), tag_order: None, table_refresh_rate: 5, table_page_size: 50,
-            shortcuts: HashMap::new(), accent_color: "#2563EB".into(), editor_font_size: 14,
-            editor_font_family: "Menlo".into(), editor_word_wrap: "off".into(), editor_minimap: true, editor_tab_size: 2,
-        }};
+        let env = crate::models::settings::SettingsExport {
+            schema_version: 1,
+            settings: crate::models::Settings {
+                confirm_before_delete: true,
+                default_folder_id: None,
+                theme: "dark".into(),
+                font_size: "medium".into(),
+                default_ports: HashMap::new(),
+                tag_order: None,
+                table_refresh_rate: 5,
+                table_page_size: 50,
+                shortcuts: HashMap::new(),
+                accent_color: "#2563EB".into(),
+                editor_font_size: 14,
+                editor_font_family: "Menlo".into(),
+                editor_word_wrap: "off".into(),
+                editor_minimap: true,
+                editor_tab_size: 2,
+            },
+        };
         let json = serde_json::to_string(&env).unwrap();
         assert!(json.contains("\"schemaVersion\":1"));
         assert!(json.contains("\"settings\":"));

@@ -29,7 +29,9 @@ impl ExportFormat {
             "csv" => Ok(ExportFormat::Csv),
             "jsonl" => Ok(ExportFormat::Jsonl),
             "json" => Ok(ExportFormat::Json),
-            other => Err(format!("unsupported export format: {other} (csv | jsonl | json)")),
+            other => Err(format!(
+                "unsupported export format: {other} (csv | jsonl | json)"
+            )),
         }
     }
 }
@@ -95,7 +97,11 @@ pub fn csv_cell(value: &serde_json::Value) -> String {
         }
         _ => raw.clone(),
     };
-    if guarded.contains(',') || guarded.contains('"') || guarded.contains('\n') || guarded.contains('\r') {
+    if guarded.contains(',')
+        || guarded.contains('"')
+        || guarded.contains('\n')
+        || guarded.contains('\r')
+    {
         format!("\"{}\"", guarded.replace('"', "\"\""))
     } else {
         guarded
@@ -124,7 +130,10 @@ pub fn csv_header(columns: &[ColumnInfo]) -> String {
 pub fn jsonl_line(columns: &[ColumnInfo], row: &[serde_json::Value]) -> String {
     let mut obj = serde_json::Map::new();
     for (i, c) in columns.iter().enumerate() {
-        obj.insert(c.name.clone(), row.get(i).cloned().unwrap_or(serde_json::Value::Null));
+        obj.insert(
+            c.name.clone(),
+            row.get(i).cloned().unwrap_or(serde_json::Value::Null),
+        );
     }
     serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default()
 }
@@ -206,9 +215,8 @@ pub fn run_sqlite_export(
         let mut first = true;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
         while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let values: Vec<serde_json::Value> = (0..col_count)
-                .map(|i| sqlite_ref_to_json(row, i))
-                .collect();
+            let values: Vec<serde_json::Value> =
+                (0..col_count).map(|i| sqlite_ref_to_json(row, i)).collect();
             write_row(writer, format, &columns, &values, first).map_err(|e| e.to_string())?;
             first = false;
             rows_written += 1;
@@ -253,7 +261,10 @@ pub async fn run_pg_export(
     // LINEAR FORM: run the cursor loop inline; on any error drop the writer
     // and remove the partial file.
     let run = async {
-        client.simple_query("BEGIN").await.map_err(|e| format!("export begin failed: {e}"))?;
+        client
+            .simple_query("BEGIN")
+            .await
+            .map_err(|e| format!("export begin failed: {e}"))?;
         if let Err(e) = client
             .simple_query(&format!("DECLARE {CURSOR_NAME} CURSOR FOR ({trimmed})"))
             .await
@@ -370,9 +381,11 @@ pub async fn run_mysql_export(
         if format == ExportFormat::Json {
             write!(writer, "[").map_err(|e| e.to_string())?;
         }
-        while let Some(row) = stream.try_next().await.map_err(|e| {
-            crate::commands::db_viewer::sanitize_error(&format!("{e}"))
-        })? {
+        while let Some(row) = stream
+            .try_next()
+            .await
+            .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?
+        {
             if columns.is_empty() {
                 columns = row
                     .columns()
@@ -394,8 +407,9 @@ pub async fn run_mysql_export(
                     writeln!(writer, "{}", csv_header(&columns)).map_err(|e| e.to_string())?;
                 }
             }
-            let values: Vec<serde_json::Value> =
-                (0..row.len()).map(|i| crate::commands::query::mysql_cell_to_json(&row, i)).collect();
+            let values: Vec<serde_json::Value> = (0..row.len())
+                .map(|i| crate::commands::query::mysql_cell_to_json(&row, i))
+                .collect();
             write_row(&mut writer, format, &columns, &values, first).map_err(|e| e.to_string())?;
             first = false;
             rows_written += 1;
@@ -498,9 +512,13 @@ pub async fn export_query_to_file(
                 .fetch_one(&mut *conn)
                 .await
                 .unwrap_or(-1);
-            state.cancel_registry.set_mysql_conn_id(&connection_id, Some(conn_id));
+            state
+                .cancel_registry
+                .set_mysql_conn_id(&connection_id, Some(conn_id));
             let r = run_mysql_export(&mut *conn, &sql, fmt, &path_buf, &mut progress_cb).await;
-            state.cancel_registry.set_mysql_conn_id(&connection_id, None);
+            state
+                .cancel_registry
+                .set_mysql_conn_id(&connection_id, None);
             r
         }
         other => run_export_query(other, &sql, fmt, &path_buf, &mut progress_cb).await,

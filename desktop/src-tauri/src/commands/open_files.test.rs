@@ -103,5 +103,8 @@ fn rejects_a_non_utf8_file() {
     std::fs::write(&f, [0xff, 0xfe, 0x00]).unwrap();
     let buffer = PendingOpenFiles::default();
     assert!(accept_path(&buffer, &f.to_string_lossy()));
-    assert!(take_from_buffer(&buffer).is_err(), "non-UTF8 must fail closed");
+    assert!(
+        take_from_buffer(&buffer).is_err(),
+        "non-UTF8 must fail closed"
+    );
 }

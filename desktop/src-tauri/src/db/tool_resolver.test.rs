@@ -2,15 +2,28 @@ use super::*;
 
 #[test]
 fn bundled_bin_name_appends_exe_only_on_windows() {
-    let expected = if cfg!(windows) { "pg_dump.exe" } else { "pg_dump" };
+    let expected = if cfg!(windows) {
+        "pg_dump.exe"
+    } else {
+        "pg_dump"
+    };
     assert_eq!(bundled_bin_name("pg_dump"), expected);
 }
 
 #[test]
 fn pg_request_maps_known_tool_names() {
-    assert_eq!(pg_request("pg_dump").unwrap(), ToolRequest::new("pg_tools", &["pg_dump"]));
-    assert_eq!(pg_request("pg_restore").unwrap(), ToolRequest::new("pg_tools", &["pg_restore"]));
-    assert_eq!(pg_request("psql").unwrap(), ToolRequest::new("pg_tools", &["psql"]));
+    assert_eq!(
+        pg_request("pg_dump").unwrap(),
+        ToolRequest::new("pg_tools", &["pg_dump"])
+    );
+    assert_eq!(
+        pg_request("pg_restore").unwrap(),
+        ToolRequest::new("pg_tools", &["pg_restore"])
+    );
+    assert_eq!(
+        pg_request("psql").unwrap(),
+        ToolRequest::new("pg_tools", &["psql"])
+    );
     assert!(pg_request("not_a_tool").is_none());
 }
 
@@ -31,7 +44,10 @@ fn mysql_client_request_prefers_mariadb_then_mysql() {
 
 #[test]
 fn cache_key_is_stable_and_name_ordered() {
-    assert_eq!(mysql_dump_request().cache_key(), "mysql_tools::mariadb-dump,mysqldump");
+    assert_eq!(
+        mysql_dump_request().cache_key(),
+        "mysql_tools::mariadb-dump,mysqldump"
+    );
     assert_eq!(pg_dump_request().cache_key(), "pg_tools::pg_dump");
 }
 
@@ -46,10 +62,23 @@ fn tool_source_maps_to_ui_string() {
 #[test]
 fn trusted_dirs_include_homebrew_and_postgres_app_on_macos() {
     let dirs = trusted_dirs();
-    assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")), "{dirs:?}");
-    assert!(dirs.contains(&PathBuf::from("/opt/homebrew/opt/mysql-client/bin")), "{dirs:?}");
-    assert!(dirs.contains(&PathBuf::from("/usr/local/opt/libpq/bin")), "{dirs:?}");
-    assert!(dirs.iter().any(|d| d.ends_with("Postgres.app/Contents/Versions/latest/bin")), "{dirs:?}");
+    assert!(
+        dirs.contains(&PathBuf::from("/opt/homebrew/bin")),
+        "{dirs:?}"
+    );
+    assert!(
+        dirs.contains(&PathBuf::from("/opt/homebrew/opt/mysql-client/bin")),
+        "{dirs:?}"
+    );
+    assert!(
+        dirs.contains(&PathBuf::from("/usr/local/opt/libpq/bin")),
+        "{dirs:?}"
+    );
+    assert!(
+        dirs.iter()
+            .any(|d| d.ends_with("Postgres.app/Contents/Versions/latest/bin")),
+        "{dirs:?}"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -69,12 +98,19 @@ fn bundled_tool_path_includes_the_nested_resources_prefix() {
     // THE BUG FROM ISSUE #44: the shipped app stores the tool at
     // <resource_dir>/resources/mysql_tools/mariadb-dump, never at
     // <resource_dir>/mysql_tools/mariadb-dump.
-    let p = bundled_tool_path(Path::new("/app/Contents/Resources"), "mysql_tools", "mariadb-dump");
+    let p = bundled_tool_path(
+        Path::new("/app/Contents/Resources"),
+        "mysql_tools",
+        "mariadb-dump",
+    );
     assert_eq!(
         p,
-        PathBuf::from("/app/Contents/Resources/resources/mysql_tools").join(bundled_bin_name("mariadb-dump"))
+        PathBuf::from("/app/Contents/Resources/resources/mysql_tools")
+            .join(bundled_bin_name("mariadb-dump"))
     );
-    assert!(p.to_string_lossy().ends_with("resources/mysql_tools/mariadb-dump"));
+    assert!(p
+        .to_string_lossy()
+        .ends_with("resources/mysql_tools/mariadb-dump"));
 }
 
 #[test]
@@ -123,7 +159,10 @@ fn path_lookup_skips_empty_entries_and_missing_names() {
 fn probe_rejects_a_missing_file_and_a_directory() {
     let dir = unique_dir();
     assert!(!probe(&dir.join("absent-tool")));
-    assert!(!probe(&dir), "a directory must never be reported as a runnable tool");
+    assert!(
+        !probe(&dir),
+        "a directory must never be reported as a runnable tool"
+    );
 }
 
 #[cfg(unix)]
@@ -150,7 +189,10 @@ fn run_version_kills_a_hung_process_at_the_timeout() {
 #[test]
 fn probe_accepts_a_runnable_script() {
     let tool = unique_dir().join(bundled_bin_name("mariadb-dump"));
-    write_exe(&tool, "#!/bin/sh\necho 'mariadb-dump 11.4.5-MariaDB'\nexit 0\n");
+    write_exe(
+        &tool,
+        "#!/bin/sh\necho 'mariadb-dump 11.4.5-MariaDB'\nexit 0\n",
+    );
     assert!(probe(&tool));
 }
 
@@ -181,7 +223,10 @@ fn resolve_prefers_a_trusted_dir_and_the_first_candidate_name() {
     let r = resolve_with(&req, &trusted, &path_lookup, None, |_p: &Path| true).unwrap();
     assert_eq!(r.source, ToolSource::TrustedDir);
     assert_eq!(r.name, "mariadb-dump");
-    assert_eq!(r.program, format!("/trusted/{}", bundled_bin_name("mariadb-dump")));
+    assert_eq!(
+        r.program,
+        format!("/trusted/{}", bundled_bin_name("mariadb-dump"))
+    );
 }
 
 #[test]
@@ -189,7 +234,11 @@ fn resolve_falls_through_to_the_inherited_path() {
     let req = mysql_dump_request();
     let trusted = vec![PathBuf::from("/trusted")];
     let path_lookup = |name: &str| -> Option<PathBuf> {
-        if name == "mysqldump" { Some(PathBuf::from("/usr/bin/mysqldump")) } else { None }
+        if name == "mysqldump" {
+            Some(PathBuf::from("/usr/bin/mysqldump"))
+        } else {
+            None
+        }
     };
     let probe = |p: &Path| p == Path::new("/usr/bin/mysqldump");
     let r = resolve_with(&req, &trusted, &path_lookup, None, probe).unwrap();
@@ -237,7 +286,13 @@ fn resolve_skips_a_candidate_that_fails_the_probe() {
 fn resolve_returns_none_when_nothing_runs() {
     let req = mysql_dump_request();
     let path_lookup = |_n: &str| -> Option<PathBuf> { None };
-    let r = resolve_with(&req, &[PathBuf::from("/trusted")], &path_lookup, Some(Path::new("/rd/x")), |_p: &Path| false);
+    let r = resolve_with(
+        &req,
+        &[PathBuf::from("/trusted")],
+        &path_lookup,
+        Some(Path::new("/rd/x")),
+        |_p: &Path| false,
+    );
     assert!(r.is_none());
 }
 
@@ -255,8 +310,11 @@ fn unique_dir() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir()
-        .join(format!("gridline_tool_resolver_{}_{}", std::process::id(), nanos));
+    let dir = std::env::temp_dir().join(format!(
+        "gridline_tool_resolver_{}_{}",
+        std::process::id(),
+        nanos
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -268,7 +326,10 @@ fn parse_major_handles_common_version_strings() {
     assert_eq!(parse_major("11.4.5-MariaDB"), Some(11));
     assert_eq!(parse_major("5.7.44-log"), Some(5));
     assert_eq!(parse_major("26.7.0"), Some(26));
-    assert_eq!(parse_major("mariadb-dump from 11.4.5-MariaDB, client 10.19"), Some(11));
+    assert_eq!(
+        parse_major("mariadb-dump from 11.4.5-MariaDB, client 10.19"),
+        Some(11)
+    );
 }
 
 #[test]
@@ -308,7 +369,10 @@ fn warning_for_is_silent_unless_the_client_is_older() {
     // indentation, so assert the exact single-line render (no newline, no run
     // of consecutive spaces).
     assert!(!w.contains('\n'), "warning must be one line: {w:?}");
-    assert!(!w.contains("  "), "warning must not contain double spaces: {w:?}");
+    assert!(
+        !w.contains("  "),
+        "warning must not contain double spaces: {w:?}"
+    );
     assert_eq!(
         w,
         concat!(
@@ -387,7 +451,10 @@ fn cache_round_trips_and_clears() {
 #[test]
 fn bundled_present_is_true_only_for_a_regular_file() {
     let dir = unique_dir();
-    assert!(!bundled_present(&dir), "a directory is not a present bundled tool");
+    assert!(
+        !bundled_present(&dir),
+        "a directory is not a present bundled tool"
+    );
     let file = dir.join("mariadb-dump");
     std::fs::write(&file, b"x").unwrap();
     assert!(bundled_present(&file));

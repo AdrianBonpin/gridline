@@ -3,7 +3,11 @@ use sqlx::Connection;
 
 #[test]
 fn read_only_heuristic_matches_frontend_guard_set() {
-    for sql in ["SELECT 1", "  with x as (select 1) select * from x", "-- note\nSELECT 1"] {
+    for sql in [
+        "SELECT 1",
+        "  with x as (select 1) select * from x",
+        "-- note\nSELECT 1",
+    ] {
         assert!(is_read_only_sql(sql), "should allow: {sql}");
     }
     for sql in [
@@ -22,11 +26,26 @@ fn read_only_heuristic_matches_frontend_guard_set() {
 
 #[test]
 fn csv_cell_quotes_and_guards_formula_injection() {
-    assert_eq!(csv_cell(&serde_json::Value::String("plain".into())), "plain");
-    assert_eq!(csv_cell(&serde_json::Value::String("a,b".into())), "\"a,b\"");
-    assert_eq!(csv_cell(&serde_json::Value::String("a\"b".into())), "\"a\"\"b\"");
-    assert_eq!(csv_cell(&serde_json::Value::String("a\nb".into())), "\"a\nb\"");
-    assert_eq!(csv_cell(&serde_json::Value::String("=SUM(A1)".into())), "'=SUM(A1)");
+    assert_eq!(
+        csv_cell(&serde_json::Value::String("plain".into())),
+        "plain"
+    );
+    assert_eq!(
+        csv_cell(&serde_json::Value::String("a,b".into())),
+        "\"a,b\""
+    );
+    assert_eq!(
+        csv_cell(&serde_json::Value::String("a\"b".into())),
+        "\"a\"\"b\""
+    );
+    assert_eq!(
+        csv_cell(&serde_json::Value::String("a\nb".into())),
+        "\"a\nb\""
+    );
+    assert_eq!(
+        csv_cell(&serde_json::Value::String("=SUM(A1)".into())),
+        "'=SUM(A1)"
+    );
     assert_eq!(csv_cell(&serde_json::Value::String("+x".into())), "'+x");
     assert_eq!(csv_cell(&serde_json::Value::String("-1".into())), "'-1");
     assert_eq!(csv_cell(&serde_json::Value::String("@cmd".into())), "'@cmd");
@@ -37,8 +56,28 @@ fn csv_cell_quotes_and_guards_formula_injection() {
 #[test]
 fn csv_line_bom_is_written_by_header_only() {
     let cols = vec![
-        crate::models::db_viewer::ColumnInfo { name: "a".into(), data_type: "int".into(), is_nullable: true, is_pk: false, is_fk: false, fk_ref: None, default_value: None, editable: true, is_generated: false },
-        crate::models::db_viewer::ColumnInfo { name: "b".into(), data_type: "text".into(), is_nullable: true, is_pk: false, is_fk: false, fk_ref: None, default_value: None, editable: true, is_generated: false },
+        crate::models::db_viewer::ColumnInfo {
+            name: "a".into(),
+            data_type: "int".into(),
+            is_nullable: true,
+            is_pk: false,
+            is_fk: false,
+            fk_ref: None,
+            default_value: None,
+            editable: true,
+            is_generated: false,
+        },
+        crate::models::db_viewer::ColumnInfo {
+            name: "b".into(),
+            data_type: "text".into(),
+            is_nullable: true,
+            is_pk: false,
+            is_fk: false,
+            fk_ref: None,
+            default_value: None,
+            editable: true,
+            is_generated: false,
+        },
     ];
     let line = csv_line(&cols, &[serde_json::json!("1"), serde_json::Value::Null]);
     assert_eq!(line, "1,");
@@ -46,7 +85,17 @@ fn csv_line_bom_is_written_by_header_only() {
 
 #[test]
 fn jsonl_line_encodes_row_object() {
-    let cols = vec![crate::models::db_viewer::ColumnInfo { name: "a".into(), data_type: "int".into(), is_nullable: true, is_pk: false, is_fk: false, fk_ref: None, default_value: None, editable: true, is_generated: false }];
+    let cols = vec![crate::models::db_viewer::ColumnInfo {
+        name: "a".into(),
+        data_type: "int".into(),
+        is_nullable: true,
+        is_pk: false,
+        is_fk: false,
+        fk_ref: None,
+        default_value: None,
+        editable: true,
+        is_generated: false,
+    }];
     let line = jsonl_line(&cols, &[serde_json::json!("x\"y")]);
     assert_eq!(line, "{\"a\":\"x\\\"y\"}");
 }
@@ -62,10 +111,17 @@ fn sqlite_export_streams_all_rows_with_bom_and_guard() {
     )
     .unwrap();
 
-    let path = std::env::temp_dir().join(format!("gridline-export-test-{}.csv", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("gridline-export-test-{}.csv", std::process::id()));
     let mut rows_seen = 0u64;
-    let summary = run_sqlite_export(&conn, "SELECT a, b FROM t ORDER BY a", ExportFormat::Csv, &path, &mut |n| rows_seen = n)
-        .expect("export runs");
+    let summary = run_sqlite_export(
+        &conn,
+        "SELECT a, b FROM t ORDER BY a",
+        ExportFormat::Csv,
+        &path,
+        &mut |n| rows_seen = n,
+    )
+    .expect("export runs");
     assert_eq!(summary.rows_written, 3);
     assert_eq!(rows_seen, 3);
 
@@ -84,11 +140,23 @@ fn sqlite_export_streams_all_rows_with_bom_and_guard() {
 fn sqlite_export_rejects_write_statements_and_multi_statement() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     let path = std::env::temp_dir().join("gridline-export-should-not-exist.csv");
-    let err = run_sqlite_export(&conn, "INSERT INTO t VALUES (1)", ExportFormat::Csv, &path, &mut |_| {})
-        .expect_err("write SQL must be rejected");
+    let err = run_sqlite_export(
+        &conn,
+        "INSERT INTO t VALUES (1)",
+        ExportFormat::Csv,
+        &path,
+        &mut |_| {},
+    )
+    .expect_err("write SQL must be rejected");
     assert!(err.contains("read-only"), "got: {err}");
-    let err = run_sqlite_export(&conn, "SELECT 1; SELECT 2", ExportFormat::Csv, &path, &mut |_| {})
-        .expect_err("multi-statement must be rejected");
+    let err = run_sqlite_export(
+        &conn,
+        "SELECT 1; SELECT 2",
+        ExportFormat::Csv,
+        &path,
+        &mut |_| {},
+    )
+    .expect_err("multi-statement must be rejected");
     assert!(err.contains("single"), "got: {err}");
     assert!(!path.exists(), "no partial file may be left behind");
 }
@@ -96,10 +164,20 @@ fn sqlite_export_rejects_write_statements_and_multi_statement() {
 #[test]
 fn sqlite_export_error_deletes_partial_file() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch("CREATE TABLE t (a INTEGER); INSERT INTO t VALUES (1),(2),(3);").unwrap();
-    let path = std::env::temp_dir().join(format!("gridline-export-partial-{}.csv", std::process::id()));
-    let err = run_sqlite_export(&conn, "SELECT a, b FROM t", ExportFormat::Csv, &path, &mut |_| {})
-        .expect_err("bad column must fail");
+    conn.execute_batch("CREATE TABLE t (a INTEGER); INSERT INTO t VALUES (1),(2),(3);")
+        .unwrap();
+    let path = std::env::temp_dir().join(format!(
+        "gridline-export-partial-{}.csv",
+        std::process::id()
+    ));
+    let err = run_sqlite_export(
+        &conn,
+        "SELECT a, b FROM t",
+        ExportFormat::Csv,
+        &path,
+        &mut |_| {},
+    )
+    .expect_err("bad column must fail");
     assert!(!err.is_empty());
     assert!(!path.exists(), "partial file must be deleted on error");
 }
@@ -162,7 +240,9 @@ async fn pg_export_live() {
     assert_eq!(lines[2], "2,'=SUM(A1)");
     assert_eq!(lines[3], "3,");
     let _ = std::fs::remove_file(&path);
-    let _ = client.batch_execute("DROP TABLE IF EXISTS gridline_export_test").await;
+    let _ = client
+        .batch_execute("DROP TABLE IF EXISTS gridline_export_test")
+        .await;
 }
 
 /// Live MySQL export — mirror the env conventions of the MySQL live tests in
@@ -206,7 +286,8 @@ async fn mysql_export_live() {
         .await
         .expect("insert");
 
-    let path = std::env::temp_dir().join(format!("gridline-export-mysql-{}.csv", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("gridline-export-mysql-{}.csv", std::process::id()));
     let mut rows_seen = 0u64;
     let summary = run_mysql_export(
         &mut conn,

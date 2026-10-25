@@ -119,8 +119,14 @@ fn build_pg_tool_status(dump: &ToolResolution, restore: &ToolResolution) -> PgTo
         pg_restore_found: restore.resolved.is_some(),
         pg_dump_version: dump.version.clone(),
         pg_restore_version: restore.version.clone(),
-        pg_dump_source: dump.resolved.as_ref().map(|r| r.source.as_str().to_string()),
-        pg_restore_source: restore.resolved.as_ref().map(|r| r.source.as_str().to_string()),
+        pg_dump_source: dump
+            .resolved
+            .as_ref()
+            .map(|r| r.source.as_str().to_string()),
+        pg_restore_source: restore
+            .resolved
+            .as_ref()
+            .map(|r| r.source.as_str().to_string()),
         pg_dump_resolved_name: dump.resolved.as_ref().map(|r| r.name.clone()),
         pg_restore_resolved_name: restore.resolved.as_ref().map(|r| r.name.clone()),
         pg_dump_bundled_available: dump.bundled_available,
@@ -138,9 +144,7 @@ pub async fn detect_pg_tools(force: Option<bool>, app_handle: AppHandle) -> PgTo
         build_pg_tool_status(&dump, &restore)
     })
     .await
-    .unwrap_or_else(|_| {
-        build_pg_tool_status(&ToolResolution::none(), &ToolResolution::none())
-    })
+    .unwrap_or_else(|_| build_pg_tool_status(&ToolResolution::none(), &ToolResolution::none()))
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +214,11 @@ fn build_restore_args(conn: &PgConnParams, options: &RestoreOptions) -> Vec<Stri
 
 /// Runs `pg_dump` against `conn`, writing to `options.file_path`.
 /// Returns `Ok(())` on success or a sanitized error message.
-pub fn run_pg_dump(conn: &PgConnParams, options: &BackupOptions, tools: &PgToolPaths) -> Result<(), String> {
+pub fn run_pg_dump(
+    conn: &PgConnParams,
+    options: &BackupOptions,
+    tools: &PgToolPaths,
+) -> Result<(), String> {
     let mut args = build_dump_args(conn, options);
     args.push(format!("--file={}", options.file_path));
 
@@ -232,7 +240,11 @@ pub fn run_pg_dump(conn: &PgConnParams, options: &BackupOptions, tools: &PgToolP
 /// Plain-format dumps are SQL text and cannot be read by `pg_restore` — they
 /// are executed with `psql` instead. The `clean` option is only honored for
 /// archive formats (custom/tar/directory); the UI disables it for plain.
-pub fn run_pg_restore(conn: &PgConnParams, options: &RestoreOptions, tools: &PgToolPaths) -> Result<(), String> {
+pub fn run_pg_restore(
+    conn: &PgConnParams,
+    options: &RestoreOptions,
+    tools: &PgToolPaths,
+) -> Result<(), String> {
     if options.format == "plain" {
         let result = Command::new(&tools.psql)
             .env("PGPASSWORD", &conn.password)
@@ -369,7 +381,10 @@ fn sqlite_literal(v: ValueRef) -> String {
         ValueRef::Real(r) => r.to_string(),
         ValueRef::Text(t) => format!("'{}'", String::from_utf8_lossy(t).replace('\'', "''")),
         ValueRef::Blob(b) => {
-            format!("X'{}'", b.iter().map(|x| format!("{:02x}", x)).collect::<String>())
+            format!(
+                "X'{}'",
+                b.iter().map(|x| format!("{:02x}", x)).collect::<String>()
+            )
         }
     }
 }
@@ -395,9 +410,11 @@ pub fn dump_sqlite_to<W: Write, F: FnMut(&str)>(
 
     for name in &table_names {
         let create_sql: String = conn
-            .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name=?1", [name], |r| {
-                r.get::<_, String>(0)
-            })
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [name],
+                |r| r.get::<_, String>(0),
+            )
             .map_err(|e| e.to_string())?;
         if create_sql.to_lowercase().contains("create virtual table") {
             return Err(format!(
@@ -418,12 +435,24 @@ pub fn dump_sqlite_to<W: Write, F: FnMut(&str)>(
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
-        let emitted: Vec<String> = xinfo.iter().filter(|(_, h)| *h == 0).map(|(n, _)| n.clone()).collect();
-        let col_list = emitted.iter().map(|n| sqlite_quote_ident(n)).collect::<Vec<_>>().join(", ");
+        let emitted: Vec<String> = xinfo
+            .iter()
+            .filter(|(_, h)| *h == 0)
+            .map(|(n, _)| n.clone())
+            .collect();
+        let col_list = emitted
+            .iter()
+            .map(|n| sqlite_quote_ident(n))
+            .collect::<Vec<_>>()
+            .join(", ");
         // Emit one INSERT per row (faithful to .dump).
         let select = format!(
             "SELECT {} FROM \"{}\"",
-            emitted.iter().map(|n| sqlite_quote_ident(n)).collect::<Vec<_>>().join(", "),
+            emitted
+                .iter()
+                .map(|n| sqlite_quote_ident(n))
+                .collect::<Vec<_>>()
+                .join(", "),
             name.replace('"', "\"\"")
         );
         let mut stmt = conn.prepare(&select).map_err(|e| e.to_string())?;
@@ -500,16 +529,30 @@ pub fn restore_sqlite(conn: &Connection, dump_text: &str, clean: bool) -> Result
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
-        conn.execute_batch("PRAGMA foreign_keys=OFF;").map_err(|e| e.to_string())?;
+        conn.execute_batch("PRAGMA foreign_keys=OFF;")
+            .map_err(|e| e.to_string())?;
         for n in names {
-            let _ = conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", n.replace('"', "\"\"")), []);
-            let _ = conn.execute(&format!("DROP VIEW IF EXISTS \"{}\"", n.replace('"', "\"\"")), []);
-            let _ = conn.execute(&format!("DROP INDEX IF EXISTS \"{}\"", n.replace('"', "\"\"")), []);
-            let _ = conn.execute(&format!("DROP TRIGGER IF EXISTS \"{}\"", n.replace('"', "\"\"")), []);
+            let _ = conn.execute(
+                &format!("DROP TABLE IF EXISTS \"{}\"", n.replace('"', "\"\"")),
+                [],
+            );
+            let _ = conn.execute(
+                &format!("DROP VIEW IF EXISTS \"{}\"", n.replace('"', "\"\"")),
+                [],
+            );
+            let _ = conn.execute(
+                &format!("DROP INDEX IF EXISTS \"{}\"", n.replace('"', "\"\"")),
+                [],
+            );
+            let _ = conn.execute(
+                &format!("DROP TRIGGER IF EXISTS \"{}\"", n.replace('"', "\"\"")),
+                [],
+            );
         }
     }
     // The dump text already wraps in PRAGMA foreign_keys=OFF + BEGIN/COMMIT.
-    conn.execute_batch(dump_text).map_err(|e| format!("restore failed: {e}"))
+    conn.execute_batch(dump_text)
+        .map_err(|e| format!("restore failed: {e}"))
 }
 
 /// Dump `source_path` and restore into `target_path` (one-shot).
@@ -541,9 +584,8 @@ fn base_mysql_args(conn: &MySqlConnParams) -> Vec<String> {
 /// options with "unknown option", aborting the dump before it connects.
 /// Probed once per program and cached for the process.
 fn client_is_mariadb(program: &str) -> bool {
-    static CACHE: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, bool>>,
-    > = std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> =
+        std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
     if let Ok(map) = cache.lock() {
@@ -593,11 +635,21 @@ pub fn build_mysql_dump_args(
     client_is_mariadb: bool,
 ) -> Vec<String> {
     let mut a = base_mysql_args(conn);
-    if options.single_transaction { a.push("--single-transaction".into()); }
-    if options.no_data { a.push("--no-data".into()); }
-    if options.routines { a.push("--routines".into()); }
-    if options.triggers { a.push("--triggers".into()); }
-    if options.events { a.push("--events".into()); }
+    if options.single_transaction {
+        a.push("--single-transaction".into());
+    }
+    if options.no_data {
+        a.push("--no-data".into());
+    }
+    if options.routines {
+        a.push("--routines".into());
+    }
+    if options.triggers {
+        a.push("--triggers".into());
+    }
+    if options.events {
+        a.push("--events".into());
+    }
     a.push("--databases".into());
     a.push(options.database.clone());
     a.push(format!("--result-file={}", options.file_path));
@@ -637,9 +689,16 @@ pub fn run_mysql_dump(
     let is_mariadb = client_is_mariadb(&tools.mysqldump);
     let mut args = build_mysql_dump_args(conn, options, is_mariadb);
     args.extend(tls_args_for_client(is_mariadb, tls_mode));
-    let out = Command::new(&tools.mysqldump).env("MYSQL_PWD", &conn.password).args(&args).output()
+    let out = Command::new(&tools.mysqldump)
+        .env("MYSQL_PWD", &conn.password)
+        .args(&args)
+        .output()
         .map_err(|e| e.to_string())?;
-    if out.status.success() { Ok(()) } else { Err(sanitize_error(&String::from_utf8_lossy(&out.stderr))) }
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(sanitize_error(&String::from_utf8_lossy(&out.stderr)))
+    }
 }
 
 pub fn run_mysql_sync(
@@ -655,15 +714,28 @@ pub fn run_mysql_sync(
     dump_args.push("--databases".into());
     dump_args.push(source.database.clone());
     dump_args.extend(tls_args_for_client(is_mariadb, tls_mode));
-    let mut dump = Command::new(&tools.mysqldump).env("MYSQL_PWD", &source.password).args(&dump_args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("dump: {e}"))?;
+    let mut dump = Command::new(&tools.mysqldump)
+        .env("MYSQL_PWD", &source.password)
+        .args(&dump_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("dump: {e}"))?;
     let stdout = dump.stdout.take().unwrap();
     let mut restore_args = base_mysql_args(target);
     restore_args.push(format!("--database={}", target.database));
-    let restore = Command::new(&tools.mysql).env("MYSQL_PWD", &target.password).args(&restore_args).stdin(stdout).output();
+    let restore = Command::new(&tools.mysql)
+        .env("MYSQL_PWD", &target.password)
+        .args(&restore_args)
+        .stdin(stdout)
+        .output();
     let _ = dump.wait();
     match restore {
         Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => Err(format!("restore: {}", sanitize_error(&String::from_utf8_lossy(&o.stderr)))),
+        Ok(o) => Err(format!(
+            "restore: {}",
+            sanitize_error(&String::from_utf8_lossy(&o.stderr))
+        )),
         Err(e) => Err(format!("restore: {e}")),
     }
 }
@@ -1007,7 +1079,13 @@ pub async fn db_sync(
     let tools = resolve_tool_paths(&app_handle);
 
     tokio::task::spawn_blocking(move || {
-        let result = run_db_sync(&source, &target, schema.as_deref(), tables.as_deref(), &tools);
+        let result = run_db_sync(
+            &source,
+            &target,
+            schema.as_deref(),
+            tables.as_deref(),
+            &tools,
+        );
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 
@@ -1024,8 +1102,14 @@ fn build_mysql_tool_status(dump: &ToolResolution, client: &ToolResolution) -> My
         mysql_found: client.resolved.is_some(),
         mysqldump_version: dump.version.clone(),
         mysql_version: client.version.clone(),
-        mysqldump_source: dump.resolved.as_ref().map(|r| r.source.as_str().to_string()),
-        mysql_source: client.resolved.as_ref().map(|r| r.source.as_str().to_string()),
+        mysqldump_source: dump
+            .resolved
+            .as_ref()
+            .map(|r| r.source.as_str().to_string()),
+        mysql_source: client
+            .resolved
+            .as_ref()
+            .map(|r| r.source.as_str().to_string()),
         mysqldump_resolved_name: dump.resolved.as_ref().map(|r| r.name.clone()),
         mysql_resolved_name: client.resolved.as_ref().map(|r| r.name.clone()),
         mysqldump_is_mariadb: dump
@@ -1047,9 +1131,7 @@ pub async fn detect_mysql_tools(force: Option<bool>, app_handle: AppHandle) -> M
         build_mysql_tool_status(&dump, &client)
     })
     .await
-    .unwrap_or_else(|_| {
-        build_mysql_tool_status(&ToolResolution::none(), &ToolResolution::none())
-    })
+    .unwrap_or_else(|_| build_mysql_tool_status(&ToolResolution::none(), &ToolResolution::none()))
 }
 
 /// Resolve (host, port, via_tunnel) for a MySQL connection, routing through the
@@ -1059,7 +1141,11 @@ fn mysql_endpoint(
     connection_id: &str,
     conn: &crate::models::Connection,
 ) -> (String, i64, bool) {
-    let via_tunnel = state.ssh_manager.lock().unwrap().get_local_port(connection_id);
+    let via_tunnel = state
+        .ssh_manager
+        .lock()
+        .unwrap()
+        .get_local_port(connection_id);
     if let Some(port) = via_tunnel {
         return ("127.0.0.1".into(), port as i64, true);
     }
@@ -1110,7 +1196,9 @@ async fn maybe_emit_version_warning(
     let (Some(client_version), Some(tool)) = (&resolution.version, &resolution.resolved) else {
         return;
     };
-    let Some(server_version) = server_version else { return };
+    let Some(server_version) = server_version else {
+        return;
+    };
     let Some(warning) = tool_resolver::warning_for(client_version, &server_version, &tool.name)
     else {
         return;
@@ -1299,11 +1387,10 @@ pub async fn mysql_restore(
             // The registry is reached through the app handle because it is not
             // `Clone`.
             let registry = app_handle_clone.state::<crate::AppState>();
-            let restore_conn_id: i64 =
-                sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
-                    .fetch_one(&mut mconn)
-                    .await
-                    .unwrap_or(-1);
+            let restore_conn_id: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+                .fetch_one(&mut mconn)
+                .await
+                .unwrap_or(-1);
             registry.cancel_registry.set_mysql(
                 &connection_id_for_cancel,
                 crate::cancel::MySqlCancel {
@@ -1314,7 +1401,11 @@ pub async fn mysql_restore(
 
             let r = run_mysql_restore_on(
                 &mut mconn,
-                MySqlRestoreRun { database: &database, statements: &statements, clean },
+                MySqlRestoreRun {
+                    database: &database,
+                    statements: &statements,
+                    clean,
+                },
                 &mut emit_progress,
                 &is_cancelled,
             )
@@ -1323,7 +1414,9 @@ pub async fn mysql_restore(
             registry
                 .cancel_registry
                 .set_mysql_conn_id(&connection_id_for_cancel, None);
-            registry.cancel_registry.clear_cancelled(&connection_id_for_cancel);
+            registry
+                .cancel_registry
+                .clear_cancelled(&connection_id_for_cancel);
             r
         }
         .await;
@@ -1381,8 +1474,10 @@ pub async fn mysql_sync(
             .unwrap_or_default()
             .unwrap_or_default();
 
-    let (src_host, src_port, src_via_tunnel) = mysql_endpoint(&state, &source_conn.id, &source_conn);
-    let (tgt_host, tgt_port, tgt_via_tunnel) = mysql_endpoint(&state, &target_conn.id, &target_conn);
+    let (src_host, src_port, src_via_tunnel) =
+        mysql_endpoint(&state, &source_conn.id, &source_conn);
+    let (tgt_host, tgt_port, tgt_via_tunnel) =
+        mysql_endpoint(&state, &target_conn.id, &target_conn);
 
     // Advisory client/server compatibility check — never blocks the job, and
     // only pays for a connection when the resolved client reported a version.
@@ -1514,8 +1609,7 @@ pub async fn sqlite_restore(
     tokio::task::spawn_blocking(move || {
         let result = (|| -> Result<(), String> {
             let dst = Connection::open(&path).map_err(|e| format!("open target: {e}"))?;
-            let text =
-                std::fs::read_to_string(&in_path).map_err(|e| format!("read dump: {e}"))?;
+            let text = std::fs::read_to_string(&in_path).map_err(|e| format!("read dump: {e}"))?;
             restore_sqlite(&dst, &text, clean)
         })();
         emit_result(&app_handle_clone, &job_id_clone, result);

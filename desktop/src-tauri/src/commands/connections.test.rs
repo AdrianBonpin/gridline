@@ -36,7 +36,10 @@ fn validate_accepts_mariadb_with_port() {
 fn validate_rejects_mariadb_without_port() {
     let mut input = mariadb_input();
     input.port = None;
-    assert!(validate(&input).is_err(), "mariadb requires a port like mysql");
+    assert!(
+        validate(&input).is_err(),
+        "mariadb requires a port like mysql"
+    );
 }
 
 #[test]

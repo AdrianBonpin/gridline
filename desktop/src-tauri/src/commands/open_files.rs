@@ -94,8 +94,7 @@ pub fn take_from_buffer(buffer: &PendingOpenFiles) -> Result<Vec<PendingSqlFile>
                 .unwrap_or_else(|| path.to_string_lossy().into_owned());
             // Fail closed on undecodable bytes rather than guessing an
             // encoding for the user's SQL.
-            let bytes =
-                std::fs::read(&path).map_err(|e| format!("Cannot read {}: {e}", name))?;
+            let bytes = std::fs::read(&path).map_err(|e| format!("Cannot read {}: {e}", name))?;
             let content =
                 String::from_utf8(bytes).map_err(|_| format!("{name} is not valid UTF-8"))?;
             Ok(PendingSqlFile {

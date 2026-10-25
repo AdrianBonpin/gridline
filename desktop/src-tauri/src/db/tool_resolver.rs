@@ -59,7 +59,10 @@ pub struct ToolRequest {
 
 impl ToolRequest {
     pub fn new(subdir: &'static str, names: &[&'static str]) -> Self {
-        Self { subdir, names: names.to_vec() }
+        Self {
+            subdir,
+            names: names.to_vec(),
+        }
     }
 
     /// The bundled binary that ships for this role.
@@ -75,7 +78,11 @@ impl ToolRequest {
 
 /// Platform executable suffix.
 pub fn exe_suffix() -> &'static str {
-    if cfg!(windows) { ".exe" } else { "" }
+    if cfg!(windows) {
+        ".exe"
+    } else {
+        ""
+    }
 }
 
 /// `pg_dump` -> `pg_dump` (POSIX) / `pg_dump.exe` (Windows).
@@ -100,16 +107,27 @@ pub fn trusted_dirs() -> Vec<PathBuf> {
             "/Applications/Postgres.app/Contents/Versions/latest/bin",
         ]
     } else if cfg!(target_os = "linux") {
-        &["/usr/bin", "/usr/local/bin", "/usr/local/mysql/bin", "/opt/mysql/bin"]
+        &[
+            "/usr/bin",
+            "/usr/local/bin",
+            "/usr/local/mysql/bin",
+            "/opt/mysql/bin",
+        ]
     } else {
         &[]
     };
     raw.iter().map(PathBuf::from).collect()
 }
 
-pub fn pg_dump_request() -> ToolRequest { ToolRequest::new("pg_tools", &["pg_dump"]) }
-pub fn pg_restore_request() -> ToolRequest { ToolRequest::new("pg_tools", &["pg_restore"]) }
-pub fn psql_request() -> ToolRequest { ToolRequest::new("pg_tools", &["psql"]) }
+pub fn pg_dump_request() -> ToolRequest {
+    ToolRequest::new("pg_tools", &["pg_dump"])
+}
+pub fn pg_restore_request() -> ToolRequest {
+    ToolRequest::new("pg_tools", &["pg_restore"])
+}
+pub fn psql_request() -> ToolRequest {
+    ToolRequest::new("pg_tools", &["psql"])
+}
 
 /// Maps a PostgreSQL tool name to its request; `None` for unknown names.
 pub fn pg_request(tool: &str) -> Option<ToolRequest> {
@@ -289,7 +307,11 @@ pub fn version_of(program: &str) -> Option<String> {
         return Some(stdout);
     }
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    if stderr.is_empty() { None } else { Some(stderr) }
+    if stderr.is_empty() {
+        None
+    } else {
+        Some(stderr)
+    }
 }
 
 /// Lenient major-version extraction. Scans for numeric groups, unwraps the
@@ -347,7 +369,11 @@ pub fn compat(client: Option<u32>, server: Option<u32>) -> Compat {
 }
 
 /// Non-blocking warning text, or `None` when there is nothing to say.
-pub fn warning_for(client_version: &str, server_version: &str, client_name: &str) -> Option<String> {
+pub fn warning_for(
+    client_version: &str,
+    server_version: &str,
+    client_name: &str,
+) -> Option<String> {
     match compat(parse_major(client_version), parse_major(server_version)) {
         Compat::ClientOlder => Some(format!(
             "Client/server version mismatch: the resolved dump tool `{client_name}` reports {client_version}, \
@@ -370,7 +396,12 @@ pub struct ToolResolution {
 
 impl ToolResolution {
     pub fn none() -> Self {
-        Self { resolved: None, bundled_path: None, bundled_available: false, version: None }
+        Self {
+            resolved: None,
+            bundled_path: None,
+            bundled_available: false,
+            version: None,
+        }
     }
 }
 

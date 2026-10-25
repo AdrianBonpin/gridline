@@ -4,15 +4,22 @@ use crate::db::pool::{ConnectionPoolManager, DbHandle};
 /// Connect directly via tokio-postgres (no tunnel) so tests are Tauri-free.
 async fn pool() -> (tokio::sync::Mutex<ConnectionPoolManager>, String) {
     let h = std::env::var("GRIDLINE_TEST_PG_HOST").expect("set GRIDLINE_TEST_PG_HOST");
-    let p: u16 = std::env::var("GRIDLINE_TEST_PG_PORT").unwrap_or_else(|_| "5432".into()).parse().unwrap();
+    let p: u16 = std::env::var("GRIDLINE_TEST_PG_PORT")
+        .unwrap_or_else(|_| "5432".into())
+        .parse()
+        .unwrap();
     let u = std::env::var("GRIDLINE_TEST_PG_USER").expect("set GRIDLINE_TEST_PG_USER");
     let d = std::env::var("GRIDLINE_TEST_PG_DB").expect("set GRIDLINE_TEST_PG_DB");
     let pw = std::env::var("GRIDLINE_TEST_PG_PASSWORD").unwrap_or_default();
     let (client, conn) = tokio_postgres::connect(
         &format!("host={h} port={p} user={u} dbname={d} password={pw}"),
         tokio_postgres::NoTls,
-    ).await.expect("connect to test PG");
-    let handle = tokio::spawn(async move { let _ = conn.await; });
+    )
+    .await
+    .expect("connect to test PG");
+    let handle = tokio::spawn(async move {
+        let _ = conn.await;
+    });
     let mut pm = ConnectionPoolManager::new();
     let id = "test-conn".to_string();
     pm.register(&id, DbHandle::Postgresql(client, handle));
@@ -25,18 +32,33 @@ async fn schema_crud_create_rename_drop() {
     let (pm, id) = pool().await;
     let name = "gridline_test_schema";
     create_schema_inner(&pm, &id, name).await.unwrap();
-    assert!(create_schema_inner(&pm, &id, name).await.is_err(), "duplicate should error");
-    rename_schema_inner(&pm, &id, name, "gridline_test_schema2").await.unwrap();
-    drop_schema_inner(&pm, &id, "gridline_test_schema2", false).await.unwrap();
+    assert!(
+        create_schema_inner(&pm, &id, name).await.is_err(),
+        "duplicate should error"
+    );
+    rename_schema_inner(&pm, &id, name, "gridline_test_schema2")
+        .await
+        .unwrap();
+    drop_schema_inner(&pm, &id, "gridline_test_schema2", false)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
 #[ignore]
 async fn search_objects_finds_table_and_function() {
     let (pm, id) = pool().await;
-    let hits = search_objects_inner(&pm, &id, "public", "users").await.unwrap();
-    assert!(hits.iter().any(|h| h.name == "users" && h.object_type == "TABLE"), "demo has a users table");
-    let fns = search_objects_inner(&pm, &id, "public", "get").await.unwrap();
+    let hits = search_objects_inner(&pm, &id, "public", "users")
+        .await
+        .unwrap();
+    assert!(
+        hits.iter()
+            .any(|h| h.name == "users" && h.object_type == "TABLE"),
+        "demo has a users table"
+    );
+    let fns = search_objects_inner(&pm, &id, "public", "get")
+        .await
+        .unwrap();
     // substring match across types; assert it returns a Vec<ObjectSearchHit>
     assert!(fns.iter().all(|h| h.object_type != ""));
     // empty needle returns nothing matched by position('' in name) > 0 is always true — so empty returns all (capped at 100)
@@ -49,34 +71,59 @@ async fn search_objects_finds_table_and_function() {
 async fn object_ddl_for_sequence_enum_function() {
     let (pm, id) = pool().await;
     // demo has users_id_seq, an enum, and a function
-    let seq = get_object_ddl_inner(&pm, &id, "public", "sequence", "users_id_seq").await.unwrap();
+    let seq = get_object_ddl_inner(&pm, &id, "public", "sequence", "users_id_seq")
+        .await
+        .unwrap();
     assert!(seq.starts_with("CREATE SEQUENCE"), "{seq}");
     // function: pg_get_functiondef passthrough
     let f = get_object_ddl_inner(&pm, &id, "public", "function", "audit_log").await; // name per demo
     assert!(f.is_ok());
-    assert!(f.clone().unwrap().contains("CREATE FUNCTION") || f.unwrap().contains("CREATE OR REPLACE FUNCTION"));
+    assert!(
+        f.clone().unwrap().contains("CREATE FUNCTION")
+            || f.unwrap().contains("CREATE OR REPLACE FUNCTION")
+    );
 }
 
 #[tokio::test]
 async fn build_object_ddl_inner_guards_missing_connection_and_rejects_unknown_op() {
     let pm = tokio::sync::Mutex::new(ConnectionPoolManager::new());
     // Missing connection -> Connection not found
-    let err = build_object_ddl_inner(&pm, "missing", "sequence", serde_json::json!({
-        "schema": "public", "name": "s", "action": { "op": "drop" }
-    })).await.unwrap_err();
+    let err = build_object_ddl_inner(
+        &pm,
+        "missing",
+        "sequence",
+        serde_json::json!({
+            "schema": "public", "name": "s", "action": { "op": "drop" }
+        }),
+    )
+    .await
+    .unwrap_err();
     assert!(err.contains("Connection not found"), "{err}");
     // SQLite now dispatches to the SQLite table builders; non-table ops are rejected.
-    pm.lock().await.register("sqlite", DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()));
-    let err = build_object_ddl_inner(&pm, "sqlite", "sequence", serde_json::json!({
-        "schema": "public", "name": "s", "action": { "op": "drop" }
-    })).await.unwrap_err();
+    pm.lock().await.register(
+        "sqlite",
+        DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+    );
+    let err = build_object_ddl_inner(
+        &pm,
+        "sqlite",
+        "sequence",
+        serde_json::json!({
+            "schema": "public", "name": "s", "action": { "op": "drop" }
+        }),
+    )
+    .await
+    .unwrap_err();
     assert!(err.contains("unknown op"), "{err}");
 }
 
 /// In-memory SQLite pool registered under id "c" (no Tauri, no live PG).
 fn fresh_pool_with_sqlite() -> ConnectionPoolManager {
     let mut pm = ConnectionPoolManager::new();
-    pm.register("c", DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()));
+    pm.register(
+        "c",
+        DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+    );
     pm
 }
 
@@ -90,15 +137,24 @@ async fn build_object_ddl_sqlite_create_yields_sqlite_sql() {
             { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
         ] }
     });
-    let sqls = build_object_ddl_inner(&tokio::sync::Mutex::new(pm), "c", "table", params).await.unwrap();
-    assert!(sqls.iter().any(|s| s.contains("INTEGER PRIMARY KEY AUTOINCREMENT")), "{sqls:?}");
+    let sqls = build_object_ddl_inner(&tokio::sync::Mutex::new(pm), "c", "table", params)
+        .await
+        .unwrap();
+    assert!(
+        sqls.iter()
+            .any(|s| s.contains("INTEGER PRIMARY KEY AUTOINCREMENT")),
+        "{sqls:?}"
+    );
     assert!(sqls.iter().all(|s| !s.contains("serial")), "{sqls:?}");
 }
 
 #[tokio::test]
 async fn execute_change_sqlite_ddl_runs_create() {
     let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
-    let change = crate::models::db_viewer::Change::Ddl { id: "x".into(), sql: "CREATE TABLE u(id INTEGER)".into() };
+    let change = crate::models::db_viewer::Change::Ddl {
+        id: "x".into(),
+        sql: "CREATE TABLE u(id INTEGER)".into(),
+    };
     let r = crate::commands::db_viewer::execute_change_inner(&pm, "c", change).await;
     assert!(r.is_ok(), "{r:?}");
     // the table really landed on the live connection
@@ -107,7 +163,11 @@ async fn execute_change_sqlite_ddl_runs_create() {
         match g.get("c").unwrap() {
             crate::db::pool::DbHandle::Sqlite(conn) => {
                 let n: i64 = conn
-                    .query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='u'", [], |row| row.get(0))
+                    .query_row(
+                        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='u'",
+                        [],
+                        |row| row.get(0),
+                    )
                     .unwrap();
                 assert_eq!(n, 1);
             }
@@ -120,9 +180,16 @@ async fn execute_change_sqlite_ddl_runs_create() {
 #[ignore]
 async fn build_object_ddl_inner_on_postgresql_pool() {
     let (pm, id) = pool().await;
-    let sql = build_object_ddl_inner(&pm, &id, "sequence", serde_json::json!({
-        "schema": "public", "name": "s", "action": { "op": "drop" }
-    })).await.unwrap();
+    let sql = build_object_ddl_inner(
+        &pm,
+        &id,
+        "sequence",
+        serde_json::json!({
+            "schema": "public", "name": "s", "action": { "op": "drop" }
+        }),
+    )
+    .await
+    .unwrap();
     assert_eq!(sql, vec!["DROP SEQUENCE \"public\".\"s\""]);
 }
 
@@ -130,11 +197,18 @@ async fn build_object_ddl_inner_on_postgresql_pool() {
 async fn get_available_extensions_inner_guards_postgresql_only() {
     let pm = tokio::sync::Mutex::new(ConnectionPoolManager::new());
     // Missing connection -> Connection not found
-    let err = get_available_extensions_inner(&pm, "missing").await.unwrap_err();
+    let err = get_available_extensions_inner(&pm, "missing")
+        .await
+        .unwrap_err();
     assert!(err.contains("Connection not found"), "{err}");
     // Non-PostgreSQL handle -> PostgreSQL-only error
-    pm.lock().await.register("sqlite", DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()));
-    let err = get_available_extensions_inner(&pm, "sqlite").await.unwrap_err();
+    pm.lock().await.register(
+        "sqlite",
+        DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+    );
+    let err = get_available_extensions_inner(&pm, "sqlite")
+        .await
+        .unwrap_err();
     assert!(err.contains("PostgreSQL-only"), "{err}");
 }
 
@@ -143,8 +217,15 @@ async fn get_available_extensions_inner_guards_postgresql_only() {
 async fn get_available_extensions_on_postgresql_pool() {
     let (pm, id) = pool().await;
     let exts = get_available_extensions_inner(&pm, &id).await.unwrap();
-    assert!(!exts.is_empty(), "pg_available_extensions should list built-ins");
-    assert!(exts.iter().all(|e| !e.name.is_empty() && !e.version.is_empty()), "every extension needs name + default version: {exts:?}");
+    assert!(
+        !exts.is_empty(),
+        "pg_available_extensions should list built-ins"
+    );
+    assert!(
+        exts.iter()
+            .all(|e| !e.name.is_empty() && !e.version.is_empty()),
+        "every extension needs name + default version: {exts:?}"
+    );
 }
 
 #[tokio::test]
@@ -152,10 +233,18 @@ async fn get_available_extensions_on_postgresql_pool() {
 async fn object_dependencies_for_table_includes_view() {
     let (pm, id) = pool().await;
     // demo has order_summary VIEW depending on orders — drop would break it
-    let deps = get_object_dependencies_inner(&pm, &id, "public", "table", "orders").await.unwrap();
-    assert!(deps.iter().any(|d| d.class.contains("pg_class") && d.name.contains("order_summary")), "view depending on orders should surface: {deps:?}");
+    let deps = get_object_dependencies_inner(&pm, &id, "public", "table", "orders")
+        .await
+        .unwrap();
+    assert!(
+        deps.iter()
+            .any(|d| d.class.contains("pg_class") && d.name.contains("order_summary")),
+        "view depending on orders should surface: {deps:?}"
+    );
     // schema contents path
-    let contents = get_object_dependencies_inner(&pm, &id, "public", "schema", "public").await.unwrap();
+    let contents = get_object_dependencies_inner(&pm, &id, "public", "schema", "public")
+        .await
+        .unwrap();
     assert!(!contents.is_empty(), "public schema should list contents");
 }
 
@@ -163,8 +252,13 @@ async fn object_dependencies_for_table_includes_view() {
 #[ignore]
 async fn get_roles_returns_current_role_and_memberships() {
     let (pm, id) = pool().await;
-    let roles = crate::commands::objects::get_roles_inner(&pm, &id).await.unwrap();
-    assert!(roles.iter().any(|r| r.can_login), "at least one login role (the test user)");
+    let roles = crate::commands::objects::get_roles_inner(&pm, &id)
+        .await
+        .unwrap();
+    assert!(
+        roles.iter().any(|r| r.can_login),
+        "at least one login role (the test user)"
+    );
 }
 
 #[tokio::test]
@@ -185,14 +279,27 @@ async fn rebuild_table_rolls_back_on_failure() {
         DROP TABLE rebuild_t; \
         ALTER TABLE _gridline_rb_rebuild_t RENAME TO rebuild_t; \
         THIS IS NOT SQL;";
-    let change = crate::models::db_viewer::Change::RebuildTable { id: "rb".into(), sql: bad_script.to_string() };
+    let change = crate::models::db_viewer::Change::RebuildTable {
+        id: "rb".into(),
+        sql: bad_script.to_string(),
+    };
     let res = crate::commands::db_viewer::execute_change_inner(&pm, &id, change).await;
-    assert!(res.is_err(), "expected rollback (transaction should fail on bad SQL)");
+    assert!(
+        res.is_err(),
+        "expected rollback (transaction should fail on bad SQL)"
+    );
     // table still intact
     let mut g = pm.lock().await;
     if let crate::db::pool::DbHandle::Postgresql(c, _) = g.get(&id).unwrap() {
-        let row = c.query_one("SELECT count(*) FROM rebuild_t", &[]).await.unwrap();
-        assert_eq!(row.get::<_, i64>(0), 1, "rollback must preserve the original table");
+        let row = c
+            .query_one("SELECT count(*) FROM rebuild_t", &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            row.get::<_, i64>(0),
+            1,
+            "rollback must preserve the original table"
+        );
         c.batch_execute("DROP TABLE rebuild_t").await.unwrap();
     }
 }
@@ -201,12 +308,22 @@ async fn rebuild_table_rolls_back_on_failure() {
 #[ignore = "requires live PG"]
 async fn get_role_privileges_returns_grants_across_object_classes() {
     let (pm, id) = pool().await;
-    let out = crate::commands::objects::get_role_privileges_inner(&pm, &id, "read_only").await
+    let out = crate::commands::objects::get_role_privileges_inner(&pm, &id, "read_only")
+        .await
         .unwrap_or_else(|e| panic!("privileges command failed: {e}"));
     let classes: std::collections::HashSet<String> =
         out.iter().map(|p| p.object_class.clone()).collect();
     assert!(classes.contains("table"), "expected a table grant: {out:?}");
-    assert!(classes.contains("routine"), "expected a routine grant: {out:?}");
-    assert!(classes.contains("schema"), "expected a schema grant: {out:?}");
-    assert!(classes.contains("database"), "expected a database grant: {out:?}");
+    assert!(
+        classes.contains("routine"),
+        "expected a routine grant: {out:?}"
+    );
+    assert!(
+        classes.contains("schema"),
+        "expected a schema grant: {out:?}"
+    );
+    assert!(
+        classes.contains("database"),
+        "expected a database grant: {out:?}"
+    );
 }

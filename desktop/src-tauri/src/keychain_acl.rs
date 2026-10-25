@@ -377,10 +377,7 @@ mod tests {
         assert!(is_item_trusted(&item), "fresh item should already trust us");
 
         ensure_item_acl(service, &account).expect("normalize ACL");
-        assert!(
-            is_item_trusted(&item),
-            "item must be trusted after repair"
-        );
+        assert!(is_item_trusted(&item), "item must be trusted after repair");
 
         // Idempotent: a second repair must not need authorization again.
         ensure_item_acl(service, &account).expect("second repair");

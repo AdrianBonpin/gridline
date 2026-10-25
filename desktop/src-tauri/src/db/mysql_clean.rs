@@ -48,8 +48,23 @@ impl ObjectKind {
 
 /// Tokens that may appear between the object keyword and its name.
 const MODIFIERS: &[&str] = &[
-    "OR", "REPLACE", "TEMPORARY", "IF", "NOT", "EXISTS", "AGGREGATE", "SQL", "SECURITY",
-    "DEFINER", "ALGORITHM", "UNDEFINED", "MERGE", "TEMPTABLE", "CASCADED", "LOCAL", "INVOKER",
+    "OR",
+    "REPLACE",
+    "TEMPORARY",
+    "IF",
+    "NOT",
+    "EXISTS",
+    "AGGREGATE",
+    "SQL",
+    "SECURITY",
+    "DEFINER",
+    "ALGORITHM",
+    "UNDEFINED",
+    "MERGE",
+    "TEMPTABLE",
+    "CASCADED",
+    "LOCAL",
+    "INVOKER",
     "=",
 ];
 

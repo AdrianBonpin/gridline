@@ -160,14 +160,19 @@ fn build_mysql_tool_status_reports_the_resolved_dump_name() {
             source: crate::db::tool_resolver::ToolSource::TrustedDir,
             name: "mariadb-dump".into(),
         }),
-        bundled_path: Some(std::path::PathBuf::from("/app/resources/mysql_tools/mariadb-dump")),
+        bundled_path: Some(std::path::PathBuf::from(
+            "/app/resources/mysql_tools/mariadb-dump",
+        )),
         bundled_available: true,
         version: Some("mariadb-dump 11.4.5-MariaDB".into()),
     };
     let status = build_mysql_tool_status(&dump, &ToolResolution::none());
     assert!(status.mysqldump_found);
     assert!(!status.mysql_found);
-    assert_eq!(status.mysqldump_resolved_name.as_deref(), Some("mariadb-dump"));
+    assert_eq!(
+        status.mysqldump_resolved_name.as_deref(),
+        Some("mariadb-dump")
+    );
     assert!(status.mysqldump_is_mariadb);
     assert!(!status.mysql_bundled_available);
 }
@@ -237,7 +242,10 @@ fn backup_progress_event_serializes_a_non_fatal_warning() {
         warning: Some("Client/server version mismatch: …".into()),
     };
     let json = serde_json::to_string(&evt).unwrap();
-    assert!(json.contains("\"warning\":\"Client/server version mismatch"), "{json}");
+    assert!(
+        json.contains("\"warning\":\"Client/server version mismatch"),
+        "{json}"
+    );
 }
 
 #[test]
@@ -361,8 +369,16 @@ fn integration_dump_restore_sync() {
         tables: None,
         no_owner: true,
     };
-    run_pg_dump(&src, &dump_opts, &PgToolPaths { pg_dump: "pg_dump".into(), pg_restore: "pg_restore".into(), psql: "psql".into() })
-        .expect("pg_dump should succeed");
+    run_pg_dump(
+        &src,
+        &dump_opts,
+        &PgToolPaths {
+            pg_dump: "pg_dump".into(),
+            pg_restore: "pg_restore".into(),
+            psql: "psql".into(),
+        },
+    )
+    .expect("pg_dump should succeed");
 
     // --- 2. Restore into target ---
     let restore_opts = RestoreOptions {
@@ -371,8 +387,16 @@ fn integration_dump_restore_sync() {
         clean: true,
         schema: None,
     };
-    run_pg_restore(&tgt, &restore_opts, &PgToolPaths { pg_dump: "pg_dump".into(), pg_restore: "pg_restore".into(), psql: "psql".into() })
-        .expect("pg_restore should succeed");
+    run_pg_restore(
+        &tgt,
+        &restore_opts,
+        &PgToolPaths {
+            pg_dump: "pg_dump".into(),
+            pg_restore: "pg_restore".into(),
+            psql: "psql".into(),
+        },
+    )
+    .expect("pg_restore should succeed");
 
     // --- 3. Verify data landed in target ---
     assert_eq!(
@@ -389,8 +413,18 @@ fn integration_dump_restore_sync() {
     // --- 4. Sync source -> target (target already has tables from the restore
     // above — db_sync now passes --clean --if-exists, so it must succeed into a
     // non-empty target). ---
-    run_db_sync(&src, &tgt, None, None, &PgToolPaths { pg_dump: "pg_dump".into(), pg_restore: "pg_restore".into(), psql: "psql".into() })
-        .expect("db_sync should succeed");
+    run_db_sync(
+        &src,
+        &tgt,
+        None,
+        None,
+        &PgToolPaths {
+            pg_dump: "pg_dump".into(),
+            pg_restore: "pg_restore".into(),
+            psql: "psql".into(),
+        },
+    )
+    .expect("db_sync should succeed");
     assert_eq!(
         psql_count(&tgt, "SELECT count(*) FROM public.products;"),
         3,
@@ -437,8 +471,16 @@ fn integration_plain_dump_restore() {
         tables: None,
         no_owner: true,
     };
-    run_pg_dump(&src, &dump_opts, &PgToolPaths { pg_dump: "pg_dump".into(), pg_restore: "pg_restore".into(), psql: "psql".into() })
-        .expect("pg_dump (plain) should succeed");
+    run_pg_dump(
+        &src,
+        &dump_opts,
+        &PgToolPaths {
+            pg_dump: "pg_dump".into(),
+            pg_restore: "pg_restore".into(),
+            psql: "psql".into(),
+        },
+    )
+    .expect("pg_dump (plain) should succeed");
 
     // --- 2. Restore into target (plain -> psql path) ---
     let restore_opts = RestoreOptions {
@@ -447,8 +489,16 @@ fn integration_plain_dump_restore() {
         clean: false,
         schema: None,
     };
-    run_pg_restore(&tgt, &restore_opts, &PgToolPaths { pg_dump: "pg_dump".into(), pg_restore: "pg_restore".into(), psql: "psql".into() })
-        .expect("pg_restore (plain/psql) should succeed");
+    run_pg_restore(
+        &tgt,
+        &restore_opts,
+        &PgToolPaths {
+            pg_dump: "pg_dump".into(),
+            pg_restore: "pg_restore".into(),
+            psql: "psql".into(),
+        },
+    )
+    .expect("pg_restore (plain/psql) should succeed");
 
     // --- 3. Verify data landed in target ---
     assert_eq!(
@@ -505,9 +555,13 @@ fn sqlite_dump_and_restore_roundtrip() {
 
     let dst = Connection::open_in_memory().unwrap();
     restore_sqlite(&dst, &text, false).unwrap();
-    let n: i64 = dst.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap();
+    let n: i64 = dst
+        .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 2);
-    let blobs: i64 = dst.query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0)).unwrap();
+    let blobs: i64 = dst
+        .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(blobs, 1);
 }
 
@@ -521,14 +575,17 @@ fn sqlite_dump_preserves_autoincrement_sequence() {
     let dst = Connection::open_in_memory().unwrap();
     restore_sqlite(&dst, &text, false).unwrap();
     dst.execute("INSERT INTO t(v) VALUES ('c')", []).unwrap();
-    let id: i64 = dst.query_row("SELECT id FROM t WHERE v='c'", [], |r| r.get(0)).unwrap();
+    let id: i64 = dst
+        .query_row("SELECT id FROM t WHERE v='c'", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(id, 3);
 }
 
 #[test]
 fn sqlite_dump_fail_closed_for_virtual_tables() {
     let src = Connection::open_in_memory().unwrap();
-    src.execute_batch("CREATE VIRTUAL TABLE ft USING fts4(content)").unwrap();
+    src.execute_batch("CREATE VIRTUAL TABLE ft USING fts4(content)")
+        .unwrap();
     let mut buf = Vec::new();
     let err = dump_sqlite_to(&src, &mut Cursor::new(&mut buf), |_| {}).unwrap_err();
     assert!(err.to_lowercase().contains("virtual table"), "got: {err}");
@@ -543,7 +600,13 @@ fn sqlite_restore_clean_drops_existing() {
     let dst = Connection::open_in_memory().unwrap();
     dst.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users VALUES (99,'old');").unwrap();
     restore_sqlite(&dst, &text, true).unwrap();
-    let names: Vec<String> = dst.prepare("SELECT name FROM users ORDER BY id").unwrap().query_map([], |r| r.get::<_, String>(0)).unwrap().filter_map(|r| r.ok()).collect();
+    let names: Vec<String> = dst
+        .prepare("SELECT name FROM users ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
     assert_eq!(names, vec!["Alice".to_string(), "Bob".to_string()]);
 }
 
@@ -554,8 +617,13 @@ fn sqlite_restore_clean_drops_existing() {
 #[test]
 fn mysql_dump_args_single_transaction_no_data_routines() {
     let opts = MySqlBackupOptions {
-        database: "shop".into(), file_path: "/tmp/d.sql".into(),
-        single_transaction: true, no_data: true, routines: true, triggers: false, events: false,
+        database: "shop".into(),
+        file_path: "/tmp/d.sql".into(),
+        single_transaction: true,
+        no_data: true,
+        routines: true,
+        triggers: false,
+        events: false,
     };
     let args = build_mysql_dump_args(
         &MySqlConnParams::new("h".into(), 3306, "u".into(), "shop".into(), "p".into()),
@@ -568,9 +636,15 @@ fn mysql_dump_args_single_transaction_no_data_routines() {
     // `--databases` is a BOOLEAN flag: the database name must be a separate
     // positional argument. `--databases=shop` is rejected by clients as
     // "invalid value 'shop'".
-    let i = args.iter().position(|a| a == "--databases").expect("--databases flag");
+    let i = args
+        .iter()
+        .position(|a| a == "--databases")
+        .expect("--databases flag");
     assert_eq!(args[i + 1], "shop");
-    assert!(!args.iter().any(|a| a.starts_with("--databases=")), "{args:?}");
+    assert!(
+        !args.iter().any(|a| a.starts_with("--databases=")),
+        "{args:?}"
+    );
     assert!(args.iter().any(|a| a == "--result-file=/tmp/d.sql"));
     // no --password on the command line (uses MYSQL_PWD env)
     assert!(args.iter().all(|a| !a.starts_with("--password")));
@@ -578,7 +652,15 @@ fn mysql_dump_args_single_transaction_no_data_routines() {
 
 #[test]
 fn mysql_env_uses_mysql_pwd_not_password_arg() {
-    let opts = MySqlBackupOptions { database: "db".into(), file_path: "/tmp/x.sql".into(), single_transaction: false, no_data: false, routines: false, triggers: false, events: false };
+    let opts = MySqlBackupOptions {
+        database: "db".into(),
+        file_path: "/tmp/x.sql".into(),
+        single_transaction: false,
+        no_data: false,
+        routines: false,
+        triggers: false,
+        events: false,
+    };
     let args = build_mysql_dump_args(
         &MySqlConnParams::new("h".into(), 3306, "u".into(), "db".into(), "p".into()),
         &opts,
@@ -592,25 +674,45 @@ fn mysql_dump_args_omit_column_statistics_for_mariadb_clients() {
     // The bundled client is MariaDB 11.4.5 and rejects the MySQL-8-only option
     // with `unknown option '--skip-column-statistics'`, aborting the dump.
     let opts = MySqlBackupOptions {
-        database: "shop".into(), file_path: "/tmp/d.sql".into(),
-        single_transaction: true, no_data: false, routines: true, triggers: true, events: false,
+        database: "shop".into(),
+        file_path: "/tmp/d.sql".into(),
+        single_transaction: true,
+        no_data: false,
+        routines: true,
+        triggers: true,
+        events: false,
     };
     let conn = MySqlConnParams::new("h".into(), 3306, "u".into(), "shop".into(), "p".into());
     let mariadb = build_mysql_dump_args(&conn, &opts, true);
-    assert!(!mariadb.iter().any(|a| a == "--skip-column-statistics"), "{mariadb:?}");
+    assert!(
+        !mariadb.iter().any(|a| a == "--skip-column-statistics"),
+        "{mariadb:?}"
+    );
     let mysql = build_mysql_dump_args(&conn, &opts, false);
-    assert!(mysql.iter().any(|a| a == "--skip-column-statistics"), "{mysql:?}");
+    assert!(
+        mysql.iter().any(|a| a == "--skip-column-statistics"),
+        "{mysql:?}"
+    );
 }
 
 #[test]
 fn tls_args_map_ssl_mode_only_for_mysql_clients() {
     // MySQL clients take `--ssl-mode=<mode>`; MariaDB clients have no such
     // option and use the boolean `--ssl`.
-    assert_eq!(tls_args_for_client(false, Some("REQUIRED")), vec!["--ssl-mode=REQUIRED".to_string()]);
-    assert_eq!(tls_args_for_client(true, Some("REQUIRED")), vec!["--ssl".to_string()]);
+    assert_eq!(
+        tls_args_for_client(false, Some("REQUIRED")),
+        vec!["--ssl-mode=REQUIRED".to_string()]
+    );
+    assert_eq!(
+        tls_args_for_client(true, Some("REQUIRED")),
+        vec!["--ssl".to_string()]
+    );
     assert_eq!(tls_args_for_client(false, None), Vec::<String>::new());
     assert_eq!(tls_args_for_client(true, None), Vec::<String>::new());
-    assert_eq!(tls_args_for_client(true, Some("DISABLED")), Vec::<String>::new());
+    assert_eq!(
+        tls_args_for_client(true, Some("DISABLED")),
+        Vec::<String>::new()
+    );
 }
 
 #[test]
@@ -642,24 +744,52 @@ fn bundled_mariadb_dump_accepts_our_generated_args() {
         return;
     }
 
-    let conn = MySqlConnParams::new("127.0.0.1".into(), 1, "root".into(), "mysql".into(), "unused".into());
+    let conn = MySqlConnParams::new(
+        "127.0.0.1".into(),
+        1,
+        "root".into(),
+        "mysql".into(),
+        "unused".into(),
+    );
     let opts = MySqlBackupOptions {
         database: "mysql".into(),
-        file_path: std::env::temp_dir().join("gridline_args_guard.sql").to_string_lossy().to_string(),
-        single_transaction: true, no_data: false, routines: true, triggers: true, events: false,
+        file_path: std::env::temp_dir()
+            .join("gridline_args_guard.sql")
+            .to_string_lossy()
+            .to_string(),
+        single_transaction: true,
+        no_data: false,
+        routines: true,
+        triggers: true,
+        events: false,
     };
-    assert!(client_is_mariadb(bundled.to_str().unwrap()), "the bundled dump tool must be MariaDB's");
+    assert!(
+        client_is_mariadb(bundled.to_str().unwrap()),
+        "the bundled dump tool must be MariaDB's"
+    );
 
     let mut args = build_mysql_dump_args(&conn, &opts, true);
     args.extend(tls_args_for_client(true, Some("REQUIRED")));
 
-    let out = std::process::Command::new(&bundled).args(&args).output().unwrap();
+    let out = std::process::Command::new(&bundled)
+        .args(&args)
+        .output()
+        .unwrap();
     let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
     // "unknown option" covers `--skip-column-statistics`; "unknown variable"
     // covers `--ssl-mode` (MariaDB's own wording for the same class of mistake).
-    assert!(!err.contains("unknown option"), "bundled client rejected an option: {err}");
-    assert!(!err.contains("unknown variable"), "bundled client rejected an option: {err}");
-    assert!(!err.contains("invalid value"), "bundled client rejected an option value: {err}");
+    assert!(
+        !err.contains("unknown option"),
+        "bundled client rejected an option: {err}"
+    );
+    assert!(
+        !err.contains("unknown variable"),
+        "bundled client rejected an option: {err}"
+    );
+    assert!(
+        !err.contains("invalid value"),
+        "bundled client rejected an option value: {err}"
+    );
     assert!(
         err.contains("2002") || err.contains("can't connect") || err.contains("connection refused"),
         "expected a connection failure (port 1 is closed), got: {err}"
@@ -688,22 +818,39 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
     use sqlx::ConnectOptions;
     use sqlx::Connection;
 
-    let host = match std::env::var("GRIDLINE_TEST_MYSQL_HOST") { Ok(v) => v, Err(_) => return };
-    let port: u16 = std::env::var("GRIDLINE_TEST_MYSQL_PORT").unwrap_or_else(|_| "3306".into()).parse().unwrap();
+    let host = match std::env::var("GRIDLINE_TEST_MYSQL_HOST") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let port: u16 = std::env::var("GRIDLINE_TEST_MYSQL_PORT")
+        .unwrap_or_else(|_| "3306".into())
+        .parse()
+        .unwrap();
     let user = std::env::var("GRIDLINE_TEST_MYSQL_USER").unwrap_or_else(|_| "root".into());
     let pass = std::env::var("GRIDLINE_TEST_MYSQL_PASS").unwrap_or_default();
-    let db = match std::env::var("GRIDLINE_TEST_MYSQL_DB") { Ok(v) => v, Err(_) => return };
+    let db = match std::env::var("GRIDLINE_TEST_MYSQL_DB") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
 
     let mut conn = sqlx::mysql::MySqlConnectOptions::new()
-        .host(&host).port(port).username(&user).password(&pass).database(&db)
+        .host(&host)
+        .port(port)
+        .username(&user)
+        .password(&pass)
+        .database(&db)
         .ssl_mode(sqlx::mysql::MySqlSslMode::Disabled)
         .disable_statement_logging()
-        .connect().await.expect("connect");
+        .connect()
+        .await
+        .expect("connect");
 
     // Scratch table, removed again at the end, so the live DB is never harmed.
     let table = "gl_restore_probe";
     sqlx::query(&format!("DROP TABLE IF EXISTS `{db}`.`{table}`"))
-        .execute(&mut conn).await.expect("pre-clean");
+        .execute(&mut conn)
+        .await
+        .expect("pre-clean");
 
     let script = format!(
         "CREATE TABLE `{table}` (id INT PRIMARY KEY, name VARCHAR(20));\n\
@@ -717,15 +864,26 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
 
     run_mysql_restore_on(
         &mut conn,
-        MySqlRestoreRun { database: &db, statements: &statements, clean: true },
+        MySqlRestoreRun {
+            database: &db,
+            statements: &statements,
+            clean: true,
+        },
         &mut on_progress,
         &never,
-    ).await.expect("first restore");
+    )
+    .await
+    .expect("first restore");
 
     let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM `{db}`.`{table}`"))
-        .fetch_one(&mut conn).await.expect("count");
+        .fetch_one(&mut conn)
+        .await
+        .expect("count");
     assert_eq!(count, 1);
-    assert_eq!(events.last().copied(), Some((statements.len() + 1, statements.len() + 1)));
+    assert_eq!(
+        events.last().copied(),
+        Some((statements.len() + 1, statements.len() + 1))
+    );
 
     // Second run with clean: the table must be dropped and recreated, so the
     // insert cannot collide with the existing primary key.
@@ -733,33 +891,57 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
     let mut on_progress2 = |done: usize, total: usize| events2.push((done, total));
     run_mysql_restore_on(
         &mut conn,
-        MySqlRestoreRun { database: &db, statements: &statements, clean: true },
+        MySqlRestoreRun {
+            database: &db,
+            statements: &statements,
+            clean: true,
+        },
         &mut on_progress2,
         &never,
-    ).await.expect("clean restore must not hit a duplicate key");
+    )
+    .await
+    .expect("clean restore must not hit a duplicate key");
 
     let count2: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM `{db}`.`{table}`"))
-        .fetch_one(&mut conn).await.expect("count2");
+        .fetch_one(&mut conn)
+        .await
+        .expect("count2");
     assert_eq!(count2, 1, "clean restore must replace, not append");
 
     // A statement that cannot succeed must fail and name its position.
-    let bad = crate::db::sql_split::split_statements("SELECT 1;\nSELECT * FROM gl_no_such_table_xyz;");
+    let bad =
+        crate::db::sql_split::split_statements("SELECT 1;\nSELECT * FROM gl_no_such_table_xyz;");
     let mut noop = |_: usize, _: usize| {};
     let err = run_mysql_restore_on(
         &mut conn,
-        MySqlRestoreRun { database: &db, statements: &bad, clean: false },
+        MySqlRestoreRun {
+            database: &db,
+            statements: &bad,
+            clean: false,
+        },
         &mut noop,
         &never,
-    ).await.expect_err("must fail");
+    )
+    .await
+    .expect_err("must fail");
     assert!(err.starts_with("Statement 2 of 2 failed:"), "got {err:?}");
 
     let _ = conn.close().await;
     let mut cleanup = sqlx::mysql::MySqlConnectOptions::new()
-        .host(&host).port(port).username(&user).password(&pass).database(&db)
-        .ssl_mode(sqlx::mysql::MySqlSslMode::Disabled).disable_statement_logging()
-        .connect().await.expect("reconnect");
+        .host(&host)
+        .port(port)
+        .username(&user)
+        .password(&pass)
+        .database(&db)
+        .ssl_mode(sqlx::mysql::MySqlSslMode::Disabled)
+        .disable_statement_logging()
+        .connect()
+        .await
+        .expect("reconnect");
     sqlx::query(&format!("DROP TABLE IF EXISTS `{db}`.`{table}`"))
-        .execute(&mut cleanup).await.expect("cleanup");
+        .execute(&mut cleanup)
+        .await
+        .expect("cleanup");
     let _ = cleanup.close().await;
 }
 
@@ -774,8 +956,14 @@ fn restore_size_cap_accepts_a_file_at_the_limit() {
 fn restore_size_cap_rejects_a_file_over_the_limit_and_states_both_sizes() {
     let err = check_restore_file_size(MAX_RESTORE_FILE_BYTES + 1, MAX_RESTORE_FILE_BYTES)
         .expect_err("must reject");
-    assert!(err.contains("100 MB"), "error must state the limit in MB; got {err:?}");
-    assert!(err.contains("MB"), "error must state the actual size in MB; got {err:?}");
+    assert!(
+        err.contains("100 MB"),
+        "error must state the limit in MB; got {err:?}"
+    );
+    assert!(
+        err.contains("MB"),
+        "error must state the actual size in MB; got {err:?}"
+    );
 }
 
 // ── live MySQL dump: system tool vs. bundled tool ───────────────────
@@ -806,7 +994,10 @@ fn mysql_conn_from_env(prefix: &str) -> MySqlConnParams {
 fn live_mysql_dump_opts(conn: &MySqlConnParams, file_name: &str) -> MySqlBackupOptions {
     MySqlBackupOptions {
         database: conn.database.clone(),
-        file_path: std::env::temp_dir().join(file_name).to_string_lossy().to_string(),
+        file_path: std::env::temp_dir()
+            .join(file_name)
+            .to_string_lossy()
+            .to_string(),
         single_transaction: true,
         no_data: false,
         routines: true,
@@ -832,7 +1023,11 @@ fn live_mysql_dump_with_a_system_tool() {
         crate::db::tool_resolver::probe,
     )
     .expect("no system mariadb-dump/mysqldump resolved");
-    eprintln!("resolved: {} ({})", resolved.program, resolved.source.as_str());
+    eprintln!(
+        "resolved: {} ({})",
+        resolved.program,
+        resolved.source.as_str()
+    );
     let tools = MySqlToolPaths {
         mysqldump: resolved.program.clone(),
         mysql: resolved.program.clone(),
@@ -854,8 +1049,14 @@ fn live_mysql_dump_with_the_bundled_tool() {
         env!("CARGO_MANIFEST_DIR")
     ))
     .join(crate::db::tool_resolver::bundled_bin_name("mariadb-dump"));
-    assert!(bundled.is_file(), "bundled mariadb-dump not staged at {bundled:?}");
-    assert!(crate::db::tool_resolver::probe(&bundled), "bundled mariadb-dump does not run");
+    assert!(
+        bundled.is_file(),
+        "bundled mariadb-dump not staged at {bundled:?}"
+    );
+    assert!(
+        crate::db::tool_resolver::probe(&bundled),
+        "bundled mariadb-dump does not run"
+    );
     let tools = MySqlToolPaths {
         mysqldump: bundled.to_string_lossy().to_string(),
         mysql: bundled.to_string_lossy().to_string(),
