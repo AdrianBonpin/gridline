@@ -1391,6 +1391,25 @@ pub async fn detect_mysql_tools(force: Option<bool>, app_handle: AppHandle) -> M
     .unwrap_or_else(|_| build_mysql_tool_status(&ToolResolution::none(), &ToolResolution::none()))
 }
 
+/// Effective TLS mode for one MySQL-family CLI endpoint.
+///
+/// A tunnelled endpoint is loopback, so certificate verification is
+/// meaningless there — it degrades to `require`, mirroring how the driver
+/// connections degrade through a tunnel. Otherwise the connection's own
+/// `ssl_mode` decides, with managed hosts (`*.psdb.cloud`, `*.supabase.co`,
+/// `*.neon.tech`) defaulting to `require` so pre-fix saved connections keep
+/// working.
+pub fn mysql_cli_tls_mode(
+    original_host: &str,
+    ssl_mode: Option<&str>,
+    via_tunnel: bool,
+) -> Option<String> {
+    if via_tunnel {
+        return Some("require".to_string());
+    }
+    crate::db::tls::resolve_ssl_mode(original_host, ssl_mode)
+}
+
 /// Resolve (host, port, via_tunnel) for a MySQL connection, routing through the
 /// SSH tunnel endpoint when present.
 fn mysql_endpoint(
@@ -1514,12 +1533,13 @@ pub async fn mysql_dump(
         password,
     );
     let tools = resolve_mysql_tool_paths(&app_handle);
-    let tls = if via_tunnel { Some("REQUIRED") } else { None };
+    // Honour the connection's own ssl_mode; a tunnel degrades to `require`.
+    let tls = mysql_cli_tls_mode(&conn.host, conn.ssl_mode.as_deref(), via_tunnel);
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
     tokio::task::spawn_blocking(move || {
-        let result = run_mysql_dump(&params, &options, &tools, tls);
+        let result = run_mysql_dump(&params, &options, &tools, tls.as_deref());
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 
@@ -1781,18 +1801,29 @@ pub async fn mysql_sync(
     );
 
     let tools = resolve_mysql_tool_paths(&app_handle);
-    // Through a tunnel the peer is loopback, so force encrypt-only `REQUIRED`
-    // (mirrors how the app degrades verify-ca/verify-full through tunnels).
-    let tls = if src_via_tunnel || tgt_via_tunnel {
-        Some("REQUIRED")
-    } else {
-        None
-    };
+    // Each endpoint gets its OWN mode: one side being tunnelled says nothing
+    // about the other, and a managed host defaults to `require`.
+    let src_tls = mysql_cli_tls_mode(
+        &source_conn.host,
+        source_conn.ssl_mode.as_deref(),
+        src_via_tunnel,
+    );
+    let tgt_tls = mysql_cli_tls_mode(
+        &target_conn.host,
+        target_conn.ssl_mode.as_deref(),
+        tgt_via_tunnel,
+    );
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
     tokio::task::spawn_blocking(move || {
-        let result = run_mysql_sync(&source, &target, &tools, tls, None);
+        let result = run_mysql_sync(
+            &source,
+            &target,
+            &tools,
+            src_tls.as_deref(),
+            tgt_tls.as_deref(),
+        );
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 

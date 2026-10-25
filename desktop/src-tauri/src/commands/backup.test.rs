@@ -1542,3 +1542,34 @@ fn mysql_sync_succeeds_when_both_processes_succeed() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn mysql_cli_tls_mode_prefers_each_endpoints_own_setting() {
+    // Direct connections honour their own ssl_mode.
+    assert_eq!(
+        mysql_cli_tls_mode("db.example.com", Some("verify-full"), false).as_deref(),
+        Some("verify-full")
+    );
+    assert_eq!(
+        mysql_cli_tls_mode("db.example.com", Some("disable"), false).as_deref(),
+        Some("disable")
+    );
+    assert_eq!(mysql_cli_tls_mode("db.example.com", None, false), None);
+
+    // Managed hosts default to `require` (pre-fix saved connections).
+    assert_eq!(
+        mysql_cli_tls_mode("xxxx.us-east-2.psdb.cloud", None, false).as_deref(),
+        Some("require")
+    );
+
+    // A tunnel makes the peer loopback, so verification degrades to require.
+    assert_eq!(
+        mysql_cli_tls_mode("db.example.com", Some("verify-full"), true).as_deref(),
+        Some("require")
+    );
+
+    // Endpoints never share a mode.
+    let source = mysql_cli_tls_mode("src.example.com", Some("disable"), false);
+    let target = mysql_cli_tls_mode("tgt.example.com", Some("verify-full"), false);
+    assert_ne!(source, target);
+}
