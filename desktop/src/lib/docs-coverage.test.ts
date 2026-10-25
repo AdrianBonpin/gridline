@@ -5,6 +5,7 @@ import agents from "../../../AGENTS.md?raw";
 import readme from "../../../README.md?raw";
 import landing from "../../../www/public/landing.js?raw";
 import roadmap from "../../../ROADMAP.md?raw";
+import security from "../../../SECURITY.md?raw";
 
 describe("v0.8.3 docs coverage", () => {
   it("AGENTS.md marks inline cell editing complete", () => {
@@ -80,6 +81,13 @@ describe("v0.8.3 docs coverage", () => {
     expect(agents).toMatch(/\.sql/);
     expect(agents.toLowerCase()).toContain("in-process");
   });
+  it("documents the private vulnerability disclosure channel", () => {
+    expect(readme).toContain("## Security");
+    expect(readme).toContain("security/advisories/new");
+    expect(readme).toContain("SECURITY.md");
+    expect(agents).toContain("SECURITY.md");
+    expect(agents.toLowerCase()).toContain("vulnerabilit");
+  });
 });
 
 describe("v0.8.3 tool resolver docs", () => {
@@ -93,5 +101,24 @@ describe("v0.8.3 tool resolver docs", () => {
   });
   it("ROADMAP describes MySQL backup via mariadb-dump/mysqldump", () => {
     expect(roadmap).toContain("mariadb-dump");
+  });
+});
+
+describe("SECURITY.md disclosure policy", () => {
+  it("routes reports to the private advisory form, not public issues", () => {
+    expect(security).toContain("security/advisories/new");
+    expect(security.toLowerCase()).toContain("do not open a public issue");
+  });
+
+  it("documents the threat model of the destructive-query guard", () => {
+    expect(security).toContain("not an authorization boundary");
+  });
+
+  it("documents that the Gitea mirror has no private reporting", () => {
+    expect(security).toContain("Report against GitHub only");
+  });
+
+  it("states a coordinated-disclosure window", () => {
+    expect(security).toContain("90 days");
   });
 });

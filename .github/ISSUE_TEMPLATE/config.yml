@@ -8,3 +8,6 @@ contact_links:
   - name: README — feature list
     url: https://github.com/AdrianBonpin/gridline#features
     about: Confirm a feature isn't already shipped
+  - name: Report a security vulnerability (private)
+    url: https://github.com/AdrianBonpin/gridline/security/advisories/new
+    about: Use this — not a public issue — for anything security related

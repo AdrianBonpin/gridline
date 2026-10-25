@@ -105,6 +105,7 @@ gridline/
 ├── docs/                         # Project docs
 ├── screenshots/                  # README marketing images
 ├── scripts/                      # Release tooling (render-cask.sh, release-mac.sh) + Gitea mirror (mirror-gitea.sh, hooks/, install-git-hooks.sh)
+├── SECURITY.md                   # Vulnerability disclosure policy (private reports only)
 └── AGENTS.md                     # This file
 ```
 
@@ -236,6 +237,7 @@ TMP=$(mktemp -d) && cp www/package.json "$TMP/package.json" && cd "$TMP" && bun 
 - **DO** keep Tauri commands thin — business logic lives in `db/` and `store/` modules
 - **DO** type all IPC boundaries explicitly
 - **DO** validate and sanitize all user-provided SQL and connection parameters before execution
+- **DO** handle security reports privately — follow [SECURITY.md](./SECURITY.md); never disclose an unfixed vulnerability in a public issue, and never weaken a fail-closed path to make a test pass
 
 ---
 
@@ -431,6 +433,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 ## Related Documents
 
 - [Project Roadmap](./ROADMAP.md) — source of truth for planned work (in-development, next-up, queue, shipped)
+- [Security Policy](./SECURITY.md) — how to report a vulnerability **privately** (never in a public issue)
 - [Architectural Spec: v0.7.0 connection-screen revamp](./docs/superpowers/specs/2026-08-04-architectural-spec.md) — current in-flight work
 - [Tauri 2.0 Documentation](https://tauri.app/develop/)
 - [sqlx Documentation](https://docs.rs/sqlx)
