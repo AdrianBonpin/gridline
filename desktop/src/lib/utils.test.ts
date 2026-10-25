@@ -395,6 +395,33 @@ describe("isDestructiveQuery", () => {
     expect(isDestructiveQuery("drop table users")).toBe(true);
     expect(isDestructiveQuery("Drop Table users")).toBe(true);
   });
+
+  it("flags a destructive statement that is not the first", () => {
+    expect(isDestructiveQuery("SELECT 1; DROP TABLE demo;")).toBe(true);
+  });
+
+  it("flags a leading destructive statement in a script", () => {
+    expect(isDestructiveQuery("DELETE FROM t; SELECT 1;")).toBe(true);
+  });
+
+  it("flags a data-modifying CTE", () => {
+    expect(isDestructiveQuery("WITH removed AS (SELECT 1) DELETE FROM demo;")).toBe(true);
+  });
+
+  it("does not flag read-only scripts", () => {
+    expect(isDestructiveQuery("SELECT 1; SELECT 2; EXPLAIN SELECT 3;")).toBe(false);
+  });
+
+  it("does not flag keywords inside quotes, comments or dollar quotes", () => {
+    expect(isDestructiveQuery("SELECT 'DROP TABLE t';")).toBe(false);
+    expect(isDestructiveQuery("-- DROP TABLE t\nSELECT 1;")).toBe(false);
+    expect(isDestructiveQuery("/* DELETE FROM t */ SELECT 1;")).toBe(false);
+    expect(isDestructiveQuery("SELECT $$ DELETE FROM t $$;")).toBe(false);
+  });
+
+  it("flags an unrecognised statement verb (fail closed)", () => {
+    expect(isDestructiveQuery("CALL refresh_all();")).toBe(true);
+  });
 });
 
 describe("pickDefaultSchema", () => {
@@ -436,5 +463,18 @@ describe("isSchemaModifyingQuery", () => {
   it("strips comments before checking", () => {
     expect(isSchemaModifyingQuery("-- note\nCREATE TABLE t (id int)")).toBe(true);
     expect(isSchemaModifyingQuery("/* x */ SELECT 1")).toBe(false);
+  });
+
+  it("detects DDL that is not the first statement", () => {
+    expect(isSchemaModifyingQuery("SELECT 1; CREATE TABLE t (id int);")).toBe(true);
+  });
+
+  it("ignores DDL keywords in comments and quotes", () => {
+    expect(isSchemaModifyingQuery("-- CREATE TABLE t\nSELECT 1;")).toBe(false);
+    expect(isSchemaModifyingQuery("SELECT 'CREATE TABLE t';")).toBe(false);
+  });
+
+  it("is false for data-only changes", () => {
+    expect(isSchemaModifyingQuery("INSERT INTO t VALUES (1); DELETE FROM t;")).toBe(false);
   });
 });

@@ -8,6 +8,7 @@ import type {
   TagInput,
   ValidationResult,
 } from "./types";
+import { analyzeScript, hasSchemaModifyingStatement, scanWords, splitStatements } from "./sqlScan";
 
 // ─── Data type abbreviations ─────────────────────────────
 
@@ -144,51 +145,40 @@ export function filterConnections(
   });
 }
 
-const DESTRUCTIVE_KEYWORDS = new Set([
-  "INSERT", "UPDATE", "DELETE", "DROP", "ALTER",
-  "TRUNCATE", "CREATE", "REPLACE",
-]);
-
 /**
- * Return the first significant keyword of `sql` (uppercased) after stripping
- * comments and collapsing whitespace, or null when there is none.
+ * Return the first significant keyword of `sql` (uppercased) after skipping
+ * comments and quoted regions, or null when there is none.
+ *
+ * Kept for callers that only care about the leading verb. Statement-level
+ * decisions must go through `analyzeScript`/`hasSchemaModifyingStatement`,
+ * which inspect the whole script.
  */
 export function firstSignificantKeyword(sql: string): string | null {
-  // Strip block comments  /* ... */
-  let stripped = sql.replace(/\/\*[\s\S]*?\*\//g, " ");
-  // Strip line comments  -- ...
-  stripped = stripped.replace(/--[^\n]*/g, " ");
-  // Collapse whitespace
-  const tokens = stripped.trim().split(/\s+/);
-  if (tokens.length === 0 || tokens[0].length === 0) return null;
-  return tokens[0].toUpperCase();
+  const statements = splitStatements(sql);
+  if (statements.length === 0) return null;
+  const words = scanWords(statements[0]);
+  return words.length > 0 ? words[0] : null;
 }
 
 /**
- * Detect whether `sql` is a data-modifying statement by checking the
- * first significant keyword after stripping comments and whitespace.
+ * Detect whether running `sql` could modify or remove data or schema.
+ * Every top-level statement is classified, so a destructive statement after
+ * a harmless one still prompts.
  *
- * This is a UX safety net, not a security boundary.  The user is already
+ * This is a UX safety net, not a security boundary. The user is already
  * authenticated to their own database — the confirmation dialog prevents
  * accidental data loss, not malicious access.
  */
 export function isDestructiveQuery(sql: string): boolean {
-  const first = firstSignificantKeyword(sql);
-  return first !== null && DESTRUCTIVE_KEYWORDS.has(first);
+  return analyzeScript(sql).destructive;
 }
 
-const SCHEMA_MODIFYING_KEYWORDS = new Set([
-  "CREATE", "DROP", "ALTER", "TRUNCATE",
-]);
-
 /**
- * Detect whether `sql` changes the database schema (DDL) by checking the
- * first significant keyword.  Used to auto-refresh the schema tree after a
- * successful query run.
+ * Detect whether `sql` changes the database schema (DDL). Multi-statement
+ * aware: used to auto-refresh the schema tree after a successful run.
  */
 export function isSchemaModifyingQuery(sql: string): boolean {
-  const k = firstSignificantKeyword(sql);
-  return k !== null && SCHEMA_MODIFYING_KEYWORDS.has(k);
+  return hasSchemaModifyingStatement(sql);
 }
 
 /**
