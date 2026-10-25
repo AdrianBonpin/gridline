@@ -766,15 +766,46 @@ fn client_is_mariadb(program: &str) -> bool {
     is_mariadb
 }
 
-/// TLS flags for a dump client. MySQL's clients take `--ssl-mode=<mode>`;
-/// MariaDB's have no `--ssl-mode` and use the boolean `--ssl`, which is the
-/// equivalent of the only mode this code path uses (`REQUIRED`).
-pub fn tls_args_for_client(client_is_mariadb: bool, tls_mode: Option<&str>) -> Vec<String> {
-    match (client_is_mariadb, tls_mode) {
-        (true, Some("REQUIRED")) => vec!["--ssl".into()],
-        (true, _) => Vec::new(),
-        (false, Some(m)) => vec![format!("--ssl-mode={m}")],
-        (false, None) => Vec::new(),
+/// TLS flags for one MySQL-family client, derived from the connection's own
+/// `ssl_mode` (`disable` | `require` | `verify-ca` | `verify-full`).
+///
+/// MySQL's clients speak `--ssl-mode=<MODE>`. MariaDB's have no `--ssl-mode`:
+/// they use the boolean `--ssl` (default ON) plus `--ssl-verify-server-cert`
+/// (default ON in 11.4, but stated explicitly so older clients that default it
+/// OFF still verify). An unrecognised non-empty mode fails closed to
+/// encrypted-and-verified rather than silently unencrypted.
+pub fn mysql_tls_args(client_is_mariadb: bool, tls_mode: Option<&str>) -> Vec<String> {
+    let Some(raw) = tls_mode else {
+        return Vec::new();
+    };
+    let normalised = raw.trim().to_ascii_lowercase();
+    let mode = match normalised.as_str() {
+        "" => return Vec::new(),
+        "disable" | "disabled" => "disable",
+        "require" | "required" => "require",
+        "verify-ca" | "verify_ca" => "verify-ca",
+        "verify-full" => "verify-full",
+        "verify_identity" | "verify-identity" => "verify-full",
+        _ => "require",
+    };
+
+    if client_is_mariadb {
+        match mode {
+            "disable" => vec!["--skip-ssl".to_string()],
+            "require" => vec![
+                "--ssl".to_string(),
+                "--skip-ssl-verify-server-cert".to_string(),
+            ],
+            _ => vec!["--ssl".to_string(), "--ssl-verify-server-cert".to_string()],
+        }
+    } else {
+        let flag = match mode {
+            "disable" => "DISABLED",
+            "require" => "REQUIRED",
+            "verify-ca" => "VERIFY_CA",
+            _ => "VERIFY_IDENTITY",
+        };
+        vec![format!("--ssl-mode={flag}")]
     }
 }
 
@@ -815,6 +846,44 @@ pub fn build_mysql_dump_args(
     a
 }
 
+/// `mariadb-dump`/`mysqldump` args for a **DB-to-DB sync**, deliberately
+/// separate from [`build_mysql_dump_args`]:
+///
+/// * No `--databases` — that emits `CREATE DATABASE` and `USE <source>`, which
+///   would redirect the restore into a source-named schema on the *target*
+///   server (issue #47). The database is passed positionally instead, which
+///   dumps its contents without database creation or selection statements.
+/// * `--add-drop-table` so re-syncing into a non-empty target replaces tables.
+pub fn build_mysql_sync_dump_args(
+    source: &MySqlConnParams,
+    client_is_mariadb: bool,
+    tls_mode: Option<&str>,
+) -> Vec<String> {
+    let mut args = base_mysql_args(source);
+    args.push("--single-transaction".into());
+    args.push("--add-drop-table".into());
+    if !client_is_mariadb {
+        args.push("--skip-column-statistics".into());
+    }
+    args.extend(mysql_tls_args(client_is_mariadb, tls_mode));
+    // Positional database name: contents only, no CREATE DATABASE / USE.
+    args.push(source.database.clone());
+    args
+}
+
+/// `mariadb`/`mysql` client args that consume a sync dump. The target
+/// endpoint gets its **own** TLS mode (issue #47).
+pub fn mysql_sync_restore_args(
+    target: &MySqlConnParams,
+    client_is_mariadb: bool,
+    tls_mode: Option<&str>,
+) -> Vec<String> {
+    let mut args = base_mysql_args(target);
+    args.push(format!("--database={}", target.database));
+    args.extend(mysql_tls_args(client_is_mariadb, tls_mode));
+    args
+}
+
 /// System-first mariadb-dump/mysqldump resolution (bundled fallback).
 pub fn resolve_mysql_tool(app: &AppHandle, tool: &str) -> (String, Option<String>) {
     match tool_resolver::mysql_request(tool) {
@@ -832,9 +901,10 @@ pub fn resolve_mysql_tool_paths(app: &AppHandle) -> MySqlToolPaths {
     }
 }
 
-/// Headless core: spawn dump with MYSQL_PWD env. `tls_mode` (e.g. `REQUIRED`)
-/// is translated per client — `--ssl-mode=` on MySQL clients, `--ssl` on
-/// MariaDB's (see `tls_args_for_client`) when routing through an SSH tunnel.
+/// Headless core: spawn dump with MYSQL_PWD env. `tls_mode` (e.g. `require`)
+/// is translated per client — `--ssl-mode=` on MySQL clients, MariaDB's
+/// boolean flags on MariaDB's (see `mysql_tls_args`) when routing through an
+/// SSH tunnel.
 /// (Live behavior = #[ignore] integration test.)
 pub fn run_mysql_dump(
     conn: &MySqlConnParams,
@@ -844,7 +914,7 @@ pub fn run_mysql_dump(
 ) -> Result<(), String> {
     let is_mariadb = client_is_mariadb(&tools.mysqldump);
     let mut args = build_mysql_dump_args(conn, options, is_mariadb);
-    args.extend(tls_args_for_client(is_mariadb, tls_mode));
+    args.extend(mysql_tls_args(is_mariadb, tls_mode));
     let out = Command::new(&tools.mysqldump)
         .env("MYSQL_PWD", &conn.password)
         .args(&args)
@@ -861,15 +931,18 @@ pub fn run_mysql_sync(
     source: &MySqlConnParams,
     target: &MySqlConnParams,
     tools: &MySqlToolPaths,
-    tls_mode: Option<&str>,
+    src_tls: Option<&str>,
+    tgt_tls: Option<&str>,
 ) -> Result<(), String> {
+    // Task 9 wires the target's own TLS mode into the restore args.
+    let _ = tgt_tls;
     let is_mariadb = client_is_mariadb(&tools.mysqldump);
     let mut dump_args = base_mysql_args(source);
     dump_args.push("--single-transaction".into());
     dump_args.push("--add-drop-table".into());
     dump_args.push("--databases".into());
     dump_args.push(source.database.clone());
-    dump_args.extend(tls_args_for_client(is_mariadb, tls_mode));
+    dump_args.extend(mysql_tls_args(is_mariadb, src_tls));
     let mut dump = Command::new(&tools.mysqldump)
         .env("MYSQL_PWD", &source.password)
         .args(&dump_args)
@@ -1691,7 +1764,7 @@ pub async fn mysql_sync(
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
     tokio::task::spawn_blocking(move || {
-        let result = run_mysql_sync(&source, &target, &tools, tls);
+        let result = run_mysql_sync(&source, &target, &tools, tls, None);
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 

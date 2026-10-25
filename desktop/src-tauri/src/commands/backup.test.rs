@@ -696,23 +696,120 @@ fn mysql_dump_args_omit_column_statistics_for_mariadb_clients() {
 }
 
 #[test]
-fn tls_args_map_ssl_mode_only_for_mysql_clients() {
-    // MySQL clients take `--ssl-mode=<mode>`; MariaDB clients have no such
-    // option and use the boolean `--ssl`.
+fn mysql_tls_args_map_each_mode_per_client() {
+    // MySQL clients speak --ssl-mode.
     assert_eq!(
-        tls_args_for_client(false, Some("REQUIRED")),
+        mysql_tls_args(false, Some("disable")),
+        vec!["--ssl-mode=DISABLED".to_string()]
+    );
+    assert_eq!(
+        mysql_tls_args(false, Some("require")),
         vec!["--ssl-mode=REQUIRED".to_string()]
     );
     assert_eq!(
-        tls_args_for_client(true, Some("REQUIRED")),
-        vec!["--ssl".to_string()]
+        mysql_tls_args(false, Some("verify-ca")),
+        vec!["--ssl-mode=VERIFY_CA".to_string()]
     );
-    assert_eq!(tls_args_for_client(false, None), Vec::<String>::new());
-    assert_eq!(tls_args_for_client(true, None), Vec::<String>::new());
     assert_eq!(
-        tls_args_for_client(true, Some("DISABLED")),
-        Vec::<String>::new()
+        mysql_tls_args(false, Some("verify-full")),
+        vec!["--ssl-mode=VERIFY_IDENTITY".to_string()]
     );
+    // Legacy uppercase form from the pre-fix code path still maps.
+    assert_eq!(
+        mysql_tls_args(false, Some("REQUIRED")),
+        vec!["--ssl-mode=REQUIRED".to_string()]
+    );
+
+    // MariaDB clients have no --ssl-mode; --ssl defaults ON, so `require`
+    // only needs verification turned off, and verify modes state both flags
+    // explicitly (older clients default verification OFF).
+    assert_eq!(
+        mysql_tls_args(true, Some("disable")),
+        vec!["--skip-ssl".to_string()]
+    );
+    assert_eq!(
+        mysql_tls_args(true, Some("require")),
+        vec![
+            "--ssl".to_string(),
+            "--skip-ssl-verify-server-cert".to_string()
+        ]
+    );
+    assert_eq!(
+        mysql_tls_args(true, Some("verify-full")),
+        vec!["--ssl".to_string(), "--ssl-verify-server-cert".to_string()]
+    );
+
+    // No mode at all -> nothing (client default).
+    assert!(mysql_tls_args(false, None).is_empty());
+    assert!(mysql_tls_args(true, None).is_empty());
+
+    // An unrecognised non-empty mode fails closed to encrypted-but-verified.
+    assert_eq!(
+        mysql_tls_args(false, Some("bogus")),
+        vec!["--ssl-mode=REQUIRED".to_string()]
+    );
+}
+
+#[test]
+fn mysql_sync_dump_args_never_emit_database_creation_or_selection() {
+    let source = MySqlConnParams::new(
+        "srchost".into(),
+        3306,
+        "root".into(),
+        "source_db".into(),
+        "secret".into(),
+    );
+    let args = build_mysql_sync_dump_args(&source, true, Some("require"));
+    // #47: --databases emits CREATE DATABASE + USE, which would redirect the
+    // restore into a source-named schema on the target server.
+    assert!(
+        !args.iter().any(|a| a == "--databases"),
+        "must not use --databases: {args:?}"
+    );
+    assert!(
+        !args.iter().any(|a| a.starts_with("--databases=")),
+        "must not use --databases=<db>: {args:?}"
+    );
+    assert_eq!(
+        args.last(),
+        Some(&"source_db".to_string()),
+        "db name goes positionally last"
+    );
+    assert!(args.iter().any(|a| a == "--single-transaction"));
+    assert!(args.iter().any(|a| a == "--add-drop-table"));
+    assert!(
+        !args.iter().any(|a| a.contains("secret")),
+        "password stays in MYSQL_PWD"
+    );
+}
+
+#[test]
+fn mysql_sync_dump_args_omit_column_statistics_for_mariadb_clients() {
+    let source = MySqlConnParams::new("h".into(), 3306, "root".into(), "db".into(), "p".into());
+    let mariadb = build_mysql_sync_dump_args(&source, true, None);
+    assert!(!mariadb.iter().any(|a| a == "--skip-column-statistics"));
+    let mysql = build_mysql_sync_dump_args(&source, false, None);
+    assert!(mysql.iter().any(|a| a == "--skip-column-statistics"));
+}
+
+#[test]
+fn mysql_sync_restore_args_target_the_target_database_only() {
+    let target = MySqlConnParams::new(
+        "tgthost".into(),
+        3307,
+        "root".into(),
+        "target_db".into(),
+        "secret".into(),
+    );
+    let args = mysql_sync_restore_args(&target, false, Some("verify-full"));
+    assert!(
+        args.iter().any(|a| a == "--database=target_db"),
+        "got: {args:?}"
+    );
+    assert!(args.iter().any(|a| a == "--host=tgthost"));
+    assert!(args.iter().any(|a| a == "--port=3307"));
+    assert!(args.iter().any(|a| a == "--ssl-mode=VERIFY_IDENTITY"));
+    assert!(!args.iter().any(|a| a == "--databases"));
 }
 
 #[test]
@@ -769,7 +866,7 @@ fn bundled_mariadb_dump_accepts_our_generated_args() {
     );
 
     let mut args = build_mysql_dump_args(&conn, &opts, true);
-    args.extend(tls_args_for_client(true, Some("REQUIRED")));
+    args.extend(mysql_tls_args(true, Some("require")));
 
     let out = std::process::Command::new(&bundled)
         .args(&args)
