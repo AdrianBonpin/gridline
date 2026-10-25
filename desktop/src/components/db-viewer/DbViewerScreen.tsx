@@ -6,7 +6,7 @@ import { DbViewerSidebar, NAV_CAPABILITY_KEY } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { isDestructiveQuery, isSchemaModifyingQuery } from "../../lib/utils";
 import { executeQueryMulti, cancelQuery } from "../../lib/commands";
-import { getCapabilities } from "../../lib/dbCapabilities";
+import { getCapabilities, isMysqlFamily } from "../../lib/dbCapabilities";
 
 const QueryEditor = lazy(() => import("../editor/QueryEditor").then((m) => ({ default: m.QueryEditor })));
 import { QueryToolbar } from "../editor/QueryToolbar";
@@ -405,7 +405,7 @@ export function DbViewerScreen({
         if (!tab || tab.tabType !== "query") return;
         const dbType = currentConnection?.db_type ?? "postgresql";
         const language =
-            dbType === "mysql"
+            isMysqlFamily(dbType)
                 ? "mysql"
                 : dbType === "sqlite"
                   ? "sqlite"

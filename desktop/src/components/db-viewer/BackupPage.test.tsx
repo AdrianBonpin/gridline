@@ -83,6 +83,24 @@ describe("BackupPage DB-aware", () => {
     await waitFor(() => expect(screen.queryByText(/checking for pg_dump/i)).not.toBeInTheDocument());
     expect(screen.getByText("Custom Archive")).toBeTruthy();
   });
+
+  // Regression (#47): `isMysql = dbType === "mysql"` made a MariaDB connection
+  // match neither branch, so the MySQL tool check never ran and no MySQL backup
+  // form was rendered.
+  it("runs the MySQL tool check for a MariaDB connection", async () => {
+    mockConnections.push({ id: "c1", db_type: "mariadb", name: "mdb", database: "db1" });
+    const detectMysql = vi.spyOn(commands, "detectMysqlTools").mockResolvedValue({
+      mysqldumpFound: true,
+      mysqlFound: true,
+      mysqldumpVersion: "11.4",
+      mysqlVersion: "11.4",
+      mysqldumpSource: "system",
+      mysqlSource: "system",
+    });
+    render(<BackupPage connectionId="c1" />);
+    await waitFor(() => expect(detectMysql).toHaveBeenCalled());
+    expect(screen.getByText("Plain SQL")).toBeTruthy();
+  });
 });
 
 describe("BackupPage tool provenance and re-check", () => {

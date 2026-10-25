@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { RestorePage } from "./RestorePage";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -100,5 +100,32 @@ describe("RestorePage DB-aware", () => {
 
     await waitFor(() => expect(screen.getByText(/Backup File/i)).toBeInTheDocument());
     expect(screen.getByText(/can't be rolled back/i)).toBeTruthy();
+  });
+
+  // Regression (#47): `isMysql = dbType === "mysql"` made a MariaDB connection
+  // match neither branch, so Start Restore dispatched sqliteRestore() and none of
+  // the MySQL restore UI rendered. MySQL restore runs in-process since the v0.8.2
+  // work, so the observable signal is the MySQL path itself (no client probe).
+  it("routes a MariaDB connection through the MySQL restore path", async () => {
+    mockConnections.push({ id: "c7", db_type: "mariadb", name: "m", database: "db1" });
+    vi.spyOn(commands, "detectMysqlTools").mockResolvedValue(mysqlToolsOk);
+    const mysqlRestore = vi.spyOn(commands, "mysqlRestore").mockResolvedValue("job-1");
+    const sqliteRestore = vi.spyOn(commands, "sqliteRestore").mockResolvedValue("job-1");
+
+    render(<RestorePage connectionId="c7" />);
+
+    // MySQL-only UI: the in-process tool row and the MariaDB clean hint.
+    await waitFor(() => expect(screen.getByText(/Backup File/i)).toBeInTheDocument());
+    expect(screen.getByText(/no MySQL client installation required/i)).toBeTruthy();
+    expect(screen.getByText(/only the objects this file defines/i)).toBeTruthy();
+
+    fireEvent.change(screen.getByPlaceholderText("/path/to/backup.dump"), {
+      target: { value: "/tmp/backup.sql" },
+    });
+    fireEvent.click(screen.getByTestId("restore-confirm-checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /start restore/i }));
+
+    await waitFor(() => expect(mysqlRestore).toHaveBeenCalled());
+    expect(sqliteRestore).not.toHaveBeenCalled();
   });
 });

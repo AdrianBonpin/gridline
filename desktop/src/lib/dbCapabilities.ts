@@ -45,3 +45,13 @@ export const DB_CAPABILITIES: Record<DbType, DbCapabilities> = {
 export function getCapabilities(dbType: string): DbCapabilities {
   return (DB_CAPABILITIES as Record<string, DbCapabilities>)[dbType] ?? ALL_FALSE;
 }
+
+/**
+ * MySQL-family engines: they share the MySQL driver, the mariadb-dump/mariadb
+ * CLI tools, and the MySQL backup/restore/sync flows. MariaDB was previously
+ * missed by `dbType === "mysql"` checks in the Tools pages, which sent a
+ * MariaDB DB Sync down the SQLite path (issue #47).
+ */
+export function isMysqlFamily(dbType: DbType | null | undefined): boolean {
+  return dbType === "mysql" || dbType === "mariadb";
+}

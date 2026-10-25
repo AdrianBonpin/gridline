@@ -20,6 +20,7 @@ import {
     sqliteRestore,
 } from "../../lib/commands";
 import type { PgToolStatus, BackupJob } from "../../lib/types";
+import { isMysqlFamily } from "../../lib/dbCapabilities";
 
 interface RestorePageProps {
     connectionId: string;
@@ -56,7 +57,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
     const dbType = connection?.db_type ?? "postgresql";
     const database = connection?.database ?? null;
     const isPg = dbType === "postgresql";
-    const isMysql = dbType === "mysql";
+    const isMysql = isMysqlFamily(dbType);
     const isSqlite = dbType === "sqlite";
 
     const [filePath, setFilePath] = useState("");
