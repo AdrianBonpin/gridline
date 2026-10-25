@@ -927,6 +927,19 @@ pub fn run_mysql_dump(
     }
 }
 
+/// Pipe a source database's dump into a target database.
+///
+/// Three things differ from a file backup deliberately (issue #47):
+///
+/// * the dump comes from [`build_mysql_sync_dump_args`], which never emits
+///   `CREATE DATABASE`/`USE` — otherwise the restore would switch away from
+///   the selected target;
+/// * the **dump** exit status is checked first, so an empty failed dump cannot
+///   masquerade as a successful sync;
+/// * each endpoint passes its own TLS mode to its own client.
+///
+/// The dump's stderr is drained on a separate thread: a large warning burst
+/// would otherwise fill the pipe buffer and deadlock both processes.
 pub fn run_mysql_sync(
     source: &MySqlConnParams,
     target: &MySqlConnParams,
@@ -934,36 +947,51 @@ pub fn run_mysql_sync(
     src_tls: Option<&str>,
     tgt_tls: Option<&str>,
 ) -> Result<(), String> {
-    // Task 9 wires the target's own TLS mode into the restore args.
-    let _ = tgt_tls;
-    let is_mariadb = client_is_mariadb(&tools.mysqldump);
-    let mut dump_args = base_mysql_args(source);
-    dump_args.push("--single-transaction".into());
-    dump_args.push("--add-drop-table".into());
-    dump_args.push("--databases".into());
-    dump_args.push(source.database.clone());
-    dump_args.extend(mysql_tls_args(is_mariadb, src_tls));
+    let dump_is_mariadb = client_is_mariadb(&tools.mysqldump);
+    let restore_is_mariadb = client_is_mariadb(&tools.mysql);
+
+    let dump_args = build_mysql_sync_dump_args(source, dump_is_mariadb, src_tls);
+    let restore_args = mysql_sync_restore_args(target, restore_is_mariadb, tgt_tls);
+
     let mut dump = Command::new(&tools.mysqldump)
         .env("MYSQL_PWD", &source.password)
         .args(&dump_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("dump: {e}"))?;
-    let stdout = dump.stdout.take().unwrap();
-    let mut restore_args = base_mysql_args(target);
-    restore_args.push(format!("--database={}", target.database));
+        .map_err(|e| format!("dump failed: {e}"))?;
+
+    let dump_stdout = dump.stdout.take().unwrap();
+    let dump_stderr_reader = dump.stderr.take().unwrap();
+    let dump_stderr_handle = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        let _ = dump_stderr_reader
+            .take(10 * 1024 * 1024) // cap at 10 MiB
+            .read_to_string(&mut buf);
+        buf
+    });
+
     let restore = Command::new(&tools.mysql)
         .env("MYSQL_PWD", &target.password)
         .args(&restore_args)
-        .stdin(stdout)
+        .stdin(dump_stdout)
         .output();
-    let _ = dump.wait();
+
+    let dump_status = dump.wait();
+    let dump_stderr = dump_stderr_handle.join().unwrap_or_default();
+
+    // The dump is evaluated FIRST: a restore that read an empty stream from a
+    // failed dump exits 0, and that must not read as a successful sync.
+    if !matches!(&dump_status, Ok(status) if status.success()) {
+        return Err(format!("dump failed: {}", sanitize_error(&dump_stderr)));
+    }
+
     match restore {
-        Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => Err(format!(
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(format!(
             "restore: {}",
-            sanitize_error(&String::from_utf8_lossy(&o.stderr))
+            sanitize_error(&String::from_utf8_lossy(&output.stderr))
         )),
         Err(e) => Err(format!("restore: {e}")),
     }

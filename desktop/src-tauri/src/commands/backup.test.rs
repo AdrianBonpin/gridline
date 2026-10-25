@@ -1422,3 +1422,123 @@ fn sqlite_restore_keeps_views_and_indexes_on_a_clean_restore() {
         .unwrap();
     assert_eq!(stale_view, 0, "clean restore replaces the view too");
 }
+
+// ------------------------------------------------------------------
+// MySQL sync failure propagation (#47 repro, needs no server)
+// ------------------------------------------------------------------
+
+/// Write an executable shell script and return its path.
+#[cfg(unix)]
+fn write_fake_tool(dir: &std::path::Path, name: &str, body: &str) -> String {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = dir.join(name);
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(body.as_bytes()).unwrap();
+    file.flush().unwrap();
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+    path.to_string_lossy().to_string()
+}
+
+#[cfg(unix)]
+fn sync_temp_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("gridline_{tag}_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[cfg(unix)]
+fn sync_params(database: &str) -> MySqlConnParams {
+    MySqlConnParams::new(
+        "h".into(),
+        3306,
+        "root".into(),
+        database.into(),
+        "secret".into(),
+    )
+}
+
+/// #47: a failing dump must fail the sync even when the restore exits 0.
+#[cfg(unix)]
+#[test]
+fn mysql_sync_fails_when_the_dump_fails_even_if_the_restore_succeeds() {
+    let dir = sync_temp_dir("sync_dumpfail");
+    let dump = write_fake_tool(&dir, "mariadb-dump", "#!/bin/sh\nexit 1\n");
+    let restore = write_fake_tool(&dir, "mariadb", "#!/bin/sh\ncat >/dev/null\nexit 0\n");
+    let tools = MySqlToolPaths {
+        mysqldump: dump,
+        mysql: restore,
+    };
+
+    let err = run_mysql_sync(
+        &sync_params("source_db"),
+        &sync_params("target_db"),
+        &tools,
+        None,
+        None,
+    )
+    .unwrap_err();
+
+    assert!(err.starts_with("dump failed"), "got: {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The dump's stderr must reach the user — swallowing it makes the failure
+/// undiagnosable.
+#[cfg(unix)]
+#[test]
+fn mysql_sync_surfaces_the_dump_error_output() {
+    let dir = sync_temp_dir("sync_dumpstderr");
+    let dump = write_fake_tool(
+        &dir,
+        "mariadb-dump",
+        "#!/bin/sh\necho 'boom: access denied' >&2\nexit 2\n",
+    );
+    let restore = write_fake_tool(&dir, "mariadb", "#!/bin/sh\ncat >/dev/null\nexit 0\n");
+    let tools = MySqlToolPaths {
+        mysqldump: dump,
+        mysql: restore,
+    };
+
+    let err = run_mysql_sync(
+        &sync_params("source_db"),
+        &sync_params("target_db"),
+        &tools,
+        None,
+        None,
+    )
+    .unwrap_err();
+
+    assert!(err.contains("boom: access denied"), "got: {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The happy path must still report success.
+#[cfg(unix)]
+#[test]
+fn mysql_sync_succeeds_when_both_processes_succeed() {
+    let dir = sync_temp_dir("sync_ok");
+    let dump = write_fake_tool(
+        &dir,
+        "mariadb-dump",
+        "#!/bin/sh\necho 'CREATE TABLE t (id INT);'\nexit 0\n",
+    );
+    let restore = write_fake_tool(&dir, "mariadb", "#!/bin/sh\ncat >/dev/null\nexit 0\n");
+    let tools = MySqlToolPaths {
+        mysqldump: dump,
+        mysql: restore,
+    };
+
+    run_mysql_sync(
+        &sync_params("source_db"),
+        &sync_params("target_db"),
+        &tools,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
