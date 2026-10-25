@@ -390,12 +390,15 @@ jobs:
               ;;
             windows-latest)
               URL="https://archive.mariadb.org/mariadb-${MARIADB_VER}/winx64-packages/mariadb-${MARIADB_VER}-winx64.zip"
+              # Pinned digest for mariadb-${MARIADB_VER}-winx64.zip, taken from the
+              # version's signed sum file:
+              #   https://archive.mariadb.org/mariadb-<ver>/winx64-packages/sha256sums.txt
+              #   (sha256sums.txt.asc is signed by MariaDB's release key)
+              # MOVE THIS DIGEST WHENEVER MARIADB_VER MOVES: a mismatched pair
+              # fails this job before anything is extracted, which is the point.
+              MARIADB_WIN_SHA256="b7c11d38657f16b837e68199d73670510aadb78f42dfa5d5fdea31a7aab342e3"
               curl -fsSL "$URL" -o /tmp/mariadb.zip
-              # TODO(RELEASE): pin the sha256 printed on the first CI run, then
-              # uncomment the check so later releases verify the download.
-              # EXPECTED="<sha256 of mariadb-${MARIADB_VER}-winx64.zip>"
-              # echo "$EXPECTED  /tmp/mariadb.zip" | sha256sum -c -
-              sha256sum /tmp/mariadb.zip
+              echo "${MARIADB_WIN_SHA256}  /tmp/mariadb.zip" | sha256sum -c -
               unzip -o /tmp/mariadb.zip -d /tmp/mariadb
               WINROOT="/tmp/mariadb/mariadb-${MARIADB_VER}-winx64"
               cp "$WINROOT"/bin/mariadb-dump.exe "$WINROOT"/bin/mariadb.exe "$OUT"/
