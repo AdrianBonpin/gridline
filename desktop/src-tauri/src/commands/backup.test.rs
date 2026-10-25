@@ -1573,3 +1573,199 @@ fn mysql_cli_tls_mode_prefers_each_endpoints_own_setting() {
     let target = mysql_cli_tls_mode("tgt.example.com", Some("verify-full"), false);
     assert_ne!(source, target);
 }
+
+// ------------------------------------------------------------------
+// Sync-path integration (inherited guarantees)
+// ------------------------------------------------------------------
+
+#[test]
+fn sqlite_sync_replaces_the_target_objects() {
+    let dir = std::env::temp_dir().join(format!("gridline_sqlite_sync_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src_path = dir.join("src.db");
+    let tgt_path = dir.join("tgt.db");
+
+    {
+        let src = Connection::open(&src_path).unwrap();
+        src.execute_batch(
+            "CREATE TABLE wanted (id INTEGER PRIMARY KEY, v TEXT);
+             INSERT INTO wanted VALUES (1,'a');",
+        )
+        .unwrap();
+    }
+    {
+        let tgt = Connection::open(&tgt_path).unwrap();
+        tgt.execute_batch(
+            "CREATE TABLE stale (id INTEGER);\n               INSERT INTO stale VALUES (9);",
+        )
+        .unwrap();
+    }
+
+    run_sqlite_sync(src_path.to_str().unwrap(), tgt_path.to_str().unwrap()).unwrap();
+
+    {
+        let tgt = Connection::open(&tgt_path).unwrap();
+        let mut names: Vec<String> = tgt
+            .prepare(
+                "SELECT name FROM sqlite_master
+                   WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["wanted".to_string()],
+            "sync is a full replacement, not a merge"
+        );
+        let rows: i64 = tgt
+            .query_row("SELECT COUNT(*) FROM wanted", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sync into an unreadable target must fail rather than silently succeed.
+#[test]
+fn sqlite_sync_fails_when_the_target_cannot_be_opened() {
+    let dir =
+        std::env::temp_dir().join(format!("gridline_sqlite_sync_bad_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src_path = dir.join("src.db");
+    {
+        let src = Connection::open(&src_path).unwrap();
+        src.execute_batch("CREATE TABLE t (id INTEGER);").unwrap();
+    }
+    // A directory is not a database file.
+    let tgt_path = dir.join("target_is_a_directory");
+    std::fs::create_dir_all(&tgt_path).unwrap();
+
+    let err = run_sqlite_sync(src_path.to_str().unwrap(), tgt_path.to_str().unwrap()).unwrap_err();
+    assert!(err.contains("open target"), "got: {err}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Live: a real plain-format PostgreSQL restore must stop at the failing
+/// statement. `after_error` must NOT exist afterwards. Opt in with
+/// GRIDLINE_TEST_TGT_*, GRIDLINE_TEST_PG_DUMP, GRIDLINE_TEST_PG_RESTORE,
+/// GRIDLINE_TEST_PSQL.
+#[test]
+#[ignore]
+fn live_pg_plain_restore_stops_at_the_first_error() {
+    if std::env::var("GRIDLINE_TEST_TGT_HOST").is_err() {
+        eprintln!(
+            "SKIPPED live_pg_plain_restore_stops_at_the_first_error: GRIDLINE_TEST_TGT_* unset"
+        );
+        return;
+    }
+    let conn = conn_from_env("GRIDLINE_TEST_TGT");
+    let tools = PgToolPaths {
+        pg_dump: std::env::var("GRIDLINE_TEST_PG_DUMP").unwrap_or_else(|_| "pg_dump".into()),
+        pg_restore: std::env::var("GRIDLINE_TEST_PG_RESTORE")
+            .unwrap_or_else(|_| "pg_restore".into()),
+        psql: std::env::var("GRIDLINE_TEST_PSQL").unwrap_or_else(|_| "psql".into()),
+    };
+    psql_exec(
+        &conn,
+        "DROP TABLE IF EXISTS gl_after_error; DROP TABLE IF EXISTS gl_before_error;",
+    );
+
+    let path = std::env::temp_dir().join("gridline_live_stop_on_error.sql");
+    std::fs::write(
+        &path,
+        "CREATE TABLE gl_before_error (id integer);\nSELECT * FROM gl_missing_table_xyz;\nCREATE TABLE gl_after_error (id integer);\n",
+    )
+    .unwrap();
+
+    let options = RestoreOptions {
+        format: "plain".into(),
+        file_path: path.to_string_lossy().to_string(),
+        clean: false,
+        schema: None,
+    };
+    let result = run_pg_restore(&conn, &options, &tools);
+
+    assert!(
+        result.is_err(),
+        "a failing middle statement must fail the restore"
+    );
+    let after = psql_count(
+        &conn,
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'gl_after_error'",
+    );
+    assert_eq!(
+        after, 0,
+        "statements after the error must not run (issue #49)"
+    );
+
+    let _ = std::fs::remove_file(&path);
+    psql_exec(&conn, "DROP TABLE IF EXISTS gl_before_error;");
+}
+
+/// Live: a real MySQL/MariaDB sync must write into the selected TARGET
+/// database and must not create a database named after the source on the
+/// target server (issue #47). Opt in with GRIDLINE_TEST_MYSQL_SRC_*,
+/// GRIDLINE_TEST_MYSQL_TGT_*, GRIDLINE_TEST_MARIADB_DUMP, GRIDLINE_TEST_MARIADB.
+#[test]
+#[ignore]
+fn live_mysql_sync_targets_only_the_selected_database() {
+    let env = |k: &str| std::env::var(k).ok();
+    let (Some(src_host), Some(tgt_host)) = (
+        env("GRIDLINE_TEST_MYSQL_SRC_HOST"),
+        env("GRIDLINE_TEST_MYSQL_TGT_HOST"),
+    ) else {
+        eprintln!("SKIPPED live_mysql_sync_targets_only_the_selected_database: env unset");
+        return;
+    };
+    let src_db = env("GRIDLINE_TEST_MYSQL_SRC_DB").unwrap_or_else(|| "gl_src".into());
+    let tgt_db = env("GRIDLINE_TEST_MYSQL_TGT_DB").unwrap_or_else(|| "gl_tgt".into());
+    let tools = MySqlToolPaths {
+        mysqldump: env("GRIDLINE_TEST_MARIADB_DUMP").unwrap_or_else(|| "mariadb-dump".into()),
+        mysql: env("GRIDLINE_TEST_MARIADB").unwrap_or_else(|| "mariadb".into()),
+    };
+    let source = MySqlConnParams::new(
+        src_host,
+        env("GRIDLINE_TEST_MYSQL_SRC_PORT")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(3306),
+        env("GRIDLINE_TEST_MYSQL_SRC_USER").unwrap_or_else(|| "root".into()),
+        src_db.clone(),
+        env("GRIDLINE_TEST_MYSQL_SRC_PASS").unwrap_or_default(),
+    );
+    let target = MySqlConnParams::new(
+        tgt_host.clone(),
+        env("GRIDLINE_TEST_MYSQL_TGT_PORT")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(3306),
+        env("GRIDLINE_TEST_MYSQL_TGT_USER").unwrap_or_else(|| "root".into()),
+        tgt_db.clone(),
+        env("GRIDLINE_TEST_MYSQL_TGT_PASS").unwrap_or_default(),
+    );
+
+    run_mysql_sync(&source, &target, &tools, None, None).expect("sync should succeed");
+
+    // The source-named database must not exist on the target server.
+    let out = std::process::Command::new(&tools.mysql)
+        .env("MYSQL_PWD", &target.password)
+        .args([
+            format!("--host={}", target.host),
+            format!("--port={}", target.port),
+            format!("--user={}", target.username),
+            "--batch".to_string(),
+            "--skip-column-names".to_string(),
+            format!("--execute=SHOW DATABASES LIKE '{src_db}'"),
+        ])
+        .output()
+        .expect("run mysql client");
+    let listed = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        listed.trim().is_empty(),
+        "sync must not create a source-named database on the target: {listed}"
+    );
+}
