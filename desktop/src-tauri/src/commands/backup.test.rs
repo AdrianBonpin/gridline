@@ -1150,3 +1150,178 @@ fn pg_sync_restore_args_stop_on_error_and_keep_clean() {
         "must target the TARGET db: {args:?}"
     );
 }
+
+// ------------------------------------------------------------------
+// Atomic SQLite restore (issue #48)
+// ------------------------------------------------------------------
+
+/// #48 repro: a malformed dump must not destroy the existing target.
+#[test]
+fn sqlite_restore_rolls_back_a_malformed_dump() {
+    let dst = Connection::open_in_memory().unwrap();
+    dst.execute_batch(
+        "CREATE TABLE preserved (id INTEGER PRIMARY KEY, name TEXT);
+         INSERT INTO preserved VALUES (1,'keep');",
+    )
+    .unwrap();
+
+    let err = restore_sqlite(
+        &dst,
+        "BEGIN; CREATE TABLE replacement (id INTEGER); THIS IS NOT SQL; COMMIT;",
+        true,
+    )
+    .unwrap_err();
+    assert!(err.contains("failed"), "got: {err}");
+
+    let mut objects: Vec<String> = dst
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    objects.sort();
+    assert_eq!(
+        objects,
+        vec!["preserved".to_string()],
+        "clean phase must roll back"
+    );
+    let rows: i64 = dst
+        .query_row("SELECT COUNT(*) FROM preserved", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+}
+
+#[test]
+fn sqlite_restore_rolls_back_a_failing_middle_statement() {
+    let dst = Connection::open_in_memory().unwrap();
+    dst.execute_batch("CREATE TABLE preserved (id INTEGER);")
+        .unwrap();
+
+    let err = restore_sqlite(
+        &dst,
+        "CREATE TABLE before_error (id INTEGER);\nSELECT * FROM missing_table;",
+        true,
+    )
+    .unwrap_err();
+    assert!(err.starts_with("Statement 2 of 2 failed"), "got: {err}");
+
+    let leaked: i64 = dst
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='before_error'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leaked, 0, "earlier statements must roll back too");
+    let preserved: i64 = dst
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='preserved'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(preserved, 1);
+}
+
+#[test]
+fn sqlite_restore_rejects_statements_that_cannot_run_in_a_transaction() {
+    let dst = Connection::open_in_memory().unwrap();
+    dst.execute_batch("CREATE TABLE preserved (id INTEGER);")
+        .unwrap();
+    for dump in [
+        "VACUUM;",
+        "ATTACH DATABASE '/tmp/gridline_other.db' AS aux;",
+        "DETACH DATABASE aux;",
+    ] {
+        let err = restore_sqlite(&dst, dump, true).unwrap_err();
+        assert!(
+            err.contains("cannot run inside the restore transaction"),
+            "{dump} -> {err}"
+        );
+    }
+    let preserved: i64 = dst
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='preserved'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(preserved, 1, "rejection must happen before any mutation");
+}
+
+#[test]
+fn sqlite_restore_rejects_a_dump_with_no_statements() {
+    let dst = Connection::open_in_memory().unwrap();
+    assert_eq!(
+        restore_sqlite(&dst, "", false).unwrap_err(),
+        "restore found no SQL statements"
+    );
+    assert_eq!(
+        restore_sqlite(&dst, "/* nothing */\n-- nothing\n", false).unwrap_err(),
+        "restore found no SQL statements"
+    );
+}
+
+#[test]
+fn sqlite_restore_restores_the_foreign_keys_pragma_on_every_path() {
+    let dst = Connection::open_in_memory().unwrap();
+    dst.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE t (id INTEGER);")
+        .unwrap();
+
+    restore_sqlite(&dst, "CREATE TABLE u (id INTEGER);", false).unwrap();
+    let fk: i64 = dst
+        .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+        .unwrap();
+    assert_eq!(fk, 1, "foreign_keys must be restored after success");
+
+    let _ = restore_sqlite(&dst, "THIS IS NOT SQL;", false).unwrap_err();
+    let fk: i64 = dst
+        .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+        .unwrap();
+    assert_eq!(fk, 1, "foreign_keys must be restored after failure");
+}
+
+#[test]
+fn sqlite_restore_keeps_views_and_indexes_on_a_clean_restore() {
+    let src = seed_sqlite();
+    let mut buf = Vec::new();
+    dump_sqlite_to(&src, &mut Cursor::new(&mut buf), |_| {}).unwrap();
+    let text = String::from_utf8(buf).unwrap();
+
+    let dst = Connection::open_in_memory().unwrap();
+    dst.execute_batch(
+        "CREATE TABLE stale (id INTEGER);
+         CREATE VIEW stale_view AS SELECT 1 AS one;
+         INSERT INTO stale VALUES (1);",
+    )
+    .unwrap();
+
+    restore_sqlite(&dst, &text, true).unwrap();
+
+    let mut names: Vec<String> = dst
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["blobs".to_string(), "users".to_string()]);
+    let indexes: i64 = dst
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='users_name'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(indexes, 1, "the dump's index must be recreated");
+    let stale_view: i64 = dst
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='stale_view'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stale_view, 0, "clean restore replaces the view too");
+}

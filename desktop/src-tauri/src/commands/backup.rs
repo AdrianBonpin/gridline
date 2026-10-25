@@ -336,7 +336,7 @@ pub fn run_db_sync(
     // --clean --if-exists makes sync work into a non-empty target (the UI
     // already requires a destructive-overwrite confirmation). --exit-on-error
     // makes a partial sync report failure rather than success.
-    let mut restore_args = build_pg_sync_restore_args(target);
+    let restore_args = build_pg_sync_restore_args(target);
 
     // --- Spawn pg_dump with piped stdout ---
     let mut dump_child = Command::new(&tools.pg_dump)
@@ -545,41 +545,170 @@ pub fn dump_sqlite_to<W: Write, F: FnMut(&str)>(
     Ok(())
 }
 
-/// Restore a `.dump` SQL script into `conn`. `clean` drops existing
-/// user tables/views/indexes/triggers first.
-pub fn restore_sqlite(conn: &Connection, dump_text: &str, clean: bool) -> Result<(), String> {
-    if clean {
-        let names: Vec<String> = conn
-            .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type DESC")
-            .map_err(|e| e.to_string())?
-            .query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        conn.execute_batch("PRAGMA foreign_keys=OFF;")
-            .map_err(|e| e.to_string())?;
-        for n in names {
-            let _ = conn.execute(
-                &format!("DROP TABLE IF EXISTS \"{}\"", n.replace('"', "\"\"")),
-                [],
-            );
-            let _ = conn.execute(
-                &format!("DROP VIEW IF EXISTS \"{}\"", n.replace('"', "\"\"")),
-                [],
-            );
-            let _ = conn.execute(
-                &format!("DROP INDEX IF EXISTS \"{}\"", n.replace('"', "\"\"")),
-                [],
-            );
-            let _ = conn.execute(
-                &format!("DROP TRIGGER IF EXISTS \"{}\"", n.replace('"', "\"\"")),
-                [],
-            );
+/// First bare word of a statement (uppercased), skipping leading whitespace
+/// and comments. `split_statements` keeps comments verbatim, so a dump
+/// statement routinely starts with `-- …` or a `/*! … */` header.
+fn first_word_upper(stmt: &str) -> Option<String> {
+    let mut rest = stmt.trim_start();
+    loop {
+        if let Some(tail) = rest.strip_prefix("--") {
+            match tail.find('\n') {
+                Some(idx) => {
+                    rest = tail[idx + 1..].trim_start();
+                    continue;
+                }
+                None => return None,
+            }
         }
+        if let Some(tail) = rest.strip_prefix("/*") {
+            match tail.find("*/") {
+                Some(idx) => {
+                    rest = tail[idx + 2..].trim_start();
+                    continue;
+                }
+                None => return None,
+            }
+        }
+        break;
     }
-    // The dump text already wraps in PRAGMA foreign_keys=OFF + BEGIN/COMMIT.
-    conn.execute_batch(dump_text)
-        .map_err(|e| format!("restore failed: {e}"))
+    let word: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if word.is_empty() {
+        None
+    } else {
+        Some(word.to_ascii_uppercase())
+    }
+}
+
+/// Statements the restore owns rather than the dump content: the dump's own
+/// `BEGIN`/`COMMIT` would nest inside our transaction, and SQLite ignores most
+/// pragmas inside one (`PRAGMA journal_mode=WAL` even errors). The target keeps
+/// whatever pragmas it already had, which is the behaviour we want.
+fn restore_harness_statement(keyword: &str) -> bool {
+    matches!(
+        keyword,
+        "PRAGMA" | "BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT" | "RELEASE"
+    )
+}
+
+/// Statements that cannot run inside a transaction, rejected before anything
+/// is mutated instead of discovered halfway through.
+fn restore_unsupported_in_txn(keyword: &str) -> bool {
+    matches!(keyword, "VACUUM" | "ATTACH" | "DETACH")
+}
+
+/// Drop every user object in dependency-safe order, propagating errors.
+///
+/// `DROP TABLE IF EXISTS <view>` errors ("use DROP VIEW"), which is why the
+/// kind comes from `sqlite_master` instead of guessing — and why the previous
+/// implementation swallowed every drop error with `let _ =`.
+fn drop_sqlite_user_objects(conn: &Connection) -> Result<(), String> {
+    let objects: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT type, name FROM sqlite_master
+                   WHERE type IN ('table','view','index','trigger')
+                     AND name NOT LIKE 'sqlite_%'
+                   ORDER BY CASE type
+                              WHEN 'view' THEN 0
+                              WHEN 'trigger' THEN 1
+                              WHEN 'index' THEN 2
+                              ELSE 3
+                            END, name",
+            )
+            .map_err(|e| format!("read sqlite_master: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("read sqlite_master: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("read sqlite_master: {e}"))?;
+        rows
+    };
+
+    for (kind, name) in objects {
+        let keyword = match kind.as_str() {
+            "view" => "VIEW",
+            "index" => "INDEX",
+            "trigger" => "TRIGGER",
+            _ => "TABLE",
+        };
+        conn.execute(
+            &format!("DROP {keyword} IF EXISTS \"{}\"", name.replace('"', "\"\"")),
+            [],
+        )
+        .map_err(|e| format!("drop {kind} \"{name}\": {e}"))?;
+    }
+    Ok(())
+}
+
+/// Restore a `.dump` SQL script into `conn`.
+///
+/// Atomic: with `clean`, the drops and every statement of the dump run inside
+/// one `BEGIN IMMEDIATE`. Any failure rolls the whole thing back, so a
+/// malformed or truncated dump leaves the target exactly as it was. The
+/// target's `foreign_keys` setting is restored on every exit path.
+pub fn restore_sqlite(conn: &Connection, dump_text: &str, clean: bool) -> Result<(), String> {
+    let original_foreign_keys: i64 = conn
+        .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+        .unwrap_or(0);
+
+    // Parse and vet everything BEFORE touching the database.
+    let mut replay: Vec<String> = Vec::new();
+    for stmt in crate::db::sql_split::split_statements(dump_text) {
+        let Some(keyword) = first_word_upper(&stmt) else {
+            continue;
+        };
+        if restore_unsupported_in_txn(&keyword) {
+            return Err(format!(
+                "{keyword} cannot run inside the restore transaction — restore this dump with the sqlite3 CLI instead"
+            ));
+        }
+        if restore_harness_statement(&keyword) {
+            continue;
+        }
+        replay.push(stmt);
+    }
+    if replay.is_empty() {
+        return Err("restore found no SQL statements".to_string());
+    }
+
+    // A reader on the app's pool must not turn this into SQLITE_BUSY.
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("busy_timeout: {e}"))?;
+    // A no-op inside a transaction, so it has to be set here.
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")
+        .map_err(|e| format!("foreign_keys: {e}"))?;
+
+    let total = replay.len();
+    let result = (|| -> Result<(), String> {
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(|e| format!("begin: {e}"))?;
+        if clean {
+            drop_sqlite_user_objects(conn)?;
+        }
+        for (index, stmt) in replay.iter().enumerate() {
+            if let Err(e) = conn.execute_batch(stmt) {
+                return Err(format_restore_statement_error(
+                    index + 1,
+                    total,
+                    &e.to_string(),
+                ));
+            }
+        }
+        conn.execute_batch("COMMIT;")
+            .map_err(|e| format!("commit: {e}"))
+    })();
+
+    if result.is_err() {
+        let _ = conn.execute_batch("ROLLBACK;");
+    }
+    let restored = if original_foreign_keys != 0 { 1 } else { 0 };
+    let _ = conn.execute_batch(&format!("PRAGMA foreign_keys={restored};"));
+    result
 }
 
 /// Dump `source_path` and restore into `target_path` (one-shot).
