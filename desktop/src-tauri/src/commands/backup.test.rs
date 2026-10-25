@@ -1066,3 +1066,87 @@ fn live_mysql_dump_with_the_bundled_tool() {
     assert!(len > 0, "bundled dump file is empty");
     let _ = std::fs::remove_file(&opts.file_path);
 }
+
+// ------------------------------------------------------------------
+// Stop-at-first-error arg shapes (issue #49)
+// ------------------------------------------------------------------
+
+#[test]
+fn psql_restore_args_stop_on_error_and_ignore_psqlrc() {
+    let conn = PgConnParams::new(
+        "localhost".into(),
+        5432,
+        "postgres".into(),
+        "app".into(),
+        "secret".into(),
+    );
+    let args = build_psql_restore_args(&conn, "/tmp/dump.sql");
+    assert!(
+        args.iter().any(|a| a == "--no-psqlrc"),
+        "missing --no-psqlrc: {args:?}"
+    );
+    assert!(args.iter().any(|a| a == "-v"), "missing -v: {args:?}");
+    assert!(
+        args.iter().any(|a| a == "ON_ERROR_STOP=1"),
+        "missing ON_ERROR_STOP=1: {args:?}"
+    );
+    assert!(
+        args.iter().any(|a| a == "--file=/tmp/dump.sql"),
+        "missing --file: {args:?}"
+    );
+    // -v must be immediately followed by its value or psql mis-parses it.
+    let v_pos = args.iter().position(|a| a == "-v").unwrap();
+    assert_eq!(args[v_pos + 1], "ON_ERROR_STOP=1");
+    assert!(
+        !args.iter().any(|a| a.contains("secret")),
+        "password must never be in argv"
+    );
+}
+
+#[test]
+fn pg_restore_args_include_exit_on_error() {
+    let conn = PgConnParams::new(
+        "localhost".into(),
+        5432,
+        "postgres".into(),
+        "app".into(),
+        "secret".into(),
+    );
+    let options = RestoreOptions {
+        format: "custom".into(),
+        file_path: "/tmp/dump.bak".into(),
+        clean: true,
+        schema: None,
+    };
+    let args = build_restore_args(&conn, &options);
+    assert!(
+        args.iter().any(|a| a == "--exit-on-error"),
+        "missing --exit-on-error: {args:?}"
+    );
+    assert!(args.iter().any(|a| a == "--clean"));
+    assert!(args.iter().any(|a| a == "--if-exists"));
+    assert!(args.iter().any(|a| a == "--format=c"));
+}
+
+#[test]
+fn pg_sync_restore_args_stop_on_error_and_keep_clean() {
+    let target = PgConnParams::new(
+        "targethost".into(),
+        5432,
+        "postgres".into(),
+        "targetdb".into(),
+        "secret".into(),
+    );
+    let args = build_pg_sync_restore_args(&target);
+    assert!(
+        args.iter().any(|a| a == "--exit-on-error"),
+        "missing --exit-on-error: {args:?}"
+    );
+    assert!(args.iter().any(|a| a == "--clean"));
+    assert!(args.iter().any(|a| a == "--if-exists"));
+    assert!(args.iter().any(|a| a == "--no-owner"));
+    assert!(
+        args.iter().any(|a| a == "--dbname=targetdb"),
+        "must target the TARGET db: {args:?}"
+    );
+}

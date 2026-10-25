@@ -189,6 +189,38 @@ fn build_dump_args(conn: &PgConnParams, options: &BackupOptions) -> Vec<String> 
     args
 }
 
+/// psql args for a plain-format restore.
+///
+/// `ON_ERROR_STOP=1` is what makes a failing statement abort the run (psql then
+/// exits 3) instead of continuing to the next one; `--no-psqlrc` stops a user's
+/// startup file from changing that behind our back. The guarantee is "stop at
+/// the first error", not transactional atomicity — a plain dump cannot be
+/// wrapped in one.
+pub fn build_psql_restore_args(conn: &PgConnParams, file_path: &str) -> Vec<String> {
+    vec![
+        "--no-psqlrc".to_string(),
+        "-v".to_string(),
+        "ON_ERROR_STOP=1".to_string(),
+        format!("--host={}", conn.host),
+        format!("--port={}", conn.port),
+        format!("--username={}", conn.username),
+        format!("--dbname={}", conn.database),
+        format!("--file={file_path}"),
+    ]
+}
+
+/// pg_restore args for a DB-to-DB sync. Sync requires the destructive-overwrite
+/// confirmation in the UI, and `--exit-on-error` makes a partially applied sync
+/// report failure instead of a silent success.
+pub fn build_pg_sync_restore_args(target: &PgConnParams) -> Vec<String> {
+    let mut args = base_conn_args(target);
+    args.push("--no-owner".into());
+    args.push("--clean".into());
+    args.push("--if-exists".into());
+    args.push("--exit-on-error".into());
+    args
+}
+
 /// Builds pg_restore args (file path is passed positionally by the caller).
 fn build_restore_args(conn: &PgConnParams, options: &RestoreOptions) -> Vec<String> {
     let mut args = base_conn_args(conn);
@@ -204,6 +236,9 @@ fn build_restore_args(conn: &PgConnParams, options: &RestoreOptions) -> Vec<Stri
         args.push("--clean".into());
         args.push("--if-exists".into());
     }
+
+    // Stop at the first failed object instead of continuing (the default).
+    args.push("--exit-on-error".into());
 
     if let Some(ref schema) = options.schema {
         args.push(format!("--schema={schema}"));
@@ -248,13 +283,7 @@ pub fn run_pg_restore(
     if options.format == "plain" {
         let result = Command::new(&tools.psql)
             .env("PGPASSWORD", &conn.password)
-            .args([
-                format!("--host={}", conn.host),
-                format!("--port={}", conn.port),
-                format!("--username={}", conn.username),
-                format!("--dbname={}", conn.database),
-                format!("--file={}", options.file_path),
-            ])
+            .args(build_psql_restore_args(conn, &options.file_path))
             .output();
 
         return match result {
@@ -305,11 +334,9 @@ pub fn run_db_sync(
 
     // --- Build pg_restore args ---
     // --clean --if-exists makes sync work into a non-empty target (the UI
-    // already requires a destructive-overwrite confirmation).
-    let mut restore_args = base_conn_args(target);
-    restore_args.push("--no-owner".into());
-    restore_args.push("--clean".into());
-    restore_args.push("--if-exists".into());
+    // already requires a destructive-overwrite confirmation). --exit-on-error
+    // makes a partial sync report failure rather than success.
+    let mut restore_args = build_pg_sync_restore_args(target);
 
     // --- Spawn pg_dump with piped stdout ---
     let mut dump_child = Command::new(&tools.pg_dump)
