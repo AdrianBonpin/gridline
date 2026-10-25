@@ -4,7 +4,8 @@ import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar, NAV_CAPABILITY_KEY } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
-import { isDestructiveQuery, isSchemaModifyingQuery } from "../../lib/utils";
+import { isSchemaModifyingQuery } from "../../lib/utils";
+import { analyzeScript, type ScriptAnalysis } from "../../lib/sqlScan";
 import { executeQueryMulti, cancelQuery } from "../../lib/commands";
 import { getCapabilities, isMysqlFamily } from "../../lib/dbCapabilities";
 
@@ -179,7 +180,10 @@ export function DbViewerScreen({
     const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
     const [rowDetailIdx, setRowDetailIdx] = useState<number | null>(null);
     const [editModalOpen, setEditModalOpen] = useState(false);
-    const [destructiveQuery, setDestructiveQuery] = useState<string | null>(null);
+    const [pendingDestructive, setPendingDestructive] = useState<{
+        sql: string;
+        analysis: ScriptAnalysis;
+    } | null>(null);
     const [streamExport, setStreamExport] = useState<{ sql: string } | null>(null);
     const connections = useConnectionStore((s) => s.connections);
     const currentConnection =
@@ -383,6 +387,19 @@ export function DbViewerScreen({
         fetchData(activeTab);
     }, [activeTab, fetchData]);
 
+    /** Route a script through the destructive-statement guard, or run it. */
+    const runWithGuard = useCallback(
+        (tabId: string, sql: string) => {
+            const analysis = analyzeScript(sql);
+            if (analysis.destructive) {
+                setPendingDestructive({ sql, analysis });
+            } else {
+                executeQueryForTab(tabId, sql);
+            }
+        },
+        [executeQueryForTab],
+    );
+
     // Read the active tab from the store directly so the Monaco keybinding action
     // (which keeps the first onRun closure) always sees the latest query text.
     const handleRunQuery = useCallback(() => {
@@ -391,12 +408,8 @@ export function DbViewerScreen({
         if (!tab || tab.tabType !== "query") return;
         const sql = tab.query?.trim() ?? "";
         if (!sql) return;
-        if (isDestructiveQuery(sql)) {
-            setDestructiveQuery(sql);
-        } else {
-            executeQueryForTab(tab.id, sql);
-        }
-    }, []);
+        runWithGuard(tab.id, sql);
+    }, [runWithGuard]);
 
     // Auto-format the active query tab's SQL
     const handleFormatQuery = useCallback(() => {
@@ -461,14 +474,10 @@ export function DbViewerScreen({
                         t.id === nt.id ? { ...t, query: sql } : t,
                     ),
                 }));
-                if (isDestructiveQuery(sql)) {
-                    setDestructiveQuery(sql);
-                } else {
-                    executeQueryForTab(nt.id, sql);
-                }
+                runWithGuard(nt.id, sql);
             }
         });
-    }, [connectionId]);
+    }, [connectionId, runWithGuard]);
 
     // Cmd+W / Ctrl+W: close current tab, or navigate home if no tabs (configurable in Settings → Shortcuts)
     useShortcut("close_tab", () => {
@@ -1320,22 +1329,33 @@ const onQueriesPanelResizeStart = useCallback(
                                                 </>
                                             )}
                                             <DestructiveQueryDialog
-                                                open={destructiveQuery !== null}
-                                                query={destructiveQuery ?? ""}
+                                                open={pendingDestructive !== null}
+                                                query={pendingDestructive?.sql ?? ""}
+                                                statementIndex={
+                                                    pendingDestructive?.analysis
+                                                        .firstDestructiveIndex ?? null
+                                                }
+                                                statementCount={
+                                                    pendingDestructive?.analysis
+                                                        .totalStatements ?? null
+                                                }
+                                                reason={
+                                                    pendingDestructive?.analysis.reason ?? null
+                                                }
                                                 onConfirm={() => {
                                                     if (
-                                                        destructiveQuery &&
+                                                        pendingDestructive &&
                                                         activeTab
                                                     ) {
                                                         executeQueryForTab(
                                                             activeTab.id,
-                                                            destructiveQuery,
+                                                            pendingDestructive.sql,
                                                         );
                                                     }
-                                                    setDestructiveQuery(null);
+                                                    setPendingDestructive(null);
                                                 }}
                                                 onCancel={() =>
-                                                    setDestructiveQuery(null)
+                                                    setPendingDestructive(null)
                                                 }
                                             />
                                         </div>
