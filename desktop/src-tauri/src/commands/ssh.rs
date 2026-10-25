@@ -1,7 +1,10 @@
 use crate::db::tls::TlsDecision;
 use crate::models::SshConfig;
 use std::collections::HashMap;
+use std::io::{self, BufRead, BufReader, Write};
+use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Through a tunnel the TLS peer is loopback (`127.0.0.1`), so certificate
 /// verification is meaningless: `verify-ca`/`verify-full` degrade to
@@ -27,6 +30,14 @@ impl Tunnel {
         Tunnel {
             local_port: port,
             closer: None,
+        }
+    }
+}
+
+impl Drop for Tunnel {
+    fn drop(&mut self) {
+        if let Some(close) = self.closer.take() {
+            close();
         }
     }
 }
@@ -89,7 +100,7 @@ impl SshTunnelManager {
             .open(key, cfg, remote_host, remote_port, password, passphrase)?;
         let port = tunnel.local_port;
         if let Some(old) = self.tunnels.insert(key.to_string(), tunnel) {
-            drop(old.closer);
+            drop(old);
         }
         Ok(port)
     }
@@ -97,7 +108,7 @@ impl SshTunnelManager {
     /// Close and remove the SSH tunnel for the given key.
     pub fn close_tunnel(&mut self, key: &str) {
         if let Some(t) = self.tunnels.remove(key) {
-            drop(t.closer);
+            drop(t);
         }
     }
 
@@ -105,7 +116,7 @@ impl SshTunnelManager {
     pub fn close_all(&mut self) {
         let tunnels = std::mem::take(&mut self.tunnels);
         for (_, t) in tunnels {
-            drop(t.closer);
+            drop(t);
         }
     }
 
@@ -123,7 +134,7 @@ impl SshTunnelManager {
     /// Insert an already-opened tunnel under `key`, closing any previous one.
     pub fn insert_tunnel(&mut self, key: String, tunnel: Tunnel) {
         if let Some(old) = self.tunnels.insert(key, tunnel) {
-            drop(old.closer);
+            drop(old);
         }
     }
 
@@ -134,8 +145,7 @@ impl SshTunnelManager {
 }
 
 /// Real ssh2 backend: binds a loopback listener, authenticates to the SSH
-/// host over a blocking socket, and pumps data between the local client and
-/// the remote DB over an SSH direct-tcpip channel.
+/// host over a blocking socket, then forwards clients on nonblocking channels.
 ///
 /// The whole `open` runs inside `tokio::task::spawn_blocking` at the call
 /// sites because `ssh2::Session` is purely blocking.
@@ -161,9 +171,24 @@ impl TunnelBackend for Ssh2Backend {
             .map_err(|e| format!("local tunnel address: {e}"))?
             .port();
 
-        let tcp = std::net::TcpStream::connect((cfg.host.as_str(), cfg.port))
-            .map_err(|e| format!("connect ssh host: {e}"))?;
+        let addresses = (cfg.host.as_str(), cfg.port)
+            .to_socket_addrs()
+            .map_err(|e| format!("resolve ssh host: {e}"))?;
+        let mut last_error = io::Error::new(io::ErrorKind::NotFound, "no SSH host addresses");
+        let tcp = addresses
+            .filter_map(
+                |addr| match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
+                    Ok(tcp) => Some(tcp),
+                    Err(e) => {
+                        last_error = e;
+                        None
+                    }
+                },
+            )
+            .next()
+            .ok_or_else(|| format!("connect ssh host: {last_error}"))?;
         let mut session = Session::new().map_err(|e| format!("ssh session: {e}"))?;
+        session.set_timeout(10_000);
         session.set_tcp_stream(tcp);
         session
             .handshake()
@@ -187,42 +212,61 @@ impl TunnelBackend for Ssh2Backend {
             return Err("SSH authentication failed".into());
         }
 
+        // Channel clones share the session's mutex. A blocking read would
+        // prevent writes on every clone, deadlocking client-first protocols.
+        session.set_blocking(false);
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("nonblocking tunnel listener: {e}"))?;
         let remote_host = remote_host.to_string();
-        let session = Arc::new(std::sync::Mutex::new(session));
         let (closer_tx, closer_rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
-            if let Ok((mut local, _)) = listener.accept() {
-                // Open the direct-tcpip channel to the remote DB. `Channel` is
-                // cloneable (Arc-shared inner), so one clone per direction
-                // lets two pump threads copy data in parallel.
-                let mut channel = match session.lock().unwrap().channel_direct_tcpip(
-                    &remote_host,
-                    remote_port as u16,
-                    None,
-                ) {
-                    Ok(c) => c,
-                    Err(_) => return,
-                };
-                // The accepted socket stays owned by this thread; when the
-                // tunnel is closed the closer wakes us, we drop `local` and
-                // the pumps end on EOF/broken pipe.
-                let mut upstream = channel.clone();
-                let down = local.try_clone();
-                let pump = match down {
-                    Ok(down) => Some(std::thread::spawn(move || {
-                        let mut down = down;
-                        // client -> remote DB
-                        let _ = std::io::copy(&mut down, &mut upstream);
-                    })),
-                    Err(_) => None,
-                };
-                // remote DB -> client (this thread)
-                let _ = std::io::copy(&mut channel, &mut local);
-                if let Some(p) = pump {
-                    let _ = p.join();
+            let mut pending = None;
+            let mut clients = Vec::new();
+            while matches!(
+                closer_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ) {
+                let mut progressed = false;
+                if pending.is_none() {
+                    match listener.accept() {
+                        Ok((local, _)) => pending = Some(local),
+                        Err(e) if retry_io(&e) => {}
+                        Err(_) => break,
+                    }
+                }
+                // Only one channel-open operation is in flight per session;
+                // existing clients keep forwarding while it waits for SSH I/O.
+                if pending.is_some() {
+                    match session.channel_direct_tcpip(&remote_host, remote_port, None) {
+                        Ok(channel) => {
+                            if let Ok(client) =
+                                ForwardedClient::new(pending.take().unwrap(), channel)
+                            {
+                                clients.push(client);
+                            }
+                            progressed = true;
+                        }
+                        Err(e) if ssh_would_block(&e) => {}
+                        Err(_) => {
+                            pending.take();
+                        }
+                    }
+                }
+                clients.retain_mut(|client| match client.forward() {
+                    Ok(CopyState::Progress) => {
+                        progressed = true;
+                        true
+                    }
+                    Ok(CopyState::Pending) => true,
+                    Ok(CopyState::Eof) | Err(_) => false,
+                });
+                if !progressed {
+                    std::thread::sleep(Duration::from_millis(5));
                 }
             }
-            let _ = closer_rx.recv();
+            // Dropping the worker's listener, clients and session closes all
+            // sockets, including clients stalled in authentication or a query.
         });
         Ok(Tunnel {
             local_port,
@@ -233,9 +277,236 @@ impl TunnelBackend for Ssh2Backend {
     }
 }
 
+fn ssh_would_block(error: &ssh2::Error) -> bool {
+    error.code() == ssh2::ErrorCode::Session(-37) // LIBSSH2_ERROR_EAGAIN
+}
+
+fn retry_io(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+    )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CopyState {
+    Pending,
+    Progress,
+    Eof,
+}
+
+/// Keep unconsumed bytes in the reader across partial writes and WouldBlock.
+fn copy_available(reader: &mut impl BufRead, writer: &mut impl Write) -> io::Result<CopyState> {
+    let bytes = match reader.fill_buf() {
+        Ok([]) => return Ok(CopyState::Eof),
+        Ok(bytes) => bytes,
+        Err(e) if retry_io(&e) => return Ok(CopyState::Pending),
+        Err(e) => return Err(e),
+    };
+    match writer.write(bytes) {
+        Ok(0) => Err(io::ErrorKind::WriteZero.into()),
+        Ok(n) => {
+            reader.consume(n);
+            Ok(CopyState::Progress)
+        }
+        Err(e) if retry_io(&e) => Ok(CopyState::Pending),
+        Err(e) => Err(e),
+    }
+}
+
+struct ForwardedClient {
+    local: TcpStream,
+    local_reader: BufReader<TcpStream>,
+    channel: ssh2::Channel,
+    channel_reader: BufReader<ssh2::Channel>,
+    sent_eof: bool,
+    received_eof: bool,
+}
+
+impl ForwardedClient {
+    fn new(local: TcpStream, channel: ssh2::Channel) -> io::Result<Self> {
+        local.set_nonblocking(true)?;
+        Ok(Self {
+            local_reader: BufReader::new(local.try_clone()?),
+            local,
+            channel_reader: BufReader::new(channel.clone()),
+            channel,
+            sent_eof: false,
+            received_eof: false,
+        })
+    }
+
+    fn forward(&mut self) -> io::Result<CopyState> {
+        let mut progressed = false;
+        if !self.sent_eof {
+            match copy_available(&mut self.local_reader, &mut self.channel)? {
+                CopyState::Eof => match self.channel.send_eof() {
+                    Ok(()) => {
+                        self.sent_eof = true;
+                        progressed = true;
+                    }
+                    Err(e) if ssh_would_block(&e) => {}
+                    Err(e) => return Err(e.into()),
+                },
+                CopyState::Progress => progressed = true,
+                CopyState::Pending => {}
+            }
+        }
+        if !self.received_eof {
+            match copy_available(&mut self.channel_reader, &mut self.local)? {
+                CopyState::Eof => {
+                    self.local.shutdown(Shutdown::Write)?;
+                    self.received_eof = true;
+                    progressed = true;
+                }
+                CopyState::Progress => progressed = true,
+                CopyState::Pending => {}
+            }
+        }
+        Ok(if self.sent_eof && self.received_eof {
+            CopyState::Eof
+        } else if progressed {
+            CopyState::Progress
+        } else {
+            CopyState::Pending
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_available_keeps_bytes_on_backpressure_and_partial_writes() {
+        struct SlowWriter {
+            bytes: Vec<u8>,
+            blocked: bool,
+        }
+        impl Write for SlowWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.blocked = !self.blocked;
+                if self.blocked {
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
+                let n = bytes.len().min(2);
+                self.bytes.extend_from_slice(&bytes[..n]);
+                Ok(n)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let payload = b"client-first protocol";
+        let mut reader = BufReader::with_capacity(3, payload.as_slice());
+        let mut writer = SlowWriter {
+            bytes: Vec::new(),
+            blocked: false,
+        };
+        for _ in 0..100 {
+            if copy_available(&mut reader, &mut writer).unwrap() == CopyState::Eof {
+                assert_eq!(writer.bytes, payload);
+                return;
+            }
+        }
+        panic!("buffered transfer did not complete");
+    }
+
+    #[test]
+    fn manager_replacement_and_close_run_tunnel_cleanup() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let first = tx.clone();
+        let mut manager = SshTunnelManager::new(Arc::new(FakeBackend::default()));
+        manager.insert_tunnel(
+            "connection".into(),
+            Tunnel {
+                local_port: 1,
+                closer: Some(Box::new(move || first.send(1).unwrap())),
+            },
+        );
+        manager.insert_tunnel(
+            "connection".into(),
+            Tunnel {
+                local_port: 2,
+                closer: Some(Box::new(move || tx.send(2).unwrap())),
+            },
+        );
+        assert_eq!(rx.try_recv().unwrap(), 1);
+        manager.close_tunnel("connection");
+        assert_eq!(rx.try_recv().unwrap(), 2);
+    }
+
+    /// Run against an SSH host forwarding to PostgreSQL, without a DB password:
+    /// GRIDLINE_TEST_SSH_HOST=... GRIDLINE_TEST_SSH_USER=... \
+    /// GRIDLINE_TEST_SSH_KEY=... cargo test ssh_live -- --ignored
+    #[test]
+    #[ignore]
+    fn ssh_live_forwards_client_first_protocol_and_multiple_connections() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let mut cfg = SshConfig::new(
+            std::env::var("GRIDLINE_TEST_SSH_HOST").expect("GRIDLINE_TEST_SSH_HOST"),
+            std::env::var("GRIDLINE_TEST_SSH_PORT")
+                .unwrap_or_else(|_| "22".into())
+                .parse()
+                .unwrap(),
+            std::env::var("GRIDLINE_TEST_SSH_USER").expect("GRIDLINE_TEST_SSH_USER"),
+            "key".into(),
+        );
+        cfg.private_key_path =
+            Some(std::env::var("GRIDLINE_TEST_SSH_KEY").expect("GRIDLINE_TEST_SSH_KEY"));
+        let target_host =
+            std::env::var("GRIDLINE_TEST_PG_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+        let target_port = std::env::var("GRIDLINE_TEST_PG_PORT")
+            .unwrap_or_else(|_| "5432".into())
+            .parse()
+            .unwrap();
+        let passphrase = std::env::var("GRIDLINE_TEST_SSH_PASSPHRASE").ok();
+        let tunnel = Ssh2Backend
+            .open(
+                "live-test",
+                &cfg,
+                &target_host,
+                target_port,
+                None,
+                passphrase.as_deref(),
+            )
+            .expect("open SSH tunnel");
+
+        // Two clients must work concurrently; PostgreSQL waits for each
+        // client's SSLRequest before replying. No credentials or SQL are sent.
+        let mut clients: Vec<_> = (0..2)
+            .map(|_| {
+                let stream = TcpStream::connect(("127.0.0.1", tunnel.local_port)).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                stream
+            })
+            .collect();
+        for client in &mut clients {
+            client.write_all(&[0, 0, 0, 8, 4, 210, 22, 47]).unwrap();
+        }
+        for client in &mut clients {
+            let mut reply = [0];
+            client
+                .read_exact(&mut reply)
+                .expect("PostgreSQL SSL response through SSH");
+            assert!(matches!(reply[0], b'S' | b'N'));
+        }
+
+        drop(tunnel);
+        for client in &mut clients {
+            assert_eq!(
+                client.read(&mut [0]).unwrap(),
+                0,
+                "dropping tunnel closes clients"
+            );
+        }
+    }
 
     // ------------------------------------------------------------------
     // SshConfig validation

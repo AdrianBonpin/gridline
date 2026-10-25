@@ -3,6 +3,36 @@ use crate::commands::ssh::{Ssh2Backend, SshTunnelManager};
 use crate::db::pool::DbConfig;
 use std::sync::Arc;
 
+#[tokio::test]
+async fn postgres_probe_times_out_when_authentication_stalls_after_tcp_connect() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+        drop(socket);
+    });
+    let config = DbConfig {
+        db_type: "postgresql".into(),
+        host: "127.0.0.1".into(),
+        port: Some(port.into()),
+        ..Default::default()
+    };
+    let ssh = std::sync::Mutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        test_pg_connection(&config, &ssh),
+    )
+    .await;
+    server.abort();
+    let result = result.expect("probe must time out even after TCP connects");
+    assert!(!result.ok);
+    assert_eq!(
+        result.error.as_deref(),
+        Some("connection timed out after 10 seconds")
+    );
+}
+
 fn mariadb_config(port: Option<i64>) -> DbConfig {
     DbConfig {
         db_type: "mariadb".into(),
