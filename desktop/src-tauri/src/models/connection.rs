@@ -199,7 +199,10 @@ mod tests {
     fn connection_input_use_keychain_defaults_true_when_absent() {
         let json = r#"{"name":"n","db_type":"postgresql","host":"h","port":5432,"tag_ids":[]}"#;
         let input: ConnectionInput = serde_json::from_str(json).unwrap();
-        assert!(input.use_keychain, "absent use_keychain defaults to true (opt-out)");
+        assert!(
+            input.use_keychain,
+            "absent use_keychain defaults to true (opt-out)"
+        );
     }
 
     #[test]

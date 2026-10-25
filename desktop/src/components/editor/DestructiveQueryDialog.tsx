@@ -1,17 +1,45 @@
 import { AlertTriangle } from "lucide-react";
 import { Button } from "../ui/Button";
 
+export type DestructiveReason = "write" | "schema" | "unknown";
+
 interface DestructiveQueryDialogProps {
   open: boolean;
   query: string;
+  /** 1-based index of the statement that needs confirmation. */
+  statementIndex?: number | null;
+  /** How many statements the script contains. */
+  statementCount?: number | null;
+  /** Why confirmation was requested (`ScriptAnalysis.reason`). */
+  reason?: DestructiveReason | null;
   onConfirm: () => void;
   onCancel: () => void;
 }
 
-export function DestructiveQueryDialog({ open, query, onConfirm, onCancel }: DestructiveQueryDialogProps) {
+const REASON_LABELS: Record<DestructiveReason, string> = {
+  write: "a data-modifying statement",
+  schema: "a schema-modifying statement (DDL)",
+  unknown: "a statement that could not be verified as read-only",
+};
+
+export function DestructiveQueryDialog({
+  open,
+  query,
+  statementIndex,
+  statementCount,
+  reason,
+  onConfirm,
+  onCancel,
+}: DestructiveQueryDialogProps) {
   if (!open) return null;
 
   const truncated = query.length > 200 ? query.slice(0, 200) + "..." : query;
+  const multiStatement = (statementCount ?? 0) > 1;
+  const detail = reason
+    ? multiStatement && statementIndex
+      ? `Statement ${statementIndex} of ${statementCount} — ${REASON_LABELS[reason]}.`
+      : `This is ${REASON_LABELS[reason]}.`
+    : null;
 
   return (
     <div className="fixed inset-0 bg-canvas/60 backdrop-blur-sm flex items-center justify-center z-50">
@@ -23,6 +51,14 @@ export function DestructiveQueryDialog({ open, query, onConfirm, onCancel }: Des
             <p className="text-sm text-text-muted mt-1">
               This query will modify your database. This action cannot be undone.
             </p>
+            {detail && (
+              <p
+                className="text-xs text-amber-300/80 mt-2"
+                data-testid="destructive-statement-detail"
+              >
+                {detail}
+              </p>
+            )}
           </div>
         </div>
 

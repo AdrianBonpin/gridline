@@ -1,7 +1,7 @@
 //! Pure builders for schema DDL, cross-object search, pg_depend lookups,
 //! and synthesized object DDL. No DB I/O — deterministic string builders.
+use crate::models::db_viewer::{ConstraintInfo, EnumInfo, ExtensionInfo, SequenceInfo};
 use serde::{Deserialize, Serialize};
-use crate::models::db_viewer::{SequenceInfo, EnumInfo, ExtensionInfo, ConstraintInfo};
 
 /// Column model for the SQLite table editor. Mirrors the frontend payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,11 +41,19 @@ pub fn create_schema_sql(name: &str) -> Result<String, String> {
 pub fn rename_schema_sql(old: &str, new: &str) -> Result<String, String> {
     validate_object_name(old)?;
     validate_object_name(new)?;
-    Ok(format!("ALTER SCHEMA {} RENAME TO {}", quote_ident(old), quote_ident(new)))
+    Ok(format!(
+        "ALTER SCHEMA {} RENAME TO {}",
+        quote_ident(old),
+        quote_ident(new)
+    ))
 }
 pub fn drop_schema_sql(name: &str, cascade: bool) -> Result<String, String> {
     validate_object_name(name)?;
-    Ok(format!("DROP SCHEMA {}{}", quote_ident(name), if cascade { " CASCADE" } else { "" }))
+    Ok(format!(
+        "DROP SCHEMA {}{}",
+        quote_ident(name),
+        if cascade { " CASCADE" } else { "" }
+    ))
 }
 
 /// UNION ALL of every browsable object type in `$2` (schema), substring-matching `$1` (needle)
@@ -122,35 +130,72 @@ pub fn sequence_ddl(s: &SequenceInfo) -> String {
         if s.cycle { "CYCLE" } else { "NO CYCLE" })
 }
 pub fn enum_ddl(e: &EnumInfo) -> String {
-    let labels: Vec<String> = e.labels.iter().map(|l| format!("'{}'", l.replace('\'', "''"))).collect();
-    format!("CREATE TYPE {}.{} AS ENUM ({});", quote_ident(&e.schema), quote_ident(&e.name), labels.join(", "))
+    let labels: Vec<String> = e
+        .labels
+        .iter()
+        .map(|l| format!("'{}'", l.replace('\'', "''")))
+        .collect();
+    format!(
+        "CREATE TYPE {}.{} AS ENUM ({});",
+        quote_ident(&e.schema),
+        quote_ident(&e.name),
+        labels.join(", ")
+    )
 }
 pub fn extension_ddl(x: &ExtensionInfo) -> String {
-    format!("CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {} VERSION '{}';", quote_ident(&x.name), quote_ident(&x.schema), x.version.replace('\'', "''"))
+    format!(
+        "CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {} VERSION '{}';",
+        quote_ident(&x.name),
+        quote_ident(&x.schema),
+        x.version.replace('\'', "''")
+    )
 }
 pub fn view_ddl(schema: &str, name: &str, selectdef: &str) -> String {
-    format!("CREATE OR REPLACE VIEW {}.{} AS\n{}", quote_ident(schema), quote_ident(name), selectdef)
+    format!(
+        "CREATE OR REPLACE VIEW {}.{} AS\n{}",
+        quote_ident(schema),
+        quote_ident(name),
+        selectdef
+    )
 }
 pub fn matview_ddl(schema: &str, name: &str, selectdef: &str) -> String {
-    format!("CREATE MATERIALIZED VIEW {}.{} AS\n{}", quote_ident(schema), quote_ident(name), selectdef)
+    format!(
+        "CREATE MATERIALIZED VIEW {}.{} AS\n{}",
+        quote_ident(schema),
+        quote_ident(name),
+        selectdef
+    )
 }
 pub fn constraint_ddl(c: &ConstraintInfo) -> String {
-    format!("ALTER TABLE {}.{} ADD CONSTRAINT {} {}",
-        quote_ident(&c.schema), quote_ident(&c.table), quote_ident(&c.name), c.definition)
+    format!(
+        "ALTER TABLE {}.{} ADD CONSTRAINT {} {}",
+        quote_ident(&c.schema),
+        quote_ident(&c.table),
+        quote_ident(&c.name),
+        c.definition
+    )
 }
 
 // --- SQLite table editor ---
 
 fn validate_type_fragment(t: &str) -> Result<(), String> {
     let l = t.trim().to_lowercase();
-    if l.is_empty() { return Err("column type is required".into()); }
-    if l.contains(';') || l.contains("--") || l.contains("/*") { return Err("invalid characters in type".into()); }
+    if l.is_empty() {
+        return Err("column type is required".into());
+    }
+    if l.contains(';') || l.contains("--") || l.contains("/*") {
+        return Err("invalid characters in type".into());
+    }
     Ok(())
 }
 
 /// CREATE TABLE for SQLite. PK inline for AUTOINCREMENT; single non-AUTOINCREMENT
 /// PKs get a table-level PRIMARY KEY clause; FKs appended inline (SQLite grammar).
-pub fn sqlite_create_table_sql(table: &str, cols: &[SqliteColumn], fks: &[(&str, &str)]) -> Result<String, String> {
+pub fn sqlite_create_table_sql(
+    table: &str,
+    cols: &[SqliteColumn],
+    fks: &[(&str, &str)],
+) -> Result<String, String> {
     validate_object_name(table)?;
     let mut defs: Vec<String> = vec![];
     let mut pk_cols: Vec<String> = vec![];
@@ -161,10 +206,18 @@ pub fn sqlite_create_table_sql(table: &str, cols: &[SqliteColumn], fks: &[(&str,
         if c.auto_increment && c.is_pk && c.type_.trim().eq_ignore_ascii_case("INTEGER") {
             d = format!("{} INTEGER PRIMARY KEY AUTOINCREMENT", quote_ident(&c.name));
         } else {
-            if !c.nullable { d.push_str(" NOT NULL"); }
-            if let Some(def) = &c.default { d.push_str(&format!(" DEFAULT {def}")); }
-            if c.unique && !c.is_pk { d.push_str(" UNIQUE"); }
-            if c.is_pk { pk_cols.push(quote_ident(&c.name)); }
+            if !c.nullable {
+                d.push_str(" NOT NULL");
+            }
+            if let Some(def) = &c.default {
+                d.push_str(&format!(" DEFAULT {def}"));
+            }
+            if c.unique && !c.is_pk {
+                d.push_str(" UNIQUE");
+            }
+            if c.is_pk {
+                pk_cols.push(quote_ident(&c.name));
+            }
         }
         defs.push(d);
     }
@@ -175,19 +228,40 @@ pub fn sqlite_create_table_sql(table: &str, cols: &[SqliteColumn], fks: &[(&str,
         defs.push(format!("PRIMARY KEY ({})", pk_cols.join(", ")));
     }
     for (lc, refc) in fks {
-        defs.push(format!("FOREIGN KEY ({}) REFERENCES {}", quote_ident(lc), refc));
+        defs.push(format!(
+            "FOREIGN KEY ({}) REFERENCES {}",
+            quote_ident(lc),
+            refc
+        ));
     }
-    Ok(format!("CREATE TABLE \"main\".{} ({})", quote_ident(table), defs.join(", ")))
+    Ok(format!(
+        "CREATE TABLE \"main\".{} ({})",
+        quote_ident(table),
+        defs.join(", ")
+    ))
 }
 
 /// Emit one statement per needed edit; falls back to a rebuild script (multi-stmt)
 /// for edits SQLite's ALTER TABLE can't express.
-pub fn sqlite_column_diff_sql(table: &str, old: &[SqliteColumn], new: &[SqliteColumn]) -> Result<Vec<String>, String> {
+pub fn sqlite_column_diff_sql(
+    table: &str,
+    old: &[SqliteColumn],
+    new: &[SqliteColumn],
+) -> Result<Vec<String>, String> {
     // rename detection: same position+type+nullable+default, name changed
     for (i, n) in new.iter().enumerate() {
         if let Some(o) = old.get(i) {
-            if o.name != n.name && o.type_ == n.type_ && o.default == n.default && o.nullable == n.nullable {
-                return Ok(vec![format!("ALTER TABLE \"main\".{} RENAME COLUMN {} TO {}", quote_ident(table), quote_ident(&o.name), quote_ident(&n.name))]);
+            if o.name != n.name
+                && o.type_ == n.type_
+                && o.default == n.default
+                && o.nullable == n.nullable
+            {
+                return Ok(vec![format!(
+                    "ALTER TABLE \"main\".{} RENAME COLUMN {} TO {}",
+                    quote_ident(table),
+                    quote_ident(&o.name),
+                    quote_ident(&n.name)
+                )]);
             }
         }
     }
@@ -197,9 +271,17 @@ pub fn sqlite_column_diff_sql(table: &str, old: &[SqliteColumn], new: &[SqliteCo
             if c.nullable || c.default.is_some() {
                 validate_object_name(&c.name)?;
                 validate_type_fragment(&c.type_)?;
-                let mut d = format!("ALTER TABLE \"main\".{} ADD COLUMN {} {}", quote_ident(table), quote_ident(&c.name), c.type_.trim());
+                let mut d = format!(
+                    "ALTER TABLE \"main\".{} ADD COLUMN {} {}",
+                    quote_ident(table),
+                    quote_ident(&c.name),
+                    c.type_.trim()
+                );
                 if !c.nullable {
-                    d.push_str(&format!(" DEFAULT {}", c.default.as_deref().unwrap_or("''")));
+                    d.push_str(&format!(
+                        " DEFAULT {}",
+                        c.default.as_deref().unwrap_or("''")
+                    ));
                 }
                 return Ok(vec![d]);
             }
@@ -209,16 +291,33 @@ pub fn sqlite_column_diff_sql(table: &str, old: &[SqliteColumn], new: &[SqliteCo
     sqlite_rebuild_script(table, old, new)
 }
 
-pub fn sqlite_rebuild_script(table: &str, _old: &[SqliteColumn], new: &[SqliteColumn]) -> Result<Vec<String>, String> {
+pub fn sqlite_rebuild_script(
+    table: &str,
+    _old: &[SqliteColumn],
+    new: &[SqliteColumn],
+) -> Result<Vec<String>, String> {
     validate_object_name(table)?;
     let tmp = format!("_gl_{}_tmp", table);
     let create = sqlite_create_table_sql(&tmp, new, &[])?;
-    let cols = new.iter().map(|c| quote_ident(&c.name)).collect::<Vec<_>>().join(", ");
+    let cols = new
+        .iter()
+        .map(|c| quote_ident(&c.name))
+        .collect::<Vec<_>>()
+        .join(", ");
     Ok(vec![
         create,
-        format!("INSERT INTO \"main\".{} ({}) SELECT * FROM \"main\".{}", quote_ident(&tmp), cols, quote_ident(table)),
+        format!(
+            "INSERT INTO \"main\".{} ({}) SELECT * FROM \"main\".{}",
+            quote_ident(&tmp),
+            cols,
+            quote_ident(table)
+        ),
         format!("DROP TABLE \"main\".{}", quote_ident(table)),
-        format!("ALTER TABLE \"main\".{} RENAME TO {}", quote_ident(&tmp), quote_ident(table)),
+        format!(
+            "ALTER TABLE \"main\".{} RENAME TO {}",
+            quote_ident(&tmp),
+            quote_ident(table)
+        ),
     ])
 }
 
@@ -255,31 +354,52 @@ mod tests {
 
     #[test]
     fn create_schema_sql_quotes_name() {
-        assert_eq!(create_schema_sql("my_schema").unwrap(), "CREATE SCHEMA \"my_schema\"");
+        assert_eq!(
+            create_schema_sql("my_schema").unwrap(),
+            "CREATE SCHEMA \"my_schema\""
+        );
         assert!(create_schema_sql("bad; name").is_err());
     }
 
     #[test]
     fn rename_schema_sql_quotes_both() {
         assert_eq!(
-        rename_schema_sql("old", "new").unwrap(),
-        "ALTER SCHEMA \"old\" RENAME TO \"new\""
+            rename_schema_sql("old", "new").unwrap(),
+            "ALTER SCHEMA \"old\" RENAME TO \"new\""
         );
     }
 
     #[test]
     fn drop_schema_sql_cascade_flag() {
         assert_eq!(drop_schema_sql("s", false).unwrap(), "DROP SCHEMA \"s\"");
-        assert_eq!(drop_schema_sql("s", true).unwrap(), "DROP SCHEMA \"s\" CASCADE");
+        assert_eq!(
+            drop_schema_sql("s", true).unwrap(),
+            "DROP SCHEMA \"s\" CASCADE"
+        );
     }
 
     #[test]
     fn object_search_query_unions_types_and_uses_position_match() {
         let sql = pg_object_search_query();
-        assert!(sql.contains("position(lower($1) in lower("), "case-insensitive substring, no wildcard escaping: {sql}");
+        assert!(
+            sql.contains("position(lower($1) in lower("),
+            "case-insensitive substring, no wildcard escaping: {sql}"
+        );
         assert!(sql.contains("$2"), "schema is $2");
         // covers every browsable type
-        for t in ["'TABLE'", "'VIEW'", "'MATERIALIZED VIEW'", "'FUNCTION'", "'PROCEDURE'", "'TRIGGER'", "'SEQUENCE'", "'ENUM'", "'EXTENSION'", "'INDEX'", "'CONSTRAINT'"] {
+        for t in [
+            "'TABLE'",
+            "'VIEW'",
+            "'MATERIALIZED VIEW'",
+            "'FUNCTION'",
+            "'PROCEDURE'",
+            "'TRIGGER'",
+            "'SEQUENCE'",
+            "'ENUM'",
+            "'EXTENSION'",
+            "'INDEX'",
+            "'CONSTRAINT'",
+        ] {
             assert!(sql.contains(t), "search must cover {t}");
         }
         assert!(sql.contains("LIMIT 100"));
@@ -299,7 +419,10 @@ mod tests {
     fn depend_query_filters_internal_and_resolves_names() {
         let sql = pg_depend_query();
         assert!(sql.contains("refobjid = $1"));
-        assert!(sql.contains("deptype IN ('n', 'a')"), "exclude internal 'i' / pinned 'p'");
+        assert!(
+            sql.contains("deptype IN ('n', 'a')"),
+            "exclude internal 'i' / pinned 'p'"
+        );
         assert!(sql.contains("pg_proc'::regclass"));
         assert!(sql.contains("pg_trigger'::regclass"));
         assert!(sql.contains("pg_constraint'::regclass"));
@@ -324,9 +447,16 @@ mod tests {
 
     #[test]
     fn sequence_ddl_is_synthesized() {
-        let s = SequenceInfo { name: "users_id_seq".into(), schema: "public".into(),
-            start_value: "1".into(), min_value: "1".into(), max_value: "9".into(),
-            increment: "1".into(), current_value: "5".into(), cycle: false };
+        let s = SequenceInfo {
+            name: "users_id_seq".into(),
+            schema: "public".into(),
+            start_value: "1".into(),
+            min_value: "1".into(),
+            max_value: "9".into(),
+            increment: "1".into(),
+            current_value: "5".into(),
+            cycle: false,
+        };
         let ddl = sequence_ddl(&s);
         assert!(ddl.starts_with("CREATE SEQUENCE \"public\".\"users_id_seq\""));
         assert!(ddl.contains("INCREMENT BY 1"));
@@ -335,7 +465,11 @@ mod tests {
 
     #[test]
     fn enum_ddl_lists_labels_quoted() {
-        let e = EnumInfo { name: "role".into(), schema: "public".into(), labels: vec!["admin".into(), "user's".into()] };
+        let e = EnumInfo {
+            name: "role".into(),
+            schema: "public".into(),
+            labels: vec!["admin".into(), "user's".into()],
+        };
         let ddl = enum_ddl(&e);
         assert!(ddl.starts_with("CREATE TYPE \"public\".\"role\" AS ENUM ("));
         assert!(ddl.contains("'admin'"));
@@ -344,7 +478,12 @@ mod tests {
 
     #[test]
     fn extension_ddl_is_synthesized() {
-        let x = ExtensionInfo { name: "pgcrypto".into(), schema: "public".into(), version: "1.3".into(), comment: None };
+        let x = ExtensionInfo {
+            name: "pgcrypto".into(),
+            schema: "public".into(),
+            version: "1.3".into(),
+            comment: None,
+        };
         let ddl = extension_ddl(&x);
         assert!(ddl.contains("CREATE EXTENSION IF NOT EXISTS \"pgcrypto\""));
         assert!(ddl.contains("WITH SCHEMA \"public\""));
@@ -353,23 +492,52 @@ mod tests {
 
     #[test]
     fn view_ddl_wraps_selectdef() {
-        assert_eq!(view_ddl("public", "v_users", "SELECT * FROM users"),
-            "CREATE OR REPLACE VIEW \"public\".\"v_users\" AS\nSELECT * FROM users");
+        assert_eq!(
+            view_ddl("public", "v_users", "SELECT * FROM users"),
+            "CREATE OR REPLACE VIEW \"public\".\"v_users\" AS\nSELECT * FROM users"
+        );
     }
 
     #[test]
     fn constraint_ddl_wraps_definition() {
-        let c = ConstraintInfo { name: "ck_pos".into(), schema: "public".into(), table: "orders".into(),
-            contype: "CHECK".into(), definition: "CHECK (amount > 0)".into(), deferrable: false, validated: true, columns: vec!["amount".into()] };
+        let c = ConstraintInfo {
+            name: "ck_pos".into(),
+            schema: "public".into(),
+            table: "orders".into(),
+            contype: "CHECK".into(),
+            definition: "CHECK (amount > 0)".into(),
+            deferrable: false,
+            validated: true,
+            columns: vec!["amount".into()],
+        };
         let ddl = constraint_ddl(&c);
-        assert_eq!(ddl, "ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"ck_pos\" CHECK (amount > 0)");
+        assert_eq!(
+            ddl,
+            "ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"ck_pos\" CHECK (amount > 0)"
+        );
     }
 
     #[test]
     fn sqlite_create_with_autoincrement_pk() {
         let cols = vec![
-            SqliteColumn { name: "id".into(), type_: "INTEGER".into(), nullable: false, default: None, is_pk: true, auto_increment: true, unique: false },
-            SqliteColumn { name: "name".into(), type_: "TEXT".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false },
+            SqliteColumn {
+                name: "id".into(),
+                type_: "INTEGER".into(),
+                nullable: false,
+                default: None,
+                is_pk: true,
+                auto_increment: true,
+                unique: false,
+            },
+            SqliteColumn {
+                name: "name".into(),
+                type_: "TEXT".into(),
+                nullable: true,
+                default: None,
+                is_pk: false,
+                auto_increment: false,
+                unique: false,
+            },
         ];
         let sql = sqlite_create_table_sql("users", &cols, &[]).unwrap();
         assert!(sql.contains("\"id\" INTEGER PRIMARY KEY AUTOINCREMENT"));
@@ -379,16 +547,40 @@ mod tests {
 
     #[test]
     fn sqlite_create_rejects_bad_identifier() {
-        let cols = vec![SqliteColumn { name: "a;b".into(), type_: "INTEGER".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false }];
+        let cols = vec![SqliteColumn {
+            name: "a;b".into(),
+            type_: "INTEGER".into(),
+            nullable: true,
+            default: None,
+            is_pk: false,
+            auto_increment: false,
+            unique: false,
+        }];
         assert!(sqlite_create_table_sql("bad name", &cols, &[]).is_err());
     }
 
     #[test]
     fn sqlite_edit_add_column_when_safe() {
-        let old = vec![SqliteColumn { name: "id".into(), type_: "INTEGER".into(), nullable: false, default: None, is_pk: true, auto_increment: true, unique: false }];
+        let old = vec![SqliteColumn {
+            name: "id".into(),
+            type_: "INTEGER".into(),
+            nullable: false,
+            default: None,
+            is_pk: true,
+            auto_increment: true,
+            unique: false,
+        }];
         let new = vec![
             old[0].clone(),
-            SqliteColumn { name: "email".into(), type_: "TEXT".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false },
+            SqliteColumn {
+                name: "email".into(),
+                type_: "TEXT".into(),
+                nullable: true,
+                default: None,
+                is_pk: false,
+                auto_increment: false,
+                unique: false,
+            },
         ];
         let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
         assert_eq!(stmts.len(), 1);
@@ -397,17 +589,56 @@ mod tests {
 
     #[test]
     fn sqlite_edit_rename_column() {
-        let old = vec![SqliteColumn { name: "id".into(), type_: "INTEGER".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false }];
-        let new = vec![SqliteColumn { name: "id2".into(), type_: "INTEGER".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false }];
+        let old = vec![SqliteColumn {
+            name: "id".into(),
+            type_: "INTEGER".into(),
+            nullable: true,
+            default: None,
+            is_pk: false,
+            auto_increment: false,
+            unique: false,
+        }];
+        let new = vec![SqliteColumn {
+            name: "id2".into(),
+            type_: "INTEGER".into(),
+            nullable: true,
+            default: None,
+            is_pk: false,
+            auto_increment: false,
+            unique: false,
+        }];
         let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
-        assert!(stmts.iter().any(|s| s.contains("RENAME COLUMN \"id\" TO \"id2\"")));
+        assert!(stmts
+            .iter()
+            .any(|s| s.contains("RENAME COLUMN \"id\" TO \"id2\"")));
     }
 
     #[test]
     fn sqlite_edit_typechange_requires_rebuild() {
-        let old = vec![SqliteColumn { name: "v".into(), type_: "TEXT".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false }];
-        let new = vec![SqliteColumn { name: "v".into(), type_: "INTEGER".into(), nullable: true, default: None, is_pk: false, auto_increment: false, unique: false }];
+        let old = vec![SqliteColumn {
+            name: "v".into(),
+            type_: "TEXT".into(),
+            nullable: true,
+            default: None,
+            is_pk: false,
+            auto_increment: false,
+            unique: false,
+        }];
+        let new = vec![SqliteColumn {
+            name: "v".into(),
+            type_: "INTEGER".into(),
+            nullable: true,
+            default: None,
+            is_pk: false,
+            auto_increment: false,
+            unique: false,
+        }];
         let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
-        assert!(stmts.iter().any(|s| s.contains("CREATE TABLE \"main\".\"_gl_t_tmp\"")), "type change must rebuild; got {stmts:?}");
+        assert!(
+            stmts
+                .iter()
+                .any(|s| s.contains("CREATE TABLE \"main\".\"_gl_t_tmp\"")),
+            "type change must rebuild; got {stmts:?}"
+        );
     }
 }

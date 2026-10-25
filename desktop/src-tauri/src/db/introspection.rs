@@ -480,7 +480,8 @@ pub fn pg_table_fk_out_query() -> String {
     "SELECT c.conname, pg_get_constraintdef(c.oid) AS definition \
      FROM pg_constraint c JOIN pg_class cl ON c.conrelid = cl.oid \
      JOIN pg_namespace n ON cl.relnamespace = n.oid \
-     WHERE n.nspname = $1 AND cl.relname = $2 AND c.contype = 'f'".to_string()
+     WHERE n.nspname = $1 AND cl.relname = $2 AND c.contype = 'f'"
+        .to_string()
 }
 
 /// FKs from other tables referencing this table. Parameterized $1 schema, $2 table.
@@ -491,7 +492,8 @@ pub fn pg_table_fk_in_query() -> String {
      JOIN pg_namespace cn ON cl.relnamespace = cn.oid \
      JOIN pg_class r ON c.confrelid = r.oid \
      JOIN pg_namespace rn ON r.relnamespace = rn.oid \
-     WHERE rn.nspname = $1 AND r.relname = $2 AND c.contype = 'f'".to_string()
+     WHERE rn.nspname = $1 AND r.relname = $2 AND c.contype = 'f'"
+        .to_string()
 }
 
 /// Grants on this table (all grantees), grouped. Parameterized $1 schema, $2 table.
@@ -500,7 +502,8 @@ pub fn pg_table_grants_query() -> String {
      bool_or(is_grantable = 'YES') AS grantable \
      FROM information_schema.table_privileges \
      WHERE table_schema = $1 AND table_name = $2 AND grantee <> 'PUBLIC' \
-     GROUP BY grantee".to_string()
+     GROUP BY grantee"
+        .to_string()
 }
 
 /// Sequences owned by this table's columns (via pg_depend). Parameterized $1 schema, $2 table.
@@ -796,9 +799,15 @@ mod tests {
     fn pg_available_extensions_query_has_name_default_version_comment() {
         let sql = pg_available_extensions_query();
         assert!(sql.contains("pg_available_extensions"));
-        assert!(sql.contains("default_version"), "should select default version; got: {sql}");
+        assert!(
+            sql.contains("default_version"),
+            "should select default version; got: {sql}"
+        );
         assert!(sql.contains("comment"), "should select comment; got: {sql}");
-        assert!(sql.contains("ORDER BY name"), "should order by name; got: {sql}");
+        assert!(
+            sql.contains("ORDER BY name"),
+            "should order by name; got: {sql}"
+        );
     }
 
     // ---------------------------------------------------------------

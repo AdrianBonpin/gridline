@@ -18,6 +18,7 @@ import {
     sqliteSync,
 } from "../../lib/commands";
 import type { PgToolStatus, MySqlToolStatus, BackupJob, DbType } from "../../lib/types";
+import { isMysqlFamily } from "../../lib/dbCapabilities";
 
 export function SyncPage() {
     const [sourceConnectionId, setSourceConnectionId] = useState("");
@@ -44,7 +45,7 @@ export function SyncPage() {
     );
     const dbType: DbType | null = sourceConnection?.db_type ?? null;
     const isPg = dbType === "postgresql";
-    const isMysql = dbType === "mysql";
+    const isMysql = isMysqlFamily(dbType);
 
     useEffect(() => {
         if (!pendingJobRef.current || !activeJob) return;

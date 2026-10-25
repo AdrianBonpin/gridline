@@ -70,9 +70,18 @@ fn sqlite_capture_reads_pragmas() {
     let users = snap.tables.iter().find(|t| t.name == "users").unwrap();
     assert_eq!(users.primary_key, vec!["id"]);
     assert_eq!(users.columns.len(), 3);
-    assert!(users.columns.iter().any(|c| c.name == "name" && !c.nullable));
-    assert!(users.columns.iter().any(|c| c.name == "email" && c.nullable));
-    assert!(users.indexes.iter().any(|i| i.name == "idx_users_email" && i.unique));
+    assert!(users
+        .columns
+        .iter()
+        .any(|c| c.name == "name" && !c.nullable));
+    assert!(users
+        .columns
+        .iter()
+        .any(|c| c.name == "email" && c.nullable));
+    assert!(users
+        .indexes
+        .iter()
+        .any(|i| i.name == "idx_users_email" && i.unique));
     let orders = snap.tables.iter().find(|t| t.name == "orders").unwrap();
     assert_eq!(orders.foreign_keys.len(), 1);
     let fk = &orders.foreign_keys[0];
@@ -90,7 +99,10 @@ fn sqlite_capture_reads_pragmas() {
 #[ignore]
 async fn pg_capture_live() {
     let h = std::env::var("GRIDLINE_TEST_PG_HOST").expect("set GRIDLINE_TEST_PG_HOST");
-    let p: u16 = std::env::var("GRIDLINE_TEST_PG_PORT").unwrap_or_else(|_| "5432".into()).parse().unwrap();
+    let p: u16 = std::env::var("GRIDLINE_TEST_PG_PORT")
+        .unwrap_or_else(|_| "5432".into())
+        .parse()
+        .unwrap();
     let u = std::env::var("GRIDLINE_TEST_PG_USER").expect("set GRIDLINE_TEST_PG_USER");
     let d = std::env::var("GRIDLINE_TEST_PG_DB").expect("set GRIDLINE_TEST_PG_DB");
     let pw = std::env::var("GRIDLINE_TEST_PG_PASSWORD").unwrap_or_default();
@@ -100,7 +112,9 @@ async fn pg_capture_live() {
     )
     .await
     .expect("connect to test PG");
-    let handle = tokio::spawn(async move { let _ = conn.await; });
+    let handle = tokio::spawn(async move {
+        let _ = conn.await;
+    });
 
     let schema = "gridline_diff_test";
     client
@@ -128,15 +142,27 @@ async fn pg_capture_live() {
         .await
         .expect("create objects");
 
-    let snap = capture_pg(&client, "postgresql", schema).await.expect("capture");
+    let snap = capture_pg(&client, "postgresql", schema)
+        .await
+        .expect("capture");
     assert_eq!(snap.engine, "postgresql");
     assert_eq!(snap.schema, schema);
     assert_eq!(snap.tables.len(), 2);
 
-    let child = snap.tables.iter().find(|t| t.name == "child").expect("child table");
+    let child = snap
+        .tables
+        .iter()
+        .find(|t| t.name == "child")
+        .expect("child table");
     assert_eq!(child.primary_key, vec!["id"]);
-    assert!(child.columns.iter().any(|c| c.name == "name" && !c.nullable && c.default_value.is_some()));
-    assert!(child.columns.iter().any(|c| c.name == "email" && c.nullable));
+    assert!(child
+        .columns
+        .iter()
+        .any(|c| c.name == "name" && !c.nullable && c.default_value.is_some()));
+    assert!(child
+        .columns
+        .iter()
+        .any(|c| c.name == "email" && c.nullable));
     assert!(child.indexes.iter().any(|i| i.name == "idx_child_email"));
     assert_eq!(child.foreign_keys.len(), 1);
     let fk = &child.foreign_keys[0];
@@ -144,12 +170,22 @@ async fn pg_capture_live() {
     assert_eq!(fk.on_delete, "CASCADE");
     assert_eq!(fk.on_update, "RESTRICT");
 
-    let parent = snap.tables.iter().find(|t| t.name == "parent").expect("parent table");
+    let parent = snap
+        .tables
+        .iter()
+        .find(|t| t.name == "parent")
+        .expect("parent table");
     assert!(parent.uniques.iter().any(|u| u.kind == "unique"));
 
     assert!(snap.views.iter().any(|v| v.name == "v_child"));
-    assert!(snap.sequences.iter().any(|s| s.name == "seq_test" && s.start == "5"));
-    assert!(snap.enums.iter().any(|e| e.name == "mood" && e.labels == vec!["happy", "sad"]));
+    assert!(snap
+        .sequences
+        .iter()
+        .any(|s| s.name == "seq_test" && s.start == "5"));
+    assert!(snap
+        .enums
+        .iter()
+        .any(|e| e.name == "mood" && e.labels == vec!["happy", "sad"]));
 
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE;"))
@@ -199,17 +235,30 @@ fn pg_snap(tables: Vec<SnapshotTable>) -> SchemaSnapshot {
 #[test]
 fn added_table_generates_create_with_pk_and_is_stageable() {
     let mut src = pg_snap(vec![]);
-    let mut t = table("users", vec![col("id", "integer", false, None), col("email", "text", true, Some("''"))]);
+    let mut t = table(
+        "users",
+        vec![
+            col("id", "integer", false, None),
+            col("email", "text", true, Some("''")),
+        ],
+    );
     t.primary_key = vec!["id".into()];
     src.tables.push(t);
     let tgt = pg_snap(vec![]);
     let r = diff_snapshots(&src, &tgt);
-    let item = r.items.iter().find(|i| i.object_type == "table" && i.name == "users").unwrap();
+    let item = r
+        .items
+        .iter()
+        .find(|i| i.object_type == "table" && i.name == "users")
+        .unwrap();
     assert_eq!(item.kind, "added");
     assert!(!item.destructive);
     assert_eq!(item.sync_sql.len(), 1);
     let sql = &item.sync_sql[0];
-    assert!(sql.starts_with("CREATE TABLE \"s\".\"users\""), "got: {sql}");
+    assert!(
+        sql.starts_with("CREATE TABLE \"s\".\"users\""),
+        "got: {sql}"
+    );
     assert!(sql.contains("\"id\" integer NOT NULL"));
     assert!(sql.contains("\"email\" text DEFAULT ''"));
     assert!(sql.contains("PRIMARY KEY (\"id\")"));
@@ -254,14 +303,23 @@ fn column_diffs_classify_exactly_per_spec() {
 
     let add = r.items.iter().find(|i| i.name == "t.added").unwrap();
     assert_eq!((add.kind.as_str(), add.destructive), ("added", false));
-    assert_eq!(add.sync_sql[0], "ALTER TABLE \"s\".\"t\" ADD COLUMN \"added\" int;");
+    assert_eq!(
+        add.sync_sql[0],
+        "ALTER TABLE \"s\".\"t\" ADD COLUMN \"added\" int;"
+    );
 
     let gone = r.items.iter().find(|i| i.name == "t.gone").unwrap();
     assert_eq!((gone.kind.as_str(), gone.destructive), ("removed", true));
-    assert_eq!(gone.sync_sql[0], "ALTER TABLE \"s\".\"t\" DROP COLUMN \"gone\";");
+    assert_eq!(
+        gone.sync_sql[0],
+        "ALTER TABLE \"s\".\"t\" DROP COLUMN \"gone\";"
+    );
 
     let retyped = r.items.iter().find(|i| i.name == "t.retyped").unwrap();
-    assert!(retyped.destructive, "ALTER COLUMN TYPE is destructive per spec");
+    assert!(
+        retyped.destructive,
+        "ALTER COLUMN TYPE is destructive per spec"
+    );
     assert!(retyped.sync_sql[0].contains("ALTER COLUMN \"retyped\" TYPE bigint"));
 
     let tight = r.items.iter().find(|i| i.name == "t.tightened").unwrap();
@@ -287,64 +345,150 @@ fn constraint_index_fk_view_sequence_enum_diffs() {
         on_delete: "CASCADE".into(),
         on_update: "NO ACTION".into(),
     });
-    src.tables[0].indexes.push(SnapshotIndex { name: "ix_t".into(), columns: vec!["id".into()], unique: false });
-    src.views.push(SnapshotView { schema: "s".into(), name: "v".into(), definition: "SELECT 1".into(), materialized: false });
-    src.sequences.push(SnapshotSequence { schema: "s".into(), name: "seq".into(), start: "1".into(), increment: "1".into(), minimum: "1".into(), maximum: "100".into(), cycle: false });
-    src.enums.push(SnapshotEnum { schema: "s".into(), name: "color".into(), labels: vec!["red".into(), "green".into()] });
-    tgt.enums.push(SnapshotEnum { schema: "s".into(), name: "color".into(), labels: vec!["red".into()] });
+    src.tables[0].indexes.push(SnapshotIndex {
+        name: "ix_t".into(),
+        columns: vec!["id".into()],
+        unique: false,
+    });
+    src.views.push(SnapshotView {
+        schema: "s".into(),
+        name: "v".into(),
+        definition: "SELECT 1".into(),
+        materialized: false,
+    });
+    src.sequences.push(SnapshotSequence {
+        schema: "s".into(),
+        name: "seq".into(),
+        start: "1".into(),
+        increment: "1".into(),
+        minimum: "1".into(),
+        maximum: "100".into(),
+        cycle: false,
+    });
+    src.enums.push(SnapshotEnum {
+        schema: "s".into(),
+        name: "color".into(),
+        labels: vec!["red".into(), "green".into()],
+    });
+    tgt.enums.push(SnapshotEnum {
+        schema: "s".into(),
+        name: "color".into(),
+        labels: vec!["red".into()],
+    });
 
     let r = diff_snapshots(&src, &tgt);
 
-    let fk = r.items.iter().find(|i| i.object_type == "constraint" && i.name == "t.fk_t_ref").unwrap();
+    let fk = r
+        .items
+        .iter()
+        .find(|i| i.object_type == "constraint" && i.name == "t.fk_t_ref")
+        .unwrap();
     assert!(!fk.destructive);
     assert!(fk.sync_sql[0].contains("ADD CONSTRAINT \"fk_t_ref\" FOREIGN KEY (\"id\")"));
     assert!(fk.sync_sql[0].contains("REFERENCES \"s\".\"other\" (\"id\")"));
     assert!(fk.sync_sql[0].contains("ON DELETE CASCADE"));
 
-    let ix = r.items.iter().find(|i| i.object_type == "index" && i.name == "t.ix_t").unwrap();
-    assert_eq!(ix.sync_sql[0], "CREATE INDEX \"s\".\"ix_t\" ON \"s\".\"t\" (\"id\");");
+    let ix = r
+        .items
+        .iter()
+        .find(|i| i.object_type == "index" && i.name == "t.ix_t")
+        .unwrap();
+    assert_eq!(
+        ix.sync_sql[0],
+        "CREATE INDEX \"s\".\"ix_t\" ON \"s\".\"t\" (\"id\");"
+    );
 
-    let view = r.items.iter().find(|i| i.object_type == "view" && i.name == "v").unwrap();
+    let view = r
+        .items
+        .iter()
+        .find(|i| i.object_type == "view" && i.name == "v")
+        .unwrap();
     assert!(view.sync_sql[0].starts_with("CREATE VIEW \"s\".\"v\" AS"));
 
-    let seq = r.items.iter().find(|i| i.object_type == "sequence" && i.name == "seq").unwrap();
+    let seq = r
+        .items
+        .iter()
+        .find(|i| i.object_type == "sequence" && i.name == "seq")
+        .unwrap();
     assert!(seq.sync_sql[0].starts_with("CREATE SEQUENCE \"s\".\"seq\""));
 
-    let en = r.items.iter().find(|i| i.object_type == "enum" && i.name == "color").unwrap();
+    let en = r
+        .items
+        .iter()
+        .find(|i| i.object_type == "enum" && i.name == "color")
+        .unwrap();
     assert!(!en.destructive);
     assert!(en.sync_sql[0].contains("ALTER TYPE \"s\".\"color\" ADD VALUE 'green'"));
 }
 
 #[test]
 fn mysql_family_uses_backticks() {
-    let mut src = SchemaSnapshot { engine: "mariadb".into(), schema: "app".into(), ..Default::default() };
+    let mut src = SchemaSnapshot {
+        engine: "mariadb".into(),
+        schema: "app".into(),
+        ..Default::default()
+    };
     src.tables.push(SnapshotTable {
         schema: "app".into(),
         name: "users".into(),
-        columns: vec![SnapshotColumn { name: "id".into(), data_type: "int".into(), nullable: false, default_value: None }],
+        columns: vec![SnapshotColumn {
+            name: "id".into(),
+            data_type: "int".into(),
+            nullable: false,
+            default_value: None,
+        }],
         primary_key: vec!["id".into()],
         uniques: vec![],
         checks: vec![],
         indexes: vec![],
         foreign_keys: vec![],
     });
-    let tgt = SchemaSnapshot { engine: "mysql".into(), schema: "app".into(), ..Default::default() };
+    let tgt = SchemaSnapshot {
+        engine: "mysql".into(),
+        schema: "app".into(),
+        ..Default::default()
+    };
     let r = diff_snapshots(&src, &tgt);
     let item = r.items.iter().find(|i| i.name == "users").unwrap();
-    assert!(item.sync_sql[0].starts_with("CREATE TABLE `app`.`users`"), "got: {}", item.sync_sql[0]);
+    assert!(
+        item.sync_sql[0].starts_with("CREATE TABLE `app`.`users`"),
+        "got: {}",
+        item.sync_sql[0]
+    );
 }
 
 #[test]
 fn sqlite_changed_view_is_destructive_note_only() {
-    let mut src = SchemaSnapshot { engine: "sqlite".into(), schema: "main".into(), ..Default::default() };
-    src.views.push(SnapshotView { schema: "main".into(), name: "v".into(), definition: "SELECT 2".into(), materialized: false });
-    let mut tgt = SchemaSnapshot { engine: "sqlite".into(), schema: "main".into(), ..Default::default() };
-    tgt.views.push(SnapshotView { schema: "main".into(), name: "v".into(), definition: "SELECT 1".into(), materialized: false });
+    let mut src = SchemaSnapshot {
+        engine: "sqlite".into(),
+        schema: "main".into(),
+        ..Default::default()
+    };
+    src.views.push(SnapshotView {
+        schema: "main".into(),
+        name: "v".into(),
+        definition: "SELECT 2".into(),
+        materialized: false,
+    });
+    let mut tgt = SchemaSnapshot {
+        engine: "sqlite".into(),
+        schema: "main".into(),
+        ..Default::default()
+    };
+    tgt.views.push(SnapshotView {
+        schema: "main".into(),
+        name: "v".into(),
+        definition: "SELECT 1".into(),
+        materialized: false,
+    });
     let r = diff_snapshots(&src, &tgt);
     let item = r.items.iter().find(|i| i.object_type == "view").unwrap();
     assert_eq!(item.kind, "changed");
     assert!(item.destructive);
-    assert!(item.sync_sql.is_empty(), "SQLite cannot CREATE OR REPLACE a view");
+    assert!(
+        item.sync_sql.is_empty(),
+        "SQLite cannot CREATE OR REPLACE a view"
+    );
 }
 
 #[test]
@@ -355,8 +499,12 @@ fn identical_snapshots_diff_empty_and_stageable_filter() {
     assert!(stageable_items(&r).is_empty());
 
     let mut src2 = pg_snap(vec![]);
-    src2.tables.push(table("new", vec![col("id", "int", false, None)]));
-    src2.tables.push(table("dropme", vec![col("id", "int", false, None)]));
+    src2.tables
+        .push(table("new", vec![col("id", "int", false, None)]));
+    src2.tables
+        .push(table("dropme", vec![col("id", "int", false, None)]));
     let r2 = diff_snapshots(&src2, &snap);
-    assert!(stageable_items(&r2).iter().all(|i| !i.destructive && !i.sync_sql.is_empty()));
+    assert!(stageable_items(&r2)
+        .iter()
+        .all(|i| !i.destructive && !i.sync_sql.is_empty()));
 }

@@ -12,7 +12,8 @@ pub fn mysql_databases_query() -> String {
 }
 
 /// System databases hidden from the DB viewer's database/schema selector.
-pub const MYSQL_SYSTEM_DBS: [&str; 4] = ["information_schema", "mysql", "performance_schema", "sys"];
+pub const MYSQL_SYSTEM_DBS: [&str; 4] =
+    ["information_schema", "mysql", "performance_schema", "sys"];
 
 /// Quote a MySQL identifier with backticks, doubling any embedded backticks.
 pub fn mysql_quote_ident(name: &str) -> String {
@@ -81,7 +82,17 @@ pub fn mysql_select_data_query(
 
     let order_cols: Vec<String> = sorts
         .iter()
-        .map(|s| format!("{} {}", mysql_quote_ident(&s.column), if s.order.eq_ignore_ascii_case("desc") { "DESC" } else { "ASC" }))
+        .map(|s| {
+            format!(
+                "{} {}",
+                mysql_quote_ident(&s.column),
+                if s.order.eq_ignore_ascii_case("desc") {
+                    "DESC"
+                } else {
+                    "ASC"
+                }
+            )
+        })
         .collect();
     let order_clause = if order_cols.is_empty() {
         if default_sort.is_empty() {
@@ -122,9 +133,11 @@ pub fn mysql_fk_query(schema: &str, table: &str) -> String {
 
 /// Choose a default sort column: prefer an `id`-like column, else the first.
 pub fn mysql_default_sort(columns: &[String]) -> &str {
-    columns.iter().find(|c| c.as_str() == "id").map(|s| s.as_str()).unwrap_or_else(|| {
-        columns.first().map(|s| s.as_str()).unwrap_or("")
-    })
+    columns
+        .iter()
+        .find(|c| c.as_str() == "id")
+        .map(|s| s.as_str())
+        .unwrap_or_else(|| columns.first().map(|s| s.as_str()).unwrap_or(""))
 }
 
 // ── Change-SQL builders ──────────────────────────────────────────────
@@ -140,11 +153,17 @@ pub fn mysql_build_update_sql(
     let mut params: Vec<serde_json::Value> = Vec::new();
     let set_clause: Vec<String> = new_data
         .iter()
-        .map(|(col, val)| { params.push(val.clone()); format!("{} = ?", mysql_quote_ident(col)) })
+        .map(|(col, val)| {
+            params.push(val.clone());
+            format!("{} = ?", mysql_quote_ident(col))
+        })
         .collect();
     let where_clause: Vec<String> = primary_key
         .iter()
-        .map(|(col, val)| { params.push(val.clone()); format!("{} = ?", mysql_quote_ident(col)) })
+        .map(|(col, val)| {
+            params.push(val.clone());
+            format!("{} = ?", mysql_quote_ident(col))
+        })
         .collect();
     Ok((
         format!(
@@ -168,10 +187,17 @@ pub fn mysql_build_delete_sql(
     let mut params: Vec<serde_json::Value> = Vec::new();
     let where_clause: Vec<String> = primary_key
         .iter()
-        .map(|(col, val)| { params.push(val.clone()); format!("{} = ?", mysql_quote_ident(col)) })
+        .map(|(col, val)| {
+            params.push(val.clone());
+            format!("{} = ?", mysql_quote_ident(col))
+        })
         .collect();
     Ok((
-        format!("DELETE FROM {} WHERE {} LIMIT 1", qualified(schema, table), where_clause.join(" AND ")),
+        format!(
+            "DELETE FROM {} WHERE {} LIMIT 1",
+            qualified(schema, table),
+            where_clause.join(" AND ")
+        ),
         params,
     ))
 }
@@ -195,11 +221,24 @@ pub fn mysql_build_insert_sql(
     )
 }
 
-pub fn mysql_build_bulk_insert_sql(schema: &str, table: &str, columns: &[String], row_count: usize) -> String {
+pub fn mysql_build_bulk_insert_sql(
+    schema: &str,
+    table: &str,
+    columns: &[String],
+    row_count: usize,
+) -> String {
     let cols: Vec<String> = columns.iter().map(|c| mysql_quote_ident(c)).collect();
-    let one_row = format!("({})", columns.iter().map(|_| "?").collect::<Vec<_>>().join(", "));
+    let one_row = format!(
+        "({})",
+        columns.iter().map(|_| "?").collect::<Vec<_>>().join(", ")
+    );
     let rows = vec![one_row; row_count].join(", ");
-    format!("INSERT INTO {} ({}) VALUES {}", qualified(schema, table), cols.join(", "), rows)
+    format!(
+        "INSERT INTO {} ({}) VALUES {}",
+        qualified(schema, table),
+        cols.join(", "),
+        rows
+    )
 }
 
 pub fn mysql_build_drop_sql(schema: &str, table: &str) -> String {
@@ -245,7 +284,12 @@ mod tests {
 
     #[test]
     fn select_data_adds_where_for_filters_with_question_placeholders() {
-        let filters = vec![FilterRule { id: "f1".into(), column: "status".into(), operator: "eq".into(), value: "paid".into() }];
+        let filters = vec![FilterRule {
+            id: "f1".into(),
+            column: "status".into(),
+            operator: "eq".into(),
+            value: "paid".into(),
+        }];
         let q = mysql_select_data_query("shop", "orders", &filters, &[], "id");
         assert!(q.contains("WHERE `status` = ?"));
         assert!(q.contains("LIMIT ? OFFSET ?"));
@@ -275,8 +319,14 @@ mod tests {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
         let data = vec![("status".to_string(), serde_json::json!("paid"))];
         let (sql, params) = mysql_build_update_sql("shop", "orders", &pk, &data).unwrap();
-        assert_eq!(sql, "UPDATE `shop`.`orders` SET `status` = ? WHERE `id` = ? LIMIT 1");
-        assert_eq!(params, vec![serde_json::json!("paid"), serde_json::json!(1)]);
+        assert_eq!(
+            sql,
+            "UPDATE `shop`.`orders` SET `status` = ? WHERE `id` = ? LIMIT 1"
+        );
+        assert_eq!(
+            params,
+            vec![serde_json::json!("paid"), serde_json::json!(1)]
+        );
     }
 
     #[test]
@@ -306,20 +356,32 @@ mod tests {
 
     #[test]
     fn build_drop_and_empty_table_quoted() {
-        assert_eq!(mysql_build_drop_sql("shop", "orders"), "DROP TABLE `shop`.`orders`");
-        assert_eq!(mysql_build_empty_sql("shop", "orders"), "DELETE FROM `shop`.`orders`");
+        assert_eq!(
+            mysql_build_drop_sql("shop", "orders"),
+            "DROP TABLE `shop`.`orders`"
+        );
+        assert_eq!(
+            mysql_build_empty_sql("shop", "orders"),
+            "DELETE FROM `shop`.`orders`"
+        );
     }
 
     #[test]
     fn build_bulk_insert_columns_and_placeholders() {
         let cols = vec!["a".to_string(), "b".to_string()];
         let sql = mysql_build_bulk_insert_sql("shop", "orders", &cols, 2);
-        assert_eq!(sql, "INSERT INTO `shop`.`orders` (`a`, `b`) VALUES (?, ?), (?, ?)");
+        assert_eq!(
+            sql,
+            "INSERT INTO `shop`.`orders` (`a`, `b`) VALUES (?, ?), (?, ?)"
+        );
     }
 
     #[test]
     fn default_sort_picks_id_then_first_column() {
-        assert_eq!(mysql_default_sort(&["updated_at".into(), "id".into()]), "id");
+        assert_eq!(
+            mysql_default_sort(&["updated_at".into(), "id".into()]),
+            "id"
+        );
         assert_eq!(mysql_default_sort(&["name".into()]), "name");
         assert_eq!(mysql_default_sort(&[]), "");
     }

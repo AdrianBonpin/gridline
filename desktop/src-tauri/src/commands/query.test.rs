@@ -5,7 +5,10 @@ use super::*;
 #[test]
 fn statement_kind_classifies_by_first_keyword() {
     assert_eq!(statement_kind("SELECT 1"), "select");
-    assert_eq!(statement_kind("  with c as (select 1) select * from c"), "select");
+    assert_eq!(
+        statement_kind("  with c as (select 1) select * from c"),
+        "select"
+    );
     assert_eq!(statement_kind("insert into t values (1)"), "dml");
     assert_eq!(statement_kind("UPDATE t SET a=1"), "dml");
     assert_eq!(statement_kind("DELETE FROM t"), "dml");
@@ -74,9 +77,8 @@ fn sqlite_walker_notices_ddl() {
 #[test]
 fn run_sqlite_statements_stops_at_first_error_with_prior_sets() {
     let conn = mem_conn();
-    let statements = crate::db::sql_split::split_statements(
-        "SELECT a FROM t; SELECT * FROM missing; SELECT 1",
-    );
+    let statements =
+        crate::db::sql_split::split_statements("SELECT a FROM t; SELECT * FROM missing; SELECT 1");
     let mut sets = Vec::new();
     let mut notices = Vec::new();
     let err = run_sqlite_statements(&conn, &statements, 1, 50, &mut sets, &mut notices);
@@ -165,7 +167,9 @@ pub(crate) async fn mysql_test_connection() -> Option<sqlx::mysql::MySqlConnecti
 #[ignore]
 async fn mysql_decimal_and_date_decode_with_features_enabled() {
     use sqlx::Row;
-    let Some(mut conn) = mysql_test_connection().await else { return };
+    let Some(mut conn) = mysql_test_connection().await else {
+        return;
+    };
 
     sqlx::query(
         "CREATE TEMPORARY TABLE gl_feature_probe (
@@ -206,18 +210,90 @@ fn mysql_cell_kind_maps_every_type_name_sqlx_can_report() {
     // Every string here was observed from a live MySQL 8 server during the
     // architect phase (ColumnType::name(flags, max_size)).
     let cases: &[(&str, MysqlCellKind)] = &[
-        ("BOOLEAN", Int { bits: 8, signed: true }),
-        ("TINYINT", Int { bits: 8, signed: true }),
-        ("TINYINT UNSIGNED", Int { bits: 8, signed: false }),
-        ("SMALLINT", Int { bits: 16, signed: true }),
-        ("SMALLINT UNSIGNED", Int { bits: 16, signed: false }),
-        ("MEDIUMINT", Int { bits: 24, signed: true }),
-        ("MEDIUMINT UNSIGNED", Int { bits: 24, signed: false }),
-        ("INT", Int { bits: 32, signed: true }),
-        ("INT UNSIGNED", Int { bits: 32, signed: false }),
-        ("BIGINT", Int { bits: 64, signed: true }),
-        ("BIGINT UNSIGNED", Int { bits: 64, signed: false }),
-        ("YEAR", Int { bits: 16, signed: false }),
+        (
+            "BOOLEAN",
+            Int {
+                bits: 8,
+                signed: true,
+            },
+        ),
+        (
+            "TINYINT",
+            Int {
+                bits: 8,
+                signed: true,
+            },
+        ),
+        (
+            "TINYINT UNSIGNED",
+            Int {
+                bits: 8,
+                signed: false,
+            },
+        ),
+        (
+            "SMALLINT",
+            Int {
+                bits: 16,
+                signed: true,
+            },
+        ),
+        (
+            "SMALLINT UNSIGNED",
+            Int {
+                bits: 16,
+                signed: false,
+            },
+        ),
+        (
+            "MEDIUMINT",
+            Int {
+                bits: 24,
+                signed: true,
+            },
+        ),
+        (
+            "MEDIUMINT UNSIGNED",
+            Int {
+                bits: 24,
+                signed: false,
+            },
+        ),
+        (
+            "INT",
+            Int {
+                bits: 32,
+                signed: true,
+            },
+        ),
+        (
+            "INT UNSIGNED",
+            Int {
+                bits: 32,
+                signed: false,
+            },
+        ),
+        (
+            "BIGINT",
+            Int {
+                bits: 64,
+                signed: true,
+            },
+        ),
+        (
+            "BIGINT UNSIGNED",
+            Int {
+                bits: 64,
+                signed: false,
+            },
+        ),
+        (
+            "YEAR",
+            Int {
+                bits: 16,
+                signed: false,
+            },
+        ),
         ("BIT", Bit),
         ("FLOAT", Float),
         ("DOUBLE", Double),
@@ -252,7 +328,13 @@ fn mysql_cell_kind_maps_every_type_name_sqlx_can_report() {
 
 #[test]
 fn mysql_cell_kind_is_case_insensitive_and_trims() {
-    assert_eq!(mysql_cell_kind("  bigint unsigned "), MysqlCellKind::Int { bits: 64, signed: false });
+    assert_eq!(
+        mysql_cell_kind("  bigint unsigned "),
+        MysqlCellKind::Int {
+            bits: 64,
+            signed: false
+        }
+    );
     assert_eq!(mysql_cell_kind("Datetime"), MysqlCellKind::DateTime);
 }
 
@@ -262,7 +344,9 @@ fn mysql_cell_kind_is_case_insensitive_and_trims() {
 #[ignore]
 async fn mysql_cell_to_json_decodes_every_type() {
     use sqlx::Row;
-    let Some(mut conn) = mysql_test_connection().await else { return };
+    let Some(mut conn) = mysql_test_connection().await else {
+        return;
+    };
 
     sqlx::query(
         "CREATE TEMPORARY TABLE gl_decode_probe (
@@ -321,7 +405,10 @@ async fn mysql_cell_to_json_decodes_every_type() {
         ("c_date", Value::String("2024-01-15".into())),
         ("c_time", Value::String("10:30:00".into())),
         ("c_datetime", Value::String("2024-01-15 10:30:00".into())),
-        ("c_datetime6", Value::String("2024-01-15 10:30:00.123456".into())),
+        (
+            "c_datetime6",
+            Value::String("2024-01-15 10:30:00.123456".into()),
+        ),
         ("c_timestamp", Value::String("2024-01-15 10:30:00".into())),
         ("c_char", Value::String("abcd".into())),
         ("c_varchar", Value::String("hello".into())),
@@ -337,10 +424,18 @@ async fn mysql_cell_to_json_decodes_every_type() {
         ("c_geometry", Value::Null),
     ];
 
-    assert_eq!(row.len(), expected.len(), "column count drifted from the fixture");
+    assert_eq!(
+        row.len(),
+        expected.len(),
+        "column count drifted from the fixture"
+    );
     for (i, (name, want)) in expected.iter().enumerate() {
         assert_eq!(row.columns()[i].name(), *name, "column order drifted");
-        assert_eq!(&mysql_cell_to_json(&row, i), want, "column {name} decoded wrong");
+        assert_eq!(
+            &mysql_cell_to_json(&row, i),
+            want,
+            "column {name} decoded wrong"
+        );
     }
 }
 
@@ -354,16 +449,28 @@ fn statement_budget_allows_a_count_at_the_cap() {
 
 #[test]
 fn interactive_over_budget_error_points_at_restore() {
-    let err = check_statement_budget(MAX_STATEMENTS + 1, MAX_STATEMENTS, false)
-        .expect_err("must reject");
-    assert!(err.contains("Tools"), "error must route to Tools → Restore; got {err:?}");
-    assert!(err.contains(&(MAX_STATEMENTS + 1).to_string()), "error must state the count; got {err:?}");
+    let err =
+        check_statement_budget(MAX_STATEMENTS + 1, MAX_STATEMENTS, false).expect_err("must reject");
+    assert!(
+        err.contains("Tools"),
+        "error must route to Tools → Restore; got {err:?}"
+    );
+    assert!(
+        err.contains(&(MAX_STATEMENTS + 1).to_string()),
+        "error must state the count; got {err:?}"
+    );
 }
 
 #[test]
 fn bulk_over_budget_error_states_the_limit_without_the_tool_hint() {
     let err = check_statement_budget(MAX_RESTORE_STATEMENTS + 1, MAX_RESTORE_STATEMENTS, true)
         .expect_err("must reject");
-    assert!(!err.contains("Tools"), "bulk path is already in Tools; got {err:?}");
-    assert!(err.contains(&MAX_RESTORE_STATEMENTS.to_string()), "got {err:?}");
+    assert!(
+        !err.contains("Tools"),
+        "bulk path is already in Tools; got {err:?}"
+    );
+    assert!(
+        err.contains(&MAX_RESTORE_STATEMENTS.to_string()),
+        "got {err:?}"
+    );
 }

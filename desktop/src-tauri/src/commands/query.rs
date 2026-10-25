@@ -577,7 +577,10 @@ pub(crate) fn mysql_wrap_count(query: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MysqlCellKind {
     /// Width in bits and signedness; drives the number-vs-string policy.
-    Int { bits: u8, signed: bool },
+    Int {
+        bits: u8,
+        signed: bool,
+    },
     /// `BIT(M)` — a bitmask, rendered as a number (spec §4.1).
     Bit,
     Float,
@@ -600,19 +603,52 @@ pub(crate) fn mysql_cell_kind(type_name: &str) -> MysqlCellKind {
     use MysqlCellKind::*;
     let t = type_name.trim().to_ascii_uppercase();
     match t.as_str() {
-        "BOOLEAN" | "TINYINT" => Int { bits: 8, signed: true },
-        "TINYINT UNSIGNED" => Int { bits: 8, signed: false },
-        "SMALLINT" => Int { bits: 16, signed: true },
-        "SMALLINT UNSIGNED" => Int { bits: 16, signed: false },
-        "MEDIUMINT" => Int { bits: 24, signed: true },
-        "MEDIUMINT UNSIGNED" => Int { bits: 24, signed: false },
-        "INT" => Int { bits: 32, signed: true },
-        "INT UNSIGNED" => Int { bits: 32, signed: false },
-        "BIGINT" => Int { bits: 64, signed: true },
-        "BIGINT UNSIGNED" => Int { bits: 64, signed: false },
+        "BOOLEAN" | "TINYINT" => Int {
+            bits: 8,
+            signed: true,
+        },
+        "TINYINT UNSIGNED" => Int {
+            bits: 8,
+            signed: false,
+        },
+        "SMALLINT" => Int {
+            bits: 16,
+            signed: true,
+        },
+        "SMALLINT UNSIGNED" => Int {
+            bits: 16,
+            signed: false,
+        },
+        "MEDIUMINT" => Int {
+            bits: 24,
+            signed: true,
+        },
+        "MEDIUMINT UNSIGNED" => Int {
+            bits: 24,
+            signed: false,
+        },
+        "INT" => Int {
+            bits: 32,
+            signed: true,
+        },
+        "INT UNSIGNED" => Int {
+            bits: 32,
+            signed: false,
+        },
+        "BIGINT" => Int {
+            bits: 64,
+            signed: true,
+        },
+        "BIGINT UNSIGNED" => Int {
+            bits: 64,
+            signed: false,
+        },
         // YEAR is an unsigned 16-bit value; it needs the unsigned rung, not
         // the signed one (int_compatible excludes UNSIGNED columns).
-        "YEAR" => Int { bits: 16, signed: false },
+        "YEAR" => Int {
+            bits: 16,
+            signed: false,
+        },
         "BIT" => Bit,
         "FLOAT" => Float,
         "DOUBLE" => Double,
@@ -624,8 +660,9 @@ pub(crate) fn mysql_cell_kind(type_name: &str) -> MysqlCellKind {
         // claiming UTC would assert something the value does not support.
         "DATETIME" | "TIMESTAMP" => DateTime,
         "JSON" => Json,
-        "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT"
-        | "ENUM" | "SET" => Text,
+        "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" | "SET" => {
+            Text
+        }
         "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => Bytes,
         "NULL" => Null,
         _ => Unknown,
@@ -943,12 +980,7 @@ pub(crate) fn affected_from_tag(tag: &str) -> Option<i64> {
     tag.split_whitespace().last()?.parse::<i64>().ok()
 }
 
-fn notice_for(
-    idx: usize,
-    kind: &str,
-    text: String,
-    affected: Option<i64>,
-) -> StatementNotice {
+fn notice_for(idx: usize, kind: &str, text: String, affected: Option<i64>) -> StatementNotice {
     StatementNotice {
         statement_index: idx,
         kind: kind.to_string(),
@@ -967,7 +999,11 @@ pub(crate) fn execute_sqlite_statement(
 ) -> Result<StatementOutcome, String> {
     match conn.execute(stmt, []) {
         Ok(n) => Ok(StatementOutcome::Notice {
-            kind: if statement_kind(stmt) == "ddl" { "ddl" } else { "dml" },
+            kind: if statement_kind(stmt) == "ddl" {
+                "ddl"
+            } else {
+                "dml"
+            },
             text: format!("OK — {n} rows affected"),
             affected: Some(n as i64),
         }),
@@ -1007,9 +1043,11 @@ pub(crate) fn run_sqlite_statements(
     for (idx, stmt) in statements.iter().enumerate() {
         match execute_sqlite_statement(conn, stmt, page, page_size) {
             Ok(StatementOutcome::Set(qr)) => result_sets.push(qr),
-            Ok(StatementOutcome::Notice { kind, text, affected }) => {
-                notices.push(notice_for(idx, kind, text, affected))
-            }
+            Ok(StatementOutcome::Notice {
+                kind,
+                text,
+                affected,
+            }) => notices.push(notice_for(idx, kind, text, affected)),
             Err(e) if e == "Query cancelled" => return Some(e),
             Err(e) => {
                 notices.push(StatementNotice {
@@ -1092,16 +1130,13 @@ pub(crate) async fn execute_pg_statement(
 
     // 2. Raw single-statement execution via simple_query (captures the
     //    CommandComplete tag so DML notices carry affected counts).
-    let messages = client
-        .simple_query(trimmed)
-        .await
-        .map_err(|e| {
-            if is_pg_cancel_error(&e) {
-                "Query cancelled".to_string()
-            } else {
-                crate::commands::db_viewer::pg_error_message(&e)
-            }
-        })?;
+    let messages = client.simple_query(trimmed).await.map_err(|e| {
+        if is_pg_cancel_error(&e) {
+            "Query cancelled".to_string()
+        } else {
+            crate::commands::db_viewer::pg_error_message(&e)
+        }
+    })?;
 
     let mut columns: Vec<ColumnInfo> = Vec::new();
     let mut all_rows: Vec<Vec<serde_json::Value>> = Vec::new();
@@ -1145,7 +1180,11 @@ pub(crate) async fn execute_pg_statement(
         let tag = last_tag.clone().unwrap_or_else(|| "OK".to_string());
         let affected = last_tag.as_deref().and_then(affected_from_tag);
         return Ok(StatementOutcome::Notice {
-            kind: if statement_kind(stmt) == "ddl" { "ddl" } else { "dml" },
+            kind: if statement_kind(stmt) == "ddl" {
+                "ddl"
+            } else {
+                "dml"
+            },
             text: tag,
             affected,
         });
@@ -1177,9 +1216,11 @@ pub(crate) async fn run_pg_statements(
     for (idx, stmt) in statements.iter().enumerate() {
         match execute_pg_statement(client, stmt, page, page_size).await {
             Ok(StatementOutcome::Set(qr)) => result_sets.push(qr),
-            Ok(StatementOutcome::Notice { kind, text, affected }) => {
-                notices.push(notice_for(idx, kind, text, affected))
-            }
+            Ok(StatementOutcome::Notice {
+                kind,
+                text,
+                affected,
+            }) => notices.push(notice_for(idx, kind, text, affected)),
             Err(e) if e == "Query cancelled" => return Some(e),
             Err(e) => {
                 notices.push(StatementNotice {
@@ -1218,7 +1259,11 @@ async fn execute_mysql_statement_on(
                 .map(|qr| {
                     if qr.columns.is_empty() {
                         StatementOutcome::Notice {
-                            kind: if statement_kind(stmt) == "ddl" { "ddl" } else { "dml" },
+                            kind: if statement_kind(stmt) == "ddl" {
+                                "ddl"
+                            } else {
+                                "dml"
+                            },
                             text: "OK".to_string(),
                             affected: None,
                         }
@@ -1289,9 +1334,11 @@ async fn run_mysql_statements(
     for (idx, stmt) in statements.iter().enumerate() {
         match execute_mysql_statement_on(conn, stmt, page, page_size).await {
             Ok(StatementOutcome::Set(qr)) => result_sets.push(qr),
-            Ok(StatementOutcome::Notice { kind, text, affected }) => {
-                notices.push(notice_for(idx, kind, text, affected))
-            }
+            Ok(StatementOutcome::Notice {
+                kind,
+                text,
+                affected,
+            }) => notices.push(notice_for(idx, kind, text, affected)),
             Err(e) if e == "Query cancelled" => {
                 cancel_registry.set_mysql_conn_id(connection_id, None);
                 return Some(e);
@@ -1343,7 +1390,8 @@ pub async fn execute_query_multi(
                 run_pg_statements(client, &statements, p, ps, &mut result_sets, &mut notices).await;
         }
         Some(DbHandle::Sqlite(conn)) => {
-            err_text = run_sqlite_statements(conn, &statements, p, ps, &mut result_sets, &mut notices);
+            err_text =
+                run_sqlite_statements(conn, &statements, p, ps, &mut result_sets, &mut notices);
         }
         Some(DbHandle::MySql(pool)) => {
             let mut conn = pool
@@ -1366,7 +1414,10 @@ pub async fn execute_query_multi(
     }
 
     let elapsed = start.elapsed().as_millis() as i64;
-    let row_count = result_sets.first().map(|q| q.rows.len() as i64).unwrap_or(0);
+    let row_count = result_sets
+        .first()
+        .map(|q| q.rows.len() as i64)
+        .unwrap_or(0);
     let history_id = Uuid::new_v4().to_string();
     if let Some(e) = &err_text {
         insert_history(
@@ -1994,7 +2045,10 @@ mod tests {
         let cancelled = rx
             .recv_timeout(std::time::Duration::from_secs(15))
             .expect("query thread must finish");
-        assert!(cancelled, "cancel must abort the wrapped query with 'Query cancelled' instead of re-running it");
+        assert!(
+            cancelled,
+            "cancel must abort the wrapped query with 'Query cancelled' instead of re-running it"
+        );
     }
 
     #[tokio::test]
@@ -2018,16 +2072,20 @@ mod tests {
             let _ = conn.await;
         });
         let token = client.cancel_token();
-        let run = tokio::spawn(async move {
-            execute_pg_query(&client, "SELECT pg_sleep(3)", 1, 50).await
-        });
+        let run =
+            tokio::spawn(
+                async move { execute_pg_query(&client, "SELECT pg_sleep(3)", 1, 50).await },
+            );
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         token
             .cancel_query(tokio_postgres::NoTls)
             .await
             .expect("cancel request");
         let res = run.await.expect("query task");
-        assert!(res.is_err(), "pg_sleep must be cancelled, not re-run; got {res:?}");
+        assert!(
+            res.is_err(),
+            "pg_sleep must be cancelled, not re-run; got {res:?}"
+        );
         assert!(res.unwrap_err().contains("Query cancelled"));
         let _ = handle;
     }
@@ -2069,7 +2127,10 @@ mod tests {
             .await
             .expect("kill");
         let res = run.await.expect("query task");
-        assert!(res.is_err(), "SLEEP(3) must be killed, not re-run; got {res:?}");
+        assert!(
+            res.is_err(),
+            "SLEEP(3) must be killed, not re-run; got {res:?}"
+        );
         assert!(res.unwrap_err().contains("Query cancelled"));
     }
 }

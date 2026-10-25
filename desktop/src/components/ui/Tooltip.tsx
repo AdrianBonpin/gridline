@@ -1,6 +1,7 @@
 import {
   createContext,
   useContext,
+  useEffect,
   useId,
   useRef,
   useState,
@@ -83,6 +84,12 @@ export function Tooltip({ content, children, side = "top" }: TooltipProps) {
     clearTimer();
     setActiveId((prev) => (prev === id ? null : prev));
   }, [clearTimer, id, setActiveId]);
+
+  // A pending show-timer must not outlive the trigger. Without this, a hover
+  // followed by an unmount fires `setActiveId` on a torn-down tree — React then
+  // touches `window`, which a torn-down test environment has already deleted
+  // (surfaced in CI as "ReferenceError: window is not defined").
+  useEffect(() => clearTimer, [clearTimer]);
 
   const measure = useCallback(() => {
     const trigger = triggerRef.current;

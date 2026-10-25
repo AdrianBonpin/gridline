@@ -40,7 +40,7 @@ pub struct PgToolStatus {
     pub pg_restore_found: bool,
     pub pg_dump_version: Option<String>,
     pub pg_restore_version: Option<String>,
-    pub pg_dump_source: Option<String>,    // "system" | "bundled" | None
+    pub pg_dump_source: Option<String>, // "system" | "bundled" | None
     pub pg_restore_source: Option<String>,
     /// The binary name that actually resolved (`mariadb-dump`, `mysqldump`, …).
     pub pg_dump_resolved_name: Option<String>,
@@ -70,8 +70,20 @@ pub struct MySqlConnParams {
 }
 
 impl MySqlConnParams {
-    pub fn new(host: String, port: i64, username: String, database: String, password: String) -> Self {
-        Self { host, port, username, database, password }
+    pub fn new(
+        host: String,
+        port: i64,
+        username: String,
+        database: String,
+        password: String,
+    ) -> Self {
+        Self {
+            host,
+            port,
+            username,
+            database,
+            password,
+        }
     }
 }
 
@@ -198,13 +210,18 @@ mod tests {
 
     #[test]
     fn pg_tool_status_reports_source() {
-        let s = PgToolStatus { pg_dump_found: true, pg_restore_found: true,
-            pg_dump_version: Some("pg_dump 16".into()), pg_restore_version: Some("pg_restore 16".into()),
-            pg_dump_source: Some("system".into()), pg_restore_source: Some("bundled".into()),
+        let s = PgToolStatus {
+            pg_dump_found: true,
+            pg_restore_found: true,
+            pg_dump_version: Some("pg_dump 16".into()),
+            pg_restore_version: Some("pg_restore 16".into()),
+            pg_dump_source: Some("system".into()),
+            pg_restore_source: Some("bundled".into()),
             pg_dump_resolved_name: Some("pg_dump".into()),
             pg_restore_resolved_name: None,
             pg_dump_bundled_available: true,
-            pg_restore_bundled_available: false };
+            pg_restore_bundled_available: false,
+        };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"pg_dump_source\":\"system\""));
         assert!(json.contains("\"pg_restore_source\":\"bundled\""));
@@ -229,7 +246,10 @@ mod tests {
 
     #[test]
     fn sqlite_restore_options_serialize_camel_case() {
-        let opts = SqliteRestoreOptions { file_path: "/tmp/in.sql".into(), clean: true };
+        let opts = SqliteRestoreOptions {
+            file_path: "/tmp/in.sql".into(),
+            clean: true,
+        };
         let json = serde_json::to_string(&opts).unwrap();
         assert!(json.contains("\"filePath\":\"/tmp/in.sql\""));
         assert!(json.contains("\"clean\":true"));

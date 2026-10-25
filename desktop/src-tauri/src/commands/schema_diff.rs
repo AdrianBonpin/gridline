@@ -54,9 +54,9 @@ pub async fn compare_schemas(
     let mut pm = state.pool_manager.lock().await;
 
     let source = {
-        let handle = pm
-            .get(&source_connection_id)
-            .ok_or_else(|| "Source connection failed: not connected (open it in the DB viewer first)".to_string())?;
+        let handle = pm.get(&source_connection_id).ok_or_else(|| {
+            "Source connection failed: not connected (open it in the DB viewer first)".to_string()
+        })?;
         crate::db::schema_diff::capture_snapshot(handle, &source_db_type, &source_schema)
             .await
             .map_err(|e| format!("Source connection failed: {e}"))?

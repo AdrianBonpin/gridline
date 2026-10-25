@@ -811,7 +811,11 @@ mod tests {
 
     #[test]
     fn object_search_hit_tagged_roundtrip() {
-        let hit = ObjectSearchHit { name: "users".into(), schema: "public".into(), object_type: "TABLE".into() };
+        let hit = ObjectSearchHit {
+            name: "users".into(),
+            schema: "public".into(),
+            object_type: "TABLE".into(),
+        };
         let json = serde_json::to_string(&hit).unwrap();
         assert!(json.contains("\"object_type\":\"TABLE\""));
         let back: ObjectSearchHit = serde_json::from_str(&json).unwrap();
@@ -820,7 +824,11 @@ mod tests {
 
     #[test]
     fn dependency_info_roundtrip() {
-        let d = DependencyInfo { deptype: "n".into(), class: "pg_class".into(), name: "v_users".into() };
+        let d = DependencyInfo {
+            deptype: "n".into(),
+            class: "pg_class".into(),
+            name: "v_users".into(),
+        };
         let json = serde_json::to_string(&d).unwrap();
         assert!(json.contains("\"deptype\":\"n\""));
         assert!(json.contains("v_users"));
@@ -855,10 +863,21 @@ mod tests {
     #[test]
     fn role_info_roundtrip() {
         let r = RoleInfo {
-            name: "app".into(), superuser: false, inherit: true, create_db: false,
-            create_role: false, can_login: true, replication: false, bypass_rls: false,
-            connection_limit: -1, valid_until: None, memberships: vec![RoleMembership {
-                role: "parent".into(), member: "app".into(), grantor: "admin".into(), admin_option: false,
+            name: "app".into(),
+            superuser: false,
+            inherit: true,
+            create_db: false,
+            create_role: false,
+            can_login: true,
+            replication: false,
+            bypass_rls: false,
+            connection_limit: -1,
+            valid_until: None,
+            memberships: vec![RoleMembership {
+                role: "parent".into(),
+                member: "app".into(),
+                grantor: "admin".into(),
+                admin_option: false,
             }],
         };
         let json = serde_json::to_string(&r).unwrap();
@@ -871,15 +890,32 @@ mod tests {
     #[test]
     fn privilege_entry_and_readiness_roundtrip() {
         let pe = PrivilegeEntry {
-            object_class: "table".into(), schema: Some("public".into()), name: "users".into(),
-            privileges: vec!["SELECT".into(), "INSERT".into()], grantable: false,
+            object_class: "table".into(),
+            schema: Some("public".into()),
+            name: "users".into(),
+            privileges: vec!["SELECT".into(), "INSERT".into()],
+            grantable: false,
         };
-        assert!(serde_json::to_string(&pe).unwrap().contains(r#""object_class":"table""#));
-        let rr = RebuildReadiness { ok: false, reasons: vec!["has triggers".into()] };
-        assert!(serde_json::to_string(&rr).unwrap().contains(r#""ok":false"#));
-        let mr = MaintenanceResult { duration_ms: 42, message: "ok".into() };
-        assert!(serde_json::to_string(&mr).unwrap().contains(r#""duration_ms":42"#));
-        let ts = TablespaceInfo { name: "pg_default".into() };
+        assert!(serde_json::to_string(&pe)
+            .unwrap()
+            .contains(r#""object_class":"table""#));
+        let rr = RebuildReadiness {
+            ok: false,
+            reasons: vec!["has triggers".into()],
+        };
+        assert!(serde_json::to_string(&rr)
+            .unwrap()
+            .contains(r#""ok":false"#));
+        let mr = MaintenanceResult {
+            duration_ms: 42,
+            message: "ok".into(),
+        };
+        assert!(serde_json::to_string(&mr)
+            .unwrap()
+            .contains(r#""duration_ms":42"#));
+        let ts = TablespaceInfo {
+            name: "pg_default".into(),
+        };
         assert!(serde_json::to_string(&ts).unwrap().contains("pg_default"));
     }
 }

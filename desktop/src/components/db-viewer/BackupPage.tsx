@@ -21,6 +21,7 @@ import {
     sqliteDump,
 } from "../../lib/commands";
 import type { PgToolStatus, MySqlToolStatus, BackupJob } from "../../lib/types";
+import { isMysqlFamily } from "../../lib/dbCapabilities";
 
 interface BackupPageProps {
     connectionId: string;
@@ -59,7 +60,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
     const dbType = connection?.db_type ?? "postgresql";
     const database = connection?.database ?? null;
     const isPg = dbType === "postgresql";
-    const isMysql = dbType === "mysql";
+    const isMysql = isMysqlFamily(dbType);
     const isSqlite = dbType === "sqlite";
 
     const [format, setFormat] = useState<BackupFormat>("custom");

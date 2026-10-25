@@ -106,3 +106,36 @@ describe("SyncPage tool re-check", () => {
     await waitFor(() => expect(screen.getByText(/mysqldump is missing/i)).toBeTruthy());
   });
 });
+
+// Regression (#47): `isMysql = dbType === "mysql"` made a MariaDB source match
+// neither branch, so the MySQL tool check never ran and Start Sync fell through
+// to sqliteSync().
+describe("SyncPage MariaDB routing", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockConnections.length = 0;
+    useBackupStore.setState({ jobs: [], activeJobId: null, progress: 0 });
+    useNotificationStore.setState({ notifications: [] });
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["db1"]);
+  });
+
+  it("treats a MariaDB source as the MySQL family", async () => {
+    mockConnections.push({
+      id: "src",
+      db_type: "mariadb",
+      name: "maria",
+      database: "db1",
+    });
+    const detectMysql = vi
+      .spyOn(commands, "detectMysqlTools")
+      .mockResolvedValue(mysqlToolsOk);
+    const detectPg = vi.spyOn(commands, "detectPgTools").mockResolvedValue(pgToolsOk);
+
+    render(<SyncPage />);
+    const [sourceSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    fireEvent.change(sourceSelect, { target: { value: "src" } });
+
+    await waitFor(() => expect(detectMysql).toHaveBeenCalled());
+    expect(detectPg).not.toHaveBeenCalled();
+  });
+});

@@ -52,7 +52,10 @@ fn line_comments_do_not_break_statements() {
 
 #[test]
 fn block_comments_do_not_break_statements() {
-    assert_eq!(split_statements("SELECT /* ; */ 1"), vec!["SELECT /* ; */ 1"]);
+    assert_eq!(
+        split_statements("SELECT /* ; */ 1"),
+        vec!["SELECT /* ; */ 1"]
+    );
 }
 
 #[test]
@@ -94,13 +97,26 @@ fn empty_and_whitespace_input() {
 
 #[test]
 fn delimiter_directive_changes_statement_terminator() {
-    let sql = "DELIMITER //\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\nEND//\nDELIMITER ;\nSELECT 2;";
+    let sql =
+        "DELIMITER //\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\nEND//\nDELIMITER ;\nSELECT 2;";
     let stmts = split_statements(sql);
     assert_eq!(stmts.len(), 2, "got {stmts:?}");
-    assert!(stmts[0].starts_with("CREATE PROCEDURE p()"), "got {:?}", stmts[0]);
+    assert!(
+        stmts[0].starts_with("CREATE PROCEDURE p()"),
+        "got {:?}",
+        stmts[0]
+    );
     // The inner `;` must NOT have split the body.
-    assert!(stmts[0].contains("SELECT 1;"), "body was split: {:?}", stmts[0]);
-    assert!(!stmts[0].contains("DELIMITER"), "directive leaked into statement: {:?}", stmts[0]);
+    assert!(
+        stmts[0].contains("SELECT 1;"),
+        "body was split: {:?}",
+        stmts[0]
+    );
+    assert!(
+        !stmts[0].contains("DELIMITER"),
+        "directive leaked into statement: {:?}",
+        stmts[0]
+    );
     assert_eq!(stmts[1], "SELECT 2");
 }
 
@@ -129,13 +145,66 @@ fn delimiter_text_inside_a_line_comment_is_not_a_directive() {
 fn delimiter_with_trailing_junk_is_ordinary_text() {
     let stmts = split_statements("DELIMITER // extra\nSELECT 1;");
     assert_eq!(stmts.len(), 1);
-    assert!(stmts[0].contains("DELIMITER // extra"), "got {:?}", stmts[0]);
+    assert!(
+        stmts[0].contains("DELIMITER // extra"),
+        "got {:?}",
+        stmts[0]
+    );
 }
 
 #[test]
 fn a_single_semicolon_is_ordinary_text_under_a_custom_delimiter() {
     let stmts = split_statements("DELIMITER //\nSELECT 1; SELECT 2//\nDELIMITER ;\nSELECT 3;");
     assert_eq!(stmts.len(), 2);
-    assert!(stmts[0].contains("SELECT 1; SELECT 2"), "got {:?}", stmts[0]);
+    assert!(
+        stmts[0].contains("SELECT 1; SELECT 2"),
+        "got {:?}",
+        stmts[0]
+    );
     assert_eq!(stmts[1], "SELECT 3");
+}
+
+/// The TypeScript mirror in `desktop/src/lib/sqlScan.test.ts` asserts the
+/// SAME table. Edit both or the guard and the executor will disagree about
+/// how many statements a script contains.
+#[test]
+fn shared_cross_language_vectors() {
+    let vectors: Vec<(&str, Vec<&str>)> = vec![
+        ("SELECT 1; SELECT 2", vec!["SELECT 1", "SELECT 2"]),
+        ("SELECT 'a;b'; SELECT 2", vec!["SELECT 'a;b'", "SELECT 2"]),
+        (
+            "SELECT 'it''s'; SELECT 2",
+            vec!["SELECT 'it''s'", "SELECT 2"],
+        ),
+        (
+            "SELECT \"a;b\"; SELECT `x;y`",
+            vec!["SELECT \"a;b\"", "SELECT `x;y`"],
+        ),
+        (
+            "SELECT 1 -- ; not a boundary\n; SELECT 2",
+            vec!["SELECT 1 -- ; not a boundary", "SELECT 2"],
+        ),
+        ("SELECT /* ; */ 1", vec!["SELECT /* ; */ 1"]),
+        (
+            "SELECT $$a;b$$; SELECT 2",
+            vec!["SELECT $$a;b$$", "SELECT 2"],
+        ),
+        (
+            "SELECT $fn$x;y$fn$; SELECT 2",
+            vec!["SELECT $fn$x;y$fn$", "SELECT 2"],
+        ),
+        ("SELECT a$b", vec!["SELECT a$b"]),
+        ("SELECT 1$", vec!["SELECT 1$"]),
+        ("-- nothing\n; SELECT 1", vec!["SELECT 1"]),
+        ("/* c */", Vec::new()),
+        ("", Vec::new()),
+        ("  ;  ; ", Vec::new()),
+        (
+            "DELIMITER //\nSELECT 1; SELECT 2//\nDELIMITER ;\nSELECT 3;",
+            vec!["SELECT 1; SELECT 2", "SELECT 3"],
+        ),
+    ];
+    for (sql, expected) in vectors {
+        assert_eq!(split_statements(sql), expected, "input: {sql:?}");
+    }
 }

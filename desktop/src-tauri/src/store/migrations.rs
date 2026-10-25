@@ -332,11 +332,22 @@ mod tests {
         .unwrap();
         run_migrations(&conn).unwrap();
         let uses: i64 = conn
-            .query_row("SELECT use_keychain FROM connections WHERE id='c1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT use_keychain FROM connections WHERE id='c1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(uses, 1, "existing connections default to use_keychain=1 (ON)");
+        assert_eq!(
+            uses, 1,
+            "existing connections default to use_keychain=1 (ON)"
+        );
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM schema_version WHERE version=8", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM schema_version WHERE version=8",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1, "schema_version row 8 inserted exactly once");
     }
@@ -347,7 +358,11 @@ mod tests {
         run_migrations(&conn).unwrap();
         run_migrations(&conn).unwrap();
         let v8: i64 = conn
-            .query_row("SELECT COUNT(*) FROM schema_version WHERE version=8", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM schema_version WHERE version=8",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(v8, 1);
         // PRAGMA confirms exactly one use_keychain column

@@ -1,0 +1,69 @@
+name: CI
+
+# Pull-request validation for the Tauri desktop app: Rust formatting + unit
+# tests, frontend unit tests, and the frontend production build. Deliberately
+# separate from release.yml — no secrets, no bundling, read-only permissions.
+#
+# `pull_request` (never `pull_request_target`) so a fork PR cannot reach a
+# write-scoped token.
+
+on:
+  pull_request:
+    branches: [prod]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: fmt + tests + build
+    runs-on: ubuntu-22.04
+    # Bounded runtime: a hung `cargo test` cannot burn a runner for hours.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Tauri v2 needs these to compile the crate on Linux. Same list as
+      # release.yml, so a missing system dependency surfaces on the PR
+      # instead of during a release.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './desktop/src-tauri -> target'
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check Rust formatting
+        working-directory: desktop/src-tauri
+        run: cargo fmt --all --check
+
+      - name: Run Rust tests
+        working-directory: desktop/src-tauri
+        run: cargo test
+
+      - name: Run frontend tests
+        run: bun run test
+
+      - name: Build the desktop frontend
+        run: bun run --filter gridline-desktop build

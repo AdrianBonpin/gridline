@@ -342,6 +342,65 @@ describe("DbViewerScreen", () => {
         );
     });
 
+    it("prompts when a later statement in the script is destructive (#50)", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue({
+                result_sets: [{ columns: [], rows: [], total_rows: 0, page: 1, page_size: 50 }],
+                notices: [],
+                execution_time_ms: 42,
+            } as any);
+        render(
+            <DbViewerScreen connectionId="c1" onHome={() => {}} onSettings={() => {}} />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        const textarea = await waitFor(() => screen.getByTestId("monaco-textarea"));
+        fireEvent.change(textarea, {
+            target: { value: "SELECT 1; DROP TABLE demo;" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
+
+        await waitFor(() => {
+            expect(screen.getByText("Destructive Query")).toBeInTheDocument();
+        });
+        expect(executeQuery).not.toHaveBeenCalled();
+        expect(screen.getByTestId("destructive-statement-detail")).toHaveTextContent(
+            "Statement 2 of 2",
+        );
+
+        fireEvent.click(screen.getByText("Execute"));
+        await waitFor(() =>
+            expect(executeQuery).toHaveBeenCalledWith(
+                "c1",
+                "SELECT 1; DROP TABLE demo;",
+                1,
+                50,
+            ),
+        );
+    });
+
+    it("does not prompt for a read-only script with several statements", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue({
+                result_sets: [{ columns: [], rows: [], total_rows: 0, page: 1, page_size: 50 }],
+                notices: [],
+                execution_time_ms: 42,
+            } as any);
+        render(
+            <DbViewerScreen connectionId="c1" onHome={() => {}} onSettings={() => {}} />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        const textarea = await waitFor(() => screen.getByTestId("monaco-textarea"));
+        fireEvent.change(textarea, {
+            target: { value: "SELECT 1; SELECT 'DROP TABLE t';" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
+
+        await waitFor(() => expect(executeQuery).toHaveBeenCalled());
+        expect(screen.queryByText("Destructive Query")).toBeNull();
+    });
+
     it("refreshes the schema tree after a DDL query runs", async () => {
         vi.spyOn(commands, "executeQueryMulti").mockResolvedValue(
             { result_sets: [mockQueryResult], notices: [], execution_time_ms: 42 } as any,

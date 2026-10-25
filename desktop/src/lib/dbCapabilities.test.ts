@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DB_CAPABILITIES, getCapabilities, type DbCapabilities } from "./dbCapabilities";
+import { DB_CAPABILITIES, getCapabilities, isMysqlFamily, type DbCapabilities } from "./dbCapabilities";
 
 describe("dbCapabilities", () => {
   it("gives PostgreSQL every capability", () => {
@@ -122,5 +122,20 @@ describe("dbCapabilities v0.7.8", () => {
     expect(DB_CAPABILITIES.mysql.ddl).toBe(true);
     expect(DB_CAPABILITIES.sqlite.editing).toBe(true);
     expect(DB_CAPABILITIES.sqlite.objects).toBe(false);
+  });
+});
+
+describe("isMysqlFamily", () => {
+  it("is true for mysql and mariadb", () => {
+    expect(isMysqlFamily("mysql")).toBe(true);
+    expect(isMysqlFamily("mariadb")).toBe(true);
+  });
+
+  it("is false for the other engines and for no connection", () => {
+    expect(isMysqlFamily("postgresql")).toBe(false);
+    expect(isMysqlFamily("sqlite")).toBe(false);
+    expect(isMysqlFamily("redis")).toBe(false);
+    expect(isMysqlFamily(null)).toBe(false);
+    expect(isMysqlFamily(undefined)).toBe(false);
   });
 });

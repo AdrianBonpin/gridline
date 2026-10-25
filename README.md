@@ -491,6 +491,7 @@ Highlights of what's next:
 - [Development](#development)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
+- [Security](#security)
 - [License](#license)
 
 ---
@@ -501,6 +502,16 @@ Contributions, bug reports, and feature ideas are welcome. Gridline is Apache 2.
 
 - Open an issue via the **[template chooser](https://github.com/AdrianBonpin/gridline/issues/new)** — pick **Bug report** (with an environment table so we can reproduce issues quickly), **Feature request**, or **Improvement** (UX polish for existing features). New issues are auto-assigned to the maintainer.
 - Submit a pull request. Keep Tauri commands thin, type IPC boundaries explicitly, and follow the existing Rust/React conventions.
+
+---
+
+## Security
+
+Gridline connects to your databases with your credentials, so security reports are taken seriously and handled privately.
+
+- **Report a vulnerability privately** via [GitHub private vulnerability reporting](https://github.com/AdrianBonpin/gridline/security/advisories/new) — never in a public issue.
+- Read the full policy, scope, and response targets in [SECURITY.md](./SECURITY.md).
+- Passwords and SSH secrets live in the OS keychain (never in the SQLite store or a plaintext file), queries are never logged, and destructive SQL requires an explicit confirmation.
 
 ---
 

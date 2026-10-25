@@ -44,7 +44,10 @@ pub(crate) fn apply_snapshot_cap(snap: &mut SchemaSnapshot) {
 }
 
 fn csv_names(s: &str) -> Vec<String> {
-    s.split(", ").map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+    s.split(", ")
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
 }
 
 /// Capture a PostgreSQL schema snapshot (six set-based queries, one per class).
@@ -60,16 +63,21 @@ pub(crate) async fn capture_pg(
 
     // Columns
     let rows = client
-        .query(&crate::db::introspection::pg_diff_columns_query(), &[&schema])
+        .query(
+            &crate::db::introspection::pg_diff_columns_query(),
+            &[&schema],
+        )
         .await
         .map_err(|e| format!("columns query failed: {e}"))?;
     for r in rows {
         let tname: String = r.get(0);
-        let entry = tables.entry(tname.clone()).or_insert_with(|| SnapshotTable {
-            schema: schema.to_string(),
-            name: tname,
-            ..Default::default()
-        });
+        let entry = tables
+            .entry(tname.clone())
+            .or_insert_with(|| SnapshotTable {
+                schema: schema.to_string(),
+                name: tname,
+                ..Default::default()
+            });
         entry.columns.push(SnapshotColumn {
             name: r.get(1),
             data_type: r.get(2),
@@ -82,16 +90,23 @@ pub(crate) async fn capture_pg(
     // Column order: table_name(0), constraint_name(1), contype(2), cols(3),
     // ref_cols(4), ref_table(5), confdeltype(6), confupdtype(7), definition(8)
     let rows = client
-        .query(&crate::db::introspection::pg_diff_constraints_query(), &[&schema])
+        .query(
+            &crate::db::introspection::pg_diff_constraints_query(),
+            &[&schema],
+        )
         .await
         .map_err(|e| format!("constraints query failed: {e}"))?;
     for r in rows {
         let tname: String = r.get(0);
         let cname: String = r.get(1);
         let contype: String = r.get(2);
-        let Some(entry) = tables.get_mut(&tname) else { continue };
+        let Some(entry) = tables.get_mut(&tname) else {
+            continue;
+        };
         match contype.as_str() {
-            "p" => entry.primary_key = csv_names(&r.get::<_, Option<String>>(3).unwrap_or_default()),
+            "p" => {
+                entry.primary_key = csv_names(&r.get::<_, Option<String>>(3).unwrap_or_default())
+            }
             "u" => entry.uniques.push(SnapshotConstraint {
                 name: cname,
                 kind: "unique".into(),
@@ -116,8 +131,10 @@ pub(crate) async fn capture_pg(
                     ref_schema,
                     ref_table,
                     ref_columns: csv_names(&r.get::<_, Option<String>>(4).unwrap_or_default()),
-                    on_delete: pg_fk_action(&r.get::<_, Option<String>>(6).unwrap_or_default()).to_string(),
-                    on_update: pg_fk_action(&r.get::<_, Option<String>>(7).unwrap_or_default()).to_string(),
+                    on_delete: pg_fk_action(&r.get::<_, Option<String>>(6).unwrap_or_default())
+                        .to_string(),
+                    on_update: pg_fk_action(&r.get::<_, Option<String>>(7).unwrap_or_default())
+                        .to_string(),
                 });
             }
             _ => {}
@@ -126,12 +143,17 @@ pub(crate) async fn capture_pg(
 
     // Indexes
     let rows = client
-        .query(&crate::db::introspection::pg_diff_indexes_query(), &[&schema])
+        .query(
+            &crate::db::introspection::pg_diff_indexes_query(),
+            &[&schema],
+        )
         .await
         .map_err(|e| format!("indexes query failed: {e}"))?;
     for r in rows {
         let tname: String = r.get(0);
-        let Some(entry) = tables.get_mut(&tname) else { continue };
+        let Some(entry) = tables.get_mut(&tname) else {
+            continue;
+        };
         entry.indexes.push(SnapshotIndex {
             name: r.get(1),
             columns: csv_names(&r.get::<_, Option<String>>(3).unwrap_or_default()),
@@ -155,7 +177,10 @@ pub(crate) async fn capture_pg(
 
     // Sequences
     let rows = client
-        .query(&crate::db::introspection::pg_diff_sequences_query(), &[&schema])
+        .query(
+            &crate::db::introspection::pg_diff_sequences_query(),
+            &[&schema],
+        )
         .await
         .map_err(|e| format!("sequences query failed: {e}"))?;
     for r in rows {
@@ -272,7 +297,9 @@ pub(crate) mod capture {
                 .prepare(&format!("PRAGMA table_info({})", quote_double(&name)))
                 .map_err(|e| e.to_string())?;
             let col_rows: Vec<(String, String, i64, Option<String>, i64)> = cols
-                .query_map([], |r| Ok((r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+                .query_map([], |r| {
+                    Ok((r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+                })
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect();
@@ -323,7 +350,15 @@ pub(crate) mod capture {
                 .map_err(|e| e.to_string())?;
             let fk_rows: Vec<(i64, i64, String, String, String, String, String)> = fks
                 .query_map([], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
                 })
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
@@ -365,7 +400,10 @@ pub(crate) mod capture {
         engine: &str,
         schema: &str,
     ) -> Result<SchemaSnapshot, String> {
-        use crate::db::mysql::{mysql_row_string, mysql_snapshot_columns_query, mysql_snapshot_constraints_query, mysql_snapshot_indexes_query, mysql_snapshot_views_query};
+        use crate::db::mysql::{
+            mysql_row_string, mysql_snapshot_columns_query, mysql_snapshot_constraints_query,
+            mysql_snapshot_indexes_query, mysql_snapshot_views_query,
+        };
 
         let mut tables: BTreeMap<String, SnapshotTable> = BTreeMap::new();
         let mut views: Vec<SnapshotView> = Vec::new();
@@ -376,16 +414,19 @@ pub(crate) mod capture {
             .map_err(|e| format!("columns query failed: {e}"))?;
         for r in rows {
             let tname = mysql_row_string(&r, 0);
-            let entry = tables.entry(tname.clone()).or_insert_with(|| SnapshotTable {
-                schema: schema.to_string(),
-                name: tname,
-                ..Default::default()
-            });
+            let entry = tables
+                .entry(tname.clone())
+                .or_insert_with(|| SnapshotTable {
+                    schema: schema.to_string(),
+                    name: tname,
+                    ..Default::default()
+                });
             entry.columns.push(SnapshotColumn {
                 name: mysql_row_string(&r, 1),
                 data_type: mysql_row_string(&r, 2),
                 nullable: mysql_row_string(&r, 3) == "YES",
-                default_value: (!mysql_row_string(&r, 4).is_empty()).then(|| mysql_row_string(&r, 4)),
+                default_value: (!mysql_row_string(&r, 4).is_empty())
+                    .then(|| mysql_row_string(&r, 4)),
             });
         }
 
@@ -398,7 +439,9 @@ pub(crate) mod capture {
             let cname = mysql_row_string(&r, 1);
             let ctype = mysql_row_string(&r, 2);
             let col = mysql_row_string(&r, 3);
-            let Some(entry) = tables.get_mut(&tname) else { continue };
+            let Some(entry) = tables.get_mut(&tname) else {
+                continue;
+            };
             match ctype.as_str() {
                 "PRIMARY KEY" => {
                     if !entry.primary_key.contains(&col) {
@@ -407,7 +450,11 @@ pub(crate) mod capture {
                 }
                 "UNIQUE" => {
                     if let Some(u) = entry.uniques.iter_mut().find(|u| u.name == cname) {
-                        u.definition = if u.definition.is_empty() { col.clone() } else { format!("{}, {col}", u.definition) };
+                        u.definition = if u.definition.is_empty() {
+                            col.clone()
+                        } else {
+                            format!("{}, {col}", u.definition)
+                        };
                     } else {
                         entry.uniques.push(SnapshotConstraint {
                             name: cname,
@@ -458,7 +505,9 @@ pub(crate) mod capture {
             let iname = mysql_row_string(&r, 1);
             let unique = mysql_row_string(&r, 2) == "0";
             let col = mysql_row_string(&r, 3);
-            let Some(entry) = tables.get_mut(&tname) else { continue };
+            let Some(entry) = tables.get_mut(&tname) else {
+                continue;
+            };
             if let Some(ix) = entry.indexes.iter_mut().find(|i| i.name == iname) {
                 ix.columns.push(col);
             } else {
@@ -528,17 +577,36 @@ fn quote(family: &str, name: &str) -> String {
 
 fn qualified(family: &str, schema: &str, name: &str) -> String {
     match family {
-        "mysql" => format!("`{}`.`{}`", schema.replace('`', "``"), name.replace('`', "``")),
+        "mysql" => format!(
+            "`{}`.`{}`",
+            schema.replace('`', "``"),
+            name.replace('`', "``")
+        ),
         "sqlite" => quote(family, name),
-        _ => format!("\"{}\".\"{}\"", schema.replace('"', "\"\""), name.replace('"', "\"\"")),
+        _ => format!(
+            "\"{}\".\"{}\"",
+            schema.replace('"', "\"\""),
+            name.replace('"', "\"\"")
+        ),
     }
 }
 
 fn detail_line(label: &str, old: &str, new: &str) -> DiffDetailLine {
-    DiffDetailLine { label: label.into(), old: old.into(), new: new.into() }
+    DiffDetailLine {
+        label: label.into(),
+        old: old.into(),
+        new: new.into(),
+    }
 }
 
-fn item(ty: &str, name: &str, kind: &str, detail: Vec<DiffDetailLine>, sql: Vec<String>, destructive: bool) -> DiffItem {
+fn item(
+    ty: &str,
+    name: &str,
+    kind: &str,
+    detail: Vec<DiffDetailLine>,
+    sql: Vec<String>,
+    destructive: bool,
+) -> DiffItem {
     DiffItem {
         object_type: ty.into(),
         name: name.into(),
@@ -559,37 +627,78 @@ pub fn diff_snapshots(source: &SchemaSnapshot, target: &SchemaSnapshot) -> DiffR
     for (s_enum, t_enum) in enum_pairs(&source.enums, &target.enums) {
         match (s_enum, t_enum) {
             (Some(s), None) => items.push(item(
-                "enum", &s.name, "added", vec![],
+                "enum",
+                &s.name,
+                "added",
+                vec![],
                 vec![format!(
                     "CREATE TYPE {}.{} AS ENUM ({});",
                     quote(family, &s.schema),
                     quote(family, &s.name),
-                    s.labels.iter().map(|l| format!("'{}'", l.replace('\'', "''"))).collect::<Vec<_>>().join(", ")
+                    s.labels
+                        .iter()
+                        .map(|l| format!("'{}'", l.replace('\'', "''")))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )],
                 false,
             )),
             (None, Some(t)) => items.push(item(
-                "enum", &t.name, "removed", vec![],
-                vec![format!("DROP TYPE {}.{};", quote(family, &t.schema), quote(family, &t.name))],
+                "enum",
+                &t.name,
+                "removed",
+                vec![],
+                vec![format!(
+                    "DROP TYPE {}.{};",
+                    quote(family, &t.schema),
+                    quote(family, &t.name)
+                )],
                 true,
             )),
             (Some(s), Some(t)) => {
                 let mut added = Vec::new();
                 let mut removed_or_reordered = false;
                 for l in &s.labels {
-                    if !t.labels.contains(l) { added.push(l.clone()); }
+                    if !t.labels.contains(l) {
+                        added.push(l.clone());
+                    }
                 }
-                if t.labels.iter().any(|l| !s.labels.contains(l)) || !common_prefix(&s.labels, &t.labels) {
+                if t.labels.iter().any(|l| !s.labels.contains(l))
+                    || !common_prefix(&s.labels, &t.labels)
+                {
                     removed_or_reordered = true;
                 }
                 if !added.is_empty() {
                     if removed_or_reordered {
-                        items.push(item("enum", &s.name, "changed", vec![detail_line("labels", &t.labels.join(", "), &s.labels.join(", "))], vec![], true));
+                        items.push(item(
+                            "enum",
+                            &s.name,
+                            "changed",
+                            vec![detail_line(
+                                "labels",
+                                &t.labels.join(", "),
+                                &s.labels.join(", "),
+                            )],
+                            vec![],
+                            true,
+                        ));
                     } else {
                         items.push(item(
-                            "enum", &s.name, "changed",
+                            "enum",
+                            &s.name,
+                            "changed",
                             vec![detail_line("added labels", "", &added.join(", "))],
-                            added.iter().map(|l| format!("ALTER TYPE {}.{} ADD VALUE '{}';", quote(family, &s.schema), quote(family, &s.name), l.replace('\'', "''"))).collect(),
+                            added
+                                .iter()
+                                .map(|l| {
+                                    format!(
+                                        "ALTER TYPE {}.{} ADD VALUE '{}';",
+                                        quote(family, &s.schema),
+                                        quote(family, &s.name),
+                                        l.replace('\'', "''")
+                                    )
+                                })
+                                .collect(),
                             false,
                         ));
                     }
@@ -655,25 +764,53 @@ pub fn diff_snapshots(source: &SchemaSnapshot, target: &SchemaSnapshot) -> DiffR
     for (s_t, t_t) in pair_by(&source.tables, &target.tables, |t| t.name.clone()) {
         match (s_t, t_t) {
             (Some(s), None) => {
-                let mut defs: Vec<String> = s.columns.iter().map(|c| {
-                    let mut d = format!("{} {}", quote(family, &c.name), c.data_type);
-                    if !c.nullable { d.push_str(" NOT NULL"); }
-                    if let Some(def) = &c.default_value { d.push_str(&format!(" DEFAULT {def}")); }
-                    d
-                }).collect();
+                let mut defs: Vec<String> = s
+                    .columns
+                    .iter()
+                    .map(|c| {
+                        let mut d = format!("{} {}", quote(family, &c.name), c.data_type);
+                        if !c.nullable {
+                            d.push_str(" NOT NULL");
+                        }
+                        if let Some(def) = &c.default_value {
+                            d.push_str(&format!(" DEFAULT {def}"));
+                        }
+                        d
+                    })
+                    .collect();
                 if !s.primary_key.is_empty() {
-                    defs.push(format!("PRIMARY KEY ({})", s.primary_key.iter().map(|p| quote(family, p)).collect::<Vec<_>>().join(", ")));
+                    defs.push(format!(
+                        "PRIMARY KEY ({})",
+                        s.primary_key
+                            .iter()
+                            .map(|p| quote(family, p))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
                 }
                 items.push(item(
-                    "table", &s.name, "added", vec![],
-                    vec![format!("CREATE TABLE {} ({});", qualified(family, schema, &s.name), defs.join(", "))],
+                    "table",
+                    &s.name,
+                    "added",
+                    vec![],
+                    vec![format!(
+                        "CREATE TABLE {} ({});",
+                        qualified(family, schema, &s.name),
+                        defs.join(", ")
+                    )],
                     false,
                 ));
                 push_constraint_items(&mut items, family, schema, s, "added");
             }
             (None, Some(t)) => items.push(item(
-                "table", &t.name, "removed", vec![],
-                vec![format!("DROP TABLE {};", qualified(family, schema, &t.name))],
+                "table",
+                &t.name,
+                "removed",
+                vec![],
+                vec![format!(
+                    "DROP TABLE {};",
+                    qualified(family, schema, &t.name)
+                )],
                 true,
             )),
             (Some(s), Some(t)) => diff_table(&mut items, family, schema, s, t),
@@ -685,26 +822,68 @@ pub fn diff_snapshots(source: &SchemaSnapshot, target: &SchemaSnapshot) -> DiffR
     for (s_v, t_v) in pair_by(&source.views, &target.views, |v| v.name.clone()) {
         match (s_v, t_v) {
             (Some(s), None) => items.push(item(
-                "view", &s.name, "added", vec![],
-                vec![format!("CREATE {}VIEW {} AS {};", if s.materialized { "MATERIALIZED " } else { "" }, qualified(family, schema, &s.name), s.definition.trim_end_matches(';'))],
+                "view",
+                &s.name,
+                "added",
+                vec![],
+                vec![format!(
+                    "CREATE {}VIEW {} AS {};",
+                    if s.materialized { "MATERIALIZED " } else { "" },
+                    qualified(family, schema, &s.name),
+                    s.definition.trim_end_matches(';')
+                )],
                 false,
             )),
             (None, Some(t)) => items.push(item(
-                "view", &t.name, "removed", vec![],
-                vec![format!("DROP {}VIEW {};", if t.materialized { "MATERIALIZED " } else { "" }, qualified(family, schema, &t.name))],
+                "view",
+                &t.name,
+                "removed",
+                vec![],
+                vec![format!(
+                    "DROP {}VIEW {};",
+                    if t.materialized { "MATERIALIZED " } else { "" },
+                    qualified(family, schema, &t.name)
+                )],
                 true,
             )),
             (Some(s), Some(t)) if s.definition.trim() != t.definition.trim() => {
                 if family == "postgresql" || family == "mysql" {
                     if s.materialized || t.materialized {
-                        items.push(item("view", &s.name, "changed", vec![detail_line("definition", &t.definition, &s.definition)],
-                            vec![format!("DROP MATERIALIZED VIEW {q}; CREATE MATERIALIZED VIEW {q} AS {d};", q = qualified(family, schema, &s.name), d = s.definition.trim_end_matches(';'))], true));
+                        items.push(item(
+                            "view",
+                            &s.name,
+                            "changed",
+                            vec![detail_line("definition", &t.definition, &s.definition)],
+                            vec![format!(
+                                "DROP MATERIALIZED VIEW {q}; CREATE MATERIALIZED VIEW {q} AS {d};",
+                                q = qualified(family, schema, &s.name),
+                                d = s.definition.trim_end_matches(';')
+                            )],
+                            true,
+                        ));
                     } else {
-                        items.push(item("view", &s.name, "changed", vec![detail_line("definition", &t.definition, &s.definition)],
-                            vec![format!("CREATE OR REPLACE VIEW {} AS {};", qualified(family, schema, &s.name), s.definition.trim_end_matches(';'))], false));
+                        items.push(item(
+                            "view",
+                            &s.name,
+                            "changed",
+                            vec![detail_line("definition", &t.definition, &s.definition)],
+                            vec![format!(
+                                "CREATE OR REPLACE VIEW {} AS {};",
+                                qualified(family, schema, &s.name),
+                                s.definition.trim_end_matches(';')
+                            )],
+                            false,
+                        ));
                     }
                 } else {
-                    items.push(item("view", &s.name, "changed", vec![detail_line("definition", &t.definition, &s.definition)], vec![], true));
+                    items.push(item(
+                        "view",
+                        &s.name,
+                        "changed",
+                        vec![detail_line("definition", &t.definition, &s.definition)],
+                        vec![],
+                        true,
+                    ));
                 }
             }
             _ => {}
@@ -721,7 +900,11 @@ pub fn diff_snapshots(source: &SchemaSnapshot, target: &SchemaSnapshot) -> DiffR
 
 /// Items safe to stage: non-destructive AND carrying SQL.
 pub fn stageable_items(report: &DiffReport) -> Vec<&DiffItem> {
-    report.items.iter().filter(|i| !i.destructive && !i.sync_sql.is_empty()).collect()
+    report
+        .items
+        .iter()
+        .filter(|i| !i.destructive && !i.sync_sql.is_empty())
+        .collect()
 }
 
 fn common_prefix(source: &[String], target: &[String]) -> bool {
@@ -738,55 +921,117 @@ fn common_prefix(source: &[String], target: &[String]) -> bool {
 }
 
 /// Pair two keyed lists into (source, target) options by key.
-fn pair_by<'a, T, K: Ord + Clone + Eq>(src: &'a [T], tgt: &'a [T], key: impl Fn(&T) -> K) -> Vec<(Option<&'a T>, Option<&'a T>)> {
+fn pair_by<'a, T, K: Ord + Clone + Eq>(
+    src: &'a [T],
+    tgt: &'a [T],
+    key: impl Fn(&T) -> K,
+) -> Vec<(Option<&'a T>, Option<&'a T>)> {
     use std::collections::BTreeMap;
     let mut map: BTreeMap<K, (Option<&T>, Option<&T>)> = BTreeMap::new();
-    for s in src { map.entry(key(s)).or_insert((None, None)).0 = Some(s); }
-    for t in tgt { map.entry(key(t)).or_insert((None, None)).1 = Some(t); }
+    for s in src {
+        map.entry(key(s)).or_insert((None, None)).0 = Some(s);
+    }
+    for t in tgt {
+        map.entry(key(t)).or_insert((None, None)).1 = Some(t);
+    }
     map.into_values().collect()
 }
 
-fn enum_pairs<'a>(src: &'a [SnapshotEnum], tgt: &'a [SnapshotEnum]) -> Vec<(Option<&'a SnapshotEnum>, Option<&'a SnapshotEnum>)> {
+fn enum_pairs<'a>(
+    src: &'a [SnapshotEnum],
+    tgt: &'a [SnapshotEnum],
+) -> Vec<(Option<&'a SnapshotEnum>, Option<&'a SnapshotEnum>)> {
     pair_by(src, tgt, |e| e.name.clone())
 }
 
-fn push_constraint_items(items: &mut Vec<DiffItem>, family: &str, schema: &str, table: &SnapshotTable, kind: &str) {
+fn push_constraint_items(
+    items: &mut Vec<DiffItem>,
+    family: &str,
+    schema: &str,
+    table: &SnapshotTable,
+    kind: &str,
+) {
     let qtn = qualified(family, schema, &table.name);
     for fk in &table.foreign_keys {
         items.push(item(
-            "constraint", &format!("{}.{}", table.name, fk.name), kind, vec![],
+            "constraint",
+            &format!("{}.{}", table.name, fk.name),
+            kind,
+            vec![],
             vec![constraint_fk_sql(family, schema, &qtn, fk)],
             false,
         ));
     }
     for u in &table.uniques {
-        let cols = u.definition.split(", ").map(|c| quote(family, c.trim())).collect::<Vec<_>>().join(", ");
+        let cols = u
+            .definition
+            .split(", ")
+            .map(|c| quote(family, c.trim()))
+            .collect::<Vec<_>>()
+            .join(", ");
         items.push(item(
-            "constraint", &format!("{}.{}", table.name, u.name), kind, vec![],
-            vec![format!("ALTER TABLE {qtn} ADD CONSTRAINT {n} UNIQUE ({cols});", n = quote(family, &u.name), cols = cols)],
+            "constraint",
+            &format!("{}.{}", table.name, u.name),
+            kind,
+            vec![],
+            vec![format!(
+                "ALTER TABLE {qtn} ADD CONSTRAINT {n} UNIQUE ({cols});",
+                n = quote(family, &u.name),
+                cols = cols
+            )],
             false,
         ));
     }
     for c in &table.checks {
         items.push(item(
-            "constraint", &format!("{}.{}", table.name, c.name), kind, vec![],
-            vec![format!("ALTER TABLE {qtn} ADD CONSTRAINT {n} CHECK ({d});", n = quote(family, &c.name), d = c.definition.trim())],
+            "constraint",
+            &format!("{}.{}", table.name, c.name),
+            kind,
+            vec![],
+            vec![format!(
+                "ALTER TABLE {qtn} ADD CONSTRAINT {n} CHECK ({d});",
+                n = quote(family, &c.name),
+                d = c.definition.trim()
+            )],
             false,
         ));
     }
     for ix in &table.indexes {
-        let cols = ix.columns.iter().map(|c| quote(family, c)).collect::<Vec<_>>().join(", ");
+        let cols = ix
+            .columns
+            .iter()
+            .map(|c| quote(family, c))
+            .collect::<Vec<_>>()
+            .join(", ");
         items.push(item(
-            "index", &format!("{}.{}", table.name, ix.name), kind, vec![],
-            vec![format!("CREATE {u}INDEX {n} ON {qtn} ({cols});", u = if ix.unique { "UNIQUE " } else { "" }, n = quote(family, &ix.name), cols = cols)],
+            "index",
+            &format!("{}.{}", table.name, ix.name),
+            kind,
+            vec![],
+            vec![format!(
+                "CREATE {u}INDEX {n} ON {qtn} ({cols});",
+                u = if ix.unique { "UNIQUE " } else { "" },
+                n = quote(family, &ix.name),
+                cols = cols
+            )],
             false,
         ));
     }
 }
 
 fn constraint_fk_sql(family: &str, _schema: &str, qtn: &str, fk: &SnapshotFk) -> String {
-    let cols = fk.columns.iter().map(|c| quote(family, c)).collect::<Vec<_>>().join(", ");
-    let ref_cols = fk.ref_columns.iter().map(|c| quote(family, c)).collect::<Vec<_>>().join(", ");
+    let cols = fk
+        .columns
+        .iter()
+        .map(|c| quote(family, c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ref_cols = fk
+        .ref_columns
+        .iter()
+        .map(|c| quote(family, c))
+        .collect::<Vec<_>>()
+        .join(", ");
     let ref_qualified = match family {
         "mysql" => format!("`{}`", fk.ref_table.replace('`', "``")),
         "sqlite" => quote(family, &fk.ref_table),
@@ -799,69 +1044,168 @@ fn constraint_fk_sql(family: &str, _schema: &str, qtn: &str, fk: &SnapshotFk) ->
     )
 }
 
-fn diff_table(items: &mut Vec<DiffItem>, family: &str, schema: &str, s: &SnapshotTable, t: &SnapshotTable) {
+fn diff_table(
+    items: &mut Vec<DiffItem>,
+    family: &str,
+    schema: &str,
+    s: &SnapshotTable,
+    t: &SnapshotTable,
+) {
     let qtn = qualified(family, schema, &s.name);
 
     for (s_c, t_c) in pair_by(&s.columns, &t.columns, |c| c.name.clone()) {
         match (s_c, t_c) {
             (Some(c), None) => {
-                let mut sql = format!("ALTER TABLE {qtn} ADD COLUMN {n} {ty}", n = quote(family, &c.name), ty = c.data_type);
+                let mut sql = format!(
+                    "ALTER TABLE {qtn} ADD COLUMN {n} {ty}",
+                    n = quote(family, &c.name),
+                    ty = c.data_type
+                );
                 if !c.nullable {
                     if family == "sqlite" && c.default_value.is_none() {
-                        items.push(item("column", &format!("{}.{}", s.name, c.name), "added",
-                            vec![detail_line("nullable", "false", "true (SQLite cannot ADD COLUMN NOT NULL without DEFAULT)")],
-                            vec![format!("{sql};")], false));
+                        items.push(item(
+                            "column",
+                            &format!("{}.{}", s.name, c.name),
+                            "added",
+                            vec![detail_line(
+                                "nullable",
+                                "false",
+                                "true (SQLite cannot ADD COLUMN NOT NULL without DEFAULT)",
+                            )],
+                            vec![format!("{sql};")],
+                            false,
+                        ));
                         continue;
                     }
                     sql.push_str(" NOT NULL");
                 }
-                if let Some(d) = &c.default_value { sql.push_str(&format!(" DEFAULT {d}")); }
-                items.push(item("column", &format!("{}.{}", s.name, c.name), "added", vec![], vec![format!("{sql};")], false));
+                if let Some(d) = &c.default_value {
+                    sql.push_str(&format!(" DEFAULT {d}"));
+                }
+                items.push(item(
+                    "column",
+                    &format!("{}.{}", s.name, c.name),
+                    "added",
+                    vec![],
+                    vec![format!("{sql};")],
+                    false,
+                ));
             }
             (None, Some(c)) => items.push(item(
-                "column", &format!("{}.{}", s.name, c.name), "removed", vec![],
-                vec![format!("ALTER TABLE {qtn} DROP COLUMN {n};", n = quote(family, &c.name))],
+                "column",
+                &format!("{}.{}", s.name, c.name),
+                "removed",
+                vec![],
+                vec![format!(
+                    "ALTER TABLE {qtn} DROP COLUMN {n};",
+                    n = quote(family, &c.name)
+                )],
                 true,
             )),
             (Some(sc), Some(tc)) => {
                 if sc.data_type != tc.data_type {
                     let sql = match family {
-                        "postgresql" => format!("ALTER TABLE {qtn} ALTER COLUMN {n} TYPE {ty} USING {n}::{ty};", n = quote(family, &sc.name), ty = sc.data_type),
-                        "mysql" => format!("ALTER TABLE {qtn} MODIFY COLUMN {n} {ty}{nn};", n = quote(family, &sc.name), ty = sc.data_type, nn = if sc.nullable { String::new() } else { " NOT NULL".into() }),
+                        "postgresql" => format!(
+                            "ALTER TABLE {qtn} ALTER COLUMN {n} TYPE {ty} USING {n}::{ty};",
+                            n = quote(family, &sc.name),
+                            ty = sc.data_type
+                        ),
+                        "mysql" => format!(
+                            "ALTER TABLE {qtn} MODIFY COLUMN {n} {ty}{nn};",
+                            n = quote(family, &sc.name),
+                            ty = sc.data_type,
+                            nn = if sc.nullable {
+                                String::new()
+                            } else {
+                                " NOT NULL".into()
+                            }
+                        ),
                         _ => String::new(),
                     };
-                    items.push(item("column", &format!("{}.{}", s.name, sc.name), "changed",
+                    items.push(item(
+                        "column",
+                        &format!("{}.{}", s.name, sc.name),
+                        "changed",
                         vec![detail_line("type", &tc.data_type, &sc.data_type)],
-                        if sql.is_empty() { vec![] } else { vec![sql] }, true));
+                        if sql.is_empty() { vec![] } else { vec![sql] },
+                        true,
+                    ));
                 }
                 if sc.nullable != tc.nullable {
                     let sql = match family {
-                        "postgresql" => format!("ALTER TABLE {qtn} ALTER COLUMN {n} {op};", n = quote(family, &sc.name), op = if sc.nullable { "DROP NOT NULL" } else { "SET NOT NULL" }),
-                        "mysql" => format!("ALTER TABLE {qtn} MODIFY COLUMN {n} {ty}{nn};", n = quote(family, &sc.name), ty = sc.data_type, nn = if sc.nullable { String::new() } else { " NOT NULL".into() }),
+                        "postgresql" => format!(
+                            "ALTER TABLE {qtn} ALTER COLUMN {n} {op};",
+                            n = quote(family, &sc.name),
+                            op = if sc.nullable {
+                                "DROP NOT NULL"
+                            } else {
+                                "SET NOT NULL"
+                            }
+                        ),
+                        "mysql" => format!(
+                            "ALTER TABLE {qtn} MODIFY COLUMN {n} {ty}{nn};",
+                            n = quote(family, &sc.name),
+                            ty = sc.data_type,
+                            nn = if sc.nullable {
+                                String::new()
+                            } else {
+                                " NOT NULL".into()
+                            }
+                        ),
                         _ => String::new(),
                     };
                     if !sql.is_empty() {
-                        items.push(item("column", &format!("{}.{}", s.name, sc.name), "changed",
-                            vec![detail_line("nullable", &tc.nullable.to_string(), &sc.nullable.to_string())],
-                            vec![sql], false));
+                        items.push(item(
+                            "column",
+                            &format!("{}.{}", s.name, sc.name),
+                            "changed",
+                            vec![detail_line(
+                                "nullable",
+                                &tc.nullable.to_string(),
+                                &sc.nullable.to_string(),
+                            )],
+                            vec![sql],
+                            false,
+                        ));
                     }
                 }
                 if sc.default_value != tc.default_value {
                     let sql = match family {
                         "postgresql" => match &sc.default_value {
-                            Some(d) => format!("ALTER TABLE {qtn} ALTER COLUMN {n} SET DEFAULT {d};", n = quote(family, &sc.name)),
-                            None => format!("ALTER TABLE {qtn} ALTER COLUMN {n} DROP DEFAULT;", n = quote(family, &sc.name)),
+                            Some(d) => format!(
+                                "ALTER TABLE {qtn} ALTER COLUMN {n} SET DEFAULT {d};",
+                                n = quote(family, &sc.name)
+                            ),
+                            None => format!(
+                                "ALTER TABLE {qtn} ALTER COLUMN {n} DROP DEFAULT;",
+                                n = quote(family, &sc.name)
+                            ),
                         },
                         "mysql" => match &sc.default_value {
-                            Some(d) => format!("ALTER TABLE {qtn} ALTER COLUMN {n} SET DEFAULT {d};", n = quote(family, &sc.name)),
-                            None => format!("ALTER TABLE {qtn} ALTER COLUMN {n} DROP DEFAULT;", n = quote(family, &sc.name)),
+                            Some(d) => format!(
+                                "ALTER TABLE {qtn} ALTER COLUMN {n} SET DEFAULT {d};",
+                                n = quote(family, &sc.name)
+                            ),
+                            None => format!(
+                                "ALTER TABLE {qtn} ALTER COLUMN {n} DROP DEFAULT;",
+                                n = quote(family, &sc.name)
+                            ),
                         },
                         _ => String::new(),
                     };
                     if !sql.is_empty() {
-                        items.push(item("column", &format!("{}.{}", s.name, sc.name), "changed",
-                            vec![detail_line("default", &tc.default_value.as_deref().unwrap_or_default(), &sc.default_value.clone().unwrap_or_default())],
-                            vec![sql], false));
+                        items.push(item(
+                            "column",
+                            &format!("{}.{}", s.name, sc.name),
+                            "changed",
+                            vec![detail_line(
+                                "default",
+                                &tc.default_value.as_deref().unwrap_or_default(),
+                                &sc.default_value.clone().unwrap_or_default(),
+                            )],
+                            vec![sql],
+                            false,
+                        ));
                     }
                 }
             }
@@ -870,9 +1214,18 @@ fn diff_table(items: &mut Vec<DiffItem>, family: &str, schema: &str, s: &Snapsho
     }
 
     if s.primary_key != t.primary_key {
-        items.push(item("table", &s.name, "changed",
-            vec![detail_line("primary key", &t.primary_key.join(", "), &s.primary_key.join(", "))],
-            vec![], true));
+        items.push(item(
+            "table",
+            &s.name,
+            "changed",
+            vec![detail_line(
+                "primary key",
+                &t.primary_key.join(", "),
+                &s.primary_key.join(", "),
+            )],
+            vec![],
+            true,
+        ));
     }
 
     for (s_c, t_c) in pair_by(&s.uniques, &t.uniques, |c| c.name.clone()) {
@@ -891,13 +1244,25 @@ fn diff_table(items: &mut Vec<DiffItem>, family: &str, schema: &str, s: &Snapsho
                         vec![detail_line("note", "", "SQLite cannot add foreign keys to existing tables — table rebuild required")],
                         vec![], false));
                 } else {
-                    items.push(item("constraint", &format!("{}.{}", s.name, f.name), "added", vec![],
-                        vec![constraint_fk_sql(family, schema, &qtn2, f)], false));
+                    items.push(item(
+                        "constraint",
+                        &format!("{}.{}", s.name, f.name),
+                        "added",
+                        vec![],
+                        vec![constraint_fk_sql(family, schema, &qtn2, f)],
+                        false,
+                    ));
                 }
             }
             (None, Some(f)) => items.push(item(
-                "constraint", &format!("{}.{}", s.name, f.name), "removed", vec![],
-                vec![format!("ALTER TABLE {qtn2} DROP CONSTRAINT {n};", n = quote(family, &f.name))],
+                "constraint",
+                &format!("{}.{}", s.name, f.name),
+                "removed",
+                vec![],
+                vec![format!(
+                    "ALTER TABLE {qtn2} DROP CONSTRAINT {n};",
+                    n = quote(family, &f.name)
+                )],
                 true,
             )),
             (Some(sf), Some(tf)) if sf.definition_differs(tf) => {
@@ -918,47 +1283,120 @@ fn diff_table(items: &mut Vec<DiffItem>, family: &str, schema: &str, s: &Snapsho
     for (s_i, t_i) in pair_by(&s.indexes, &t.indexes, |i| i.name.clone()) {
         match (s_i, t_i) {
             (Some(ix), None) => items.push(item(
-                "index", &format!("{}.{}", s.name, ix.name), "added", vec![],
-                vec![format!("CREATE {u}INDEX {n} ON {qtn} ({cols});", u = if ix.unique { "UNIQUE " } else { "" }, n = qualified(family, schema, &ix.name), cols = ix.columns.iter().map(|c| quote(family, c)).collect::<Vec<_>>().join(", "))],
+                "index",
+                &format!("{}.{}", s.name, ix.name),
+                "added",
+                vec![],
+                vec![format!(
+                    "CREATE {u}INDEX {n} ON {qtn} ({cols});",
+                    u = if ix.unique { "UNIQUE " } else { "" },
+                    n = qualified(family, schema, &ix.name),
+                    cols = ix
+                        .columns
+                        .iter()
+                        .map(|c| quote(family, c))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )],
                 false,
             )),
             (None, Some(ix)) => items.push(item(
-                "index", &format!("{}.{}", s.name, ix.name), "removed", vec![],
+                "index",
+                &format!("{}.{}", s.name, ix.name),
+                "removed",
+                vec![],
                 vec![format!("DROP INDEX {n};", n = quote(family, &ix.name))],
                 true,
             )),
             (Some(si), Some(ti)) if si.columns != ti.columns || si.unique != ti.unique => {
-                items.push(item("index", &format!("{}.{}", s.name, si.name), "changed",
-                    vec![detail_line("columns", &ti.columns.join(", "), &si.columns.join(", "))],
-                    vec![format!("DROP INDEX {n}; CREATE {u}INDEX {n} ON {qtn} ({cols});", n = qualified(family, schema, &si.name), u = if si.unique { "UNIQUE " } else { "" }, cols = si.columns.iter().map(|c| quote(family, c)).collect::<Vec<_>>().join(", "))],
-                    true));
+                items.push(item(
+                    "index",
+                    &format!("{}.{}", s.name, si.name),
+                    "changed",
+                    vec![detail_line(
+                        "columns",
+                        &ti.columns.join(", "),
+                        &si.columns.join(", "),
+                    )],
+                    vec![format!(
+                        "DROP INDEX {n}; CREATE {u}INDEX {n} ON {qtn} ({cols});",
+                        n = qualified(family, schema, &si.name),
+                        u = if si.unique { "UNIQUE " } else { "" },
+                        cols = si
+                            .columns
+                            .iter()
+                            .map(|c| quote(family, c))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )],
+                    true,
+                ));
             }
             _ => {}
         }
     }
 }
 
-fn push_constraint_delta(items: &mut Vec<DiffItem>, family: &str, table: &SnapshotTable, kind: &str,
-    s_c: Option<&SnapshotConstraint>, t_c: Option<&SnapshotConstraint>) {
+fn push_constraint_delta(
+    items: &mut Vec<DiffItem>,
+    family: &str,
+    table: &SnapshotTable,
+    kind: &str,
+    s_c: Option<&SnapshotConstraint>,
+    t_c: Option<&SnapshotConstraint>,
+) {
     let qtn = qualified(family, &table.schema, &table.name);
     match (s_c, t_c) {
         (Some(c), None) if kind == "UNIQUE" => items.push(item(
-            "constraint", &format!("{}.{}", table.name, c.name), "added", vec![],
-            vec![format!("ALTER TABLE {qtn} ADD CONSTRAINT {n} UNIQUE ({cols});", n = quote(family, &c.name), cols = c.definition.split(", ").map(|x| quote(family, x.trim())).collect::<Vec<_>>().join(", "))],
+            "constraint",
+            &format!("{}.{}", table.name, c.name),
+            "added",
+            vec![],
+            vec![format!(
+                "ALTER TABLE {qtn} ADD CONSTRAINT {n} UNIQUE ({cols});",
+                n = quote(family, &c.name),
+                cols = c
+                    .definition
+                    .split(", ")
+                    .map(|x| quote(family, x.trim()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )],
             false,
         )),
         (Some(c), None) if kind == "CHECK" => items.push(item(
-            "constraint", &format!("{}.{}", table.name, c.name), "added", vec![],
-            vec![format!("ALTER TABLE {qtn} ADD CONSTRAINT {n} CHECK ({d});", n = quote(family, &c.name), d = c.definition.trim())],
+            "constraint",
+            &format!("{}.{}", table.name, c.name),
+            "added",
+            vec![],
+            vec![format!(
+                "ALTER TABLE {qtn} ADD CONSTRAINT {n} CHECK ({d});",
+                n = quote(family, &c.name),
+                d = c.definition.trim()
+            )],
             false,
         )),
         (Some(c), None) if family == "sqlite" => items.push(item(
-            "constraint", &format!("{}.{}", table.name, c.name), "added",
-            vec![detail_line("note", "", "SQLite cannot add constraints to existing tables — table rebuild required")],
-            vec![], false)),
+            "constraint",
+            &format!("{}.{}", table.name, c.name),
+            "added",
+            vec![detail_line(
+                "note",
+                "",
+                "SQLite cannot add constraints to existing tables — table rebuild required",
+            )],
+            vec![],
+            false,
+        )),
         (None, Some(c)) => items.push(item(
-            "constraint", &format!("{}.{}", table.name, c.name), "removed", vec![],
-            vec![format!("ALTER TABLE {qtn} DROP CONSTRAINT {n};", n = quote(family, &c.name))],
+            "constraint",
+            &format!("{}.{}", table.name, c.name),
+            "removed",
+            vec![],
+            vec![format!(
+                "ALTER TABLE {qtn} DROP CONSTRAINT {n};",
+                n = quote(family, &c.name)
+            )],
             true,
         )),
         (Some(sc), Some(tc)) if sc.definition.trim() != tc.definition.trim() => {
@@ -969,9 +1407,14 @@ fn push_constraint_delta(items: &mut Vec<DiffItem>, family: &str, table: &Snapsh
                 format!("ALTER TABLE {qtn} DROP CONSTRAINT {n}; ALTER TABLE {qtn} ADD CONSTRAINT {n} CHECK ({d});",
                     n = quote(family, &sc.name), d = sc.definition.trim())
             };
-            items.push(item("constraint", &format!("{}.{}", table.name, sc.name), "changed",
+            items.push(item(
+                "constraint",
+                &format!("{}.{}", table.name, sc.name),
+                "changed",
                 vec![detail_line("definition", &tc.definition, &sc.definition)],
-                vec![sql], true));
+                vec![sql],
+                true,
+            ));
         }
         _ => {}
     }
