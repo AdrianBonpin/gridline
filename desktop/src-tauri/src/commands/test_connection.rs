@@ -298,42 +298,51 @@ async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnecti
         .connect_timeout(std::time::Duration::from_secs(10));
 
     let start = std::time::Instant::now();
-    let result = match tls {
-        None => crate::commands::db_viewer::connect_pg_with(&pgconfig, tokio_postgres::NoTls).await,
-        Some(cc) => {
-            let connector = tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
-            crate::commands::db_viewer::connect_pg_with(&pgconfig, connector).await
-        }
-    };
-    let latency_ms = Some(start.elapsed().as_millis() as u64);
+    // connect_timeout only bounds TCP establishment, not TLS/authentication
+    // or the version query. Bound the whole probe while retaining its tunnel.
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let (client, handle) = match tls {
+            None => {
+                crate::commands::db_viewer::connect_pg_with(&pgconfig, tokio_postgres::NoTls).await
+            }
+            Some(cc) => {
+                let connector = tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
+                crate::commands::db_viewer::connect_pg_with(&pgconfig, connector).await
+            }
+        }?;
+        // Latency stays "time to a usable connection": the version query is a
+        // diagnostic extra, so it is not folded into the number.
+        let latency_ms = start.elapsed().as_millis() as u64;
+        let server_version = client
+            .query_one("SELECT current_setting('server_version')", &[])
+            .await
+            .ok()
+            .and_then(|row| row.try_get::<_, String>(0).ok());
+        handle.abort();
+        Ok::<_, tokio_postgres::Error>((server_version, latency_ms))
+    })
+    .await;
+    close_probe_tunnel(ssh, target.tunnel_key.as_deref());
 
     match result {
-        Ok((client, _handle)) => {
-            close_probe_tunnel(ssh, target.tunnel_key.as_deref());
-            // Best-effort server version from the live client; None if the
-            // query fails. The driver task is already spawned inside
-            // `connect_pg_with`, so the client is fully usable here.
-            let server_version = client
-                .query_one("SELECT current_setting('server_version')", &[])
-                .await
-                .ok()
-                .and_then(|row| row.try_get::<_, String>(0).ok());
-            TestConnectionResult {
-                ok: true,
-                error: None,
-                server_version,
-                latency_ms,
-            }
-        }
-        Err(e) => {
-            close_probe_tunnel(ssh, target.tunnel_key.as_deref());
-            TestConnectionResult {
-                ok: false,
-                error: Some(e.to_string()),
-                server_version: None,
-                latency_ms: None,
-            }
-        }
+        Ok(Ok((server_version, latency_ms))) => TestConnectionResult {
+            ok: true,
+            error: None,
+            server_version,
+            latency_ms: Some(latency_ms),
+        },
+        Ok(Err(e)) => TestConnectionResult {
+            ok: false,
+            error: Some(e.to_string()),
+            server_version: None,
+            latency_ms: None,
+        },
+        Err(_) => TestConnectionResult {
+            ok: false,
+            error: Some("connection timed out after 10 seconds".into()),
+            server_version: None,
+            latency_ms: None,
+        },
     }
 }
 
