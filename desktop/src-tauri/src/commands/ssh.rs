@@ -223,6 +223,7 @@ impl TunnelBackend for Ssh2Backend {
         std::thread::spawn(move || {
             let mut pending = None;
             let mut clients = Vec::new();
+            let mut idle_rounds: u32 = 0;
             while matches!(
                 closer_rx.try_recv(),
                 Err(std::sync::mpsc::TryRecvError::Empty)
@@ -261,8 +262,19 @@ impl TunnelBackend for Ssh2Backend {
                     Ok(CopyState::Pending) => true,
                     Ok(CopyState::Eof) | Err(_) => false,
                 });
-                if !progressed {
-                    std::thread::sleep(Duration::from_millis(5));
+                if progressed {
+                    idle_rounds = 0;
+                } else {
+                    // Poll tightly while data is flowing and back off once the
+                    // tunnel idles (an open pool connection is idle most of
+                    // its life): a fixed 5 ms poll wakes the CPU ~200x/s per
+                    // tunnel for nothing, and on Windows it rounds up to the
+                    // ~15.6 ms timer granularity anyway. The first round after
+                    // activity is still 1 ms, so a request that arrives while
+                    // the tunnel is warm only pays ~1 ms.
+                    idle_rounds = idle_rounds.saturating_add(1);
+                    let delay_ms = if idle_rounds <= 250 { 1 } else { 20 };
+                    std::thread::sleep(Duration::from_millis(delay_ms));
                 }
             }
             // Dropping the worker's listener, clients and session closes all

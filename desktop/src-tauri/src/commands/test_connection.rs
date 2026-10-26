@@ -310,24 +310,26 @@ async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnecti
                 crate::commands::db_viewer::connect_pg_with(&pgconfig, connector).await
             }
         }?;
+        // Latency stays "time to a usable connection": the version query is a
+        // diagnostic extra, so it is not folded into the number.
+        let latency_ms = start.elapsed().as_millis() as u64;
         let server_version = client
             .query_one("SELECT current_setting('server_version')", &[])
             .await
             .ok()
             .and_then(|row| row.try_get::<_, String>(0).ok());
         handle.abort();
-        Ok::<_, tokio_postgres::Error>(server_version)
+        Ok::<_, tokio_postgres::Error>((server_version, latency_ms))
     })
     .await;
-    let latency_ms = Some(start.elapsed().as_millis() as u64);
     close_probe_tunnel(ssh, target.tunnel_key.as_deref());
 
     match result {
-        Ok(Ok(server_version)) => TestConnectionResult {
+        Ok(Ok((server_version, latency_ms))) => TestConnectionResult {
             ok: true,
             error: None,
             server_version,
-            latency_ms,
+            latency_ms: Some(latency_ms),
         },
         Ok(Err(e)) => TestConnectionResult {
             ok: false,
