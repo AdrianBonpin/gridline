@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { ObjectSearchPalette } from "./ObjectSearchPalette";
 import * as cmd from "../../lib/commands";
 import type { ObjectSearchHit } from "../../lib/types";
@@ -219,6 +219,12 @@ describe("ObjectSearchPalette", () => {
       target: { value: "s" },
     });
     await waitFor(() => screen.getByText("second"));
+    // The keydown listener is re-registered on every render (`hits` and
+    // `highlightedIndex` are dependencies). `waitFor` can resolve on the DOM
+    // mutation with the previous, empty-hit listener still installed, which
+    // swallows the keydown — this flaked once on a loaded CI runner. Flush the
+    // passive effects for the commit that rendered the hits first.
+    await act(async () => {});
 
     fireEvent.keyDown(window, { key: "ArrowDown" });
     fireEvent.keyDown(window, { key: "Enter" });
@@ -239,8 +245,15 @@ describe("ObjectSearchPalette", () => {
       target: { value: "s" },
     });
     await waitFor(() => screen.getByText("last"));
+    // Same effect-flush requirement as the ArrowDown case above.
+    await act(async () => {});
 
     fireEvent.keyDown(window, { key: "ArrowUp" });
+    // Pin the wrap itself: the row is highlighted through `highlightedIndex`,
+    // so this fails loudly if the keydown was swallowed instead of silently
+    // selecting the wrong hit.
+    expect(screen.getByText("last").closest("button")).toHaveClass("bg-surface-raised");
+
     fireEvent.keyDown(window, { key: "Enter" });
 
     expect(mockSetSelectedObjectType).toHaveBeenCalledWith("sequences");

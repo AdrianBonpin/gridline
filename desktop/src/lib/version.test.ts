@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import pkg from "../../package.json";
 
 describe("version", () => {
-  it("declares v0.8.3 across the app shell", () => {
-    expect(pkg.version).toBe("0.8.3");
+  it("declares v0.8.4 across the app shell", () => {
+    expect(pkg.version).toBe("0.8.4");
   });
 });
