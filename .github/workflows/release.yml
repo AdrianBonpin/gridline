@@ -477,8 +477,24 @@ jobs:
               --key-id "$APPLE_API_KEY" \
               --issuer "$APPLE_API_ISSUER" \
               --wait
-            xcrun stapler staple "$dmg"
-            xcrun stapler validate "$dmg"
+            # Apple's ticket delivery (api.apple-cloudkit.com) intermittently
+            # answers "The network connection was lost" (exit 68) and the
+            # staple fails even though notarization was ACCEPTED — that cost
+            # v0.8.4's Intel job a full rebuild. Stapling is idempotent, so
+            # retry a bounded number of times before failing the job.
+            stapled=0
+            for attempt in 1 2 3 4 5; do
+              if xcrun stapler staple "$dmg" && xcrun stapler validate "$dmg"; then
+                stapled=1
+                break
+              fi
+              echo "stapler attempt ${attempt} failed; retrying in 20s" >&2
+              sleep 20
+            done
+            if [ "$stapled" -ne 1 ]; then
+              echo "could not staple ${name} after 5 attempts" >&2
+              exit 1
+            fi
             # Replace the copy tauri-action uploaded, which carries no DMG ticket.
             old=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets" \
               --jq ".[] | select(.name == \"${name}\") | .id" | head -1)
