@@ -7,7 +7,7 @@ import landing from "../../../www/public/landing.js?raw";
 import roadmap from "../../../ROADMAP.md?raw";
 import security from "../../../SECURITY.md?raw";
 
-describe("v0.8.3 docs coverage", () => {
+describe("v0.8.4 docs coverage", () => {
   it("AGENTS.md marks inline cell editing complete", () => {
     expect(agents).toContain("Inline cell editing");
     expect(agents).toMatch(/Inline cell editing \| ✅/);
@@ -27,8 +27,8 @@ describe("v0.8.3 docs coverage", () => {
     expect(agents).toMatch(/Connection status indicator on cards \| ✅/);
     expect(agents).toMatch(/Move-to-folder bulk action \| ✅/);
   });
-  it("README declares v0.8.3", () => {
-    expect(readme).toContain("0.8.3");
+  it("README declares v0.8.4", () => {
+    expect(readme).toContain("0.8.4");
   });
   it("AGENTS.md marks schema CRUD complete", () => {
     expect(agents).toMatch(/Schema CRUD \| ✅/);
@@ -67,13 +67,13 @@ describe("v0.8.3 docs coverage", () => {
     expect(agents).toMatch(/Cancel long-running queries \| ✅/);
     expect(agents).toMatch(/Settings export\/import \| ✅/);
   });
-  it("README links to v0.8.3 assets in both download tables", () => {
-    expect(readme).toContain("releases/download/v0.8.3/");
-    expect(readme).toContain("Gridline_0.8.3_aarch64.dmg");
-    expect(readme).toContain("Gridline-0.8.3-1.x86_64.rpm");
+  it("README links to v0.8.4 assets in both download tables", () => {
+    expect(readme).toContain("releases/download/v0.8.4/");
+    expect(readme).toContain("Gridline_0.8.4_aarch64.dmg");
+    expect(readme).toContain("Gridline-0.8.4-1.x86_64.rpm");
   });
-  it("landing.js platform download links point to v0.8.3", () => {
-    expect(landing).toContain('const version = "0.8.3"');
+  it("landing.js platform download links point to v0.8.4", () => {
+    expect(landing).toContain('const version = "0.8.4"');
   });
   it("AGENTS.md documents the native MySQL restore and the .sql association", () => {
     // These claims would actively mislead the next contributor if they were

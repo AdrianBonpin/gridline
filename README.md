@@ -30,16 +30,16 @@
 
 ## Download
 
-Grab the installer for your OS from the [latest release](https://github.com/AdrianBonpin/gridline/releases/latest) — the links below point at the current release (**v0.8.3**):
+Grab the installer for your OS from the [latest release](https://github.com/AdrianBonpin/gridline/releases/latest) — the links below point at the current release (**v0.8.4**):
 
 | OS                           | Architecture                 | Download                                                                                                                             |
 | :--------------------------- | :--------------------------- | :----------------------------------------------------------------------------------------------------------------------------------- |
-| **macOS**                    | Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.8.3_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_aarch64.dmg)         |
-| **macOS**                    | Intel                        | [Gridline_0.8.3_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_x64.dmg)                 |
-| **Windows**                  | x64                          | [Gridline_0.8.3_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_x64-setup.exe)     |
-| **Debian / Ubuntu**          | amd64                        | [Gridline_0.8.3_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_amd64.deb)             |
-| **Fedora / RHEL / openSUSE** | x86_64                       | [Gridline-0.8.3-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline-0.8.3-1.x86_64.rpm)       |
-| **Other Linux**              | amd64                        | [Gridline_0.8.3_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_amd64.AppImage)   |
+| **macOS**                    | Apple Silicon (M1/M2/M3/M4…) | [Gridline_0.8.4_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline_0.8.4_aarch64.dmg)         |
+| **macOS**                    | Intel                        | [Gridline_0.8.4_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline_0.8.4_x64.dmg)                 |
+| **Windows**                  | x64                          | [Gridline_0.8.4_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline_0.8.4_x64-setup.exe)     |
+| **Debian / Ubuntu**          | amd64                        | [Gridline_0.8.4_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline_0.8.4_amd64.deb)             |
+| **Fedora / RHEL / openSUSE** | x86_64                       | [Gridline-0.8.4-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline-0.8.4-1.x86_64.rpm)       |
+| **Other Linux**              | amd64                        | [Gridline_0.8.4_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline_0.8.4_amd64.AppImage)   |
 
 **macOS via Homebrew** (recommended for Mac users):
 
@@ -57,7 +57,7 @@ The cask installs the app directly. The DMGs are Developer-ID signed and notariz
 > **macOS first launch:** Gridline is Developer-ID signed and notarized, so macOS opens it without a Gatekeeper prompt. Not sure if your Mac is Intel or Apple Silicon? See [Which file should I download?](#which-file-should-i-download) below.
 
 <!--
-  MAINTENANCE: These links are STATIC (versioned) — they point at the v0.8.3
+  MAINTENANCE: These links are STATIC (versioned) — they point at the v0.8.4
   release assets, not at a moving "latest" target. On every new release,
   update BOTH tables here (Download + Which file should I download?) to the
   new version's asset names, which are tauri-action's default naming:
@@ -101,6 +101,8 @@ Gridline is built for developers and small teams who manage multiple database en
 
 <details>
 <summary>View the full changelog</summary>
+
+- **v0.8.4** — **SSH tunnels no longer hang.** A tunnelled connection could stall the instant SSH authentication finished: *Test connection* spun forever, and any second connection opened behind the tunnel — the rest of the pool, the version probe — queued on a listener that only ever accepted one client. The forwarder was driving a single SSH session from two threads, and that session's lock meant a waiting read blocked the write carrying the client's very first packet, so PostgreSQL and Gridline each waited for the other. One nonblocking worker now drives the whole session: it serves every client behind the tunnel at once, keeps partially written bytes buffered instead of dropping them, preserves half-closes, and closes clients that are stalled mid-authentication or mid-query when the tunnel goes away. **Everything over SSH is time-bounded** — 10 seconds for connect, handshake and authentication, plus a 10-second ceiling on the PostgreSQL probe that now covers TLS, authentication *and* the version query, so a hostile or wedged server reports *"connection timed out after 10 seconds"* instead of spinning. An idle tunnel also stopped waking the CPU ~200 times a second to do nothing. Reported and fixed by [@Amikas](https://github.com/Amikas) in [#57](https://github.com/AdrianBonpin/gridline/pull/57).
 
 - **v0.8.3** — **Your installed database tools are found again** ([issue #44](https://github.com/AdrianBonpin/gridline/issues/44)): Gridline reported *"mysqldump not found"* even when the tools were installed, for three separate reasons — the bundled binaries were looked up one directory too high (`<resource_dir>/mysql_tools` instead of the `<resource_dir>/resources/mysql_tools` the installer actually bundles, which silently disabled the bundled fallback for PostgreSQL too), a macOS GUI app inherits launchd's minimal `PATH` rather than your shell's, and only `mariadb-dump`/`mariadb` were ever probed — never `mysqldump`/`mysql`, which is what `brew install mysql-client` installs. Both engines now resolve through one ordered chain (trusted absolute directories → your `PATH` → bundled), a candidate counts only if it is a real file that runs `--version`, and an explicit **Check again** re-detects on demand. **The bundled MySQL client now actually runs**: backup and sync were passing MySQL-only options (`--databases=<db>`, `--skip-column-statistics`, `--ssl-mode=…`) to the bundled MariaDB binary, so the job died at option parsing before connecting; options are now tailored per client. **Backup, Restore, DB Sync and Schema Diff say which tool they use and where it came from** (`Using system mysqldump`, `Using bundled mariadb-dump`), explain a bundled copy that is present but cannot run, offer one-click copy of the install command, warn non-blockingly when the dump client's major version is older than the server's, and share the Objects view's form layout. **The app icon is back to its previous rendering** — the macOS "legacy plate" strip from #40 was reverted at the maintainer's request.
 
@@ -350,16 +352,16 @@ Gridline's macOS builds are **Developer-ID signed and notarized by GitHub Action
 
 #### Which file should I download?
 
-Each release contains **one file per platform** — you only need the one that matches your computer. The links below point at the current release (**v0.8.3**):
+Each release contains **one file per platform** — you only need the one that matches your computer. The links below point at the current release (**v0.8.4**):
 
 | Your system                            | Download this                                                                                                                                | Notes                                                            |
 | :------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------- |
-| macOS **Apple Silicon** (M1/M2/M3/M4…) | [Gridline_0.8.3_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_aarch64.dmg)                 | `aarch64` = Apple's own chip                                     |
-| macOS **Intel**                        | [Gridline_0.8.3_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_x64.dmg)                         | `x64` = Intel/AMD                                                |
-| **Windows** (most PCs)                 | [Gridline_0.8.3_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_x64-setup.exe)             | The `.msi` is an alternate installer (for enterprises/IT admins) |
-| **Debian / Ubuntu**                    | [Gridline_0.8.3_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_amd64.deb)                     | Install: `sudo apt install ./Gridline_0.8.3_amd64.deb`           |
-| **Fedora / RHEL / openSUSE**           | [Gridline-0.8.3-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline-0.8.3-1.x86_64.rpm)               | Install: `sudo dnf install Gridline-0.8.3-1.x86_64.rpm`          |
-| **Any other Linux**                    | [Gridline_0.8.3_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.3/Gridline_0.8.3_amd64.AppImage)           | Works on every distro: `chmod +x` the file, then double-click it |
+| macOS **Apple Silicon** (M1/M2/M3/M4…) | [Gridline_0.8.4_aarch64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline_0.8.4_aarch64.dmg)                 | `aarch64` = Apple's own chip                                     |
+| macOS **Intel**                        | [Gridline_0.8.4_x64.dmg](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline_0.8.4_x64.dmg)                         | `x64` = Intel/AMD                                                |
+| **Windows** (most PCs)                 | [Gridline_0.8.4_x64-setup.exe](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline_0.8.4_x64-setup.exe)             | The `.msi` is an alternate installer (for enterprises/IT admins) |
+| **Debian / Ubuntu**                    | [Gridline_0.8.4_amd64.deb](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline_0.8.4_amd64.deb)                     | Install: `sudo apt install ./Gridline_0.8.4_amd64.deb`           |
+| **Fedora / RHEL / openSUSE**           | [Gridline-0.8.4-1.x86_64.rpm](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline-0.8.4-1.x86_64.rpm)               | Install: `sudo dnf install Gridline-0.8.4-1.x86_64.rpm`          |
+| **Any other Linux**                    | [Gridline_0.8.4_amd64.AppImage](https://github.com/AdrianBonpin/gridline/releases/download/v0.8.4/Gridline_0.8.4_amd64.AppImage)           | Works on every distro: `chmod +x` the file, then double-click it |
 
 **Not sure if your Mac is Intel or Apple Silicon?** Click the **Apple menu** → **About This Mac**. If it shows "Apple M1/M2/M3/M4…" download the `aarch64` file; if it shows an Intel chip, download `x64`. Downloading the wrong one won't run.
 
@@ -369,11 +371,13 @@ Cutting a release is one command — CI builds everything. **Releases are cut fr
 
 ```bash
 git checkout prod && git pull
-git tag v0.7.15
-git push origin v0.7.15
+git tag v0.8.4
+git push github v0.8.4        # GitHub is the only release remote
 ```
 
-GitHub Actions (`.github/workflows/release.yml`) builds the **macOS (Apple Silicon + Intel), Windows, and Linux** installers in parallel and opens a **draft release** on the [Releases](https://github.com/AdrianBonpin/gridline/releases) page. Review the draft and hit **Publish release** — publishing triggers a follow-up job that bumps the Homebrew cask in [`AdrianBonpin/homebrew-gridline`](https://github.com/AdrianBonpin/homebrew-gridline) (pushed via a write-enabled deploy key on the tap, `HOMEBREW_TAP_DEPLOY_KEY`; skipped when unset).
+The version bump itself lands through a pull request first — `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/tauri.conf.json`, `www/src/pages/index.astro`, `www/public/landing.js`, `www/src/data/changelog.ts` and both README download tables all carry it, and the docs-coverage tests fail if one is missed.
+
+GitHub Actions (`.github/workflows/release.yml`) builds the **macOS (Apple Silicon + Intel), Windows, and Linux** installers in parallel and opens a **draft release** on the [Releases](https://github.com/AdrianBonpin/gridline/releases) page. Paste the new version's entry from [`www/src/data/changelog.ts`](./www/src/data/changelog.ts) into the draft's description (`gh release edit v0.8.4 --notes-file notes.md`), review the draft, then hit **Publish release** — publishing triggers a follow-up job that bumps the Homebrew cask in [`AdrianBonpin/homebrew-gridline`](https://github.com/AdrianBonpin/homebrew-gridline) (pushed via a write-enabled deploy key on the tap, `HOMEBREW_TAP_DEPLOY_KEY`; skipped when unset).
 
 The self-hosted Gitea mirror (`.gitea/workflows/release.yml`) still builds Linux and Windows for the Gitea release, and `scripts/release-mac.sh` can build macOS locally — both are kept as a fallback if GitHub is unavailable.
 

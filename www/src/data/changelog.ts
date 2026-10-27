@@ -6,6 +6,16 @@ export interface ChangelogEntry {
 
 export const changelogEntries: ChangelogEntry[] = [
   {
+    version: "0.8.4",
+    date: "2026-10-27",
+    highlights: [
+      "SSH tunnels stopped hanging. A tunnelled connection could stall the instant SSH authentication finished: **Test connection** spun forever, and any second connection opened behind the tunnel queued behind a listener that only ever accepted one client. The forwarder drove a single SSH session from two threads, and that session's lock meant a waiting read blocked the write carrying the client's very first packet — with PostgreSQL, which speaks first, both sides then waited for the other. One nonblocking worker now drives the whole session: buffered partial writes, half-closes preserved, and clients still stalled mid-authentication or mid-query are closed when the tunnel goes away instead of being left behind.",
+      "Every connection behind a tunnel is served. The old forwarder accepted exactly one client per tunnel, so anything beyond the first — a second pool connection, the version probe that follows a successful test — connected to the loopback port and then sat there unheard. A tunnel is now a real multiplexer for its connection, which is what Backup, DB Sync, the query editor and the data grid all rely on once they start parallel work.",
+      "Nothing over SSH can wait forever. Connection, handshake and authentication are bounded at 10 seconds, and the PostgreSQL connection probe has a 10-second ceiling that covers TLS, authentication and the version query together (previously only the TCP connect was bounded). A wedged server or a hostile host now answers with *\"connection timed out after 10 seconds\"* instead of an endless spinner, and the probe's reported latency is the time to a usable connection again rather than including the version query.",
+      "An idle tunnel costs less. The forwarding worker woke the CPU roughly 200 times a second even when nothing was happening on a long-lived tunnel; it now polls quickly while data flows and backs off to 20 ms once the tunnel idles, cutting that idle cost to about a third. Reported and fixed by [@Amikas](https://github.com/Amikas) in [#57](https://github.com/AdrianBonpin/gridline/pull/57).",
+    ],
+  },
+  {
     version: "0.8.3",
     date: "2026-09-30",
     highlights: [

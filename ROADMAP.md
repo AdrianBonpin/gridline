@@ -6,6 +6,11 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ---
 
+## ✅ Shipped (0.8.4)
+
+- **SSH tunnels no longer hang** — tunnelled connections could stall right after SSH authentication (PostgreSQL *Test connection* spinning forever, pool clients hanging behind the tunnel), because the forwarder's read and write threads shared one blocking session mutex, so a waiting read blocked the client's first packet. A single nonblocking forwarding worker now drives the whole session, serves multiple concurrent pool clients, bounds SSH connect/handshake/auth at 10 s, and the PostgreSQL probe has a 10 s deadline instead of an unbounded wait. Reported and fixed by @Amikas (#57).
+- **Version bump** 0.8.3 → **0.8.4**.
+
 ## ✅ Shipped (0.8.0)
 
 - **Schema diff / compare** — same-engine structural diff (PG↔PG, MySQL-family↔MySQL-family, SQLite↔SQLite) with per-object sync SQL; non-destructive items stage through the changes queue, destructive items are copy-only. Target = current connection; source = any saved same-family connection.
@@ -16,12 +21,11 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 - **PlanetScale preset** — managed MySQL (Vitess) provider card + setup guide + `.psdb.cloud` host detection; persists as `db_type: mysql`
 - **Version bump** 0.7.15 → **0.8.0**.
 
-## ✅ Shipped (unreleased)
+## ✅ Shipped (0.8.1)
 
 - **Connection-string SSL mode is honored end to end** — pasting a provider URL now carries its `?sslmode=` (Neon/Supabase `require`, `verify-full`, MySQL `ssl-mode=`) into the saved connection instead of silently connecting with TLS off, and the SSH/SSL tab's mode + certificate paths are persisted on create/edit (they were previously dropped before reaching the backend). Save/Test also fall back to a URL-derived label, so a pasted URL can be saved without typing anything. Fixes managed-provider connections failing with *"connection is insecure (try using `sslmode=require`)"*.
 - **Managed hosts default to TLS** — `*.neon.tech` / `*.supabase.co` / `*.psdb.cloud` resolve to `require` when a connection has no `ssl_mode`, so connections saved before the form persisted it (or imported without it) connect again without being re-saved. An explicit mode — including `disable` — always wins.
 - **Managed presets preselect their TLS mode** — Supabase/NeonDB → Require, PlanetScale → Verify Full.
-- **SSH tunnels no longer hang** — tunnelled connections could stall right after SSH authentication (PostgreSQL *Test connection* spinning forever, pool clients hanging behind the tunnel), because the forwarder's read and write threads shared one blocking session mutex, so a waiting read blocked the client's first packet. A single nonblocking forwarding worker now drives the whole session, serves multiple concurrent pool clients, bounds SSH connect/handshake/auth at 10 s, and the PostgreSQL probe has a 10 s deadline instead of an unbounded wait. Reported and fixed by @Amikas (#57).
 
 ## 📋 In the queue
 
