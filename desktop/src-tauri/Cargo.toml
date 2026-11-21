@@ -42,6 +42,9 @@ redis = { version = "0.27", features = ["tokio-comp"] }
 # runtime dependency on the build machine's Homebrew openssl (@/opt/homebrew
 # absolute LC_LOAD_DYLIB — dyld aborts on user machines without it).
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+# Process-group supervision for managed tool jobs: terminate the whole child
+# process tree (pg_dump/pg_restore/psql helpers) on cancel or app exit.
+libc = "0.2"
 # SSH host trust (ADR 0001): OpenSSH-style SHA256 fingerprints, key-blob
 # decoding, and HMAC-SHA1 matching of hashed known-hosts entries.
 sha2 = "0.10"

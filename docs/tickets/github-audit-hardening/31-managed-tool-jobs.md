@@ -7,11 +7,11 @@
 **Seams:** Tool-job seam: catches job ownership, cancellation, deadlines, and cleanup; misses some operating-system process-tree differences.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/80
-**Status:** ready
+**Status:** done
 
-- [ ] A running backup or restore can be cancelled from the UI and stops promptly.
-- [ ] Cancelling terminates the child process tree, leaving no orphan process.
-- [ ] Quitting during a job terminates its children instead of leaving them running.
-- [ ] Tool availability and version probes are bounded and fail visibly.
-- [ ] A failed job surfaces a visible failure state with a recovery action.
-- [ ] A continuously progressing large job is not killed by an arbitrary total-duration limit.
+- [x] A running backup or restore can be cancelled from the UI and stops promptly.
+- [x] Cancelling terminates the child process tree, leaving no orphan process.
+- [x] Quitting during a job terminates its children instead of leaving them running.
+- [x] Tool availability and version probes are bounded and fail visibly.
+- [x] A failed job surfaces a visible failure state with a recovery action.
+- [x] A continuously progressing large job is not killed by an arbitrary total-duration limit.

@@ -205,6 +205,46 @@ fn version_of_reads_the_version_from_stdout() {
     assert!(v.contains("11.4.5-MariaDB"), "got {v}");
 }
 
+/// Version detection used to call `Command::output()` with no deadline, so a
+/// tool that ignores `--version` hung detection (and the Backup form with it).
+#[cfg(unix)]
+#[test]
+fn version_of_is_bounded_when_the_tool_never_answers() {
+    let tool = unique_dir().join("hanging_tool");
+    write_exe(&tool, "#!/bin/sh\nsleep 30\n");
+    let started = Instant::now();
+    assert_eq!(version_of(tool.to_str().unwrap()), None);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "version detection was not bounded: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A probe that hits its deadline reports *why*, so detection can tell the user
+/// the tool was found but did not respond instead of "not installed".
+#[cfg(unix)]
+#[test]
+fn probe_outcome_reports_a_timeout_instead_of_a_bare_false() {
+    let tool = unique_dir().join("hanging_tool");
+    write_exe(&tool, "#!/bin/sh\nsleep 30\n");
+    let started = Instant::now();
+    let outcome = probe_outcome(&tool, Duration::from_millis(100));
+    assert!(
+        matches!(outcome, Err(crate::job::JobError::Timeout(_))),
+        "got {outcome:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[cfg(unix)]
+#[test]
+fn probe_outcome_reports_a_nonzero_exit_as_not_usable() {
+    let tool = unique_dir().join("bad_tool");
+    write_exe(&tool, "#!/bin/sh\nexit 3\n");
+    assert_eq!(probe_outcome(&tool, Duration::from_secs(2)), Ok(false));
+}
+
 #[cfg(unix)]
 #[test]
 fn probe_within_returns_false_once_the_aggregate_deadline_passed() {

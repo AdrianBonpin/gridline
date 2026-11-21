@@ -79,7 +79,6 @@ export function BackupPage({ connectionId }: BackupPageProps) {
 
     const activeJobId = useBackupStore((s) => s.activeJobId);
     const jobs = useBackupStore((s) => s.jobs);
-    const startJob = useBackupStore((s) => s.startJob);
     const notify = useNotificationStore((s) => s.notify);
 
     const activeJob = jobs.find((j) => j.id === activeJobId);
@@ -101,6 +100,9 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                 `Backup failed: ${activeJob.error_message || "Unknown error"}`,
                 "error",
             );
+            pendingJobRef.current = null;
+        } else if (activeJob.status === "cancelled") {
+            notify("Backup cancelled", "info");
             pendingJobRef.current = null;
         }
     }, [activeJob, notify]);
@@ -194,23 +196,24 @@ export function BackupPage({ connectionId }: BackupPageProps) {
 
     const runWithProgress = useCallback(
         async (type: BackupJob["type"], action: () => Promise<unknown>) => {
-            const jobId = `${type}-${Date.now()}`;
-            startJob(jobId, type);
-            pendingJobRef.current = jobId;
-
-            try {
-                // Command returns the job ID immediately — completion
-                // comes via Tauri events handled by the backupStore
-                await action();
-            } catch (e) {
-                // If the command itself fails (e.g. connection not found),
-                // the event won't fire — handle here
-                const msg = e instanceof Error ? e.message : String(e);
-                useBackupStore.getState().failJob(jobId, msg);
-            }
+            // `runJob` adopts the job id the backend returns, so the progress
+            // events and the cancel command address the real job.
+            await useBackupStore.getState().runJob(type, action);
+            pendingJobRef.current = useBackupStore.getState().activeJobId;
         },
-        [startJob],
+        [],
     );
+
+    // Cancel a running backup. The backend terminates the tool's whole process
+    // tree, so nothing is left running behind the UI.
+    const handleCancelBackup = useCallback(async () => {
+        const jobId = useBackupStore.getState().activeJobId;
+        if (!jobId) return;
+        const cancelled = await useBackupStore.getState().cancelJob(jobId);
+        if (!cancelled) {
+            notify("The backup had already finished", "info");
+        }
+    }, [notify]);
 
     const handleStartBackup = useCallback(async () => {
         if (!filePath) {
@@ -287,6 +290,11 @@ export function BackupPage({ connectionId }: BackupPageProps) {
     const bundledPresent = isPg
         ? pgToolStatus?.pg_dump_bundled_available
         : mysqlToolStatus?.mysqldumpBundledAvailable;
+    // A probe that timed out is a different failure from "not installed": the
+    // tool exists but did not answer, so installing another copy will not help.
+    const probeError = isPg
+        ? pgToolStatus?.pg_dump_probe_error
+        : mysqlToolStatus?.mysqldumpProbeError;
     const dumpFallbackName = isPg ? "pg_dump" : "mysqldump";
     const installInstructions = getPlatformInstructions(
         isPg ? PG_INSTALL_INSTRUCTIONS : MYSQL_INSTALL_INSTRUCTIONS,
@@ -358,6 +366,14 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                             tools. This build could not locate or run them, so a manual
                             install is needed:
                         </p>
+                        {probeError && (
+                            <p
+                                data-testid="tool-probe-error"
+                                className="text-amber-200/80 text-xs leading-relaxed font-mono break-all"
+                            >
+                                {probeError}
+                            </p>
+                        )}
                         {bundledPresent && (
                             <p className="text-amber-200/80 text-xs leading-relaxed">
                                 A bundled copy is present but could not run — reinstall
@@ -553,6 +569,14 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                     jobType="dump"
                                     status={activeJob.status}
                                     errorMessage={activeJob.error_message ?? undefined}
+                                    onCancel={
+                                        isRunning ? () => void handleCancelBackup() : undefined
+                                    }
+                                    onRetry={
+                                        !isRunning
+                                            ? () => void handleStartBackup()
+                                            : undefined
+                                    }
                                 />
                             </div>
                         )}

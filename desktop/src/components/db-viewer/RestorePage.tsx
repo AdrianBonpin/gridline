@@ -71,7 +71,6 @@ export function RestorePage({ connectionId }: RestorePageProps) {
 
     const activeJobId = useBackupStore((s) => s.activeJobId);
     const jobs = useBackupStore((s) => s.jobs);
-    const startJob = useBackupStore((s) => s.startJob);
     const notify = useNotificationStore((s) => s.notify);
 
     const activeJob = jobs.find((j) => j.id === activeJobId);
@@ -90,6 +89,9 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                 `Restore failed: ${activeJob.error_message || "Unknown error"}`,
                 "error",
             );
+            pendingJobRef.current = null;
+        } else if (activeJob.status === "cancelled") {
+            notify("Restore cancelled", "info");
             pendingJobRef.current = null;
         }
     }, [activeJob, notify]);
@@ -153,19 +155,24 @@ export function RestorePage({ connectionId }: RestorePageProps) {
 
     const runWithProgress = useCallback(
         async (type: BackupJob["type"], action: () => Promise<unknown>) => {
-            const jobId = `${type}-${Date.now()}`;
-            startJob(jobId, type);
-            pendingJobRef.current = jobId;
-
-            try {
-                await action();
-            } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                useBackupStore.getState().failJob(jobId, msg);
-            }
+            // `runJob` adopts the job id the backend returns, so the progress
+            // events and the cancel command address the real job.
+            await useBackupStore.getState().runJob(type, action);
+            pendingJobRef.current = useBackupStore.getState().activeJobId;
         },
-        [startJob],
+        [],
     );
+
+    // Cancel a running restore. The backend terminates the tool's whole process
+    // tree; the native MySQL engine stops at the next statement boundary.
+    const handleCancelRestore = useCallback(async () => {
+        const jobId = useBackupStore.getState().activeJobId;
+        if (!jobId) return;
+        const cancelled = await useBackupStore.getState().cancelJob(jobId);
+        if (!cancelled) {
+            notify("The restore had already finished", "info");
+        }
+    }, [notify]);
 
     const handleStartRestore = useCallback(async () => {
         if (!filePath) {
@@ -450,6 +457,14 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                     jobType="restore"
                                     status={activeJob.status}
                                     errorMessage={activeJob.error_message ?? undefined}
+                                    onCancel={
+                                        isRunning ? () => void handleCancelRestore() : undefined
+                                    }
+                                    onRetry={
+                                        !isRunning
+                                            ? () => void handleStartRestore()
+                                            : undefined
+                                    }
                                 />
                             </div>
                         )}
