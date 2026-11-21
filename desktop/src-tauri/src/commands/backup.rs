@@ -337,40 +337,80 @@ fn build_dump_args(conn: &PgConnParams, options: &BackupOptions) -> Vec<String> 
     args
 }
 
+/// How a PostgreSQL restore runs against the target.
+///
+/// This is the difference between "a failure left the target untouched" and "a
+/// failure left it partially restored", so it is decided explicitly (see
+/// [`pg_restore_txn`]) instead of being inferred at the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PgRestoreTxn {
+    /// The whole restore is one transaction: any failing statement rolls the
+    /// target back to exactly what it was before the run.
+    OneTransaction,
+    /// Statement by statement, so whatever succeeded before a failure stays
+    /// applied. Only ever chosen after the user accepted that risk.
+    PerStatement,
+}
+
+impl PgRestoreTxn {
+    pub fn is_atomic(&self) -> bool {
+        matches!(self, PgRestoreTxn::OneTransaction)
+    }
+}
+
 /// psql args for a plain-format restore.
 ///
 /// `ON_ERROR_STOP=1` is what makes a failing statement abort the run (psql then
 /// exits 3) instead of continuing to the next one; `--no-psqlrc` stops a user's
-/// startup file from changing that behind our back. The guarantee is "stop at
-/// the first error", not transactional atomicity — a plain dump cannot be
-/// wrapped in one.
-pub fn build_psql_restore_args(conn: &PgConnParams, file_path: &str) -> Vec<String> {
-    vec![
+/// startup file from changing that behind our back. `--single-transaction`
+/// wraps the whole script in one transaction, so a failure rolls the target
+/// back — but it can only be used when the script is compatible with running
+/// inside a transaction (see [`pg_restore_txn`]).
+pub fn build_psql_restore_args(
+    conn: &PgConnParams,
+    file_path: &str,
+    txn: PgRestoreTxn,
+) -> Vec<String> {
+    let mut args = vec![
         "--no-psqlrc".to_string(),
         "-v".to_string(),
         "ON_ERROR_STOP=1".to_string(),
+    ];
+    if txn.is_atomic() {
+        args.push("--single-transaction".to_string());
+    }
+    args.extend([
         format!("--host={}", conn.host),
         format!("--port={}", conn.port),
         format!("--username={}", conn.username),
         format!("--dbname={}", conn.database),
         format!("--file={file_path}"),
-    ]
+    ]);
+    args
 }
 
 /// pg_restore args for a DB-to-DB sync. Sync requires the destructive-overwrite
-/// confirmation in the UI, and `--exit-on-error` makes a partially applied sync
-/// report failure instead of a silent success.
+/// confirmation in the UI. The source is our own `pg_dump` custom archive, which
+/// is always transaction-shaped, so the restore runs as one transaction: a
+/// failure (or a truncated archive when the dump dies) rolls the target back
+/// instead of leaving it partially replaced. `--exit-on-error` makes a partial
+/// sync report failure instead of a silent success.
 pub fn build_pg_sync_restore_args(target: &PgConnParams) -> Vec<String> {
     let mut args = base_conn_args(target);
     args.push("--no-owner".into());
     args.push("--clean".into());
     args.push("--if-exists".into());
+    args.push("--single-transaction".into());
     args.push("--exit-on-error".into());
     args
 }
 
 /// Builds pg_restore args (file path is passed positionally by the caller).
-fn build_restore_args(conn: &PgConnParams, options: &RestoreOptions) -> Vec<String> {
+fn build_restore_args(
+    conn: &PgConnParams,
+    options: &RestoreOptions,
+    txn: PgRestoreTxn,
+) -> Vec<String> {
     let mut args = base_conn_args(conn);
 
     match options.format.as_str() {
@@ -383,6 +423,12 @@ fn build_restore_args(conn: &PgConnParams, options: &RestoreOptions) -> Vec<Stri
     if options.clean {
         args.push("--clean".into());
         args.push("--if-exists".into());
+    }
+
+    // One transaction for the whole archive when the dump allows it; a
+    // statement failure then rolls back everything the run had applied.
+    if txn.is_atomic() {
+        args.push("--single-transaction".into());
     }
 
     // Stop at the first failed object instead of continuing (the default).
@@ -441,6 +487,11 @@ pub fn run_pg_dump(
 /// are executed with `psql` instead. The `clean` option is only honored for
 /// archive formats (custom/tar/directory); the UI disables it for plain.
 ///
+/// `txn` decides whether the run is one transaction (a failure leaves the target
+/// unchanged) or statement-by-statement (a failure leaves earlier objects
+/// applied). It is never guessed here: [`pg_restore_txn`] derives it from the
+/// dump and refuses a non-atomic run the user did not accept.
+///
 /// No idle bound applies here: a restore can sit in one large `COPY` without
 /// printing anything, and that is indistinguishable from a quiet-but-healthy
 /// run. The job stays cancellable and is terminated on app exit, but it is
@@ -449,15 +500,16 @@ pub fn run_pg_restore_managed(
     job: &JobControl,
     conn: &PgConnParams,
     options: &RestoreOptions,
+    txn: PgRestoreTxn,
     tools: &PgToolPaths,
 ) -> Result<(), JobFailure> {
     let cmd = if options.format == "plain" {
         let mut cmd = Command::new(&tools.psql);
         cmd.env("PGPASSWORD", &conn.password)
-            .args(build_psql_restore_args(conn, &options.file_path));
+            .args(build_psql_restore_args(conn, &options.file_path, txn));
         cmd
     } else {
-        let mut args = build_restore_args(conn, options);
+        let mut args = build_restore_args(conn, options, txn);
         args.push(options.file_path.clone());
         let mut cmd = Command::new(&tools.pg_restore);
         cmd.env("PGPASSWORD", &conn.password).args(&args);
@@ -468,17 +520,439 @@ pub fn run_pg_restore_managed(
     if out.status.success() {
         Ok(())
     } else {
-        Err(JobFailure::failed(sanitize_error(&out.stderr)))
+        Err(JobFailure::failed(pg_restore_failure_message(
+            txn,
+            &out.stderr,
+        )))
     }
 }
 
 /// Headless one-shot form of [`run_pg_restore_managed`].
+///
+/// Transactional whenever the dump allows it. A dump that cannot be restored
+/// atomically is refused here — a headless caller has no way to accept the
+/// partial-application risk, so it must not be silently downgraded.
 pub fn run_pg_restore(
     conn: &PgConnParams,
     options: &RestoreOptions,
     tools: &PgToolPaths,
 ) -> Result<(), String> {
-    run_pg_restore_managed(&JobControl::detached(), conn, options, tools).map_err(|e| e.message)
+    let txn = pg_restore_txn(&options.format, &options.file_path, false)?;
+    run_pg_restore_managed(&JobControl::detached(), conn, options, txn, tools)
+        .map_err(|e| e.message)
+}
+
+// ---------------------------------------------------------------------------
+// Transactional restore: is this dump compatible with one transaction?
+// ---------------------------------------------------------------------------
+
+/// Stable IPC code in front of the refusal for a dump that cannot be restored in
+/// one transaction. The renderer turns it into an explicit risk confirmation
+/// instead of matching on human text.
+pub const PG_RESTORE_NON_ATOMIC_CODE: &str = "pg-restore-non-atomic";
+
+/// Whether PostgreSQL can apply a dump as one transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PgRestoreAtomicity {
+    /// The whole dump can run in one transaction: a failing statement rolls the
+    /// target back.
+    Atomic,
+    /// It cannot. `reason` names what makes it impossible and what a failure
+    /// would leave behind; it is shown to the user before they accept the risk.
+    NonAtomic { reason: String },
+}
+
+impl PgRestoreAtomicity {
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            PgRestoreAtomicity::Atomic => None,
+            PgRestoreAtomicity::NonAtomic { reason } => Some(reason),
+        }
+    }
+}
+
+/// One statement found in a plain SQL dump that PostgreSQL refuses to run inside
+/// a transaction block, or that would end the transaction the restore opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlainDumpHazard {
+    /// What was found, e.g. `VACUUM` or `\connect`.
+    pub found: String,
+    /// 1-based line number in the dump.
+    pub line: usize,
+}
+
+/// Whether `file_path` can be restored in one transaction, or why not.
+///
+/// Archive formats (custom/tar/directory) are accepted as transaction-shaped:
+/// `pg_restore --single-transaction` only refuses to run alongside `--jobs`, and
+/// a non-transactional entry inside an archive is caught at execution time (the
+/// run then rolls back). A plain script is inspected first because psql has to
+/// own its transaction: a script containing `VACUUM`, `CREATE DATABASE`, `CREATE
+/// INDEX CONCURRENTLY`, psql's `\connect`, or its own `BEGIN`/`COMMIT` cannot be
+/// wrapped in one.
+///
+/// The scan is a best-effort lexical pass (comments, `COPY` data rows and
+/// dollar-quoted bodies are skipped), so an incompatibility it misses still
+/// surfaces at execution time — as a rollback plus an explanation, never as a
+/// partial apply.
+pub fn pg_restore_atomicity(format: &str, file_path: &str) -> Result<PgRestoreAtomicity, String> {
+    if format == "plain" {
+        let hazards = scan_plain_dump(file_path)?;
+        if !hazards.is_empty() {
+            return Ok(PgRestoreAtomicity::NonAtomic {
+                reason: describe_hazards(&hazards),
+            });
+        }
+    }
+    Ok(PgRestoreAtomicity::Atomic)
+}
+
+/// The transaction mode a restore must run with.
+///
+/// A dump that cannot be atomic is **refused** unless the caller passes
+/// `accept_non_atomic`: a silent downgrade to a statement-by-statement run is
+/// exactly the bug this guards against (the user would find out by discovering a
+/// half-restored database).
+pub fn pg_restore_txn(
+    format: &str,
+    file_path: &str,
+    accept_non_atomic: bool,
+) -> Result<PgRestoreTxn, String> {
+    match pg_restore_atomicity(format, file_path)? {
+        PgRestoreAtomicity::Atomic => Ok(PgRestoreTxn::OneTransaction),
+        PgRestoreAtomicity::NonAtomic { reason } => {
+            if accept_non_atomic {
+                Ok(PgRestoreTxn::PerStatement)
+            } else {
+                Err(non_atomic_refusal(&reason))
+            }
+        }
+    }
+}
+
+/// The refusal for a dump the caller did not allow to run non-atomically.
+fn non_atomic_refusal(reason: &str) -> String {
+    format!(
+        "{PG_RESTORE_NON_ATOMIC_CODE}: {reason} It can only be restored one statement at a time, so a failure partway through is not rolled back and can leave the target partially applied. Accept that risk to run it anyway."
+    )
+}
+
+/// Name what makes a plain script incompatible with one transaction, and the
+/// risk of running it anyway.
+fn describe_hazards(hazards: &[PlainDumpHazard]) -> String {
+    const SHOWN: usize = 4;
+    let mut parts: Vec<String> = hazards
+        .iter()
+        .take(SHOWN)
+        .map(|h| format!("{} (line {})", h.found, h.line))
+        .collect();
+    if hazards.len() > SHOWN {
+        parts.push(format!("and {} more", hazards.len() - SHOWN));
+    }
+    format!(
+        "This SQL script contains statements PostgreSQL cannot run inside a single transaction: {}. Restoring it as one transaction is impossible, so a failure partway through can leave the target partially applied.",
+        parts.join(", ")
+    )
+}
+
+/// Lexical state carried across lines while scanning a plain dump.
+#[derive(Default)]
+struct PlainScanState {
+    in_block_comment: bool,
+    /// The dollar-quote tag (`$$` or `$body$`) whose body is still open.
+    dollar_tag: Option<String>,
+    /// Inside a `COPY … FROM stdin` data block, where every line is payload.
+    in_copy_data: bool,
+}
+
+/// Read a plain dump and collect every statement that breaks a single-transaction
+/// restore. Bounded: one line at a time, nothing but the line buffer is held.
+fn scan_plain_dump(path: &str) -> Result<Vec<PlainDumpHazard>, String> {
+    use std::io::BufRead;
+
+    let file = std::fs::File::open(path).map_err(|e| {
+        format!(
+            "Could not read the backup file to check whether it can be restored atomically: {e}"
+        )
+    })?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut state = PlainScanState::default();
+    let mut hazards = Vec::new();
+    let mut buf = Vec::new();
+    let mut line_no = 0usize;
+
+    loop {
+        buf.clear();
+        let read = reader.read_until(b'\n', &mut buf).map_err(|e| {
+            format!(
+                "Could not read the backup file to check whether it can be restored atomically: {e}"
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        line_no += 1;
+        // A dump's encoding is the database's, not necessarily UTF-8. Lossy
+        // decoding only has to preserve the ASCII prefixes matched below.
+        let text = String::from_utf8_lossy(&buf);
+        let trimmed = text.trim();
+
+        if state.in_copy_data {
+            if trimmed == "\\." {
+                state.in_copy_data = false;
+            }
+            continue;
+        }
+
+        let code = code_fragment(trimmed, &mut state);
+        let code = code.trim();
+        if code.is_empty() {
+            continue;
+        }
+
+        // `COPY … FROM stdin;` starts a payload block; the data rows are values,
+        // not statements, so a row that reads `VACUUM` is not a hazard.
+        let upper = code.to_ascii_uppercase();
+        if upper.starts_with("COPY ") || upper.starts_with("\\COPY ") {
+            if upper.contains("FROM STDIN") {
+                state.in_copy_data = true;
+                continue;
+            }
+        }
+
+        if let Some(found) = line_hazard(code) {
+            hazards.push(PlainDumpHazard {
+                found,
+                line: line_no,
+            });
+        }
+    }
+
+    Ok(hazards)
+}
+
+/// The executable part of one line: comments stripped and dollar-quoted bodies
+/// skipped, with that state carried into the next line.
+fn code_fragment<'a>(line: &'a str, state: &mut PlainScanState) -> &'a str {
+    let mut rest = line;
+    loop {
+        if let Some(tag) = state.dollar_tag.clone() {
+            match rest.find(&tag) {
+                Some(at) => {
+                    rest = &rest[at + tag.len()..];
+                    state.dollar_tag = None;
+                }
+                None => return "",
+            }
+            continue;
+        }
+        if state.in_block_comment {
+            match rest.find("*/") {
+                Some(at) => {
+                    rest = &rest[at + 2..];
+                    state.in_block_comment = false;
+                }
+                None => return "",
+            }
+            continue;
+        }
+
+        let line_comment = rest.find("--");
+        let block_comment = rest.find("/*");
+        let dollar = find_dollar_opener(rest);
+
+        let mut first = rest.len();
+        for at in [
+            line_comment,
+            block_comment,
+            dollar.as_ref().map(|(at, _)| *at),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            first = first.min(at);
+        }
+
+        if first == rest.len() {
+            return rest;
+        }
+        if Some(first) == line_comment {
+            return &rest[..first];
+        }
+        if Some(first) == block_comment {
+            state.in_block_comment = true;
+            rest = &rest[first + 2..];
+            continue;
+        }
+        let (at, tag) = dollar.expect("dollar opener was the earliest token");
+        rest = &rest[at + tag.len()..];
+        state.dollar_tag = Some(tag);
+    }
+}
+
+/// Find the first `$tag$` dollar-quote opener on a line. `$1` (a parameter) is
+/// not an opener because it has no closing `$`.
+fn find_dollar_opener(s: &str) -> Option<(usize, String)> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'$' {
+                return Some((i, s[i..=j].to_string()));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// At most `n` leading SQL words, uppercased. Words are split on anything that
+/// cannot appear in a keyword, so `BEGIN;` and `VACUUM(id)` are still recognized.
+fn leading_words(code: &str, n: usize) -> Vec<String> {
+    code.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .take(n)
+        .map(|w| w.to_ascii_uppercase())
+        .collect()
+}
+
+/// What (if anything) about this line makes a single-transaction restore
+/// impossible.
+fn line_hazard(code: &str) -> Option<String> {
+    // psql meta-commands: `\connect` moves to another database mid-script, which
+    // a one-transaction run cannot do (and `\c` is its abbreviation).
+    if let Some(rest) = code.strip_prefix('\\') {
+        let command = rest.split_whitespace().next().unwrap_or("");
+        if command == "connect" || command == "c" {
+            return Some("\\connect".to_string());
+        }
+        return None;
+    }
+
+    let mut words = leading_words(code, 2).into_iter();
+    let first = words.next().unwrap_or_default();
+    let second = words.next().unwrap_or_default();
+    let upper = code.to_ascii_uppercase();
+
+    let hazard = match (first.as_str(), second.as_str()) {
+        ("VACUUM", _) => Some("VACUUM".to_string()),
+        ("CLUSTER", _) => Some("CLUSTER".to_string()),
+        ("CREATE", "DATABASE") => Some("CREATE DATABASE".to_string()),
+        ("DROP", "DATABASE") => Some("DROP DATABASE".to_string()),
+        ("CREATE", "TABLESPACE") => Some("CREATE TABLESPACE".to_string()),
+        ("DROP", "TABLESPACE") => Some("DROP TABLESPACE".to_string()),
+        ("CREATE", "SUBSCRIPTION") => Some("CREATE SUBSCRIPTION".to_string()),
+        ("ALTER", "SYSTEM") => Some("ALTER SYSTEM".to_string()),
+        ("CREATE", "INDEX") if upper.contains("CONCURRENTLY") => {
+            Some("CREATE INDEX CONCURRENTLY".to_string())
+        }
+        ("DROP", "INDEX") if upper.contains("CONCURRENTLY") => {
+            Some("DROP INDEX CONCURRENTLY".to_string())
+        }
+        ("REINDEX", _) if upper.contains("CONCURRENTLY") => {
+            Some("REINDEX CONCURRENTLY".to_string())
+        }
+        // The dump's own transaction control would end the transaction the
+        // restore opened, so the "one transaction" guarantee would be a lie.
+        ("BEGIN", _)
+        | ("START", _)
+        | ("COMMIT", _)
+        | ("END", _)
+        | ("ROLLBACK", _)
+        | ("ABORT", _)
+        | ("SAVEPOINT", _)
+        | ("RELEASE", _) => Some(format!("{first} (the script manages its own transactions)")),
+        _ => None,
+    };
+
+    hazard
+}
+
+/// What a failed PostgreSQL restore reports.
+///
+/// The user's most important fact after a failure is what the target looks like
+/// now, so the message always states it: a transactional run rolled back (and a
+/// failure that only surfaced at execution time names how to proceed), while an
+/// accepted non-atomic run says which part survived.
+pub fn pg_restore_failure_message(txn: PgRestoreTxn, stderr: &str) -> String {
+    let detail = sanitize_error(stderr);
+    let detail = if detail.trim().is_empty() {
+        "The restore tool exited with an error and printed no diagnostic.".to_string()
+    } else {
+        detail
+    };
+
+    if txn.is_atomic() {
+        if is_transaction_incompatibility(&detail) {
+            format!(
+                "{detail}\n\nThe restore ran in a single transaction, so the target database was left unchanged. This dump contains statements PostgreSQL cannot run inside a transaction, so restoring it at all means accepting that a failure can leave the target partially applied."
+            )
+        } else {
+            format!(
+                "{detail}\n\nThe restore ran in a single transaction, so the target database was left unchanged."
+            )
+        }
+    } else {
+        format!(
+            "{detail}\n\nThis restore ran without a single transaction (the dump cannot be restored atomically), so objects restored before the failure were already applied."
+        )
+    }
+}
+
+/// A failure that only appears once the restore is running: the dump turned out
+/// to contain statements that cannot be transactional.
+fn is_transaction_incompatibility(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    lower.contains("inside a transaction block")
+        || lower.contains("inside a transaction")
+        || lower.contains("in a single transaction")
+}
+
+/// The failure a DB sync reports, or `None` when both ends succeeded.
+///
+/// The target's error is primary: when the restore rejects its input the dump's
+/// pipe closes, so the source's broken-pipe diagnostic is a consequence and not
+/// the cause the user has to act on. It is still reported, as secondary context.
+pub fn db_sync_failure_message(
+    source_ok: bool,
+    source_stderr: &str,
+    sink_ok: bool,
+    sink_stderr: &str,
+) -> Option<String> {
+    if source_ok && sink_ok {
+        return None;
+    }
+
+    if !sink_ok {
+        let mut message = format!(
+            "pg_restore failed: {}",
+            pg_restore_failure_message(PgRestoreTxn::OneTransaction, sink_stderr)
+        );
+        if !source_ok {
+            let source = sanitize_error(source_stderr);
+            let source = if source.trim().is_empty() {
+                "the dump tool also stopped".to_string()
+            } else {
+                source
+            };
+            message.push_str(&format!(
+                "\n\npg_dump also stopped, which is usually the consequence of the target rejecting the restore: {source}"
+            ));
+        }
+        return Some(message);
+    }
+
+    let source = sanitize_error(source_stderr);
+    let source = if source.trim().is_empty() {
+        "the dump tool exited with an error and printed no diagnostic".to_string()
+    } else {
+        source
+    };
+    Some(format!("pg_dump failed: {source}"))
 }
 
 /// Runs a DB-to-DB sync under `job`: `pg_dump` on `source` piped into
@@ -513,8 +987,10 @@ pub fn run_db_sync_managed(
 
     // --- Build pg_restore args ---
     // --clean --if-exists makes sync work into a non-empty target (the UI
-    // already requires a destructive-overwrite confirmation). --exit-on-error
-    // makes a partial sync report failure rather than success.
+    // already requires a destructive-overwrite confirmation), and
+    // --single-transaction makes a failed sync roll the target back instead of
+    // leaving it partially replaced. --exit-on-error keeps a partial sync from
+    // being reported as success.
     let restore_args = build_pg_sync_restore_args(target);
 
     let mut dump_cmd = Command::new(&tools.pg_dump);
@@ -529,19 +1005,17 @@ pub fn run_db_sync_managed(
 
     let out = job::run_managed_pipe(job, dump_cmd, restore_cmd).map_err(JobFailure::from)?;
 
-    if !out.source_status.success() {
-        return Err(JobFailure::failed(format!(
-            "pg_dump failed: {}",
-            sanitize_error(&out.source_stderr)
-        )));
+    // The target's failure is the actionable one; a source failure caused by the
+    // target closing the pipe is reported as consequence, not as the cause.
+    match db_sync_failure_message(
+        out.source_status.success(),
+        &out.source_stderr,
+        out.sink_status.success(),
+        &out.sink_stderr,
+    ) {
+        None => Ok(()),
+        Some(message) => Err(JobFailure::failed(message)),
     }
-    if !out.sink_status.success() {
-        return Err(JobFailure::failed(format!(
-            "pg_restore failed: {}",
-            sanitize_error(&out.sink_stderr)
-        )));
-    }
-    Ok(())
 }
 
 /// Headless one-shot form of [`run_db_sync_managed`].
@@ -1266,8 +1740,36 @@ pub fn check_restore_file_size(bytes: u64, cap: u64) -> Result<(), String> {
 /// list so the headless core stays readable and directly testable.
 pub struct MySqlRestoreRun<'a> {
     pub database: &'a str,
-    pub statements: &'a [String],
+    /// Statements borrowed from the script buffer (see
+    /// [`crate::db::mysql_script`]), so the dump is never copied per statement.
+    pub statements: &'a [crate::db::mysql_script::MySqlStatement<'a>],
     pub clean: bool,
+}
+
+/// Split a MySQL restore script without duplicating its text.
+///
+/// The file is read from disk **once** into a single `String`; every statement
+/// here borrows from it (`Cow::Borrowed`), so parsing a dump at the 100 MB cap
+/// adds only the statement index — not a second copy of the SQL. Only a
+/// statement that a `DELIMITER` line splits (a routine/trigger body) is joined
+/// into an owned string.
+///
+/// The statement budget is enforced here, before a connection is opened.
+pub fn parse_mysql_restore_script(
+    text: &str,
+) -> Result<Vec<crate::db::mysql_script::MySqlStatement<'_>>, String> {
+    parse_mysql_restore_script_with_cap(text, crate::commands::query::MAX_RESTORE_STATEMENTS)
+}
+
+/// [`parse_mysql_restore_script`] with an explicit statement cap, so the budget
+/// boundary is testable without a million-statement fixture.
+pub fn parse_mysql_restore_script_with_cap(
+    text: &str,
+    cap: usize,
+) -> Result<Vec<crate::db::mysql_script::MySqlStatement<'_>>, String> {
+    let statements: Vec<_> = crate::db::mysql_script::MySqlScript::new(text).collect();
+    crate::commands::query::check_statement_budget(statements.len(), cap, true)?;
+    Ok(statements)
 }
 
 /// Progress units for a restore: every statement, plus one for the clean
@@ -1283,14 +1785,23 @@ pub fn format_restore_statement_error(index_1based: usize, total: usize, detail:
     format!("Statement {index_1based} of {total} failed: {detail}")
 }
 
-/// Map a driver error for the restore path: a `KILL QUERY` cancellation must
-/// read as a cancellation, not as a broken statement.
-fn restore_statement_error(e: &sqlx::Error) -> String {
-    if crate::commands::query::is_mysql_cancel_error(e) {
-        "Query cancelled".to_string()
-    } else {
-        sanitize_error(&format!("{e}"))
-    }
+/// The error the **MySQL** restore reports for a failed statement: its 1-based
+/// index in the script *and* the line it starts on, so the user can find it in
+/// their dump. The statement text is never echoed (SQL must not be logged).
+pub fn format_mysql_restore_statement_error(
+    index_1based: usize,
+    total: usize,
+    line_1based: usize,
+    detail: &str,
+) -> String {
+    format!("Statement {index_1based} of {total} (line {line_1based}) failed: {detail}")
+}
+
+/// The error a failed MySQL clean-phase `DROP` reports. The drop is generated by
+/// us rather than read from the file, so its position is the drop's index in the
+/// plan; the SQL itself is never echoed.
+pub fn format_mysql_clean_drop_error(index_1based: usize, total: usize, detail: &str) -> String {
+    format!("Clean drop {index_1based} of {total} failed: {detail}")
 }
 
 /// Execute an already-split restore script over one live MySQL connection.
@@ -1330,13 +1841,20 @@ pub async fn run_mysql_restore_on(
             exec_restore_statement(conn, "SET FOREIGN_KEY_CHECKS = 0")
                 .await
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
-            for drop_sql in &drops {
+            for (drop_idx, drop_sql) in drops.iter().enumerate() {
                 if is_cancelled() {
                     return Err("Query cancelled".to_string());
                 }
-                exec_restore_statement(conn, drop_sql)
-                    .await
-                    .map_err(|e| restore_statement_error(&e))?;
+                if let Err(e) = exec_restore_statement(conn, drop_sql).await {
+                    if crate::commands::query::is_mysql_cancel_error(&e) {
+                        return Err("Query cancelled".to_string());
+                    }
+                    return Err(format_mysql_clean_drop_error(
+                        drop_idx + 1,
+                        drops.len(),
+                        &sanitize_error(&format!("{e}")),
+                    ));
+                }
             }
             exec_restore_statement(conn, "SET FOREIGN_KEY_CHECKS = 1")
                 .await
@@ -1346,17 +1864,18 @@ pub async fn run_mysql_restore_on(
         on_progress(done, total);
     }
 
-    for (idx, stmt) in run.statements.iter().enumerate() {
+    for stmt in run.statements {
         if is_cancelled() {
             return Err("Query cancelled".to_string());
         }
-        if let Err(e) = exec_restore_statement(conn, stmt).await {
+        if let Err(e) = exec_restore_statement(conn, stmt.text.as_ref()).await {
             if crate::commands::query::is_mysql_cancel_error(&e) {
                 return Err("Query cancelled".to_string());
             }
-            return Err(format_restore_statement_error(
-                idx + 1,
+            return Err(format_mysql_restore_statement_error(
+                stmt.index,
                 run.statements.len(),
+                stmt.line,
                 &sanitize_error(&format!("{e}")),
             ));
         }
@@ -1526,10 +2045,25 @@ pub async fn pg_restore(
         password,
     );
 
+    let accept_non_atomic = request.accept_non_atomic;
+
     // Authorize the read last: the granted path is the only input file this
     // command can be made to use, and a grant is not spent on a request that
     // fails before the job starts.
     let options = request.with_source_path(resolve_restore_input(&state.file_grants, &file_grant)?);
+
+    // Decide the transaction mode off the async runtime: checking a plain-format
+    // script reads the dump. A dump that cannot be restored atomically is refused
+    // here, before any job exists, and nothing runs — the read above is what tells
+    // us that, so such a refusal does use up the file selection (the UI says so
+    // and offers a fresh one).
+    let txn = {
+        let format = options.format.clone();
+        let path = options.file_path.clone();
+        tokio::task::spawn_blocking(move || pg_restore_txn(&format, &path, accept_non_atomic))
+            .await
+            .map_err(|e| format!("Could not start the restore: {e}"))??
+    };
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
@@ -1539,7 +2073,7 @@ pub async fn pg_restore(
     let jobs = state.jobs.clone();
 
     tokio::task::spawn_blocking(move || {
-        let result = run_pg_restore_managed(&job, &params, &options, &tools);
+        let result = run_pg_restore_managed(&job, &params, &options, txn, &tools);
         jobs.finish(&job_id_clone);
         emit_job_result(&app_handle_clone, &job_id_clone, result);
     });
@@ -1907,22 +2441,16 @@ pub async fn mysql_restore(
 
     let (host, port, via_tunnel) = mysql_endpoint(&state, &connection_id, &conn);
 
-    // Native restore: no tool resolution, no subprocess, no MYSQL_PWD in a
-    // child environment. The sqlx driver handles MySQL 8 auth and TLS.
-    let statements = {
+    // Read the dump **once**. Statements borrow from this buffer
+    // (`db::mysql_script`), so the restore never holds a second copy of the
+    // script; the buffer is moved into the job that consumes it.
+    let script = {
         let bytes = std::fs::metadata(&options.file_path)
             .map_err(|e| format!("Cannot read restore file: {e}"))?
             .len();
         check_restore_file_size(bytes, MAX_RESTORE_FILE_BYTES)?;
-        let text = std::fs::read_to_string(&options.file_path)
-            .map_err(|e| format!("Cannot read restore file: {e}"))?;
-        let statements = crate::db::sql_split::split_statements(&text);
-        crate::commands::query::check_statement_budget(
-            statements.len(),
-            crate::commands::query::MAX_RESTORE_STATEMENTS,
-            true,
-        )?;
-        statements
+        std::fs::read_to_string(&options.file_path)
+            .map_err(|e| format!("Cannot read restore file: {e}"))?
     };
 
     let database = options.database.clone();
@@ -1989,6 +2517,10 @@ pub async fn mysql_restore(
         };
 
         let result = async {
+            // Split before connecting: a script over the statement budget fails
+            // without ever opening a session. Statements borrow from `script`.
+            let statements = parse_mysql_restore_script(&script)?;
+
             let mut mconn = crate::commands::db_viewer::open_mysql_connection(
                 &host,
                 port as u16,

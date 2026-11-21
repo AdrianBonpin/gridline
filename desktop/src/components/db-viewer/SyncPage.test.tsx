@@ -139,3 +139,44 @@ describe("SyncPage MariaDB routing", () => {
     expect(detectPg).not.toHaveBeenCalled();
   });
 });
+// Ticket 33: a PostgreSQL sync restores into the target in one transaction, so a
+// failure rolls back instead of leaving a half-replaced target — and the UI says
+// so before the destructive confirmation is ticked.
+describe("SyncPage PostgreSQL atomicity", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockConnections.length = 0;
+    useBackupStore.setState({ jobs: [], activeJobId: null, progress: 0 });
+    useNotificationStore.setState({ notifications: [] });
+  });
+
+  it("states that a PostgreSQL sync rolls the target back on failure", async () => {
+    mockConnections.push(
+      { id: "pg1", db_type: "postgresql", name: "Postgres 1", database: "src" },
+      { id: "pg2", db_type: "postgresql", name: "Postgres 2", database: "dst" },
+    );
+    vi.spyOn(commands, "detectPgTools").mockResolvedValue(pgToolsOk);
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    render(<SyncPage />);
+    const [sourceSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    fireEvent.change(sourceSelect, { target: { value: "pg1" } });
+
+    const note = await screen.findByTestId("sync-atomicity");
+    expect(note.textContent).toMatch(/one\s+transaction/i);
+    expect(note.textContent).toMatch(/rolled back/i);
+    expect(note.textContent).toMatch(/left\s+unchanged/i);
+  });
+
+  it("does not claim a transaction for a non-PostgreSQL target", async () => {
+    mockConnections.push(
+      { id: "my1", db_type: "mysql", name: "MySQL 1", database: "db1" },
+      { id: "my2", db_type: "mysql", name: "MySQL 2", database: "db2" },
+    );
+    vi.spyOn(commands, "detectMysqlTools").mockResolvedValue(mysqlToolsOk);
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["db1"]);
+    render(<SyncPage />);
+    const [sourceSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    fireEvent.change(sourceSelect, { target: { value: "my1" } });
+    await waitFor(() => expect(screen.queryByTestId("sync-atomicity")).toBeNull());
+  });
+});

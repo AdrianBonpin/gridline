@@ -7,10 +7,10 @@
 **Seams:** Viewer interaction seam: catches request identity and cancellation; built-product seam: catches keyboard behavior in a real window.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/107
-**Status:** ready
+**Status:** done
 
-- [ ] Switching tabs, editing the SQL, or changing origin invalidates a pending confirmation.
-- [ ] A keyboard shortcut cannot execute or relocate a pending confirmation.
-- [ ] The dialog traps focus, Escape cancels, and the editor behind cannot receive typing.
-- [ ] The dialog names the offending statement and its position in the script.
-- [ ] Confirming executes exactly the reviewed text once.
+- [x] Switching tabs, editing the SQL, or changing origin invalidates a pending confirmation.
+- [x] A keyboard shortcut cannot execute or relocate a pending confirmation.
+- [x] The dialog traps focus, Escape cancels, and the editor behind cannot receive typing.
+- [x] The dialog names the offending statement and its position in the script.
+- [x] Confirming executes exactly the reviewed text once.
