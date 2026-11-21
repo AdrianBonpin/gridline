@@ -1,4 +1,3 @@
-import { HarnessError } from "./errors.mjs";
 import {
   DEMO_CONNECTION_NAME,
   DEMO_TABLE,
@@ -7,6 +6,7 @@ import {
   gridSelector,
   tableTreeItemSelector,
 } from "./expectations.mjs";
+import { waitForRenderedCells } from "./gridContent.mjs";
 import { pollUntil } from "./poll.mjs";
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -22,11 +22,6 @@ function clock(options) {
   };
 }
 
-function snippet(text, limit = 240) {
-  const collapsed = String(text).replace(/\s+/g, " ").trim();
-  return collapsed.length > limit ? `${collapsed.slice(0, limit)}…` : collapsed;
-}
-
 /**
  * Wait for a CSS selector to match, polling while the webview boots.
  * @returns {Promise<{elementId: string}>}
@@ -40,51 +35,6 @@ export function waitForElement(driver, selector, options) {
     sleep: time.sleep,
     now: time.now,
   });
-}
-
-/**
- * Wait until the grid element exists *and* its rendered text contains every
- * expected cell value. A mounted grid with empty or placeholder content is a
- * failure, not a pass: this is the assertion that the demo data actually
- * reached the screen.
- *
- * @returns {Promise<string>} the matching grid text
- */
-export async function waitForGridContent(driver, selector, expectedCells, options) {
-  const time = clock(options);
-  let lastText = "";
-  let missing = [...expectedCells];
-  let sawGrid = false;
-
-  try {
-    return await pollUntil(
-      async () => {
-        const grid = await driver.findElement(selector);
-        if (!grid) return null;
-        sawGrid = true;
-        lastText = await driver.elementText(grid);
-        missing = expectedCells.filter((cell) => !lastText.includes(cell));
-        return missing.length === 0 ? lastText : null;
-      },
-      {
-        timeoutMs: time.timeoutMs,
-        intervalMs: time.intervalMs,
-        label: `${JSON.stringify(selector)} grid content`,
-        sleep: time.sleep,
-        now: time.now,
-      },
-    );
-  } catch (error) {
-    if (!sawGrid) {
-      throw new HarnessError(
-        `${JSON.stringify(selector)} never rendered within ${time.timeoutMs}ms, so no grid content could be asserted`,
-      );
-    }
-    throw new HarnessError(
-      `grid never showed ${missing.map((cell) => JSON.stringify(cell)).join(", ")} ` +
-        `within ${time.timeoutMs}ms (last grid text: ${snippet(lastText) || "<empty>"})`,
-    );
-  }
 }
 
 /**
@@ -134,8 +84,8 @@ export async function runDemoSmokeFlow(driver, options = {}) {
     );
     await step(`explorer: open ${table}`, () => driver.click(tableItem));
 
-    const gridText = await step(`grid: seeded ${table} rows visible`, () =>
-      waitForGridContent(driver, gridSelector(), expectedCells, {
+    const rendered = await step(`grid: seeded ${table} rows visible`, () =>
+      waitForRenderedCells(driver, gridSelector(), expectedCells, {
         timeoutMs: time.timeoutMs,
         intervalMs: time.intervalMs,
         sleep: time.sleep,
@@ -143,7 +93,7 @@ export async function runDemoSmokeFlow(driver, options = {}) {
       }),
     );
 
-    return { steps, gridText };
+    return { steps, renderedCells: rendered.cells };
   } catch (error) {
     // Attach completed steps so the failure report shows how far the app got.
     if (error && typeof error === "object") error.steps = steps;

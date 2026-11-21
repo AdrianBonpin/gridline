@@ -74,6 +74,44 @@ export class WebDriverClient {
     }
   }
 
+  /**
+   * Every element matching a CSS selector. An empty list means "nothing yet"
+   * (the W3C spec answers 200 with `[]`), so callers can poll it safely.
+   *
+   * @param {string} cssSelector
+   * @returns {Promise<Array<{elementId: string}>>}
+   */
+  async findElements(cssSelector) {
+    const value = await this.#request("POST", this.#sessionPath("/elements"), {
+      using: "css selector",
+      value: cssSelector,
+    });
+    if (!Array.isArray(value)) return [];
+    return value.map((entry) => {
+      const elementId = entry?.[ELEMENT_KEY];
+      return elementId ? { elementId } : null;
+    }).filter((entry) => entry !== null);
+  }
+
+  /**
+   * Read an element attribute (`null` when the attribute is absent).
+   *
+   * This is the assertion source the harness needs: WebKitWebDriver's `/text`
+   * endpoint only returns inline content, so block-level grid cells report ""
+   * while their `title` attribute holds the rendered value.
+   *
+   * @param {{elementId: string}} element
+   * @param {string} name
+   * @returns {Promise<string | null>}
+   */
+  async getAttribute(element, name) {
+    const value = await this.#request(
+      "GET",
+      this.#sessionPath(`/element/${element.elementId}/attribute/${encodeURIComponent(name)}`),
+    );
+    return value == null ? null : String(value);
+  }
+
   /** @param {{elementId: string}} element */
   async click(element) {
     await this.#request(

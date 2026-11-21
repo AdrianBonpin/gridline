@@ -59,11 +59,36 @@ setup is needed on a headless Linux box. Useful flags (`bun run e2e:desktop --
 3. `explorer: products listed in the table tree` — the introspected demo tables
    reached the UI.
 4. `explorer: open products` — a table tab opens.
-5. `grid: seeded products rows visible` — the grid's rendered **text** contains
-   seeded cell values (`GL-MSE-001`, `Gridline Wireless Mouse`).
+5. `grid: seeded products rows visible` — rendered **cells of data rows** expose
+   the seeded values (`GL-MSE-001`, `Gridline Wireless Mouse`) through the
+   WebDriver attribute endpoint.
 
 Step 5 is the point of the harness: a live process, a mapped window, and even a
 mounted grid are not proof. Only rendered seeded data is.
+
+### Why the grid assertion reads attributes, not text
+
+`WebKitWebDriver`'s `GET /element/{id}/text` returns inline content only. Every
+cell in `VirtualDataGrid` renders its value as a bare text node inside a block
+`<div>`, so `/text` answers `""` for a perfectly rendered grid (header labels,
+which are wrapped in a `<span>`, do report text — which is why a text-based
+assertion looked plausible and then failed forever). The cell's own `title`
+attribute carries exactly what the user sees, and
+`GET /element/{id}/attribute/title` reports it:
+
+```
+[role="grid"] /text:        len=377  contains sku=false
+[data-index="1"] /text:     len=10   "{ 4 keys }"
+[title="GL-MSE-001"] /text: len=0    ""
+      .../attribute/title = "GL-MSE-001"
+```
+
+So [`gridContent.mjs`](./gridContent.mjs) scope-asserts on cells of data rows
+(`[role="grid"] [data-index] > div`, header cells excluded), reads each cell's
+`title` (falling back to `/text` for cells without one), and requires every
+expected fixture value to appear on a rendered cell. Page source is **never** an
+assertion path — a value can sit in the DOM without being painted — it is only
+quoted in the failure message to distinguish "not painted" from "not loaded".
 
 The expected connection name, table and cell values live in
 [`expectations.mjs`](./expectations.mjs) and are checked against the seeder
@@ -102,8 +127,10 @@ job fails. CI uploads the folder with `if: failure()`.
 
 1. Write the flow as an async function `(driver, {timeoutMs, intervalMs}) =>
    { steps, ... }` using the `WebDriverClient` interface and `pollUntil` /
-   `waitForElement` (see [`smokeFlow.mjs`](./smokeFlow.mjs)). The driver is
-   injected, so the flow itself is unit-testable with a fake.
+   `waitForElement` (see [`smokeFlow.mjs`](./smokeFlow.mjs)). For grid content
+   use `waitForRenderedCells` ([`gridContent.mjs`](./gridContent.mjs)) instead of
+   `elementText`. The driver is injected, so the flow itself is unit-testable
+   with a fake.
 2. Register a short description in `FLOWS` ([`preflight.mjs`](./preflight.mjs))
    and the runner in `FLOW_RUNNERS` ([`run.mjs`](./run.mjs)).
 3. If the flow needs a stable DOM anchor, add a `data-testid`/`data-*` attribute

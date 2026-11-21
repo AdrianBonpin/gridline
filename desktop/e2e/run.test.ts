@@ -53,6 +53,8 @@ function fakeClient() {
     }),
     deleteSession: vi.fn(async () => {}),
     findElement: vi.fn(async () => null),
+    findElements: vi.fn(async () => []),
+    getAttribute: vi.fn(async () => null),
     click: vi.fn(async () => {}),
     elementText: vi.fn(async () => ""),
     screenshot: vi.fn(async () => "iVBORw0KGgo="),
@@ -70,7 +72,7 @@ describe("executeRun", () => {
         { name: "home: Gridline Demo (SQLite) card visible", durationMs: 5 },
         { name: "grid: seeded products rows visible", durationMs: 7 },
       ],
-      gridText: "GL-MSE-001 Gridline Wireless Mouse",
+      renderedCells: ["GL-MSE-001", "Gridline Wireless Mouse"],
     }));
     const log: string[] = [];
 

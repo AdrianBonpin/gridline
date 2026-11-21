@@ -104,6 +104,43 @@ describe("WebDriverClient", () => {
     expect(calls[1].body).toEqual({});
   });
 
+  it("lists matching elements and reads a cell attribute", async () => {
+    // The attribute endpoint is the harness's assertion source: WebKitWebDriver
+    // returns no rendered text for block-level grid cells, but `title` holds the
+    // value the user sees.
+    const { calls, fetchImpl } = fakeDriver([
+      {
+        status: 200,
+        body: {
+          value: [{ [ELEMENT_KEY]: "e1" }, { [ELEMENT_KEY]: "e2" }],
+        },
+      },
+      { status: 200, body: { value: "GL-MSE-001" } },
+      { status: 200, body: { value: null } },
+    ]);
+    const client = clientFor(fetchImpl);
+    client.sessionId = "s1";
+
+    const cells = await client.findElements('[role="grid"] [data-index] > div');
+    expect(cells).toEqual([{ elementId: "e1" }, { elementId: "e2" }]);
+    expect(calls[0].url).toBe(`${BASE}/session/s1/elements`);
+    expect(calls[0].body).toEqual({
+      using: "css selector",
+      value: '[role="grid"] [data-index] > div',
+    });
+
+    await expect(client.getAttribute(cells[0], "title")).resolves.toBe("GL-MSE-001");
+    expect(calls[1].url).toBe(`${BASE}/session/s1/element/e1/attribute/title`);
+    await expect(client.getAttribute(cells[1], "title")).resolves.toBeNull();
+  });
+
+  it("answers an empty element list instead of failing when nothing matches", async () => {
+    const { fetchImpl } = fakeDriver([{ status: 200, body: { value: [] } }]);
+    const client = clientFor(fetchImpl);
+    client.sessionId = "s1";
+    await expect(client.findElements("#nothing")).resolves.toEqual([]);
+  });
+
   it("captures a screenshot and the page source", async () => {
     const { calls, fetchImpl } = fakeDriver([
       { status: 200, body: { value: "iVBORw0KGgo=" } },
