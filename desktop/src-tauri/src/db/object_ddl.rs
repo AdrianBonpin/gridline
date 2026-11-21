@@ -348,6 +348,43 @@ fn sqlite_alterable(edit: &SqliteEdit<'_>) -> bool {
     }
 }
 
+/// Does applying this column submission need a table rebuild (rather than
+/// statements `ALTER TABLE` can express)?
+///
+/// The editor asks this before staging and the change builder asks it before
+/// generating SQL, so both agree on when a rebuild — and therefore the rebuild
+/// guard — applies.
+pub fn sqlite_edit_requires_rebuild(
+    old: &[SqliteColumn],
+    new: &[SqliteColumn],
+) -> Result<bool, String> {
+    if new.is_empty() {
+        return Err("EDIT TABLE requires at least one column".into());
+    }
+    let (edits, renames) = sqlite_resolve_edits(old, new)?;
+    let renamed_away: std::collections::HashSet<&str> =
+        renames.iter().map(|(from, _)| *from).collect();
+    let new_names: std::collections::HashSet<&str> = new.iter().map(|c| c.name.as_str()).collect();
+
+    // A dropped column and any non-ALTER-able change need a rebuild.
+    let dropped = old
+        .iter()
+        .any(|c| !new_names.contains(c.name.as_str()) && !renamed_away.contains(c.name.as_str()));
+    let reordered = {
+        let sources: Vec<&str> = edits
+            .iter()
+            .filter_map(|e| e.source.map(|c| c.name.as_str()))
+            .collect();
+        let live: Vec<&str> = old
+            .iter()
+            .map(|c| c.name.as_str())
+            .filter(|n| sources.contains(n))
+            .collect();
+        sources != live
+    };
+    Ok(dropped || reordered || edits.iter().any(|e| !sqlite_alterable(e)))
+}
+
 /// Emit one statement per needed edit; falls back to a rebuild script (multi-stmt)
 /// for edits SQLite's ALTER TABLE can't express.
 ///
@@ -382,27 +419,7 @@ pub fn sqlite_column_diff_sql(
             ));
         }
     }
-    let renamed_away: std::collections::HashSet<&str> =
-        renames.iter().map(|(from, _)| *from).collect();
-    let new_names: std::collections::HashSet<&str> = new.iter().map(|c| c.name.as_str()).collect();
-
-    // A dropped column and any non-ALTER-able change need a rebuild.
-    let dropped = old
-        .iter()
-        .any(|c| !new_names.contains(c.name.as_str()) && !renamed_away.contains(c.name.as_str()));
-    let reordered = {
-        let sources: Vec<&str> = edits
-            .iter()
-            .filter_map(|e| e.source.map(|c| c.name.as_str()))
-            .collect();
-        let live: Vec<&str> = old
-            .iter()
-            .map(|c| c.name.as_str())
-            .filter(|n| sources.contains(n))
-            .collect();
-        sources != live
-    };
-    if dropped || reordered || edits.iter().any(|e| !sqlite_alterable(e)) {
+    if sqlite_edit_requires_rebuild(old, new)? {
         return sqlite_rebuild_script(table, old, new);
     }
 
@@ -506,15 +523,6 @@ pub fn sqlite_rebuild_script(
             quote_ident(table)
         ),
     ])
-}
-
-/// Fail-closed readiness reason, or None if rebuild is safe.
-/// AUTOINCREMENT tables are refused in v0.7.8 (rowid counter would be lost).
-pub fn sqlite_rebuild_refusal(old: &[SqliteColumn]) -> Option<String> {
-    if old.iter().any(|c| c.auto_increment) {
-        return Some("rebuild is not supported for AUTOINCREMENT tables in v0.7.8 (rowid counter would be lost)".into());
-    }
-    None
 }
 
 #[cfg(test)]

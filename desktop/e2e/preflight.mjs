@@ -16,6 +16,8 @@ export const FLOWS = {
     "prove a destructive script is confirmed from both the initial Run button and the toolbar re-run control, and that a keyboard shortcut cannot execute the pending confirmation while Escape cancels it",
   "composite-edit":
     "edit one cell of the demo's composite-primary-key table and assert that only that row changed",
+  "sqlite-rebuild":
+    "prove a SQLite rebuild is refused before staging for an unpreservable table shape and, for a supported one, completes as one change that keeps every row",
 };
 
 const USAGE = `usage: bun run e2e [options]

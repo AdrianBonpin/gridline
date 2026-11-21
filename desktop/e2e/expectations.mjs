@@ -129,3 +129,76 @@ export function changesQueueSelector() {
 export function commitAllSelector() {
   return '[data-testid="commit-all"]';
 }
+
+// ---------------------------------------------------------------------------
+// SQLite rebuild flow (ticket 08)
+// ---------------------------------------------------------------------------
+
+/**
+ * A demo table no rebuild can reproduce faithfully today: `order_items` carries
+ * a composite primary key, a CHECK, foreign keys, and an explicit index, and the
+ * rebuild script drops every one of them. The editor must refuse the rebuild
+ * and stage nothing.
+ */
+export const REBUILD_REFUSED_TABLE = "order_items";
+
+/**
+ * A table the flow creates itself (through the query workspace) so the rebuild
+ * has a shape it can complete: no AUTOINCREMENT, index, trigger, key, check,
+ * unique, generated column, collation, expression default, or table option.
+ */
+export const REBUILD_CREATED_TABLE = "e2e_rebuild";
+
+/** Seeded rows the completed rebuild must still show. */
+export const REBUILD_CREATED_CELLS = ["alpha", "beta"];
+
+/** The column the completed rebuild drops, with its seeded value. */
+export const REBUILD_DROPPED_COLUMN = "note";
+export const REBUILD_DROPPED_VALUES = ["first", "second"];
+
+/**
+ * Create + seed the rebuild fixture through the query workspace. Two statements
+ * in one run: the app stages schema work through `execute_query`/`Ddl`, and a
+ * `CREATE TABLE` reaching the database is what makes the table appear in the
+ * tree. The script never touches demo data.
+ */
+export function rebuildFixtureScript() {
+  return (
+    `CREATE TABLE ${REBUILD_CREATED_TABLE} (` +
+    "id INTEGER PRIMARY KEY, label TEXT NOT NULL, note TEXT); " +
+    `INSERT INTO ${REBUILD_CREATED_TABLE} (id, label, note) VALUES ` +
+    "(1, 'alpha', 'first'), (2, 'beta', 'second');"
+  );
+}
+
+/** The table row's overflow button (the one that opens the actions menu). */
+export function tableOptionsSelector(table) {
+  return `[data-testid="table-tree-item"][data-table-name="${table}"] [aria-label="Table options"]`;
+}
+
+/** One item of that menu, e.g. `edit_table`. */
+export function tableMenuItemSelector(id) {
+  return `[data-testid="table-menu-${id}"]`;
+}
+
+/** The table editor's rebuild refusal banner (the editor itself, not a queue error). */
+export function rebuildRefusalSelector() {
+  return '[data-testid="rebuild-refusal"]';
+}
+
+/** The table editor's Stage button. */
+export function tableFormStageSelector() {
+  return '[data-testid="table-form-stage"]';
+}
+
+/** Every "Remove column" control in the editor, in column order. */
+export function removeColumnSelector() {
+  return '[aria-label="Remove column"]';
+}
+
+/**
+ * Wording any refusal must carry for the demo's rich table: the blocker names
+ * come from the backend guard, so the assertion accepts the ones a rebuild of
+ * `order_items` would drop rather than pinning one exact sentence.
+ */
+export const REBUILD_REFUSAL_WORDS = ["CHECK", "FOREIGN KEY", "UNIQUE", "indexes"];

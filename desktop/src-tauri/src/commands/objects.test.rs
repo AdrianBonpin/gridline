@@ -273,6 +273,182 @@ async fn sqlite_edit_explicit_rename_keeps_values_under_the_new_name() {
     assert_eq!(rows, vec!["1|ada"], "the value followed the column");
 }
 
+// ---------------------------------------------------------------------------
+// SQLite rebuild guard: a submission that needs a rebuild is refused before any
+// mutation, with a reason naming the blocker (ticket 08)
+// ---------------------------------------------------------------------------
+
+/// The demo `order_items` shape: composite PK, a CHECK, a foreign key, and an
+/// explicit index — every one of which the current rebuild script would drop.
+const RICH_TABLE: &str = r#"
+CREATE TABLE "main"."order_items" (
+    "order_id"   INTEGER NOT NULL REFERENCES "orders"("id"),
+    "product_id" INTEGER NOT NULL,
+    "quantity"   INTEGER NOT NULL DEFAULT 1 CHECK ("quantity" > 0),
+    "unit_price" REAL NOT NULL,
+    PRIMARY KEY ("order_id", "product_id")
+);
+CREATE INDEX "main"."idx_order_items_product_id" ON "order_items"("product_id");
+INSERT INTO "main"."order_items" VALUES (1, 7, 2, 34.99);
+"#;
+
+async fn pool_with_rich_table() -> tokio::sync::Mutex<ConnectionPoolManager> {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(
+        &pm,
+        &[
+            "CREATE TABLE \"main\".\"orders\" (\"id\" INTEGER PRIMARY KEY)".into(),
+            "INSERT INTO \"main\".\"orders\" VALUES (1)".into(),
+            RICH_TABLE.to_string(),
+        ],
+    )
+    .await;
+    pm
+}
+
+fn rich_columns() -> serde_json::Value {
+    serde_json::json!([
+        { "name": "order_id", "type": "INTEGER", "nullable": false, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+        { "name": "product_id", "type": "INTEGER", "nullable": false, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+        { "name": "quantity", "type": "INTEGER", "nullable": false, "default": "1", "is_pk": false, "auto_increment": false, "unique": false },
+        { "name": "unit_price", "type": "REAL", "nullable": false, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
+    ])
+}
+
+#[tokio::test]
+async fn sqlite_edit_that_needs_a_rebuild_is_refused_with_the_blockers() {
+    let pm = pool_with_rich_table().await;
+    // Changing a declared type cannot be expressed by ALTER TABLE, so this
+    // submission is a rebuild — and that rebuild would drop the CHECK, the
+    // foreign key, and the index.
+    let mut columns = rich_columns();
+    columns[2]["type"] = serde_json::json!("TEXT");
+    let params = serde_json::json!({
+        "schema": "main", "name": "order_items",
+        "action": { "op": "edit", "columns": columns }
+    });
+    let err = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .expect_err("an unpreservable rebuild must be refused");
+    assert!(err.contains("Cannot rebuild"), "{err}");
+    for blocker in ["CHECK", "FOREIGN KEY", "indexes"] {
+        assert!(
+            err.contains(blocker),
+            "the refusal names every blocker, missing {blocker}: {err}"
+        );
+    }
+    assert!(err.contains("idx_order_items_product_id"), "{err}");
+}
+
+#[tokio::test]
+async fn sqlite_edit_that_needs_no_rebuild_is_still_staged() {
+    // The guard must not refuse ALTER-only work on a table it would refuse to
+    // rebuild: adding a nullable column touches no metadata.
+    let pm = pool_with_rich_table().await;
+    let mut columns = rich_columns();
+    columns.as_array_mut().unwrap().push(serde_json::json!(
+        { "name": "discount", "type": "REAL", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
+    ));
+    let params = serde_json::json!({
+        "schema": "main", "name": "order_items",
+        "action": { "op": "edit", "columns": columns }
+    });
+    let sqls = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .expect("an ALTER-only edit needs no rebuild guard");
+    assert_eq!(
+        sqls,
+        vec!["ALTER TABLE \"main\".\"order_items\" ADD COLUMN \"discount\" REAL".to_string()],
+        "only the add is staged"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_rebuild_op_is_refused_with_the_blockers() {
+    let pm = pool_with_rich_table().await;
+    let params = serde_json::json!({
+        "schema": "main", "name": "order_items",
+        "action": { "op": "rebuild", "columns": rich_columns() }
+    });
+    let err = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .expect_err("a rich table cannot be rebuilt faithfully");
+    assert!(err.contains("Cannot rebuild"), "{err}");
+    assert!(err.contains("CHECK"), "{err}");
+}
+
+#[tokio::test]
+async fn sqlite_rebuild_readiness_answers_for_the_proposed_columns() {
+    let pm = pool_with_rich_table().await;
+    // ALTER-only submission: no rebuild, so no refusal — even though the table
+    // could not be rebuilt.
+    let mut added = rich_columns();
+    added.as_array_mut().unwrap().push(serde_json::json!(
+        { "name": "discount", "type": "REAL", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
+    ));
+    let ready = get_table_rebuild_readiness_inner(&pm, "c", "main", "order_items", Some(added))
+        .await
+        .unwrap();
+    assert!(ready.ok, "{ready:?}");
+    assert!(ready.reasons.is_empty(), "{ready:?}");
+
+    // A type change is a rebuild: refused, with every blocker as a reason.
+    let mut retyped = rich_columns();
+    retyped[2]["type"] = serde_json::json!("TEXT");
+    let refused = get_table_rebuild_readiness_inner(&pm, "c", "main", "order_items", Some(retyped))
+        .await
+        .unwrap();
+    assert!(!refused.ok, "{refused:?}");
+    assert!(
+        refused.reasons.iter().any(|r| r.contains("CHECK")),
+        "the readiness reasons name the blocker: {refused:?}"
+    );
+
+    // Without proposed columns the answer is about the live table as-is.
+    let live = get_table_rebuild_readiness_inner(&pm, "c", "main", "order_items", None)
+        .await
+        .unwrap();
+    assert!(
+        !live.ok,
+        "a rich table cannot be reordered either: {live:?}"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_rebuild_readiness_allows_a_plain_table() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(
+        &pm,
+        &[
+            "CREATE TABLE \"main\".\"t\" (\"id\" INTEGER PRIMARY KEY, \"label\" TEXT NOT NULL)"
+                .into(),
+            "INSERT INTO \"main\".\"t\" VALUES (1, 'alpha')".into(),
+        ],
+    )
+    .await;
+    let columns = serde_json::json!([
+        { "name": "label", "type": "TEXT", "nullable": false, "default": null, "is_pk": false, "auto_increment": false, "unique": false },
+        { "name": "id", "type": "INTEGER", "nullable": true, "default": null, "is_pk": true, "auto_increment": false, "unique": false }
+    ]);
+    // A reorder: a rebuild, and this table carries nothing a rebuild would drop.
+    let ready = get_table_rebuild_readiness_inner(&pm, "c", "main", "t", Some(columns.clone()))
+        .await
+        .unwrap();
+    assert!(ready.ok, "{ready:?}");
+
+    let params = serde_json::json!({
+        "schema": "main", "name": "t",
+        "action": { "op": "edit", "columns": columns }
+    });
+    let sqls = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .expect("a plain table can be rebuilt");
+    assert!(
+        sqls.iter().any(|s| s.contains("_gl_t_tmp")),
+        "the reorder produced a rebuild script: {sqls:?}"
+    );
+}
+
 #[tokio::test]
 async fn execute_change_sqlite_ddl_runs_create() {
     let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
@@ -406,6 +582,7 @@ async fn rebuild_table_rolls_back_on_failure() {
         THIS IS NOT SQL;";
     let change = crate::models::db_viewer::Change::RebuildTable {
         id: "rb".into(),
+        table: "rebuild_t".into(),
         sql: bad_script.to_string(),
     };
     let res = crate::commands::db_viewer::execute_change_inner(&pm, &id, change).await;

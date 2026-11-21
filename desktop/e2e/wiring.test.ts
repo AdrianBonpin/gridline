@@ -96,11 +96,19 @@ describe("registered flows", () => {
     expect(Object.keys(FLOW_RUNNERS).sort()).toEqual(Object.keys(FLOWS).sort());
     expect(FLOWS["composite-edit"]).toContain("composite-primary-key");
     expect(typeof FLOW_RUNNERS["composite-edit"]).toBe("function");
+    expect(FLOWS["sqlite-rebuild"]).toContain("refused before staging");
+    expect(typeof FLOW_RUNNERS["sqlite-rebuild"]).toBe("function");
   });
 
   it("documents the composite-key edit flow in the harness README", () => {
     const readme = read("desktop/e2e/README.md");
     expect(readme).toContain("composite-edit");
     expect(readme).toContain("sibling");
+  });
+
+  it("documents the SQLite rebuild flow in the harness README", () => {
+    const readme = read("desktop/e2e/README.md");
+    expect(readme).toContain("sqlite-rebuild");
+    expect(readme).toContain("rebuild-refusal");
   });
 });

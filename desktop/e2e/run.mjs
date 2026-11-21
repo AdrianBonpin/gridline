@@ -18,6 +18,7 @@ import { FLOWS, planRun } from "./preflight.mjs";
 import { runCompositeEditFlow } from "./compositeEditFlow.mjs";
 import { runDemoSmokeFlow } from "./smokeFlow.mjs";
 import { runDestructiveRerunFlow } from "./destructiveFlow.mjs";
+import { runSqliteRebuildFlow } from "./sqliteRebuildFlow.mjs";
 import { buildCapabilities, startTauriDriver } from "./tauriDriver.mjs";
 import { WebDriverClient } from "./webdriverClient.mjs";
 
@@ -26,6 +27,7 @@ export const FLOW_RUNNERS = {
   "demo-smoke": runDemoSmokeFlow,
   "destructive-rerun": runDestructiveRerunFlow,
   "composite-edit": runCompositeEditFlow,
+  "sqlite-rebuild": runSqliteRebuildFlow,
 };
 
 export function reexecCommand({ argv, execPath, scriptPath }) {

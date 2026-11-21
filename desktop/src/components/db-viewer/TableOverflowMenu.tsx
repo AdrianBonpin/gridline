@@ -401,6 +401,7 @@ export function TableOverflowMenu({
                 key={item.id}
                 type="button"
                 onClick={() => handleAction(item.id)}
+                data-testid={`table-menu-${item.id}`}
                 className={[
                   "flex items-center justify-between px-3 py-2 text-sm w-full text-left transition-colors cursor-pointer",
                   item.danger ? "text-red-400 hover:bg-red-500/10 hover:text-red-300" : "text-text-muted hover:text-text hover:bg-surface-raised",

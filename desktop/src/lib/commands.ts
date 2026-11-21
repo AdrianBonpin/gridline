@@ -565,8 +565,21 @@ export async function getRolePrivileges(connectionId: string, role: string): Pro
 export async function getTableColumns(connectionId: string, schema: string, table: string): Promise<ColumnInfo[]> {
   return invoke<ColumnInfo[]>("get_table_columns", { connectionId, schema, table });
 }
-export async function getTableRebuildReadiness(connectionId: string, schema: string, table: string): Promise<RebuildReadiness> {
-  return invoke<RebuildReadiness>("get_table_rebuild_readiness", { connectionId, schema, table });
+/**
+ * Can this table be rebuilt — and, when `columns` is supplied, would staging
+ * those columns need a rebuild at all?
+ *
+ * The table editor asks with the columns it is about to stage, so an ALTER-only
+ * submission on a table that could not be rebuilt is not refused, while a
+ * submission that *would* rebuild one is refused with every blocker named.
+ */
+export async function getTableRebuildReadiness(
+  connectionId: string,
+  schema: string,
+  table: string,
+  columns?: unknown,
+): Promise<RebuildReadiness> {
+  return invoke<RebuildReadiness>("get_table_rebuild_readiness", { connectionId, schema, table, columns });
 }
 export async function runMaintenance(connectionId: string, schema: string, table: string, action: "vacuum" | "analyze" | "reindex"): Promise<MaintenanceResult> {
   return invoke<MaintenanceResult>("run_maintenance", { connectionId, schema, table, action });
