@@ -12,6 +12,7 @@ import { useConnectionStore } from "../../stores/connectionStore";
 import { useQueryStore } from "../../stores/queryStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import * as commands from "../../lib/commands";
+import { rowSelectionKey } from "../../lib/rowSelection";
 import type { Connection } from "../../lib/types";
 
 vi.mock("../../hooks/useDbConnection", () => ({
@@ -2138,5 +2139,227 @@ describe("viewer identity and freshness", () => {
         // The failed table keeps its optimistic marker; only refreshed ones clear.
         const remaining = useDbViewerStore.getState().changesQueue.map((c) => c.table);
         expect(remaining).toEqual(["posts"]);
+    });
+});
+
+describe("selection follows Row Identity", () => {
+    // orders — a composite-PK table: two rows share order_id and differ by
+    // product_id, so a positional selection or a single-column key collides.
+    const orderColumns = [
+        { name: "order_id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+        { name: "product_id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+        { name: "quantity", data_type: "integer", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    ];
+    const page1 = [
+        [1, 1, 2],
+        [1, 3, 1],
+    ];
+    const page2 = [
+        [2, 1, 5],
+        [2, 3, 4],
+    ];
+
+    const ordersPage = (page: number) => ({
+        columns: orderColumns,
+        rows: page === 2 ? page2 : page1,
+        total_rows: 100,
+        page,
+        page_size: 50,
+    });
+
+    function mockOrders() {
+        return vi.spyOn(commands, "getTableData").mockImplementation(((...
+            args: unknown[]
+        ) => {
+            const page = args[3] as number;
+            return Promise.resolve(ordersPage(page));
+        }) as never);
+    }
+
+    function seedOrders() {
+        const store = useDbViewerStore.getState();
+        store.openTab("public", "orders");
+        const tabId = useDbViewerStore.getState().activeTabId!;
+        store.setTabData(tabId, ordersPage(1) as any);
+        return tabId;
+    }
+
+    function tabState(tabId: string) {
+        return useDbViewerStore.getState().tabs.find((t) => t.id === tabId)!;
+    }
+
+    // Every checkbox in the grid: [0] is select-all, the rest are the rows.
+    const rowCheckboxes = () => screen.getAllByRole("checkbox").slice(1);
+
+    function renderScreen() {
+        return render(
+            <DbViewerScreen connectionId="c1" onHome={() => {}} onSettings={() => {}} />,
+        );
+    }
+
+    const selectedLabel = () => screen.queryByText(/^\d+ selected$/);
+    const actionsButton = () => screen.queryByText("Actions");
+
+    beforeEach(() => {
+        useDbViewerStore.getState().reset();
+        useConnectionStore.setState({
+            connections: [
+                { id: "c1", name: "local", db_type: "postgresql", host: "localhost", port: 5432, username: "dev", database: "mydb", folder_id: null, keychain_ref: null, tag_ids: [], favorite: false, created_at: "", updated_at: "" },
+            ] as Connection[],
+        });
+        useUiStore.setState({ activeConnectionId: "c1" });
+        useDbViewerStore.setState({
+            databases: ["mydb"],
+            schemas: ["public"],
+            tables: [
+                { name: "orders", schema: "public", table_type: "TABLE" },
+                { name: "users", schema: "public", table_type: "TABLE" },
+            ],
+            currentDatabase: "mydb",
+            currentSchema: "public",
+        });
+        vi.resetAllMocks();
+    });
+
+    it("stages only currently visible rows when bulk delete follows a page change", async () => {
+        mockOrders();
+        const tabId = seedOrders();
+        renderScreen();
+
+        // Select the second row of page 1 (order 1, product 3).
+        await waitFor(() => expect(rowCheckboxes()).toHaveLength(2));
+        fireEvent.click(rowCheckboxes()[1]!);
+        expect(await screen.findByText("1 selected")).toBeInTheDocument();
+
+        // Page 2 has the same positions but entirely different rows.
+        fireEvent.click(screen.getByLabelText("Next page"));
+        await waitFor(() => expect(tabState(tabId).data?.rows).toEqual(page2));
+
+        // Nothing page 1 selected is on screen now, so nothing is selected:
+        // no count, no bulk actions, and no staged delete to run.
+        expect(selectedLabel()).toBeNull();
+        expect(actionsButton()).toBeNull();
+        expect(useDbViewerStore.getState().changesQueue).toEqual([]);
+
+        // Selecting a page-2 row deletes exactly that row.
+        fireEvent.click(rowCheckboxes()[1]!);
+        fireEvent.click(await screen.findByText("Actions"));
+        fireEvent.click(screen.getByText("Delete selected rows"));
+
+        const staged = useDbViewerStore.getState().changesQueue;
+        expect(staged).toHaveLength(1);
+        expect(staged[0]!.type).toBe("delete");
+        expect(staged[0]!.primaryKey).toEqual({ order_id: 2, product_id: 3 });
+    });
+
+    it("clears the selection on a filter change, a sort change, and a tab change", async () => {
+        mockOrders();
+        const tabId = seedOrders();
+        renderScreen();
+        await waitFor(() => expect(rowCheckboxes()).toHaveLength(2));
+
+        const selectFirstRow = async () => {
+            fireEvent.click(rowCheckboxes()[0]!);
+            expect(await screen.findByText("1 selected")).toBeInTheDocument();
+        };
+
+        await selectFirstRow();
+        act(() =>
+            useDbViewerStore
+                .getState()
+                .setSortRules(tabId, [{ id: "s1", column: "quantity", order: "desc" }]),
+        );
+        await waitFor(() => expect(selectedLabel()).toBeNull());
+
+        await waitFor(() => expect(rowCheckboxes()).toHaveLength(2));
+        await selectFirstRow();
+        act(() =>
+            useDbViewerStore
+                .getState()
+                .setFilterRules(tabId, [
+                    { id: "f1", column: "quantity", operator: "gt", value: "1" },
+                ]),
+        );
+        await waitFor(() => expect(selectedLabel()).toBeNull());
+
+        await waitFor(() => expect(rowCheckboxes()).toHaveLength(2));
+        await selectFirstRow();
+        act(() => useDbViewerStore.getState().openTab("public", "users"));
+        await waitFor(() => expect(selectedLabel()).toBeNull());
+
+        // Coming back to the original tab does not restore the selection.
+        act(() => useDbViewerStore.getState().setActiveTab(tabId));
+        await waitFor(() => expect(rowCheckboxes()).toHaveLength(2));
+        expect(selectedLabel()).toBeNull();
+    });
+
+    it("never counts a selected key whose row is no longer on screen", async () => {
+        mockOrders();
+        const tabId = seedOrders();
+        renderScreen();
+        await waitFor(() => expect(rowCheckboxes()).toHaveLength(2));
+
+        // The selection lifecycle clears on every dataset change; this simulates
+        // the case where the rows are replaced out of band. The selected key
+        // must still resolve against the rows on screen — page 1's selection is
+        // not page 2's rows.
+        const page1Key = rowSelectionKey(orderColumns, page1[1]!, "postgresql")!;
+        act(() => {
+            useDbViewerStore.getState().setRowSelection(tabId, [page1Key]);
+            useDbViewerStore.setState((s) => ({
+                tabs: s.tabs.map((t) =>
+                    t.id === tabId ? { ...t, data: ordersPage(2) as any } : t,
+                ),
+            }));
+        });
+
+        await waitFor(() => expect(screen.queryByText("1 selected")).toBeNull());
+        expect(actionsButton()).toBeNull();
+        // …and no checkbox claims a selection either.
+        expect(rowCheckboxes().every((box) => !(box as HTMLInputElement).checked)).toBe(true);
+    });
+
+    it("copies the selected row by identity, not by its position", async () => {
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.assign(navigator, { clipboard: { writeText } });
+        mockOrders();
+        const tabId = seedOrders();
+        renderScreen();
+        await waitFor(() => expect(rowCheckboxes()).toHaveLength(2));
+
+        // Select the SECOND row (order 1, product 3, quantity 1).
+        fireEvent.click(rowCheckboxes()[1]!);
+        fireEvent.click(await screen.findByText("Actions"));
+        fireEvent.click(screen.getByText("Copy as SQL INSERT"));
+
+        const sql = writeText.mock.calls[0]![0] as string;
+        expect(sql).toContain("(1, 3, 1)");
+        expect(sql).not.toContain("(1, 1, 2)");
+
+        // The same selected row, now displayed first: its key still follows the
+        // row, and the copy still contains that row — never the old position.
+        act(() => {
+            useDbViewerStore.setState((s) => ({
+                tabs: s.tabs.map((t) =>
+                    t.id === tabId
+                        ? {
+                              ...t,
+                              data: {
+                                  ...ordersPage(1),
+                                  rows: [page1[1]!, page1[0]!],
+                              } as any,
+                          }
+                        : t,
+                ),
+            }));
+        });
+        expect(await screen.findByText("1 selected")).toBeInTheDocument();
+
+        writeText.mockClear();
+        fireEvent.click(await screen.findByText("Actions"));
+        fireEvent.click(screen.getByText("Copy as SQL INSERT"));
+        const reordered = writeText.mock.calls[0]![0] as string;
+        expect(reordered).toContain("(1, 3, 1)");
+        expect(reordered).not.toContain("(1, 1, 2)");
     });
 });
