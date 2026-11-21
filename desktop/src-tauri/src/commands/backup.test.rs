@@ -593,6 +593,532 @@ fn sqlite_dump_fail_closed_for_virtual_tables() {
     assert!(err.to_lowercase().contains("virtual table"), "got: {err}");
 }
 
+// ------------------------------------------------------------------
+// SQLite dump destination safety (ticket 32)
+// ------------------------------------------------------------------
+
+/// Every temporary sibling a dump left behind in `dir` (it must leave none).
+fn partial_siblings(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".gridline-partial-"))
+        .collect()
+}
+
+fn write_seed_db(path: &std::path::Path) {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);
+         INSERT INTO items (name) VALUES ('one'),('two');",
+    )
+    .unwrap();
+}
+
+/// Dumping onto the database being read would truncate it. The refusal is by
+/// resolved file identity, not by comparing strings.
+#[test]
+fn sqlite_dump_refuses_the_connection_file_as_its_destination() {
+    let dir = job_temp_dir("sqlite_dump_self");
+    let db = dir.join("app.db");
+    write_seed_db(&db);
+    let before = std::fs::read(&db).unwrap();
+
+    let err = dump_sqlite_to_path(db.to_str().unwrap(), db.to_str().unwrap()).unwrap_err();
+    assert!(
+        err.to_lowercase().contains("same file") || err.to_lowercase().contains("source database"),
+        "the refusal must say why, got: {err}"
+    );
+    assert_eq!(
+        before,
+        std::fs::read(&db).unwrap(),
+        "the source database must be untouched"
+    );
+    assert!(
+        partial_siblings(&dir).is_empty(),
+        "a refused dump leaves nothing behind"
+    );
+
+    // The same file spelled differently is still the same file.
+    let spelled = dir.join(".").join("app.db");
+    assert!(dump_sqlite_to_path(db.to_str().unwrap(), spelled.to_str().unwrap()).is_err());
+    assert_eq!(before, std::fs::read(&db).unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A symlink to the source resolves to the source, so `File::create`-style
+/// writes through it would truncate the database.
+#[test]
+#[cfg(unix)]
+fn sqlite_dump_refuses_a_symlinked_destination_that_names_the_source() {
+    let dir = job_temp_dir("sqlite_dump_symlink");
+    let db = dir.join("app.db");
+    write_seed_db(&db);
+    let before = std::fs::read(&db).unwrap();
+    let link = dir.join("backup.sql");
+    std::os::unix::fs::symlink(&db, &link).unwrap();
+
+    let err = dump_sqlite_to_path(db.to_str().unwrap(), link.to_str().unwrap()).unwrap_err();
+    assert!(
+        err.to_lowercase().contains("same file") || err.to_lowercase().contains("source database"),
+        "got: {err}"
+    );
+    assert_eq!(before, std::fs::read(&db).unwrap());
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink()),
+        "the symlink itself must not be replaced by the dump"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A hard link has a different path but the same identity.
+#[test]
+fn sqlite_dump_refuses_a_hard_link_to_the_source() {
+    let dir = job_temp_dir("sqlite_dump_hardlink");
+    let db = dir.join("app.db");
+    write_seed_db(&db);
+    let before = std::fs::read(&db).unwrap();
+    let link = dir.join("backup.sql");
+    std::fs::hard_link(&db, &link).unwrap();
+
+    let err = dump_sqlite_to_path(db.to_str().unwrap(), link.to_str().unwrap()).unwrap_err();
+    assert!(
+        err.to_lowercase().contains("same file") || err.to_lowercase().contains("source database"),
+        "got: {err}"
+    );
+    assert_eq!(before, std::fs::read(&db).unwrap());
+    assert_eq!(before, std::fs::read(&link).unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Output is written to a temporary sibling and published by rename, so a dump
+/// that fails takes nothing with it: the prior destination stays byte-identical
+/// and no partial sibling survives.
+#[test]
+fn a_failed_sqlite_dump_leaves_the_existing_destination_intact() {
+    let dir = job_temp_dir("sqlite_dump_failed");
+    let db = dir.join("app.db");
+    // Fails mid-dump (virtual tables are refused before any row is written).
+    let src = Connection::open(&db).unwrap();
+    src.execute_batch(
+        "CREATE TABLE keep (id INTEGER);
+         INSERT INTO keep VALUES (1);
+         CREATE VIRTUAL TABLE ft USING fts4(content);",
+    )
+    .unwrap();
+    drop(src);
+
+    let dest = dir.join("backup.sql");
+    std::fs::write(&dest, b"PRIOR BACKUP\n").unwrap();
+
+    let err = dump_sqlite_to_path(db.to_str().unwrap(), dest.to_str().unwrap()).unwrap_err();
+    assert!(err.to_lowercase().contains("virtual table"), "got: {err}");
+    assert_eq!(
+        b"PRIOR BACKUP\n".to_vec(),
+        std::fs::read(&dest).unwrap(),
+        "a failed dump must not touch the existing destination"
+    );
+    assert!(
+        partial_siblings(&dir).is_empty(),
+        "a failed dump must not leave partial output: {:?}",
+        partial_siblings(&dir)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A cancelled dump is a failed dump: no partial artifact, prior file intact.
+#[test]
+fn a_cancelled_sqlite_dump_publishes_nothing() {
+    let dir = job_temp_dir("sqlite_dump_cancel_publish");
+    let db = dir.join("app.db");
+    write_seed_db(&db);
+    let dest = dir.join("backup.sql");
+    std::fs::write(&dest, b"PRIOR BACKUP\n").unwrap();
+
+    let err = dump_sqlite_to_path_cancellable(
+        db.to_str().unwrap(),
+        dest.to_str().unwrap(),
+        |_| {},
+        &|| true,
+    )
+    .unwrap_err();
+    assert_eq!(err, CANCEL_MESSAGE);
+    assert_eq!(b"PRIOR BACKUP\n".to_vec(), std::fs::read(&dest).unwrap());
+    assert!(partial_siblings(&dir).is_empty(), "no partial output");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The successful path publishes exactly one file: the destination.
+#[test]
+fn a_successful_sqlite_dump_replaces_the_destination_and_leaves_no_partial() {
+    let dir = job_temp_dir("sqlite_dump_publish");
+    let db = dir.join("app.db");
+    write_seed_db(&db);
+    let dest = dir.join("backup.sql");
+    std::fs::write(&dest, b"PRIOR BACKUP\n").unwrap();
+
+    dump_sqlite_to_path(db.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+    let text = std::fs::read_to_string(&dest).unwrap();
+    assert!(
+        !text.contains("PRIOR BACKUP"),
+        "the destination is replaced"
+    );
+    assert!(text.contains("CREATE TABLE items"), "got: {text}");
+    assert!(partial_siblings(&dir).is_empty(), "no partial output left");
+
+    // Independent check: the published file restores to the original rows.
+    let dst = Connection::open_in_memory().unwrap();
+    restore_sqlite(&dst, &text, false).unwrap();
+    let names: Vec<String> = dst
+        .prepare("SELECT name FROM items ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(names, vec!["one".to_string(), "two".to_string()]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every table in one dump must come from one point in time. A writer that
+/// commits between two tables must not be visible in the same dump: the dump is
+/// taken from a single read transaction, so either all tables have the old value
+/// or all have the new one.
+#[test]
+fn a_sqlite_dump_reads_every_table_from_one_snapshot() {
+    let dir = job_temp_dir("sqlite_dump_snapshot");
+    let db = dir.join("app.db");
+    // WAL, so the concurrent writer is not blocked by the dump's read lock and
+    // the test actually offers the dump a newer committed state mid-run.
+    {
+        let seed = Connection::open(&db).unwrap();
+        seed.pragma_update(None, "journal_mode", "WAL").unwrap();
+        seed.execute_batch(
+            "CREATE TABLE a (v INTEGER);
+             CREATE TABLE b (v INTEGER);
+             INSERT INTO a VALUES (0);
+             INSERT INTO b VALUES (0);",
+        )
+        .unwrap();
+    }
+
+    let writer = Connection::open(&db).unwrap();
+    writer
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+
+    let src = Connection::open(&db).unwrap();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut wrote = false;
+    dump_sqlite_to(&src, &mut Cursor::new(&mut buf), |table| {
+        // Progress for `b` fires after `a`'s rows are already in the dump and
+        // before `b` is read: exactly the torn middle the snapshot must cover.
+        if table == "b" && !wrote {
+            wrote = true;
+            writer
+                .execute_batch("UPDATE a SET v = 1; UPDATE b SET v = 1;")
+                .expect("the concurrent writer must not be blocked mid-dump");
+        }
+    })
+    .unwrap();
+    assert!(wrote, "the midway commit must have happened");
+
+    let text = String::from_utf8(buf).unwrap();
+    let dst = Connection::open_in_memory().unwrap();
+    restore_sqlite(&dst, &text, false).unwrap();
+    let a: i64 = dst.query_row("SELECT v FROM a", [], |r| r.get(0)).unwrap();
+    let b: i64 = dst.query_row("SELECT v FROM b", [], |r| r.get(0)).unwrap();
+    assert_eq!(
+        (a, b),
+        (0, 0),
+        "both tables must reflect one point in time, not a torn read"
+    );
+
+    // The writer's own view proves the commit really happened.
+    let live: i64 = writer
+        .query_row("SELECT v FROM b", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(live, 1);
+    drop(src);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A metadata row the dump cannot decode must fail the dump. Skipping it would
+/// publish a backup that is silently missing a table.
+#[test]
+fn sqlite_dump_fails_instead_of_dropping_a_table_it_cannot_decode() {
+    let dir = job_temp_dir("sqlite_dump_metadata_decode");
+    let db = dir.join("app.db");
+    // A table whose name (and schema text) is not valid UTF-8: SQLite stores and
+    // reads it happily, but it cannot be spelled in the dump's SQL text, and a
+    // naive `get::<String>` decode is the only place that notices.
+    let name: &[u8] = b"bad\xff";
+    let create: &[u8] = b"CREATE TABLE \"bad\xff\" (id INTEGER)";
+    {
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE good (id INTEGER); INSERT INTO good VALUES (1);")
+            .unwrap();
+        conn.execute_batch("PRAGMA writable_schema=ON;").unwrap();
+        conn.execute(
+            "UPDATE sqlite_master SET name=CAST(?1 AS TEXT), tbl_name=CAST(?1 AS TEXT), \
+             sql=CAST(?2 AS TEXT) WHERE name='good'",
+            rusqlite::params![name, create],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA writable_schema=OFF; PRAGMA schema_version=99;")
+            .unwrap();
+    }
+
+    let dest = dir.join("backup.sql");
+    std::fs::write(&dest, b"PRIOR BACKUP\n").unwrap();
+    let err = dump_sqlite_to_path(db.to_str().unwrap(), dest.to_str().unwrap()).unwrap_err();
+    assert!(
+        err.to_lowercase().contains("decode"),
+        "the failure must name the decode step, got: {err}"
+    );
+    assert_eq!(
+        b"PRIOR BACKUP\n".to_vec(),
+        std::fs::read(&dest).unwrap(),
+        "a failed dump must not publish partial output"
+    );
+    assert!(partial_siblings(&dir).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `(typeof, hex)` per row: what SQLite says the storage class and exact bytes
+/// are, read by SQLite itself rather than derived by the code under test.
+fn sqlite_storage_and_bytes(conn: &Connection, sql: &str) -> Vec<(String, String)> {
+    conn.prepare(sql)
+        .unwrap()
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+fn sqlite_roundtrip(src: &Connection) -> String {
+    let mut buf: Vec<u8> = Vec::new();
+    dump_sqlite_to(src, &mut Cursor::new(&mut buf), |_| {}).unwrap();
+    String::from_utf8(buf).expect("the dump must stay valid UTF-8 so it can be replayed")
+}
+
+fn sqlite_pragma_i64(conn: &Connection, name: &str) -> i64 {
+    conn.pragma_query_value(None, name, |r| r.get(0)).unwrap()
+}
+
+/// TEXT that is not valid UTF-8 cannot be spelled in a quoted SQL literal, and
+/// `String::from_utf8_lossy` would silently rewrite it. The dump uses
+/// `CAST(X'…' AS TEXT)`, which restores the exact bytes as TEXT.
+#[test]
+fn sqlite_dump_preserves_invalid_utf8_text_losslessly() {
+    let src = Connection::open_in_memory().unwrap();
+    src.execute_batch(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT);
+         INSERT INTO t VALUES (1, CAST(X'8041FF' AS TEXT));
+         INSERT INTO t VALUES (2, CAST(X'00FF' AS TEXT));
+         INSERT INTO t VALUES (3, 'plain ''quoted''');",
+    )
+    .unwrap();
+    let before = sqlite_storage_and_bytes(&src, "SELECT typeof(v), hex(v) FROM t ORDER BY id");
+    // The fixture really is invalid UTF-8 / NUL-bearing text, not plain ASCII.
+    assert_eq!(before[0].0, "text");
+    assert_eq!(before[0].1, "8041FF");
+    assert_eq!(before[1].1, "00FF");
+
+    let text = sqlite_roundtrip(&src);
+    let dst = Connection::open_in_memory().unwrap();
+    restore_sqlite(&dst, &text, false).unwrap();
+    let after = sqlite_storage_and_bytes(&dst, "SELECT typeof(v), hex(v) FROM t ORDER BY id");
+    assert_eq!(
+        before, after,
+        "invalid-UTF8 and NUL-bearing TEXT must survive byte-for-byte as TEXT"
+    );
+}
+
+/// BLOBs, including embedded NULs and high bytes, are hex literals — never a
+/// text conversion.
+#[test]
+fn sqlite_dump_preserves_blobs_including_embedded_nuls() {
+    let src = Connection::open_in_memory().unwrap();
+    src.execute_batch(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v BLOB);
+         INSERT INTO t VALUES (1, X'00010200FF');
+         INSERT INTO t VALUES (2, X'00');
+         INSERT INTO t VALUES (3, X'');",
+    )
+    .unwrap();
+    let before = sqlite_storage_and_bytes(&src, "SELECT typeof(v), hex(v) FROM t ORDER BY id");
+    assert_eq!(before[0], ("blob".to_string(), "00010200FF".to_string()));
+
+    let text = sqlite_roundtrip(&src);
+    let dst = Connection::open_in_memory().unwrap();
+    restore_sqlite(&dst, &text, false).unwrap();
+    assert_eq!(
+        before,
+        sqlite_storage_and_bytes(&dst, "SELECT typeof(v), hex(v) FROM t ORDER BY id"),
+        "BLOBs must survive byte-for-byte as BLOBs"
+    );
+}
+
+/// REALs must not be textualised, re-read as INTEGER, or lose their sign.
+/// SQLite stores ±Infinity, so a dump that cannot express them is lossy; NaN is
+/// not storable (SQLite stores NaN as NULL), which both sides must agree on.
+#[test]
+fn sqlite_dump_preserves_reals_including_non_finite_values() {
+    let expected = [
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+        1e-320,
+        0.1 + 0.2,
+        -0.0,
+        1.0 / 3.0,
+        f64::NAN,
+    ];
+    let src = Connection::open_in_memory().unwrap();
+    // No declared type, so no affinity can convert a REAL into an INTEGER.
+    src.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, v)")
+        .unwrap();
+    {
+        let mut insert = src
+            .prepare("INSERT INTO t (id, v) VALUES (?1, ?2)")
+            .unwrap();
+        for (id, value) in expected.iter().enumerate() {
+            insert
+                .execute(rusqlite::params![id as i64, *value])
+                .unwrap();
+        }
+    }
+
+    let text = sqlite_roundtrip(&src);
+    let dst = Connection::open_in_memory().unwrap();
+    restore_sqlite(&dst, &text, false).unwrap();
+
+    let read = |conn: &Connection| -> Vec<(String, Option<f64>)> {
+        conn.prepare("SELECT typeof(v), v FROM t ORDER BY id")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<f64>>(1)?))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    let after = read(&dst);
+    let before = read(&src);
+    for (index, expected) in expected.iter().enumerate() {
+        assert_eq!(
+            before[index].0, after[index].0,
+            "storage class changed for value {index}"
+        );
+        match after[index].1 {
+            Some(actual) => assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "value {index} must round-trip bit-for-bit ({expected})"
+            ),
+            None => assert!(
+                expected.is_nan(),
+                "value {index} ({expected}) came back as NULL"
+            ),
+        }
+    }
+    // SQLite's own rule, unchanged by the dump: NaN is stored as NULL.
+    assert_eq!(after[expected.len() - 1].0, "null");
+}
+
+/// `user_version` and `application_id` live in the file header, not in any
+/// CREATE statement: a dump that omits them silently resets an application's
+/// schema versioning, and the restore has to replay exactly these two pragmas.
+#[test]
+fn sqlite_dump_round_trips_user_version_and_application_id() {
+    let src = Connection::open_in_memory().unwrap();
+    src.execute_batch(
+        "CREATE TABLE t (id INTEGER);
+         INSERT INTO t VALUES (1);
+         PRAGMA user_version = 7;
+         PRAGMA application_id = 4660;",
+    )
+    .unwrap();
+    assert_eq!(sqlite_pragma_i64(&src, "user_version"), 7);
+
+    let text = sqlite_roundtrip(&src);
+    assert!(
+        text.contains("PRAGMA user_version = 7;"),
+        "the dump must carry user_version: {text}"
+    );
+    assert!(
+        text.contains("PRAGMA application_id = 4660;"),
+        "the dump must carry application_id: {text}"
+    );
+
+    let dst = Connection::open_in_memory().unwrap();
+    restore_sqlite(&dst, &text, false).unwrap();
+    assert_eq!(sqlite_pragma_i64(&dst, "user_version"), 7);
+    assert_eq!(sqlite_pragma_i64(&dst, "application_id"), 4660);
+}
+
+/// The header pragmas are replayed; every other pragma stays a local setting of
+/// the target (replaying `journal_mode` from another machine is how a restore
+/// breaks a database).
+#[test]
+fn sqlite_restore_replays_only_the_round_trip_pragmas() {
+    let dst = Connection::open_in_memory().unwrap();
+    dst.execute_batch("CREATE TABLE keep (id INTEGER); INSERT INTO keep VALUES (1);")
+        .unwrap();
+    let before_mode: String = dst
+        .pragma_query_value(None, "journal_mode", |r| r.get(0))
+        .unwrap();
+
+    let dump = "PRAGMA journal_mode = MEMORY;\n\
+                PRAGMA user_version = 3;\n\
+                PRAGMA application_id = 9;\n\
+                CREATE TABLE t (id INTEGER);\n";
+    restore_sqlite(&dst, dump, false).unwrap();
+
+    assert_eq!(sqlite_pragma_i64(&dst, "user_version"), 3);
+    assert_eq!(sqlite_pragma_i64(&dst, "application_id"), 9);
+    let after_mode: String = dst
+        .pragma_query_value(None, "journal_mode", |r| r.get(0))
+        .unwrap();
+    assert_eq!(before_mode, after_mode, "journal_mode is connection-local");
+}
+
+/// An AUTOINCREMENT counter outlives the rows that produced it; a dump that only
+/// carries rows silently renumbers the next insert.
+#[test]
+fn sqlite_dump_preserves_an_autoincrement_sequence_that_outlived_its_rows() {
+    let src = Connection::open_in_memory().unwrap();
+    src.execute_batch(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT);
+         INSERT INTO t (v) VALUES ('a'),('b'),('c');
+         DELETE FROM t;",
+    )
+    .unwrap();
+
+    let text = sqlite_roundtrip(&src);
+    let dst = Connection::open_in_memory().unwrap();
+    restore_sqlite(&dst, &text, false).unwrap();
+
+    let seq: i64 = dst
+        .query_row("SELECT seq FROM sqlite_sequence WHERE name='t'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(seq, 3, "the counter must not rewind to 0");
+    dst.execute("INSERT INTO t (v) VALUES ('d')", []).unwrap();
+    let id: i64 = dst
+        .query_row("SELECT id FROM t WHERE v='d'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(id, 4, "the next insert continues the original sequence");
+}
+
 #[test]
 fn sqlite_restore_clean_drops_existing() {
     let src = seed_sqlite();
