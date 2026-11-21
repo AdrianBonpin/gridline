@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Search, Command } from "lucide-react";
 import { Input } from "../ui/Input";
 import { useUiStore } from "../../stores/uiStore";
@@ -7,6 +7,9 @@ import { looksLikeConnectionString } from "../../lib/connectionString";
 export interface SearchBarHandle {
   focus: () => void;
 }
+
+/** Delay before a typed search term is committed to the store. */
+export const SEARCH_DEBOUNCE_MS = 150;
 
 interface SearchBarProps {
   onDetectUrl?: (url: string) => void;
@@ -17,15 +20,33 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function Se
   const setSearchQuery = useUiStore((s) => s.setSearchQuery);
   const searchQuery = useUiStore((s) => s.searchQuery);
   const inputRef = useRef<HTMLInputElement>(null);
+  // The pending debounce lives in a ref owned by this component (it used to be
+  // a `window` global, so it outlived the component and crossed instances).
+  const debounceRef = useRef<number | null>(null);
 
   useImperativeHandle(ref, () => ({
     focus: () => inputRef.current?.focus(),
   }));
 
-  // Keep local input in sync with store (e.g. when Clear button resets it)
+  const cancelPendingSearch = useCallback(() => {
+    if (debounceRef.current !== null) {
+      window.clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+  }, []);
+
+  // Never leave a timer running past unmount.
+  useEffect(() => cancelPendingSearch, [cancelPendingSearch]);
+
+  // Keep local input in sync with the store (e.g. when the Clear button or a
+  // detected connection string resets it). A pending debounce is dropped first:
+  // the store changed from somewhere else, so re-applying our own queued, now
+  // stale text afterwards would undo that change (Clear search reverting, or —
+  // the bug this guards — a partial URL prefix truncating the input).
   useEffect(() => {
+    cancelPendingSearch();
     setValue(searchQuery);
-  }, [searchQuery]);
+  }, [searchQuery, cancelPendingSearch]);
 
   return (
     <div className="flex items-center justify-center w-full">
@@ -38,16 +59,23 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function Se
           onChange={(v) => {
             setValue(v);
             if (looksLikeConnectionString(v)) {
+              // The text is handed to the new-connection screen, so any queued
+              // search term is obsolete: letting it fire would commit a stale
+              // prefix of the URL into the search store.
+              cancelPendingSearch();
               onDetectUrl?.(v);
               return;
             }
-            window.clearTimeout((window as any).__sb);
-            (window as any).__sb = window.setTimeout(() => setSearchQuery(v), 150);
+            cancelPendingSearch();
+            debounceRef.current = window.setTimeout(() => {
+              debounceRef.current = null;
+              setSearchQuery(v);
+            }, SEARCH_DEBOUNCE_MS);
           }}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               e.preventDefault();
-              window.clearTimeout((window as any).__sb);
+              cancelPendingSearch();
               setValue("");
               setSearchQuery("");
               inputRef.current?.blur();
