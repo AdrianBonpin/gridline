@@ -1076,7 +1076,7 @@ pub(crate) async fn run_mysql_connect(
         })
         .await
         .map_err(|e| format!("Connection failed: {e}"))?
-        .map_err(|e| sanitize_error(&e))?;
+        .map_err(|e: crate::commands::ssh_trust::SshTunnelError| sanitize_error(&e.message()))?;
         let lp = tunnel.local_port;
         ssh_manager
             .lock()
@@ -1200,7 +1200,9 @@ pub async fn db_connect(
                 })
                 .await
                 .map_err(|e| format!("Connection failed: {e}"))?
-                .map_err(|e| sanitize_error(&e))?;
+                .map_err(|e: crate::commands::ssh_trust::SshTunnelError| {
+                    sanitize_error(&e.message())
+                })?;
                 let lp = tunnel.local_port;
                 state
                     .ssh_manager
@@ -3086,6 +3088,14 @@ mod tests {
     use crate::models::db_viewer::Change;
     use std::sync::{Arc, Mutex as StdMutex};
 
+    /// SSH backend for tests that never reach a real SSH server: host trust is
+    /// an in-memory fake, so no endpoint needs enrolling.
+    fn test_ssh_backend() -> Ssh2Backend {
+        Ssh2Backend::new(Arc::new(
+            crate::commands::ssh_trust::fake::FakeHostTrust::default(),
+        ))
+    }
+
     #[test]
     fn split_columns_csv_handles_commas_and_trims() {
         assert_eq!(
@@ -3627,7 +3637,7 @@ mod tests {
             ssh_private_key_path: None,
             ssh_passphrase: None,
         };
-        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(test_ssh_backend())));
         let pm = fresh_pool_manager().await;
         let reg = crate::cancel::CancelRegistry::new();
         let id = "mysql-empty-host";
@@ -3697,7 +3707,7 @@ mod tests {
             ssh_private_key_path: None,
             ssh_passphrase: None,
         };
-        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(test_ssh_backend())));
         let pm = fresh_pool_manager().await;
         let reg = crate::cancel::CancelRegistry::new();
         let id = "mysql-unreachable";
@@ -3748,7 +3758,7 @@ mod tests {
             ssh_private_key_path: None,
             ssh_passphrase: None,
         };
-        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(test_ssh_backend())));
         let pm = fresh_pool_manager().await;
         let reg = crate::cancel::CancelRegistry::new();
         let id = format!("mysql-it-{}", uuid::Uuid::new_v4());

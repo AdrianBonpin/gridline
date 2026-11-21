@@ -3,6 +3,14 @@ use crate::commands::ssh::{Ssh2Backend, SshTunnelManager};
 use crate::db::pool::DbConfig;
 use std::sync::Arc;
 
+/// SSH backend for tests that never reach a real SSH server: host trust is
+/// an in-memory fake, so no endpoint needs enrolling.
+fn test_ssh_backend() -> Ssh2Backend {
+    Ssh2Backend::new(Arc::new(
+        crate::commands::ssh_trust::fake::FakeHostTrust::default(),
+    ))
+}
+
 #[tokio::test]
 async fn postgres_probe_times_out_when_authentication_stalls_after_tcp_connect() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -18,7 +26,7 @@ async fn postgres_probe_times_out_when_authentication_stalls_after_tcp_connect()
         port: Some(port.into()),
         ..Default::default()
     };
-    let ssh = std::sync::Mutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+    let ssh = std::sync::Mutex::new(SshTunnelManager::new(Arc::new(test_ssh_backend())));
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(12),
         test_pg_connection(&config, &ssh),
@@ -73,7 +81,7 @@ fn mariadb_live_test_connection_reports_mariadb_version() {
         ..mariadb_config(None)
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let ssh = std::sync::Mutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+    let ssh = std::sync::Mutex::new(SshTunnelManager::new(Arc::new(test_ssh_backend())));
     let result = rt.block_on(async { test_mysql_connection(&config, &ssh).await });
     assert!(result.ok, "connection failed: {:?}", result.error);
     let version = result.server_version.unwrap_or_default().to_lowercase();

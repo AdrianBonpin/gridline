@@ -180,6 +180,22 @@ describe("HomeScreen", () => {
     expect(deleteConnection).not.toHaveBeenCalled();
   });
 
+  it("states that Connection-owned Data is removed when deleting a connection", async () => {
+    const user = userEvent.setup();
+    useConnectionStore.setState({ connections: [makeConnection("conn-1")] });
+    render(<HomeScreen />);
+
+    await user.click(screen.getByLabelText("Connection actions"));
+    await user.click(screen.getByText("Manage"));
+    await user.click(screen.getByText("Delete…"));
+
+    const message = await screen.findByText(/Connection-owned Data/i);
+    expect(message).toHaveTextContent(/query history/i);
+    expect(message).toHaveTextContent(/recent-connection records/i);
+    expect(message).toHaveTextContent(/saved queries for this connection/i);
+    expect(message).toHaveTextContent(/global saved queries/i);
+  });
+
   it("deletes a connection from the kebab menu without confirmation when confirm_before_delete is false", async () => {
     const user = userEvent.setup();
     vi.clearAllMocks();

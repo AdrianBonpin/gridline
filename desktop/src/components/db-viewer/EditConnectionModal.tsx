@@ -7,6 +7,8 @@ import { useNotificationStore } from "../../stores/notificationStore";
 import { updateConnection, testConnection, saveConnectionSshPassword, saveConnectionSshPassphrase, getConnectionSshPassword, getConnectionSshPassphrase } from "../../lib/commands";
 import { persistDbPassword } from "../../lib/keychain";
 import { detectProviderFromHost, type SslMode } from "../../lib/connectionString";
+import { useSshHostTrust } from "../../hooks/useSshHostTrust";
+import { SshHostTrustDialog } from "../connections/SshHostTrustDialog";
 import type { Connection, ConnectionInput } from "../../lib/types";
 import type { ConnectionFormData } from "../connections/connectionFormData";
 
@@ -55,6 +57,14 @@ export function EditConnectionModal({
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const loadAll = useConnectionStore((s) => s.loadAll);
+  const {
+    trustState: sshHostTrustState,
+    busy: sshHostTrustBusy,
+    error: sshHostTrustError,
+    check: checkSshHostTrust,
+    accept: acceptSshHostTrust,
+    dismiss: dismissSshHostTrust,
+  } = useSshHostTrust();
   const notify = useNotificationStore((s) => s.notify);
 
   const handleSave = useCallback(async () => {
@@ -154,13 +164,16 @@ export function EditConnectionModal({
         notify("Connection successful", "success");
       } else {
         notify(result.error ?? "Connection failed", "error");
+        // A tunneled test can stop on SSH host trust: surface the fingerprint and
+        // accept it before any credential is sent.
+        void checkSshHostTrust(form.ssh_host, form.ssh_port);
       }
     } catch (e) {
       notify(`Test failed: ${e instanceof Error ? e.message : e}`, "error");
     } finally {
       setTesting(false);
     }
-  }, [form, notify, connection.id]);
+  }, [form, notify, connection.id, checkSshHostTrust]);
 
   return (
     <AnimatedModal open={open} onClose={onClose}>
@@ -176,6 +189,15 @@ export function EditConnectionModal({
           </Button>
         </div>
       </div>
+      <SshHostTrustDialog
+        state={sshHostTrustState}
+        busy={sshHostTrustBusy}
+        error={sshHostTrustError}
+        onAccept={async () => {
+          if (await acceptSshHostTrust()) handleTest();
+        }}
+        onClose={dismissSshHostTrust}
+      />
     </AnimatedModal>
   );
 }

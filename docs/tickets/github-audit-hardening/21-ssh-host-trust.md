@@ -7,10 +7,10 @@
 **Seams:** Connection trust seam with a fake transport: catches known, unknown, and mismatched host policy and the pre-authentication ordering; misses real keychain and network behavior, covered by platform checks.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/72
-**Status:** ready
+**Status:** done
 
-- [ ] A host matching a known-hosts entry connects without prompting.
-- [ ] An unknown host blocks authentication until the user explicitly accepts its fingerprint, and accepts non-standard ports correctly.
-- [ ] A conflicting key fails with expected and actual fingerprints and no bypass during authentication.
-- [ ] No password, key, or passphrase is sent before verification succeeds.
-- [ ] An unknown-host state is visible in the UI with a recovery action.
+- [x] A host matching a known-hosts entry connects without prompting.
+- [x] An unknown host blocks authentication until the user explicitly accepts its fingerprint, and accepts non-standard ports correctly.
+- [x] A conflicting key fails with expected and actual fingerprints and no bypass during authentication.
+- [x] No password, key, or passphrase is sent before verification succeeds.
+- [x] An unknown-host state is visible in the UI with a recovery action.

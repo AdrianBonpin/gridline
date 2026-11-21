@@ -1,14 +1,42 @@
 pub mod migrations;
+pub mod permissions;
 
 use rusqlite::params;
 use rusqlite::Connection as SqliteConnection;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Mutex;
 
 use crate::models::{Connection, ConnectionInput, Folder, FolderInput, Settings, Tag, TagInput};
 
 pub struct Store {
     conn: Mutex<SqliteConnection>,
+}
+
+/// Host-key blobs are persisted base64-encoded (the same encoding known-hosts
+/// uses), never as raw bytes in a text column.
+fn trust_blob_to_text(blob: &[u8]) -> String {
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, blob)
+}
+
+fn row_to_trust_record(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<crate::models::HostTrustRecord> {
+    let key_blob: String = row.get(4)?;
+    let blob = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &key_blob)
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+    Ok(crate::models::HostTrustRecord {
+        host: row.get(0)?,
+        port: row.get::<_, i64>(1)? as u16,
+        key: crate::models::HostKey {
+            key_type: row.get(2)?,
+            blob,
+        },
+        fingerprint: row.get(3)?,
+        enrolled_at: row.get(5)?,
+    })
 }
 
 /// A saved query row (returned from the store).
@@ -38,16 +66,52 @@ const ALLOWED_EDITOR_FONTS: &[&str] = &[
 ];
 
 impl Store {
+    /// Wrap an already-opened connection as a store.
+    ///
+    /// Referential enforcement is part of the store contract, so it is enabled
+    /// here as well as in [`Store::open`]: SQLite applies `foreign_keys` per
+    /// connection and its default depends on how the library was built, which
+    /// is exactly how Connection-owned Data used to become unreachable.
     pub fn from_connection(conn: SqliteConnection) -> Self {
-        Self {
+        Self::try_from_connection(conn)
+            .expect("failed to enable referential enforcement on the local store")
+    }
+
+    fn try_from_connection(conn: SqliteConnection) -> Result<Self, String> {
+        Self::enforce_referential_integrity(&conn)?;
+        Ok(Self {
             conn: Mutex::new(conn),
+        })
+    }
+
+    /// Turn on foreign keys for this connection and verify they are active.
+    /// A silent no-op (SQLite ignores the pragma inside a transaction) or a
+    /// library built with a different default fails the store instead of being
+    /// trusted.
+    fn enforce_referential_integrity(conn: &SqliteConnection) -> Result<(), String> {
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .map_err(|e| {
+                format!("failed to enable referential enforcement on the local store: {e}")
+            })?;
+        let active: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .map_err(|e| format!("failed to read local store enforcement state: {e}"))?;
+        if active != 1 {
+            return Err("referential enforcement is not active on the local store".to_string());
         }
+        Ok(())
     }
 
     pub fn open(path: &str) -> Result<Self, String> {
-        let conn = SqliteConnection::open(path).map_err(|e| e.to_string())?;
+        let db_path = Path::new(path);
+        // Secure the directory before the file is created, then restrict the
+        // file and any sidecars left by a previous run. Both steps are
+        // idempotent, so an existing installation is tightened on this open.
+        permissions::secure_store_directory(db_path)?;
+        let conn = SqliteConnection::open(db_path).map_err(|e| e.to_string())?;
+        permissions::secure_store_files(db_path)?;
         migrations::run_migrations(&conn).map_err(|e| e.to_string())?;
-        Ok(Self::from_connection(conn))
+        Self::try_from_connection(conn)
     }
 
     fn now() -> String {
@@ -403,6 +467,75 @@ impl Store {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM recent_connections", [])
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // SSH host trust (ADR 0001)
+    //
+    // Non-secret metadata only: the endpoint, the host-key identity and when
+    // the user accepted it. Passwords, private keys and passphrases live in
+    // the OS keychain, never here.
+    // ------------------------------------------------------------------
+
+    pub fn get_ssh_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<Option<crate::models::HostTrustRecord>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT host, port, key_type, fingerprint, key_blob, enrolled_at
+                 FROM ssh_host_trust WHERE host = ?1 AND port = ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(params![host, port as i64], row_to_trust_record)
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            Some(Ok(record)) => Ok(Some(record)),
+            Some(Err(e)) => Err(e.to_string()),
+            None => Ok(None),
+        }
+    }
+
+    pub fn remember_ssh_host_trust(
+        &self,
+        record: &crate::models::HostTrustRecord,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO ssh_host_trust
+                 (host, port, key_type, fingerprint, key_blob, enrolled_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(host, port) DO UPDATE SET
+                 key_type = excluded.key_type,
+                 fingerprint = excluded.fingerprint,
+                 key_blob = excluded.key_blob,
+                 enrolled_at = excluded.enrolled_at",
+            params![
+                record.host,
+                record.port as i64,
+                record.key.key_type,
+                record.fingerprint,
+                trust_blob_to_text(&record.key.blob),
+                record.enrolled_at
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Forget an enrollment so the next connection re-enrolls. Deliberate
+    /// re-enrollment uses this; authentication never does.
+    pub fn forget_ssh_host_trust(&self, host: &str, port: u16) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM ssh_host_trust WHERE host = ?1 AND port = ?2",
+            params![host, port as i64],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -894,6 +1027,166 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
         Store::from_connection(conn)
+    }
+
+    /// A unique on-disk store directory (the production shape) plus its store
+    /// file path. Removed by `remove_store_dir`.
+    fn temp_store(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("gridline_store_{tag}_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("gridline.db");
+        (dir, db)
+    }
+
+    fn remove_store_dir(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn opened_store_rejects_connection_owned_data_for_a_missing_connection() {
+        let (dir, db) = temp_store("enforced_open");
+        let store = Store::open(db.to_str().unwrap()).unwrap();
+
+        assert!(
+            store
+                .insert_query_history(
+                    "h1",
+                    "missing-connection",
+                    "SELECT 1",
+                    None,
+                    None,
+                    "success",
+                    None
+                )
+                .is_err(),
+            "an opened store must reject query history for an unreachable connection"
+        );
+        assert!(
+            store
+                .record_recent_connection("missing-connection")
+                .is_err(),
+            "an opened store must reject recent records for an unreachable connection"
+        );
+        assert!(
+            store
+                .save_query(Some("missing-connection"), "q", "SELECT 1", "")
+                .is_err(),
+            "an opened store must reject connection-specific saved queries for an unreachable connection"
+        );
+
+        remove_store_dir(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_an_existing_installation_restricts_its_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, db) = temp_store("perm_open");
+        // A store written by an older build: permissive directory and file
+        // modes. (Sidecars are covered by the permissions unit tests because
+        // SQLite removes a stale journal while opening the store.)
+        std::fs::write(&db, b"").unwrap();
+        std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _store = Store::open(db.to_str().unwrap()).unwrap();
+
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode(&dir),
+            0o700,
+            "the store directory is tightened on open"
+        );
+        assert_eq!(mode(&db), 0o600, "the store file is tightened on open");
+
+        remove_store_dir(&dir);
+    }
+
+    #[test]
+    fn opening_a_store_that_cannot_be_migrated_is_reported() {
+        let (dir, db) = temp_store("unreadable");
+        // Not a SQLite database: the app must fail loudly instead of running on
+        // an uninitialised (and therefore unenforced) store.
+        std::fs::write(&db, b"this is not a sqlite database").unwrap();
+        let err = match Store::open(db.to_str().unwrap()) {
+            Ok(_) => panic!("a store that cannot be migrated must be reported"),
+            Err(e) => e,
+        };
+        assert!(!err.is_empty(), "the failure must carry a reason");
+
+        remove_store_dir(&dir);
+    }
+
+    #[test]
+    fn store_from_connection_enables_referential_enforcement() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::run_migrations(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        let before: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, 0, "precondition: enforcement starts disabled");
+
+        let store = Store::from_connection(conn);
+        let guard = store.conn.lock().unwrap();
+        let after: i64 = guard
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            after, 1,
+            "every store handle must enforce referential integrity, not just migrated ones"
+        );
+    }
+
+    #[test]
+    fn deleting_a_connection_removes_its_connection_owned_data() {
+        let (dir, db) = temp_store("delete_owned");
+        let store = Store::open(db.to_str().unwrap()).unwrap();
+        let conn = create_test_connection(&store, "owned");
+        store
+            .insert_query_history(
+                "h1",
+                &conn.id,
+                "SELECT 1",
+                Some(1),
+                Some(1),
+                "success",
+                None,
+            )
+            .unwrap();
+        store.record_recent_connection(&conn.id).unwrap();
+        store
+            .save_query(Some(&conn.id), "scoped", "SELECT 1", "")
+            .unwrap();
+        store
+            .save_query(None, "global", "SELECT version()", "")
+            .unwrap();
+
+        store.delete_connection(&conn.id).unwrap();
+
+        assert!(
+            store
+                .get_query_history(Some(&conn.id), 10, 0)
+                .unwrap()
+                .is_empty(),
+            "query history is Connection-owned Data"
+        );
+        assert!(
+            store.get_recent_connections(10).unwrap().is_empty(),
+            "recent records are Connection-owned Data"
+        );
+        assert!(
+            store.list_saved_queries(Some(&conn.id)).unwrap().is_empty(),
+            "connection-specific saved queries are Connection-owned Data"
+        );
+        assert_eq!(
+            store.list_saved_queries(None).unwrap().len(),
+            1,
+            "global saved queries are not Connection-owned Data"
+        );
+
+        remove_store_dir(&dir);
     }
 
     #[test]
@@ -1641,5 +1934,115 @@ mod tests {
             "disallowed font -> default"
         );
         assert_eq!(s.editor_word_wrap, "off", "invalid wrap -> default");
+    }
+
+    fn trust_record(host: &str, port: u16, seed: u8) -> crate::models::HostTrustRecord {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&11u32.to_be_bytes());
+        blob.extend_from_slice(b"ssh-ed25519");
+        blob.extend_from_slice(&[seed; 32]);
+        crate::models::HostTrustRecord {
+            host: host.to_string(),
+            port,
+            key: crate::models::HostKey {
+                key_type: "ssh-ed25519".into(),
+                blob,
+            },
+            fingerprint: format!("SHA256:seed-{seed}"),
+            enrolled_at: "2026-11-21T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn ssh_host_trust_round_trips_and_is_keyed_by_endpoint() {
+        let store = fresh_store();
+        assert!(store
+            .get_ssh_host_trust("db.example.com", 22)
+            .unwrap()
+            .is_none());
+
+        let record = trust_record("db.example.com", 2222, 1);
+        store.remember_ssh_host_trust(&record).unwrap();
+
+        let got = store
+            .get_ssh_host_trust("db.example.com", 2222)
+            .unwrap()
+            .expect("record persisted");
+        assert_eq!(got.key, record.key, "the key blob survives the round trip");
+        assert_eq!(got.fingerprint, record.fingerprint);
+
+        // Non-standard ports are part of the identity: another port is a
+        // different endpoint, not the same trust.
+        assert!(store
+            .get_ssh_host_trust("db.example.com", 22)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_ssh_host_trust("other.example.com", 2222)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn remembering_a_trust_record_replaces_the_endpoint_row() {
+        let store = fresh_store();
+        store
+            .remember_ssh_host_trust(&trust_record("db.example.com", 22, 1))
+            .unwrap();
+        store
+            .remember_ssh_host_trust(&trust_record("db.example.com", 22, 2))
+            .unwrap();
+
+        let got = store
+            .get_ssh_host_trust("db.example.com", 22)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.fingerprint, "SHA256:seed-2");
+        let rows: i64 = {
+            let conn = store.conn.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM ssh_host_trust", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(rows, 1, "one trust record per endpoint");
+    }
+
+    #[test]
+    fn forgetting_a_trust_record_removes_it() {
+        let store = fresh_store();
+        store
+            .remember_ssh_host_trust(&trust_record("db.example.com", 22, 1))
+            .unwrap();
+        store.forget_ssh_host_trust("db.example.com", 22).unwrap();
+        assert!(store
+            .get_ssh_host_trust("db.example.com", 22)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn ssh_host_trust_rows_carry_no_credentials() {
+        let store = fresh_store();
+        store
+            .remember_ssh_host_trust(&trust_record("db.example.com", 22, 1))
+            .unwrap();
+
+        // Structural guarantee: the table has no credential columns at all.
+        let columns: Vec<String> = {
+            let conn = store.conn.lock().unwrap();
+            let mut stmt = conn.prepare("PRAGMA table_info(ssh_host_trust)").unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        assert_eq!(
+            columns,
+            vec![
+                "host".to_string(),
+                "port".to_string(),
+                "key_type".to_string(),
+                "fingerprint".to_string(),
+                "key_blob".to_string(),
+                "enrolled_at".to_string(),
+            ]
+        );
     }
 }

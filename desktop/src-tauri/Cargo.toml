@@ -42,6 +42,12 @@ redis = { version = "0.27", features = ["tokio-comp"] }
 # runtime dependency on the build machine's Homebrew openssl (@/opt/homebrew
 # absolute LC_LOAD_DYLIB — dyld aborts on user machines without it).
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+# SSH host trust (ADR 0001): OpenSSH-style SHA256 fingerprints, key-blob
+# decoding, and HMAC-SHA1 matching of hashed known-hosts entries.
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
 deadpool-postgres = { version = "0.14" }
 indexmap = { version = "2", features = ["serde"] }
 tauri-plugin-keyring-store = { version = "0.2.0", default-features = false }

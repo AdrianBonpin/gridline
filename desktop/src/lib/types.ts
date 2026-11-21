@@ -293,6 +293,50 @@ export interface ConnectionTestResult {
   latency_ms?: number | null;
 }
 
+// ─── SSH Host Trust ─────────────────────────────────────────────
+
+/**
+ * The host-key identity a user is asked to accept. Mirrors the Rust
+ * `HostKeyFingerprint`: key algorithm plus an OpenSSH-style `SHA256:` digest.
+ * Never contains credentials.
+ */
+export interface HostKeyFingerprint {
+  key_type: string;
+  fingerprint: string;
+}
+
+/**
+ * Trust between Gridline and one SSH endpoint (ADR 0001). Three states, not a
+ * boolean: `unknown` needs first-use acceptance, `mismatch` needs deliberate
+ * re-enrollment, and only `trusted` may receive credentials.
+ */
+export type SshHostTrustState =
+  | {
+      state: "trusted";
+      host: string;
+      port: number;
+      key_type: string;
+      fingerprint: string;
+      source: "known_hosts" | "enrolled";
+    }
+  | {
+      state: "unknown";
+      host: string;
+      port: number;
+      key_type: string;
+      fingerprint: string;
+    }
+  | {
+      state: "mismatch";
+      host: string;
+      port: number;
+      key_type: string;
+      fingerprint: string;
+      expected_key_type: string;
+      expected_fingerprint: string;
+      source: "known_hosts" | "enrolled";
+    };
+
 // ─── Backup Types ────────────────────────────────────────────────
 
 export interface BackupOptions {
