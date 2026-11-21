@@ -938,7 +938,7 @@ describe("DbViewerScreen", () => {
         await waitFor(() => expect(getTableData).toHaveBeenCalledTimes(1));
     });
 
-    it("fetches enum labels and FK reference rows for the active table tab", async () => {
+    it("fetches FK options for the referenced relation instead of a same-named local table", async () => {
         const getEnums = vi
             .spyOn(commands, "getEnums")
             .mockResolvedValue([
@@ -948,8 +948,10 @@ describe("DbViewerScreen", () => {
                     labels: ["admin", "user"],
                 },
             ]);
-        const getTableData = vi
-            .spyOn(commands, "getTableData")
+        // The option source: rows of the *referenced* table, keyed by its own
+        // key column. Never a page of the browsing schema's table.
+        const searchFkOptions = vi
+            .spyOn(commands, "searchFkOptions")
             .mockResolvedValue({
                 columns: [
                     {
@@ -963,19 +965,32 @@ describe("DbViewerScreen", () => {
                         editable: false,
                         is_generated: false,
                     },
+                    {
+                        name: "name",
+                        data_type: "text",
+                        is_nullable: true,
+                        is_pk: false,
+                        is_fk: false,
+                        fk_ref: null,
+                        default_value: null,
+                        editable: true,
+                        is_generated: false,
+                    },
                 ],
-                rows: [[1], [2]],
-                total_rows: 2,
+                rows: [[7, "Reporting Alice"]],
+                total_rows: 1,
                 page: 1,
                 page_size: 50,
             } as any);
+        const getTableData = vi.spyOn(commands, "getTableData");
 
         useDbViewerStore.setState({
             tabs: [
                 {
                     id: "tab-1",
                     schema: "public",
-                    table: "users",
+                    // The FK from public.orders points at reporting.users.
+                    table: "orders",
                     page: 1,
                     pageSize: 50,
                     loading: false,
@@ -999,7 +1014,7 @@ describe("DbViewerScreen", () => {
                                 is_nullable: true,
                                 is_pk: false,
                                 is_fk: true,
-                                fk_ref: ["users", "id"],
+                                fk_ref: ["reporting", "users", "id"],
                                 default_value: null,
                                 editable: true,
                                 is_generated: false,
@@ -1016,7 +1031,7 @@ describe("DbViewerScreen", () => {
                                 is_generated: false,
                             },
                         ],
-                        rows: [[1, 2, "admin"]],
+                        rows: [[1, 7, "admin"]],
                         total_rows: 1,
                         page: 1,
                         page_size: 50,
@@ -1043,15 +1058,27 @@ describe("DbViewerScreen", () => {
         await waitFor(() =>
             expect(getEnums).toHaveBeenCalledWith("c1", "public"),
         );
-        // FK reference rows are fetched from the referenced table (page 1, 50).
+        // The FK source column is what gets searched; the backend resolves the
+        // referenced relation from engine metadata.
         await waitFor(() =>
-            expect(getTableData).toHaveBeenCalledWith(
+            expect(searchFkOptions).toHaveBeenCalledWith(
                 "c1",
                 "public",
-                "users",
+                "orders",
+                "user_id",
+                "",
                 1,
                 50,
             ),
+        );
+        // The bug: options were fetched with getTableData under the browsing
+        // schema, so a same-named local table supplied the rows.
+        expect(getTableData).not.toHaveBeenCalledWith(
+            "c1",
+            "public",
+            "users",
+            1,
+            50,
         );
     });
 

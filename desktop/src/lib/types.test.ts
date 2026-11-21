@@ -209,12 +209,13 @@ describe("ColumnInfo", () => {
       is_nullable: true,
       is_pk: false,
       is_fk: true,
-      fk_ref: ["users", "id"],
+      fk_ref: ["reporting", "users", "id"],
       default_value: null,
       editable: true,
       is_generated: false,
     };
-    expect(col.fk_ref?.[0]).toBe("users");
+    // The referenced schema travels with the reference.
+    expect(col.fk_ref).toEqual(["reporting", "users", "id"]);
   });
 });
 

@@ -152,7 +152,14 @@ export interface ColumnInfo {
   is_nullable: boolean;
   is_pk: boolean;
   is_fk: boolean;
-  fk_ref: [string, string] | null;
+  /**
+   * Referenced `[schema, table, column]` for a foreign-key column.
+   *
+   * The referenced schema is part of the reference: a foreign key may point into
+   * another schema, and following it against the browsing schema would read a
+   * same-named local table instead.
+   */
+  fk_ref: [string, string, string] | null;
   default_value: string | null;
   editable: boolean;
   is_generated: boolean;

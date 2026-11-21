@@ -4,13 +4,22 @@ import { Key, X, ExternalLink, Loader2 } from "lucide-react";
 import * as cmd from "../../lib/commands";
 import type { QueryResult } from "../../lib/types";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import type { FkTarget } from "../../lib/fkTarget";
 import { DataTypeIcon } from "../ui/DataTypeIcon";
 
-interface FkPreviewPopoverProps {
-  connectionId: string;
+/** The foreign-key column that was clicked (where the value lives). */
+export interface FkSource {
   schema: string;
   table: string;
   column: string;
+}
+
+interface FkPreviewPopoverProps {
+  connectionId: string;
+  /** The column holding the FK value. The backend resolves its target. */
+  source: FkSource;
+  /** The referenced relation (schema-qualified), used for display + Open. */
+  target: FkTarget;
   value: string;
   anchorRect: DOMRect | null;
   onClose: () => void;
@@ -18,9 +27,8 @@ interface FkPreviewPopoverProps {
 
 export function FkPreviewPopover({
   connectionId,
-  schema,
-  table,
-  column,
+  source,
+  target,
   value,
   anchorRect,
   onClose,
@@ -34,13 +42,14 @@ export function FkPreviewPopover({
   const setColumnFilter = useDbViewerStore((s) => s.setColumnFilter);
 
   const handleOpen = () => {
-    openTab(schema, table);
-    // Find the newly created tab and apply the column filter
+    // Open the *referenced* relation: a same-named table in the browsing
+    // schema is a different table and must never be shown in its place.
+    openTab(target.schema, target.table);
     const newTab = useDbViewerStore.getState().tabs.find(
-      (t) => t.schema === schema && t.table === table,
+      (t) => t.schema === target.schema && t.table === target.table,
     );
     if (newTab) {
-      setColumnFilter(newTab.id, column, value);
+      setColumnFilter(newTab.id, target.column, value);
     }
     onClose();
   };
@@ -51,7 +60,13 @@ export function FkPreviewPopover({
     setLoading(true);
     setError(null);
     cmd
-      .getFkPreview(connectionId, schema, table, column, value)
+      .getFkPreview(
+        connectionId,
+        source.schema,
+        source.table,
+        source.column,
+        value,
+      )
       .then((result) => {
         if (!cancelled) {
           setData(result);
@@ -67,7 +82,7 @@ export function FkPreviewPopover({
     return () => {
       cancelled = true;
     };
-  }, [connectionId, schema, table, column, value]);
+  }, [connectionId, source.schema, source.table, source.column, value]);
 
   // Close on Escape
   useEffect(() => {
@@ -128,7 +143,7 @@ export function FkPreviewPopover({
         <div className="flex items-center gap-1.5 min-w-0">
           <Key size={12} className="text-amber-400 shrink-0" />
           <span className="text-xs font-heading text-text truncate">
-            {schema}.{table}
+            {target.schema}.{target.table}
           </span>
         </div>
         <div className="flex items-center gap-1">

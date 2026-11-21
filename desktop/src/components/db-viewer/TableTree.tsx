@@ -6,6 +6,7 @@ import { TableOverflowMenu } from "./TableOverflowMenu";
 import { abbreviateType } from "../../lib/utils";
 import type { ColumnInfo } from "../../lib/types";
 import * as cmd from "../../lib/commands";
+import { fkLabel, fkTarget } from "../../lib/fkTarget";
 
 export function TableTree({ searchQuery, dbType }: { searchQuery?: string; dbType?: string }) {
     const tables = useDbViewerStore((s) => s.tables);
@@ -134,7 +135,7 @@ export function TableTree({ searchQuery, dbType }: { searchQuery?: string; dbTyp
                                         className="flex items-center gap-2 text-xs text-text-muted"
                                         title={
                                             col.is_fk && col.fk_ref
-                                                ? `${col.data_type} → ${col.fk_ref[0]}.${col.fk_ref[1]}`
+                                                ? `${col.data_type} → ${fkLabel(fkTarget(col))}`
                                                 : col.data_type
                                         }
                                     >
