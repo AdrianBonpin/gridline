@@ -581,38 +581,21 @@ pub struct PlainDumpHazard {
     pub line: usize,
 }
 
-/// Why a restore of this dump cannot be atomic, decidable from the format alone.
-///
-/// Kept separate from [`pg_restore_atomicity`] on purpose: this answer needs no
-/// file read, so the command can refuse a directory restore *before* it spends
-/// the File Grant that authorizes the read.
-fn pg_restore_format_non_atomic_reason(format: &str) -> Option<String> {
-    if format == "directory" {
-        Some(
-            "A directory-format dump is restored entry by entry, and pg_restore does not accept --single-transaction for that format."
-                .to_string(),
-        )
-    } else {
-        None
-    }
-}
-
 /// Whether `file_path` can be restored in one transaction, or why not.
 ///
-/// Custom/tar archives are accepted as transaction-shaped (pg_restore reports a
-/// non-transactional entry at execution time, and the run then rolls back). A
-/// plain script is inspected first because psql has to own its transaction: a
-/// script containing `VACUUM`, `CREATE DATABASE`, `CREATE INDEX CONCURRENTLY`,
-/// psql's `\connect`, or its own `BEGIN`/`COMMIT` cannot be wrapped in one.
+/// Archive formats (custom/tar/directory) are accepted as transaction-shaped:
+/// `pg_restore --single-transaction` only refuses to run alongside `--jobs`, and
+/// a non-transactional entry inside an archive is caught at execution time (the
+/// run then rolls back). A plain script is inspected first because psql has to
+/// own its transaction: a script containing `VACUUM`, `CREATE DATABASE`, `CREATE
+/// INDEX CONCURRENTLY`, psql's `\connect`, or its own `BEGIN`/`COMMIT` cannot be
+/// wrapped in one.
 ///
 /// The scan is a best-effort lexical pass (comments, `COPY` data rows and
 /// dollar-quoted bodies are skipped), so an incompatibility it misses still
 /// surfaces at execution time — as a rollback plus an explanation, never as a
 /// partial apply.
 pub fn pg_restore_atomicity(format: &str, file_path: &str) -> Result<PgRestoreAtomicity, String> {
-    if let Some(reason) = pg_restore_format_non_atomic_reason(format) {
-        return Ok(PgRestoreAtomicity::NonAtomic { reason });
-    }
     if format == "plain" {
         let hazards = scan_plain_dump(file_path)?;
         if !hazards.is_empty() {
@@ -2017,15 +2000,6 @@ pub async fn pg_restore(
         password,
     );
 
-    // A directory dump cannot be transactional at all, and that is decidable from
-    // the request alone: refuse before the read grant is spent, so accepting the
-    // risk does not also cost the user a second file selection.
-    if let Some(reason) = pg_restore_format_non_atomic_reason(&request.format) {
-        if !request.accept_non_atomic {
-            return Err(non_atomic_refusal(&reason));
-        }
-    }
-
     let accept_non_atomic = request.accept_non_atomic;
 
     // Authorize the read last: the granted path is the only input file this
@@ -2035,7 +2009,9 @@ pub async fn pg_restore(
 
     // Decide the transaction mode off the async runtime: checking a plain-format
     // script reads the dump. A dump that cannot be restored atomically is refused
-    // here, before any job exists, and nothing runs.
+    // here, before any job exists, and nothing runs — the read above is what tells
+    // us that, so such a refusal does use up the file selection (the UI says so
+    // and offers a fresh one).
     let txn = {
         let format = options.format.clone();
         let path = options.file_path.clone();

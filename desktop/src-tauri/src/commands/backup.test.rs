@@ -1408,26 +1408,28 @@ fn plain_dump_with_a_connect_meta_command_is_non_atomic() {
 }
 
 #[test]
-fn directory_dump_is_identified_as_non_atomic() {
-    let reason = pg_restore_atomicity("directory", "/tmp/dumpdir")
-        .unwrap()
-        .reason()
-        .expect("a directory dump cannot be transactional")
-        .to_string();
-    assert!(
-        reason.contains("--single-transaction"),
-        "reason must say why: {reason}"
+fn directory_dump_is_identified_as_transactional() {
+    assert_eq!(
+        pg_restore_atomicity("directory", "/tmp/dumpdir").unwrap(),
+        PgRestoreAtomicity::Atomic
     );
 }
 
-/// The format alone identifies the directory case, which is what lets the
-/// command refuse before spending the read grant.
+/// `pg_restore --single-transaction` accepts every archive format (it only
+/// refuses to run alongside `--jobs`), so a directory dump is transactional too.
 #[test]
-fn the_directory_refusal_is_decidable_without_reading_the_file() {
-    assert!(pg_restore_format_non_atomic_reason("directory").is_some());
-    assert!(pg_restore_format_non_atomic_reason("custom").is_none());
-    assert!(pg_restore_format_non_atomic_reason("tar").is_none());
-    assert!(pg_restore_format_non_atomic_reason("plain").is_none());
+fn a_directory_dump_runs_in_one_transaction() {
+    let options = restore_options("directory", "/tmp/dumpdir");
+    let args = build_restore_args(&pg_test_conn(), &options, PgRestoreTxn::OneTransaction);
+    assert!(args.iter().any(|a| a == "--format=d"));
+    assert!(
+        args.iter().any(|a| a == "--single-transaction"),
+        "a directory dump is restored in one transaction: {args:?}"
+    );
+    assert_eq!(
+        pg_restore_txn("directory", "/tmp/dumpdir", false).unwrap(),
+        PgRestoreTxn::OneTransaction
+    );
 }
 
 /// Ticket 33: silent downgrade is the bug. Without explicit acceptance the
@@ -1435,7 +1437,12 @@ fn the_directory_refusal_is_decidable_without_reading_the_file() {
 /// the UI can turn into a confirmation.
 #[test]
 fn non_atomic_dump_is_refused_without_explicit_confirmation() {
-    let err = pg_restore_txn("directory", "/tmp/dumpdir", false).unwrap_err();
+    let path = temp_plain_dump(
+        "refused",
+        "CREATE TABLE public.t (id integer);\nVACUUM FULL public.t;\n",
+    );
+    let err = pg_restore_txn("plain", &path, false).unwrap_err();
+    let _ = std::fs::remove_file(&path);
     assert!(
         err.starts_with(PG_RESTORE_NON_ATOMIC_CODE),
         "must carry the UI code: {err}"
@@ -1445,10 +1452,13 @@ fn non_atomic_dump_is_refused_without_explicit_confirmation() {
 
 #[test]
 fn non_atomic_dump_runs_per_statement_once_the_risk_is_accepted() {
-    assert_eq!(
-        pg_restore_txn("directory", "/tmp/dumpdir", true).unwrap(),
-        PgRestoreTxn::PerStatement
+    let path = temp_plain_dump(
+        "accepted",
+        "CREATE TABLE public.t (id integer);\nVACUUM FULL public.t;\n",
     );
+    let txn = pg_restore_txn("plain", &path, true).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(txn, PgRestoreTxn::PerStatement);
 }
 
 /// Acceptance is not a blanket opt-out: a compatible dump still runs as one
@@ -2054,9 +2064,92 @@ fn live_pg_plain_restore_stops_at_the_first_error() {
         after, 0,
         "statements after the error must not run (issue #49)"
     );
+    // Ticket 33: the run is one transaction, so even the statement that succeeded
+    // before the failure was rolled back — the target is unchanged.
+    let before = psql_count(
+        &conn,
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'gl_before_error'",
+    );
+    assert_eq!(
+        before, 0,
+        "a failed transactional restore must leave the target unchanged"
+    );
 
     let _ = std::fs::remove_file(&path);
     psql_exec(&conn, "DROP TABLE IF EXISTS gl_before_error;");
+}
+
+/// Live ticket 33: a real `pg_dump` plain script must scan as transaction
+/// compatible. This is the guard against false positives in the scanner: data
+/// values that read like statements (`COPY` payload) and PL/pgSQL bodies
+/// (`BEGIN`/`END` inside dollar quotes) are not statements.
+///
+/// Opt in with GRIDLINE_TEST_SRC_*, GRIDLINE_TEST_PG_DUMP.
+#[test]
+#[ignore]
+fn live_pg_dump_plain_output_is_recognized_as_atomic() {
+    if std::env::var("GRIDLINE_TEST_SRC_HOST").is_err() {
+        eprintln!(
+            "SKIPPED live_pg_dump_plain_output_is_recognized_as_atomic: GRIDLINE_TEST_SRC_* unset"
+        );
+        return;
+    }
+    let _guard = INTEGRATION_LOCK.lock().unwrap();
+    let src = conn_from_env("GRIDLINE_TEST_SRC");
+    let pg_dump = std::env::var("GRIDLINE_TEST_PG_DUMP").unwrap_or_else(|_| "pg_dump".into());
+
+    psql_exec(
+        &src,
+        "DROP SCHEMA IF EXISTS gl_scan CASCADE; CREATE SCHEMA gl_scan;",
+    );
+    psql_exec(
+        &src,
+        "CREATE TABLE gl_scan.t (id integer PRIMARY KEY, note text);\
+         INSERT INTO gl_scan.t VALUES (1, 'VACUUM; CREATE DATABASE evil;');",
+    );
+    psql_exec(
+        &src,
+        "CREATE FUNCTION gl_scan.f() RETURNS integer LANGUAGE plpgsql AS $$\nBEGIN\n    RETURN 1;\nEND;\n$$;",
+    );
+    psql_exec(&src, "CREATE VIEW gl_scan.v AS SELECT id FROM gl_scan.t;");
+
+    let path = std::env::temp_dir().join(format!(
+        "gridline_live_scan_{}_{}.sql",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let out = Command::new(&pg_dump)
+        .env("PGPASSWORD", &src.password)
+        .args([
+            format!("--host={}", src.host),
+            format!("--port={}", src.port),
+            format!("--username={}", src.username),
+            format!("--dbname={}", src.database),
+            "--schema=gl_scan".into(),
+            "--no-owner".into(),
+            "--format=plain".into(),
+            format!("--file={}", path.display()),
+        ])
+        .output()
+        .expect("pg_dump should run");
+    assert!(
+        out.status.success(),
+        "pg_dump failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let atomicity = pg_restore_atomicity("plain", path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    psql_exec(&src, "DROP SCHEMA IF EXISTS gl_scan CASCADE;");
+
+    assert_eq!(
+        atomicity,
+        PgRestoreAtomicity::Atomic,
+        "a real pg_dump plain script must not be flagged as non-atomic"
+    );
 }
 
 /// Live ticket 33: a *compatible* archive that fails partway leaves the target
@@ -3327,7 +3420,6 @@ fn an_expired_restore_grant_reports_the_expired_state() {
     );
 }
 
-#[test]
 /// Ticket 33: the non-atomic acceptance is an explicit, per-request decision, and
 /// an absent one defaults to "refused" so a stale renderer cannot opt in by
 /// omission.

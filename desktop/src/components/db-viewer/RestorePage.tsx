@@ -469,11 +469,11 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                 This restore runs in one transaction: if any statement
                                 fails, everything it applied is rolled back and the
                                 target database is left unchanged. A dump that cannot
-                                be restored in one transaction (a directory dump, or a
-                                script containing VACUUM, CREATE DATABASE, a CONCURRENTLY
-                                index, or its own BEGIN/COMMIT) is refused first, and
-                                only runs after you accept that a failure can leave the
-                                target partially applied.
+                                be restored in one transaction — a SQL script containing
+                                VACUUM, CREATE DATABASE, a CONCURRENTLY index, a
+                                \connect, or its own BEGIN/COMMIT — is refused first,
+                                and only runs after you accept that a failure can leave
+                                the target partially applied.
                             </div>
                         )}
 
