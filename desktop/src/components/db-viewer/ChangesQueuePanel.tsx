@@ -6,6 +6,7 @@ import { useActiveChangeOrigin } from "../../hooks/useActiveChangeOrigin";
 import * as cmd from "../../lib/commands";
 import { buildChangePayload, buildChangeSql } from "../../lib/changePayload";
 import { isSchemaModifyingQuery } from "../../lib/utils";
+import { shortcutIsSuppressed } from "../../lib/shortcutGuard";
 import {
   describeChangeOrigin,
   describeRetargeting,
@@ -229,10 +230,13 @@ export function ChangesQueuePanel({
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        void handleCommitAll();
-      }
+      if (!((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s")) return;
+      // Commit All is a durable write: never let it fire from inside a text
+      // field (where Cmd+S means "save") or from under a modal that owns the
+      // keyboard (ticket 39).
+      if (shortcutIsSuppressed(e)) return;
+      e.preventDefault();
+      void handleCommitAll();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
