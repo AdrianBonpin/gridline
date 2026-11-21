@@ -7,10 +7,23 @@ import * as commands from "../../lib/commands";
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockReturnValue(Promise.resolve(() => {})) }));
 
-const mockConnections: any[] = [];
-vi.mock("../../stores/connectionStore", () => ({
-  useConnectionStore: (selector: any) => selector({ connections: mockConnections }),
+const sessionCredentialMock = vi.hoisted(() => ({
+  requestSessionCredential: vi.fn(),
+  setSessionPassword: vi.fn(),
 }));
+
+const mockConnections: any[] = [];
+vi.mock("../../stores/connectionStore", () => {
+  // The page reads connections through the hook, and only reaches `getState()`
+  // when a tool job asks for a session password.
+  const hook = ((selector: any) =>
+    selector({ connections: mockConnections })) as any;
+  hook.getState = () => ({
+    requestSessionCredential: sessionCredentialMock.requestSessionCredential,
+    setSessionPassword: sessionCredentialMock.setSessionPassword,
+  });
+  return { useConnectionStore: hook };
+});
 
 const pgToolsOk = {
   pg_dump_found: true,
@@ -178,5 +191,52 @@ describe("SyncPage PostgreSQL atomicity", () => {
     const [sourceSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
     fireEvent.change(sourceSelect, { target: { value: "my1" } });
     await waitFor(() => expect(screen.queryByTestId("sync-atomicity")).toBeNull());
+  });
+});
+
+// Ticket 27: a sync resolves one credential per side, so a keychain-off target
+// asks for its own session password instead of failing with an empty one.
+describe("SyncPage session credential prompt (ticket 27)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockConnections.length = 0;
+    mockConnections.push({ id: "src", db_type: "postgresql", name: "source", database: "db1", use_keychain: false });
+    mockConnections.push({ id: "tgt", db_type: "postgresql", name: "target", database: "db1", use_keychain: false });
+    useBackupStore.setState({ jobs: [], activeJobId: null, progress: 0 });
+    useNotificationStore.setState({ notifications: [] });
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    vi.spyOn(commands, "detectPgTools").mockResolvedValue(pgToolsOk);
+    sessionCredentialMock.requestSessionCredential.mockReset();
+    sessionCredentialMock.setSessionPassword.mockReset();
+    sessionCredentialMock.requestSessionCredential.mockResolvedValue("typed-password");
+    sessionCredentialMock.setSessionPassword.mockResolvedValue(undefined);
+  });
+
+  it("asks for the missing side's password and retries the sync", async () => {
+    const sync = vi
+      .spyOn(commands, "dbSync")
+      .mockRejectedValueOnce(new Error("session-credential-required:tgt"))
+      .mockResolvedValueOnce("job-1");
+
+    render(<SyncPage />);
+    await waitFor(() => expect(screen.queryByText(/checking for/i)).not.toBeInTheDocument());
+    const [sourceSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    fireEvent.change(sourceSelect, { target: { value: "src" } });
+    // Selecting the source starts its tool check, whose effect also clears the
+    // destructive confirmation. Wait for that commit before confirming, and
+    // re-query the target (its options are rebuilt for the chosen db type).
+    await waitFor(() => expect(commands.detectPgTools).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/checking for/i)).not.toBeInTheDocument());
+    const [, targetSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    fireEvent.change(targetSelect, { target: { value: "tgt" } });
+    fireEvent.click(await screen.findByTestId("sync-confirm-checkbox"));
+    const startButton = await screen.findByRole("button", { name: /start sync/i });
+    await waitFor(() => expect((startButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(startButton);
+
+    await waitFor(() => expect(sync).toHaveBeenCalledTimes(2));
+    // The refusal names the target, not the page's source connection.
+    expect(sessionCredentialMock.requestSessionCredential).toHaveBeenCalledWith("tgt");
+    expect(sessionCredentialMock.setSessionPassword).toHaveBeenCalledWith("tgt", "typed-password");
   });
 });

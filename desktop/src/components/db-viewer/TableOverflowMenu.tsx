@@ -19,6 +19,7 @@ import {
   type TableActionId,
 } from "../../lib/relationKind";
 import type { ColumnInfo, DependencyInfo, MaintenanceResult } from "../../lib/types";
+import { withSessionCredential } from "../../lib/sessionCredential";
 
 interface TableOverflowMenuProps {
   schema: string;
@@ -176,12 +177,18 @@ export function TableOverflowMenu({
       case "copy-schema": {
         if (!connectionId) break;
         try {
-          const ddl = await cmd.getTableDdl(connectionId, schema, table);
+          // DDL copy shells out to pg_dump, so a keychain-off connection has to
+          // supply its session password before the copy can authenticate.
+          const ddl = await withSessionCredential(connectionId, () =>
+            cmd.getTableDdl(connectionId, schema, table),
+          );
           if (navigator.clipboard) {
             void navigator.clipboard.writeText(ddl);
           }
-        } catch {
-          /* ignore copy failures */
+        } catch (e) {
+          // A cancelled prompt or a failed copy must be visible, not a menu that
+          // silently closes with an empty clipboard.
+          notify(e instanceof Error ? e.message : String(e), "error");
         }
         setOpen(false);
         break;

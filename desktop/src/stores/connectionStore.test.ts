@@ -384,3 +384,52 @@ describe("keychain toggle + session passwords (Task 3.1)", () => {
     expect(commands.createConnection).toHaveBeenCalledWith(expect.objectContaining({ use_keychain: true }));
   });
 });
+describe("session credentials reach backend tool jobs (ticket 27)", () => {
+  it("setSessionPassword mirrors the password to backend memory, never the keychain", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c9", use_keychain: false })] });
+    const mirror = vi.spyOn(commands, "storeSessionCredential").mockResolvedValue(undefined);
+    const keychain = vi.spyOn(commands, "saveConnectionPassword").mockResolvedValue(undefined);
+
+    await useConnectionStore.getState().setSessionPassword("c9", "sess-secret");
+
+    expect(mirror).toHaveBeenCalledWith("c9", "sess-secret");
+    expect(keychain).not.toHaveBeenCalled();
+  });
+
+  it("cachePassword for a keychain-off connection mirrors the password", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c10", use_keychain: false })] });
+    const mirror = vi.spyOn(commands, "storeSessionCredential").mockResolvedValue(undefined);
+
+    await useConnectionStore.getState().cachePassword("c10", "sess-secret");
+
+    expect(mirror).toHaveBeenCalledWith("c10", "sess-secret");
+    expect(await useConnectionStore.getState().getConnectionPassword("c10")).toBe("sess-secret");
+  });
+
+  it("clearSessionPassword forgets the backend copy too", async () => {
+    const forget = vi.spyOn(commands, "forgetSessionCredential").mockResolvedValue(undefined);
+
+    await useConnectionStore.getState().clearSessionPassword("c11");
+
+    expect(forget).toHaveBeenCalledWith("c11");
+  });
+
+  it("deleting a connection forgets its backend copy", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c12", use_keychain: false })] });
+    vi.spyOn(commands, "deleteConnection").mockResolvedValue(undefined);
+    const forget = vi.spyOn(commands, "forgetSessionCredential").mockResolvedValue(undefined);
+
+    await useConnectionStore.getState().deleteConnection("c12");
+
+    expect(forget).toHaveBeenCalledWith("c12");
+  });
+
+  it("keeps the renderer session copy when the backend mirror fails (the job prompts instead)", async () => {
+    useConnectionStore.setState({ connections: [makeConn({ id: "c13", use_keychain: false })] });
+    vi.spyOn(commands, "storeSessionCredential").mockRejectedValue(new Error("ipc unavailable"));
+
+    await useConnectionStore.getState().setSessionPassword("c13", "sess-secret");
+
+    expect(await useConnectionStore.getState().getConnectionPassword("c13")).toBe("sess-secret");
+  });
+});

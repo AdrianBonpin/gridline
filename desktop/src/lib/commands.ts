@@ -62,6 +62,24 @@ export async function deleteConnectionPassword(connectionId: string): Promise<vo
   return invoke<void>("delete_connection_password", { connectionId });
 }
 
+// ─── Session-only credentials (keychain persistence off) ──────
+//
+// Tool jobs (`pg_dump`, `pg_restore`, `psql`, `mariadb-dump`) and DDL copy run
+// in Rust and cannot read the renderer's session map. The password entered for
+// a keychain-off connection is handed to backend memory here; it is never
+// persisted to the OS keychain, the local store, or a log line.
+
+export async function storeSessionCredential(
+  connectionId: string,
+  password: string,
+): Promise<void> {
+  return invoke<void>("store_session_credential", { connectionId, password });
+}
+
+export async function forgetSessionCredential(connectionId: string): Promise<void> {
+  return invoke<void>("forget_session_credential", { connectionId });
+}
+
 // ─── Keychain: SSH secrets ────────────────────────────────────
 
 export async function saveConnectionSshPassword(connectionId: string, password: string): Promise<void> {

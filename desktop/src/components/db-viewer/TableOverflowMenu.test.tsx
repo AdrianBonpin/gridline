@@ -6,6 +6,7 @@ import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import * as commands from "../../lib/commands";
 import * as exportData from "../../lib/exportData";
+import { useConnectionStore } from "../../stores/connectionStore";
 
 describe("TableOverflowMenu", () => {
   beforeEach(() => {
@@ -66,6 +67,40 @@ describe("TableOverflowMenu", () => {
     await user.click(screen.getByLabelText(/table options/i));
     await user.click(screen.getByText("Open in new tab"));
     expect(onOpenTab).toHaveBeenCalledWith("public", "users", true);
+  });
+
+  it("Copy table schema asks for a session password and retries the DDL job (ticket 27)", async () => {
+    const writeText = (navigator.clipboard as any).writeText as ReturnType<typeof vi.fn>;
+    const getDdl = vi
+      .spyOn(commands, "getTableDdl")
+      .mockRejectedValueOnce(new Error("session-credential-required:conn-ddl"))
+      .mockResolvedValueOnce("CREATE TABLE t (id int)");
+    const requestSessionCredential = vi.fn(async () => "typed-password");
+    const setSessionPassword = vi.fn(async () => {});
+    const original = useConnectionStore.getState();
+    useConnectionStore.setState({ requestSessionCredential, setSessionPassword });
+    try {
+      render(
+        <TableOverflowMenu
+          schema="public"
+          table="t"
+          onOpenTab={() => "tab-1"}
+          connectionId="c1"
+        />,
+      );
+      fireEvent.click(screen.getByLabelText(/table options/i));
+      fireEvent.click(screen.getByText(/copy table schema/i));
+
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith("CREATE TABLE t (id int)"));
+      expect(requestSessionCredential).toHaveBeenCalledWith("conn-ddl");
+      expect(setSessionPassword).toHaveBeenCalledWith("conn-ddl", "typed-password");
+      expect(getDdl).toHaveBeenCalledTimes(2);
+    } finally {
+      useConnectionStore.setState({
+        requestSessionCredential: original.requestSessionCredential,
+        setSessionPassword: original.setSessionPassword,
+      });
+    }
   });
 
   it("Copy table schema calls getTableDdl and writes clipboard", async () => {

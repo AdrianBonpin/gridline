@@ -4294,3 +4294,218 @@ fn a_restore_request_takes_its_input_path_from_the_granted_path() {
     assert_eq!(sqlite.file_path, "/tmp/granted.sqlite.sql");
     assert!(sqlite.clean);
 }
+
+// ------------------------------------------------------------------
+// Ticket 27: session-only credentials reach tool jobs.
+//
+// These tests drive the *process* seam with controlled external tools: the
+// credential a keychain-off connection supplied for this session must be the
+// one the tool authenticates with, and it must travel through the environment
+// only — never the argument list, which `ps` exposes to every local process.
+// ------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn a_session_credential_backup_authenticates_without_putting_it_in_argv() {
+    let dir = job_temp_dir("session_credential_dump");
+    let argv_log = dir.join("argv.txt");
+    let env_log = dir.join("env.txt");
+    let pg_dump = write_executable_script(
+        "pg_dump_session",
+        &format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"--version\" ]; then echo 'pg_dump (PostgreSQL) 16.4'; exit 0; fi\n\
+             printf '%s\\n' \"$@\" > '{}'\n\
+             printf '%s' \"$PGPASSWORD\" > '{}'\n\
+             test \"$PGPASSWORD\" = session-secret || exit 79\n\
+             exit 0\n",
+            argv_log.display(),
+            env_log.display()
+        ),
+    );
+
+    // The credential a keychain-off connection supplies for this session.
+    let store = crate::session_credential::SessionCredentialStore::new();
+    store.set("conn-session", "session-secret");
+    let password =
+        crate::session_credential::resolve_tool_credential(&store, false, "conn-session", || {
+            panic!("a keychain-off connection must not read the OS keychain")
+        })
+        .expect("the session credential is available");
+
+    let conn = PgConnParams::new("localhost".into(), 5432, "u".into(), "db".into(), password);
+    let options = BackupOptions {
+        format: "custom".into(),
+        file_path: dir.join("out.dump").to_string_lossy().into_owned(),
+        schema: None,
+        tables: None,
+        no_owner: true,
+    };
+    let tools = PgToolPaths {
+        pg_dump: pg_dump.to_string_lossy().into_owned(),
+        pg_restore: String::new(),
+        psql: String::new(),
+    };
+
+    let result = run_pg_dump(&conn, &options, &tools);
+    let argv = std::fs::read_to_string(&argv_log).unwrap_or_default();
+    let env_password = std::fs::read_to_string(&env_log).unwrap_or_default();
+    let _ = std::fs::remove_file(&pg_dump);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(result.is_ok(), "the tool exited early: {result:?}");
+    assert_eq!(
+        env_password, "session-secret",
+        "the session credential must reach the tool through PGPASSWORD"
+    );
+    assert!(
+        !argv.contains("session-secret"),
+        "the credential must never be a process argument: {argv}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_session_credential_restore_authenticates_without_putting_it_in_argv() {
+    let dir = job_temp_dir("session_credential_restore");
+    let dump = dir.join("dump.sql");
+    std::fs::write(&dump, "CREATE TABLE public.t (id integer);\n").unwrap();
+    let argv_log = dir.join("argv.txt");
+    let env_log = dir.join("env.txt");
+    let psql = write_executable_script(
+        "psql_session",
+        &format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$@\" > '{}'\n\
+             printf '%s' \"$PGPASSWORD\" > '{}'\n\
+             test \"$PGPASSWORD\" = session-secret || exit 79\n\
+             cat > /dev/null\n\
+             exit 0\n",
+            argv_log.display(),
+            env_log.display()
+        ),
+    );
+
+    let store = crate::session_credential::SessionCredentialStore::new();
+    store.set("conn-session", "session-secret");
+    let password =
+        crate::session_credential::resolve_tool_credential(&store, false, "conn-session", || {
+            panic!("a keychain-off connection must not read the OS keychain")
+        })
+        .expect("the session credential is available");
+
+    let conn = PgConnParams::new("localhost".into(), 5432, "u".into(), "db".into(), password);
+    let options = RestoreOptions {
+        format: "plain".into(),
+        file_path: dump.to_string_lossy().into_owned(),
+        clean: false,
+        schema: None,
+    };
+    let tools = PgToolPaths {
+        pg_dump: String::new(),
+        pg_restore: String::new(),
+        psql: psql.to_string_lossy().into_owned(),
+    };
+
+    let result = run_pg_restore(&conn, &options, &tools);
+    let argv = std::fs::read_to_string(&argv_log).unwrap_or_default();
+    let env_password = std::fs::read_to_string(&env_log).unwrap_or_default();
+    let _ = std::fs::remove_file(&psql);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(result.is_ok(), "the tool exited early: {result:?}");
+    assert_eq!(env_password, "session-secret");
+    assert!(
+        !argv.contains("session-secret"),
+        "the credential must never be a process argument: {argv}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_session_credential_sync_keeps_both_passwords_out_of_argv() {
+    let dir = job_temp_dir("session_credential_sync");
+    let dump_argv = dir.join("dump_argv.txt");
+    let dump_env = dir.join("dump_env.txt");
+    let restore_argv = dir.join("restore_argv.txt");
+    let restore_env = dir.join("restore_env.txt");
+    let dump = write_executable_script(
+        "pg_dump_sync_session",
+        &format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$@\" > '{}'\n\
+             printf '%s' \"$PGPASSWORD\" > '{}'\n\
+             test \"$PGPASSWORD\" = source-secret || exit 80\n\
+             printf 'archive bytes'\n\
+             exit 0\n",
+            dump_argv.display(),
+            dump_env.display()
+        ),
+    );
+    let restore = write_executable_script(
+        "pg_restore_sync_session",
+        &format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$@\" > '{}'\n\
+             printf '%s' \"$PGPASSWORD\" > '{}'\n\
+             test \"$PGPASSWORD\" = target-secret || exit 81\n\
+             cat > /dev/null\n\
+             exit 0\n",
+            restore_argv.display(),
+            restore_env.display()
+        ),
+    );
+
+    let store = crate::session_credential::SessionCredentialStore::new();
+    store.set("conn-source", "source-secret");
+    store.set("conn-target", "target-secret");
+    let source_password =
+        crate::session_credential::resolve_tool_credential(&store, false, "conn-source", || {
+            panic!("keychain must not be read")
+        })
+        .expect("source credential");
+    let target_password =
+        crate::session_credential::resolve_tool_credential(&store, false, "conn-target", || {
+            panic!("keychain must not be read")
+        })
+        .expect("target credential");
+
+    let source = PgConnParams::new(
+        "source".into(),
+        5432,
+        "u".into(),
+        "db".into(),
+        source_password,
+    );
+    let target = PgConnParams::new(
+        "target".into(),
+        5432,
+        "u".into(),
+        "db".into(),
+        target_password,
+    );
+    let tools = PgToolPaths {
+        pg_dump: dump.to_string_lossy().into_owned(),
+        pg_restore: restore.to_string_lossy().into_owned(),
+        psql: String::new(),
+    };
+
+    let result = run_db_sync(&source, &target, None, None, &tools);
+    let dump_args = std::fs::read_to_string(&dump_argv).unwrap_or_default();
+    let restore_args = std::fs::read_to_string(&restore_argv).unwrap_or_default();
+    let dump_password = std::fs::read_to_string(&dump_env).unwrap_or_default();
+    let restore_password = std::fs::read_to_string(&restore_env).unwrap_or_default();
+    let _ = std::fs::remove_file(&dump);
+    let _ = std::fs::remove_file(&restore);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(result.is_ok(), "the sync exited early: {result:?}");
+    assert_eq!(dump_password, "source-secret", "source PGPASSWORD");
+    assert_eq!(restore_password, "target-secret", "target PGPASSWORD");
+    for (side, argv) in [("dump", &dump_args), ("restore", &restore_args)] {
+        assert!(
+            !argv.contains("source-secret") && !argv.contains("target-secret"),
+            "the {side} credential must never be a process argument: {argv}"
+        );
+    }
+}
