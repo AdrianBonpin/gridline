@@ -286,7 +286,12 @@ export function TableOverflowMenu({
             name: table,
             action: {
               op: "edit",
-              columns: columnMeta,
+              // Each row remembers its live column (Column Identity); a rename
+              // is a name the user edits on that row, never a positional match.
+              columns: columnMeta.map((c) => ({
+                ...c,
+                original_name: c.name,
+              })),
               old_columns: columnMeta,
             },
           },

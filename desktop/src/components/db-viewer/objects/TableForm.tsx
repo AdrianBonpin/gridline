@@ -88,6 +88,12 @@ interface TableFormColumn {
     params?: string;
     auto_increment?: boolean;
     unique?: boolean;
+    /**
+     * The live column this row represents in edit mode (undefined for a row the
+     * user just added). Column Identity lives here, not in the row's position:
+     * only a row with an `original_name` whose name changed is a rename.
+     */
+    original_name?: string | null;
     /** transient: true when a FK was just assigned to this column */
     fk?: boolean;
 }
@@ -100,6 +106,8 @@ interface SqlColumn {
     is_pk: boolean;
     unique?: boolean;
     auto_increment?: boolean;
+    /** Explicit rename intent: the live column name this entry replaces. */
+    renamed_from?: string;
 }
 
 interface TableFormAction {
@@ -140,6 +148,11 @@ function toSqlColumn(
         is_pk: c.is_pk,
         unique: c.unique ?? undefined,
     };
+    // Column Identity: a rename is sent only when this row came from a live
+    // column and the user changed that row's name. A newly added row carries no
+    // `original_name`, so adding or moving a column is never read as a rename.
+    const original = c.original_name;
+    if (original && original !== c.name) out.renamed_from = original;
     if (dbType === "sqlite" && c.auto_increment) {
         out.auto_increment = true;
     }

@@ -397,6 +397,70 @@ describe("ChangesQueuePanel", () => {
     ).toEqual(staged);
   });
 
+  it("surfaces a stale-row conflict and reports nothing was committed", async () => {
+    // The backend refuses a write whose original value another session already
+    // changed. The queue must show that conflict verbatim and never present the
+    // change as applied.
+    vi.spyOn(commands, "executeChange").mockRejectedValue(
+      new Error(
+        'row conflict: column "name" changed in another session; nothing was written',
+      ),
+    );
+    const onCommitted = vi.fn();
+    useDbViewerStore.getState().addChange({
+      type: "update",
+      schema: "public",
+      table: "users",
+      primaryKey: { id: 1 },
+      oldData: { name: "Alice" },
+      newData: { name: "Alicia" },
+      description: "Edit users",
+    });
+
+    render(<ChangesQueuePanel onCommitted={onCommitted} />);
+    fireEvent.click(screen.getByTestId("commit-all"));
+
+    await waitFor(() =>
+      expect(useDbViewerStore.getState().changesQueue[0].status).toBe("failed"),
+    );
+    expect(useDbViewerStore.getState().changesQueue[0].error).toMatch(/row conflict/);
+    // The conflict is visible on the card and in the commit report…
+    expect(screen.getByText(/row conflict: column "name" changed/i)).toBeInTheDocument();
+    expect(notifications()).toMatch(/row conflict: column "name" changed/i);
+    expect(notifications()).toMatch(/nothing was written/i);
+    // …and no tab is refreshed as if it had committed.
+    expect(onCommitted).not.toHaveBeenCalled();
+  });
+
+  it("stops at an ambiguous-match failure instead of committing later changes", async () => {
+    const exec = vi
+      .spyOn(commands, "executeChange")
+      .mockRejectedValueOnce(new Error("ambiguous row match: 2 rows matched the row identity; nothing was written"))
+      .mockResolvedValue(undefined);
+    for (const label of ["Delete A", "Delete B"]) {
+      useDbViewerStore.getState().addChange({
+        type: "delete",
+        schema: "public",
+        table: "t",
+        primaryKey: { id: label },
+        description: label,
+      });
+    }
+
+    render(<ChangesQueuePanel />);
+    fireEvent.click(screen.getByTestId("commit-all"));
+
+    await waitFor(() =>
+      expect(useDbViewerStore.getState().changesQueue.map((c) => c.status)).toEqual([
+        "failed",
+        "pending",
+      ]),
+    );
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(notifications()).toMatch(/ambiguous row match/i);
+    expect(notifications()).toMatch(/committed 0 of 2/i);
+  });
+
   it("refuses Commit All when the saved connection was retargeted after staging", async () => {
     const exec = vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
     useDbViewerStore.getState().addChange({

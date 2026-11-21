@@ -475,6 +475,11 @@ describe("table/role crud params", () => {
     const p = initialCrudParams("table", item, "edit");
     expect((p as any).action.op).toBe("edit");
     expect((p as any).action.old_columns).toEqual(item.columnMeta);
+    // Each editable row remembers its live column, so a name the user edits is
+    // an explicit rename (Column Identity) rather than a positional guess.
+    expect((p as any).action.columns).toEqual([
+      { ...item.columnMeta![0], original_name: "id" },
+    ]);
   });
   it("initialCrudParams(role, create) starts empty with options", () => {
     const p = initialCrudParams("role", { schema: "", name: "" }, "create");

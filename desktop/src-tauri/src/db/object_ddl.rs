@@ -14,6 +14,13 @@ pub struct SqliteColumn {
     pub is_pk: bool,
     pub auto_increment: bool,
     pub unique: bool,
+    /// Explicit rename intent: the live column name this entry replaces.
+    ///
+    /// A SQLite edit renames a column only when the payload says so here.
+    /// Ordinal position, type similarity, and default equality never make two
+    /// different names a rename.
+    #[serde(default)]
+    pub renamed_from: Option<String>,
 }
 
 /// Double-quote an identifier, doubling embedded quotes.
@@ -244,77 +251,254 @@ pub fn sqlite_create_table_sql(
     ))
 }
 
+/// One new column's place in a SQLite edit, resolved by Column Identity.
+///
+/// `source` is the live column the entry came from — the name-matched column, or
+/// the explicit `renamed_from` column. `None` means the entry is a new column.
+/// Ordinal position never establishes identity.
+struct SqliteEdit<'a> {
+    new: &'a SqliteColumn,
+    source: Option<&'a SqliteColumn>,
+}
+
+/// Resolve each entry to a live column, collecting the explicit renames.
+///
+/// A rename exists only for an entry carrying `renamed_from`; everything else is
+/// matched by name or treated as a new column. Both engines share these rules
+/// (see GLOSSARY.md — Column Identity).
+fn sqlite_resolve_edits<'a>(
+    old: &'a [SqliteColumn],
+    new: &'a [SqliteColumn],
+) -> Result<(Vec<SqliteEdit<'a>>, Vec<(&'a str, &'a str)>), String> {
+    let old_by_name: std::collections::HashMap<&str, &SqliteColumn> =
+        old.iter().map(|c| (c.name.as_str(), c)).collect();
+    let mut edits: Vec<SqliteEdit<'a>> = Vec::with_capacity(new.len());
+    let mut renames: Vec<(&'a str, &'a str)> = Vec::new(); // (from, to)
+    for nc in new {
+        let from = nc.renamed_from.as_deref().filter(|f| *f != nc.name);
+        let source = match from {
+            Some(from) => {
+                validate_object_name(from)?;
+                let oc = old_by_name.get(from).ok_or_else(|| {
+                    format!(
+                        "Cannot rename column \"{from}\" to \"{}\": no such column on the table",
+                        nc.name
+                    )
+                })?;
+                if renames.iter().any(|(f, _)| *f == from) {
+                    return Err(format!(
+                        "Column \"{from}\" is the source of more than one rename"
+                    ));
+                }
+                if let Some(existing) = old_by_name.get(nc.name.as_str()) {
+                    if existing.name != from
+                        && !new.iter().any(|c| {
+                            c.renamed_from
+                                .as_deref()
+                                .is_some_and(|f| f == existing.name)
+                        })
+                    {
+                        return Err(format!(
+                            "Cannot rename column \"{from}\" to \"{}\": that column name still exists",
+                            nc.name
+                        ));
+                    }
+                }
+                renames.push((from, nc.name.as_str()));
+                Some(*oc)
+            }
+            None => old_by_name.get(nc.name.as_str()).copied(),
+        };
+        edits.push(SqliteEdit { new: nc, source });
+    }
+    Ok((edits, renames))
+}
+
+/// `ADD COLUMN` definition for a SQLite column (no UNIQUE/PK — those rebuild).
+fn sqlite_add_column_def(c: &SqliteColumn) -> Result<String, String> {
+    validate_object_name(&c.name)?;
+    validate_type_fragment(&c.type_)?;
+    let mut d = format!("{} {}", quote_ident(&c.name), c.type_.trim());
+    if !c.nullable {
+        d.push_str(" NOT NULL");
+    }
+    if let Some(def) = &c.default {
+        d.push_str(&format!(" DEFAULT {def}"));
+    }
+    Ok(d)
+}
+
+/// True when SQLite's `ALTER TABLE` can express this entry as-is: an added
+/// column that is nullable or defaulted, or an unchanged live column.
+fn sqlite_alterable(edit: &SqliteEdit<'_>) -> bool {
+    match edit.source {
+        Some(o) => {
+            o.type_.trim() == edit.new.type_.trim()
+                && o.nullable == edit.new.nullable
+                && o.default == edit.new.default
+                && o.is_pk == edit.new.is_pk
+                && o.auto_increment == edit.new.auto_increment
+                && o.unique == edit.new.unique
+        }
+        // SQLite cannot ADD a UNIQUE or PRIMARY KEY column, and NOT NULL needs
+        // a default to backfill existing rows.
+        None => {
+            !edit.new.is_pk && !edit.new.unique && (edit.new.nullable || edit.new.default.is_some())
+        }
+    }
+}
+
 /// Emit one statement per needed edit; falls back to a rebuild script (multi-stmt)
 /// for edits SQLite's ALTER TABLE can't express.
+///
+/// Renames come only from explicit `renamed_from` intent, and every requested
+/// edit is represented: a submission that renames a column and also adds one
+/// stages both statements instead of returning early with the first.
 pub fn sqlite_column_diff_sql(
     table: &str,
     old: &[SqliteColumn],
     new: &[SqliteColumn],
 ) -> Result<Vec<String>, String> {
-    // rename detection: same position+type+nullable+default, name changed
-    for (i, n) in new.iter().enumerate() {
-        if let Some(o) = old.get(i) {
-            if o.name != n.name
-                && o.type_ == n.type_
-                && o.default == n.default
-                && o.nullable == n.nullable
-            {
-                return Ok(vec![format!(
-                    "ALTER TABLE \"main\".{} RENAME COLUMN {} TO {}",
-                    quote_ident(table),
-                    quote_ident(&o.name),
-                    quote_ident(&n.name)
-                )]);
-            }
+    validate_object_name(table)?;
+    if new.is_empty() {
+        return Err("EDIT TABLE requires at least one column".into());
+    }
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for c in new {
+        validate_object_name(&c.name)?;
+        validate_type_fragment(&c.type_)?;
+        if !seen.insert(c.name.as_str()) {
+            return Err(format!("Duplicate column name: {}", c.name));
         }
     }
-    // add column (new tail column, safe only if nullable or defaulted)
-    if new.len() > old.len() {
-        if let Some(c) = new.last() {
-            if c.nullable || c.default.is_some() {
-                validate_object_name(&c.name)?;
-                validate_type_fragment(&c.type_)?;
-                let mut d = format!(
-                    "ALTER TABLE \"main\".{} ADD COLUMN {} {}",
-                    quote_ident(table),
-                    quote_ident(&c.name),
-                    c.type_.trim()
-                );
-                if !c.nullable {
-                    d.push_str(&format!(
-                        " DEFAULT {}",
-                        c.default.as_deref().unwrap_or("''")
-                    ));
-                }
-                return Ok(vec![d]);
-            }
+
+    let (edits, renames) = sqlite_resolve_edits(old, new)?;
+    // A rename whose target is another rename's source (a swap or a chain)
+    // cannot be expressed in one pass — every RENAME sees the live names.
+    for (_, to) in &renames {
+        if renames.iter().any(|(from, _)| from == to) {
+            return Err(format!(
+                "Cannot rename to \"{to}\": it is still the source of another rename in this submission"
+            ));
         }
     }
-    // otherwise: full rebuild (type change, NOT NULL, drop, PK/UNIQUE/FK add, reorder)
-    sqlite_rebuild_script(table, old, new)
+    let renamed_away: std::collections::HashSet<&str> =
+        renames.iter().map(|(from, _)| *from).collect();
+    let new_names: std::collections::HashSet<&str> = new.iter().map(|c| c.name.as_str()).collect();
+
+    // A dropped column and any non-ALTER-able change need a rebuild.
+    let dropped = old
+        .iter()
+        .any(|c| !new_names.contains(c.name.as_str()) && !renamed_away.contains(c.name.as_str()));
+    let reordered = {
+        let sources: Vec<&str> = edits
+            .iter()
+            .filter_map(|e| e.source.map(|c| c.name.as_str()))
+            .collect();
+        let live: Vec<&str> = old
+            .iter()
+            .map(|c| c.name.as_str())
+            .filter(|n| sources.contains(n))
+            .collect();
+        sources != live
+    };
+    if dropped || reordered || edits.iter().any(|e| !sqlite_alterable(e)) {
+        return sqlite_rebuild_script(table, old, new);
+    }
+
+    // Renames first (each one the user asked for), then the adds.
+    let mut out: Vec<String> = renames
+        .iter()
+        .map(|(from, to)| {
+            format!(
+                "ALTER TABLE \"main\".{} RENAME COLUMN {} TO {}",
+                quote_ident(table),
+                quote_ident(from),
+                quote_ident(to)
+            )
+        })
+        .collect();
+    for edit in edits.iter().filter(|e| e.source.is_none()) {
+        out.push(format!(
+            "ALTER TABLE \"main\".{} ADD COLUMN {}",
+            quote_ident(table),
+            sqlite_add_column_def(edit.new)?
+        ));
+    }
+    Ok(out)
+}
+
+/// The rebuild copy step maps each value by Column Identity.
+///
+/// `SELECT *` is only safe when the edit carries no explicit rename and the new
+/// column order is positionally identical to the live columns it draws from.
+/// Once a rename or a reorder makes that untrue, the source list is spelled out
+/// so a value can never land in a column it did not come from. Added columns are
+/// left out of the copy and take their declared default.
+pub fn sqlite_rebuild_copy(
+    table: &str,
+    old: &[SqliteColumn],
+    new: &[SqliteColumn],
+) -> Result<String, String> {
+    let mut targets: Vec<String> = Vec::new();
+    let mut sources: Vec<&str> = Vec::new();
+    for c in new {
+        let src = c
+            .renamed_from
+            .as_deref()
+            .filter(|f| *f != c.name)
+            .unwrap_or(c.name.as_str());
+        if old.iter().any(|o| o.name == src) {
+            targets.push(quote_ident(&c.name));
+            sources.push(src);
+        }
+    }
+    if targets.is_empty() {
+        return Err(
+            "Rebuild needs at least one column carried over from the live table".to_string(),
+        );
+    }
+    let live: Vec<&str> = old
+        .iter()
+        .map(|c| c.name.as_str())
+        .filter(|n| sources.contains(n))
+        .collect();
+    let renamed = new
+        .iter()
+        .any(|c| c.renamed_from.as_deref().is_some_and(|f| f != c.name));
+    // `SELECT *` pairs by position, so it is only equivalent to the identity
+    // copy when every live column is carried, in the same order, and nothing is
+    // renamed.
+    let positional = !renamed && sources.len() == old.len() && sources == live;
+    let select = if positional {
+        "*".to_string()
+    } else {
+        sources
+            .iter()
+            .map(|s| quote_ident(s))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Ok(format!(
+        "INSERT INTO \"main\".{} ({}) SELECT {} FROM \"main\".{}",
+        quote_ident(&format!("_gl_{}_tmp", table)),
+        targets.join(", "),
+        select,
+        quote_ident(table)
+    ))
 }
 
 pub fn sqlite_rebuild_script(
     table: &str,
-    _old: &[SqliteColumn],
+    old: &[SqliteColumn],
     new: &[SqliteColumn],
 ) -> Result<Vec<String>, String> {
     validate_object_name(table)?;
     let tmp = format!("_gl_{}_tmp", table);
     let create = sqlite_create_table_sql(&tmp, new, &[])?;
-    let cols = new
-        .iter()
-        .map(|c| quote_ident(&c.name))
-        .collect::<Vec<_>>()
-        .join(", ");
     Ok(vec![
         create,
-        format!(
-            "INSERT INTO \"main\".{} ({}) SELECT * FROM \"main\".{}",
-            quote_ident(&tmp),
-            cols,
-            quote_ident(table)
-        ),
+        sqlite_rebuild_copy(table, old, new)?,
         format!("DROP TABLE \"main\".{}", quote_ident(table)),
         format!(
             "ALTER TABLE \"main\".{} RENAME TO {}",
@@ -531,6 +715,7 @@ mod tests {
                 is_pk: true,
                 auto_increment: true,
                 unique: false,
+                renamed_from: None,
             },
             SqliteColumn {
                 name: "name".into(),
@@ -540,6 +725,7 @@ mod tests {
                 is_pk: false,
                 auto_increment: false,
                 unique: false,
+                renamed_from: None,
             },
         ];
         let sql = sqlite_create_table_sql("users", &cols, &[]).unwrap();
@@ -558,6 +744,7 @@ mod tests {
             is_pk: false,
             auto_increment: false,
             unique: false,
+            renamed_from: None,
         }];
         assert!(sqlite_create_table_sql("bad name", &cols, &[]).is_err());
     }
@@ -572,6 +759,7 @@ mod tests {
             is_pk: true,
             auto_increment: true,
             unique: false,
+            renamed_from: None,
         }];
         let new = vec![
             old[0].clone(),
@@ -583,6 +771,7 @@ mod tests {
                 is_pk: false,
                 auto_increment: false,
                 unique: false,
+                renamed_from: None,
             },
         ];
         let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
@@ -590,52 +779,208 @@ mod tests {
         assert!(stmts[0].contains("ALTER TABLE \"main\".\"users\" ADD COLUMN \"email\" TEXT"));
     }
 
+    // --- Column Identity: renames are explicit intent only (ticket 07) ---
+
+    fn col(name: &str, ty: &str) -> SqliteColumn {
+        SqliteColumn {
+            name: name.into(),
+            type_: ty.into(),
+            nullable: true,
+            default: None,
+            is_pk: false,
+            auto_increment: false,
+            unique: false,
+            renamed_from: None,
+        }
+    }
+
+    fn renamed(name: &str, ty: &str, from: &str) -> SqliteColumn {
+        SqliteColumn {
+            renamed_from: Some(from.into()),
+            ..col(name, ty)
+        }
+    }
+
     #[test]
     fn sqlite_edit_rename_column() {
-        let old = vec![SqliteColumn {
-            name: "id".into(),
-            type_: "INTEGER".into(),
-            nullable: true,
-            default: None,
-            is_pk: false,
-            auto_increment: false,
-            unique: false,
-        }];
-        let new = vec![SqliteColumn {
-            name: "id2".into(),
-            type_: "INTEGER".into(),
-            nullable: true,
-            default: None,
-            is_pk: false,
-            auto_increment: false,
-            unique: false,
-        }];
+        let old = vec![col("id", "INTEGER")];
+        let new = vec![renamed("id2", "INTEGER", "id")];
         let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
-        assert!(stmts
+        assert_eq!(
+            stmts,
+            vec!["ALTER TABLE \"main\".\"t\" RENAME COLUMN \"id\" TO \"id2\""]
+        );
+    }
+
+    #[test]
+    fn sqlite_edit_rename_without_intent_stages_no_rename() {
+        // Same shape as a rename, no intent: `name` is dropped and `label` is a
+        // new column. Nothing may be inferred from the matching ordinal, and the
+        // value of `name` must not be carried into `label`.
+        let old = vec![col("id", "INTEGER"), col("name", "TEXT")];
+        let new = vec![col("id", "INTEGER"), col("label", "TEXT")];
+        let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
+        assert!(
+            !stmts.iter().any(|s| s.contains("RENAME COLUMN")),
+            "no rename may be inferred; got {stmts:?}"
+        );
+        let insert = stmts
             .iter()
-            .any(|s| s.contains("RENAME COLUMN \"id\" TO \"id2\"")));
+            .find(|s| s.starts_with("INSERT INTO"))
+            .unwrap_or_else(|| panic!("expected a rebuild copy step; got {stmts:?}"));
+        assert!(
+            insert.contains("(\"id\")") && insert.contains("SELECT \"id\" FROM"),
+            "only the kept column's value is carried; got {insert}"
+        );
+    }
+
+    #[test]
+    fn sqlite_edit_add_in_middle_stages_only_add() {
+        // A column added between two existing ones occupies an ordinal that a
+        // live column already used; it must still be a plain ADD.
+        let old = vec![
+            col("id", "INTEGER"),
+            col("name", "TEXT"),
+            col("age", "INTEGER"),
+        ];
+        let new = vec![
+            col("id", "INTEGER"),
+            col("email", "TEXT"),
+            col("name", "TEXT"),
+            col("age", "INTEGER"),
+        ];
+        let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
+        assert!(
+            !stmts.iter().any(|s| s.contains("RENAME")),
+            "an inserted column is not a rename; got {stmts:?}"
+        );
+        assert!(
+            stmts
+                .iter()
+                .any(|s| s.contains("ADD COLUMN \"email\" TEXT")),
+            "the add itself is staged; got {stmts:?}"
+        );
+        assert!(
+            !stmts.iter().any(|s| s.contains("_gl_users_tmp")),
+            "an add needs no rebuild/data movement; got {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn sqlite_edit_two_added_columns_are_both_staged() {
+        let old = vec![col("id", "INTEGER")];
+        let new = vec![col("id", "INTEGER"), col("a", "TEXT"), col("b", "TEXT")];
+        let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
+        assert_eq!(
+            stmts.len(),
+            2,
+            "every added column is staged; got {stmts:?}"
+        );
+        assert!(stmts.iter().any(|s| s.contains("ADD COLUMN \"a\" TEXT")));
+        assert!(stmts.iter().any(|s| s.contains("ADD COLUMN \"b\" TEXT")));
+    }
+
+    #[test]
+    fn sqlite_edit_reorder_never_emits_rename() {
+        let old = vec![col("a", "TEXT"), col("b", "TEXT")];
+        let new = vec![col("b", "TEXT"), col("a", "TEXT")];
+        let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
+        assert!(
+            !stmts.iter().any(|s| s.contains("RENAME COLUMN")),
+            "a reorder is not a rename; got {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn sqlite_edit_rename_combined_with_add_stages_both() {
+        let old = vec![col("id", "INTEGER"), col("name", "TEXT")];
+        let new = vec![
+            col("id", "INTEGER"),
+            renamed("label", "TEXT", "name"),
+            col("email", "TEXT"),
+        ];
+        let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
+        assert_eq!(
+            stmts,
+            vec![
+                "ALTER TABLE \"main\".\"users\" RENAME COLUMN \"name\" TO \"label\"",
+                "ALTER TABLE \"main\".\"users\" ADD COLUMN \"email\" TEXT",
+            ],
+            "the rename and the add are both staged"
+        );
+    }
+
+    #[test]
+    fn sqlite_edit_rename_combined_with_type_change_rebuilds_by_identity() {
+        // Rename + type change cannot be expressed by ALTER TABLE, so it is one
+        // rebuild whose copy step reads each value from the column it came from.
+        let old = vec![col("id", "INTEGER"), col("name", "TEXT")];
+        let new = vec![col("id", "INTEGER"), renamed("label", "INTEGER", "name")];
+        let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
+        let insert = stmts
+            .iter()
+            .find(|s| s.starts_with("INSERT INTO"))
+            .unwrap_or_else(|| panic!("expected a rebuild copy step; got {stmts:?}"));
+        assert!(
+            insert.contains("(\"id\", \"label\")"),
+            "target list follows the new schema; got {insert}"
+        );
+        assert!(
+            insert.contains("SELECT \"id\", \"name\" FROM"),
+            "source list follows Column Identity; got {insert}"
+        );
+    }
+
+    #[test]
+    fn sqlite_edit_rename_quotes_legal_identifiers() {
+        let old = vec![col("select", "TEXT")];
+        let new = vec![renamed("we ird name", "TEXT", "select")];
+        let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
+        assert_eq!(
+            stmts,
+            vec!["ALTER TABLE \"main\".\"users\" RENAME COLUMN \"select\" TO \"we ird name\""]
+        );
+    }
+
+    #[test]
+    fn sqlite_edit_rename_of_unknown_column_is_rejected() {
+        let old = vec![col("id", "INTEGER")];
+        let new = vec![renamed("label", "TEXT", "nope")];
+        let err = sqlite_column_diff_sql("t", &old, &new).unwrap_err();
+        assert!(
+            err.contains("nope"),
+            "expected the unknown source named; got {err}"
+        );
+    }
+
+    #[test]
+    fn sqlite_edit_swapped_renames_are_rejected() {
+        let old = vec![col("a", "TEXT"), col("b", "TEXT")];
+        let new = vec![renamed("b", "TEXT", "a"), renamed("a", "TEXT", "b")];
+        let err = sqlite_column_diff_sql("t", &old, &new).unwrap_err();
+        assert!(
+            err.contains("source of another rename"),
+            "expected a swap refusal; got {err}"
+        );
+    }
+
+    #[test]
+    fn sqlite_rebuild_without_a_carried_column_is_refused() {
+        // Every live column replaced: there is no value to carry over, so the
+        // rebuild cannot be expressed as a copy step.
+        let old = vec![col("a", "TEXT")];
+        let new = vec![col("b", "TEXT")];
+        let err = sqlite_rebuild_script("t", &old, &new).unwrap_err();
+        assert!(
+            err.contains("at least one column carried over"),
+            "expected a refusal naming the copy step; got {err}"
+        );
     }
 
     #[test]
     fn sqlite_edit_typechange_requires_rebuild() {
-        let old = vec![SqliteColumn {
-            name: "v".into(),
-            type_: "TEXT".into(),
-            nullable: true,
-            default: None,
-            is_pk: false,
-            auto_increment: false,
-            unique: false,
-        }];
-        let new = vec![SqliteColumn {
-            name: "v".into(),
-            type_: "INTEGER".into(),
-            nullable: true,
-            default: None,
-            is_pk: false,
-            auto_increment: false,
-            unique: false,
-        }];
+        let old = vec![col("v", "TEXT")];
+        let new = vec![col("v", "INTEGER")];
         let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
         assert!(
             stmts
