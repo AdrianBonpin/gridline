@@ -1882,9 +1882,12 @@ ORDER BY c.ordinal_position"#;
                 .collect();
 
             Ok(QueryResult {
+                // A table page count is a COUNT over the table, not a replay of
+                // the user's statement, so the total is exact here.
+                has_more: (off + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page: p,
                 page_size: ps,
                 execution_time_ms: None,
@@ -2029,9 +2032,12 @@ ORDER BY c.ordinal_position"#;
             };
 
             Ok(QueryResult {
+                // A table page count is a COUNT over the table, not a replay of
+                // the user's statement, so the total is exact here.
+                has_more: (off + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page: p,
                 page_size: ps,
                 execution_time_ms: None,
@@ -2087,9 +2093,12 @@ ORDER BY c.ordinal_position"#;
                 .collect();
 
             Ok(QueryResult {
+                // A table page count is a COUNT over the table, not a replay of
+                // the user's statement, so the total is exact here.
+                has_more: (off + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page: p,
                 page_size: ps,
                 execution_time_ms: None,
@@ -2281,7 +2290,8 @@ ORDER BY c.ordinal_position"#;
             Ok(QueryResult {
                 columns,
                 rows,
-                total_rows: 1,
+                total_rows: Some(1),
+                has_more: false,
                 page: 1,
                 page_size: 1,
                 execution_time_ms: None,
@@ -2370,7 +2380,8 @@ ORDER BY c.ordinal_position"#;
             Ok(QueryResult {
                 columns,
                 rows,
-                total_rows: 1,
+                total_rows: Some(1),
+                has_more: false,
                 page: 1,
                 page_size: 1,
                 execution_time_ms: None,
@@ -2403,7 +2414,8 @@ ORDER BY c.ordinal_position"#;
             Ok(QueryResult {
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
+                has_more: false,
                 page: 1,
                 page_size: 1,
                 execution_time_ms: None,

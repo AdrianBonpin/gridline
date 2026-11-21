@@ -445,7 +445,9 @@ export function DbViewerScreen({
                           // empty-state behavior.
                           columns: [],
                           rows: [],
+                          // No result set at all: zero rows is exact, not unknown.
                           total_rows: 0,
+                          has_more: false,
                           page,
                           page_size: pageSize,
                           execution_time_ms: multi.execution_time_ms,
