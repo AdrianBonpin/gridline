@@ -310,7 +310,7 @@ export function HomeScreen() {
                 <ConfirmDialog
                     open
                     title="Delete Items"
-                    message={`Are you sure you want to delete ${selectedItemIds.length} item${selectedItemIds.length !== 1 ? "s" : ""}?`}
+                    message={`Are you sure you want to delete ${selectedItemIds.length} item${selectedItemIds.length !== 1 ? "s" : ""}? Deleting a connection also permanently deletes its Connection-owned Data: query history, recent-connection records, and saved queries for that connection. Global saved queries are kept.`}
                     confirmLabel="Delete"
                     confirmVariant="ghost"
                     onConfirm={executeDeleteSelected}
@@ -333,7 +333,7 @@ export function HomeScreen() {
                     <ConfirmDialog
                         open
                         title="Delete Connection"
-                        message={`Are you sure you want to delete "${confirmDelete.connection.name}"?`}
+                        message={`Are you sure you want to delete "${confirmDelete.connection.name}"? This permanently deletes its Connection-owned Data: query history, recent-connection records, and saved queries for this connection. Global saved queries are kept.`}
                         confirmLabel="Delete"
                         confirmVariant="ghost"
                         onConfirm={async () => {
