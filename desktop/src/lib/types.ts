@@ -369,9 +369,10 @@ export interface BackupOptions {
   noOwner: boolean;
 }
 
-export interface RestoreOptions {
+/** A PostgreSQL restore request. No input path: the file comes from the File
+ * Grant named alongside it (see {@link selectFileForGrant}). */
+export interface PgRestoreRequest {
   format: string;
-  filePath: string;
   clean: boolean;
   schema?: string;
 }
@@ -435,14 +436,21 @@ export interface MySqlBackupOptions {
   events: boolean;
 }
 
-export interface MySqlRestoreOptions {
+/** What a granted data-import source read returns (see `readImportFile`). */
+export interface ImportSource {
+  text: string;
+  displayName: string;
+  bytes: number;
+}
+
+/** A MySQL restore request; no input path — see {@link PgRestoreRequest}. */
+export interface MySqlRestoreRequest {
   database: string;
-  filePath: string;
   clean: boolean;
 }
 
-export interface SqliteRestoreOptions {
-  filePath: string;
+/** A SQLite restore request; no input path — see {@link PgRestoreRequest}. */
+export interface SqliteRestoreRequest {
   clean: boolean;
 }
 

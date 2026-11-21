@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { FolderOpen, Upload } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { CopyButton } from "../ui/CopyButton";
 import { BackupProgress } from "./BackupProgress";
 import {
@@ -18,8 +17,16 @@ import {
     getSchemas,
     mysqlRestore,
     sqliteRestore,
+    selectFileForGrant,
 } from "../../lib/commands";
 import type { PgToolStatus, BackupJob } from "../../lib/types";
+import type { FileFilter, FileGrant } from "../../lib/fileGrant";
+import {
+    FILE_GRANT_STATE,
+    fileGrantErrorKind,
+    fileGrantErrorMessage,
+    type FileGrantErrorKind,
+} from "../../lib/fileGrant";
 import { isMysqlFamily } from "../../lib/dbCapabilities";
 
 interface RestorePageProps {
@@ -58,9 +65,12 @@ export function RestorePage({ connectionId }: RestorePageProps) {
     const database = connection?.database ?? null;
     const isPg = dbType === "postgresql";
     const isMysql = isMysqlFamily(dbType);
-    const isSqlite = dbType === "sqlite";
 
-    const [filePath, setFilePath] = useState("");
+    // The restore input is authorized by a backend-issued File Grant: the path
+    // below is display metadata, and `grant.id` is what the restore consumes.
+    const [grant, setGrant] = useState<FileGrant | null>(null);
+    const [selectedPath, setSelectedPath] = useState("");
+    const [grantError, setGrantError] = useState<FileGrantErrorKind | null>(null);
     const [format, setFormat] = useState("custom");
     const [clean, setClean] = useState(true);
     const [schema, setSchema] = useState("");
@@ -141,17 +151,23 @@ export function RestorePage({ connectionId }: RestorePageProps) {
               ? ["sql"]
               : ["db", "sqlite", "sql"];
 
-        const picked = await open({
-            multiple: false,
-            filters: [
-                {
-                    name: "Backup Files",
-                    extensions,
-                },
-            ],
-        });
-        if (picked && typeof picked === "string") setFilePath(picked);
-    }, [isPg, isMysql, isSqlite]);
+        const filters: FileFilter[] = [{ name: "Backup Files", extensions }];
+        try {
+            const picked = await selectFileForGrant({
+                intent: "read",
+                title: "Choose a backup file to restore",
+                filters,
+            });
+            if (!picked) return; // cancelled: nothing to authorize
+            setGrant(picked);
+            setSelectedPath(picked.path);
+            setGrantError(null);
+        } catch (e) {
+            const kind = fileGrantErrorKind(e);
+            if (kind) setGrantError(kind);
+            notify(fileGrantErrorMessage(e) ?? String(e), "error");
+        }
+    }, [isPg, isMysql, notify]);
 
     const runWithProgress = useCallback(
         async (type: BackupJob["type"], action: () => Promise<unknown>) => {
@@ -175,8 +191,8 @@ export function RestorePage({ connectionId }: RestorePageProps) {
     }, [notify]);
 
     const handleStartRestore = useCallback(async () => {
-        if (!filePath) {
-            notify("Please select a file path", "error");
+        if (!grant) {
+            notify("Please choose a backup file", "error");
             return;
         }
         if (isMysql && !database) {
@@ -184,30 +200,48 @@ export function RestorePage({ connectionId }: RestorePageProps) {
             return;
         }
 
-        await runWithProgress("restore", () => {
-            if (isPg) {
-                return pgRestore(connectionId, {
-                    format,
-                    filePath,
-                    clean,
-                    schema: schema || undefined,
-                });
+        // A grant is single-use: this selection is spent by the attempt, so the
+        // next job must choose the file again (a replayed id is rejected).
+        const grantId = grant.id;
+        setGrant(null);
+
+        await runWithProgress("restore", async () => {
+            try {
+                if (isPg) {
+                    return await pgRestore(
+                        connectionId,
+                        {
+                            format,
+                            clean,
+                            schema: schema || undefined,
+                        },
+                        grantId,
+                    );
+                }
+                if (isMysql) {
+                    return await mysqlRestore(
+                        connectionId,
+                        {
+                            database: database!,
+                            clean,
+                        },
+                        grantId,
+                    );
+                }
+                return await sqliteRestore(connectionId, { clean }, grantId);
+            } catch (e) {
+                const kind = fileGrantErrorKind(e);
+                if (!kind) throw e;
+                // Surface the grant state instead of a generic tool failure.
+                setGrantError(kind);
+                throw new Error(fileGrantErrorMessage(e) ?? String(e));
             }
-            if (isMysql) {
-                return mysqlRestore(connectionId, {
-                    database: database!,
-                    filePath,
-                    clean,
-                });
-            }
-            return sqliteRestore(connectionId, { filePath, clean });
         });
     }, [
-        filePath,
+        grant,
         database,
         isPg,
         isMysql,
-        isSqlite,
         format,
         clean,
         schema,
@@ -215,6 +249,16 @@ export function RestorePage({ connectionId }: RestorePageProps) {
         notify,
         runWithProgress,
     ]);
+
+    // Retry after a failure: without a live grant the retry starts by choosing
+    // the file again, because the previous selection is spent.
+    const handleRetry = useCallback(() => {
+        if (grant) {
+            void handleStartRestore();
+            return;
+        }
+        void handlePickFile();
+    }, [grant, handleStartRestore, handlePickFile]);
 
     // pg_restore is still required for PostgreSQL. MySQL restore runs in-process
     // via the sqlx driver, so a missing mariadb/mysql client must not gate it —
@@ -225,7 +269,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
     const toolsBundled = isPg
         ? pgToolStatus?.pg_restore_source === "bundled"
         : false;
-    const canStart = filePath && confirmed && !isRunning;
+    const canStart = Boolean(grant) && confirmed && !isRunning;
     const installInstructions = getPlatformInstructions(
         isPg ? PG_INSTALL_INSTRUCTIONS : MYSQL_INSTALL_INSTRUCTIONS,
     );
@@ -274,6 +318,31 @@ export function RestorePage({ connectionId }: RestorePageProps) {
 
             {/* Content */}
             <div className="flex-1 overflow-auto">
+                {/* File Grant state: expired, already used, or missing. Each has
+                    a recovery action, so the flow never fails only in logs. */}
+                {grantError && (
+                    <div
+                        data-testid={`restore-file-grant-${grantError}`}
+                        role="alert"
+                        className="flex items-start justify-between gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3"
+                    >
+                        <div className="min-w-0 space-y-1">
+                            <p className="text-sm font-semibold text-amber-300">
+                                {FILE_GRANT_STATE[grantError].title}
+                            </p>
+                            <p className="text-xs leading-relaxed text-amber-200/80">
+                                {FILE_GRANT_STATE[grantError].detail}
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => void handlePickFile()}
+                            className="shrink-0 rounded-lg border border-amber-500/40 px-3 py-1 text-xs font-medium text-amber-200 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                        >
+                            Choose file
+                        </button>
+                    </div>
+                )}
                 {/* Tool check */}
                 {checkingTools && checkingMessage && (
                     <div className="px-4 py-3 text-sm text-text-muted">
@@ -354,13 +423,18 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                             </FormRow>
                         )}
 
-                        {/* Backup file */}
+                        {/* Backup file. Display only: the read is authorized by
+                            the File Grant behind it, so the field is read-only
+                            and Start stays disabled until a file is chosen. */}
                         <FormRow label="Backup file">
                             <input
                                 type="text"
-                                value={filePath}
-                                onChange={(e) => setFilePath(e.target.value)}
+                                value={selectedPath}
+                                readOnly
+                                aria-label="Backup file"
+                                data-testid="restore-input-path"
                                 placeholder="/path/to/backup.dump"
+                                title="Chosen with Browse — the path alone does not authorize a read"
                                 className={inputClass}
                             />
                             <button
@@ -462,7 +536,7 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                     }
                                     onRetry={
                                         !isRunning
-                                            ? () => void handleStartRestore()
+                                            ? () => void handleRetry()
                                             : undefined
                                     }
                                 />

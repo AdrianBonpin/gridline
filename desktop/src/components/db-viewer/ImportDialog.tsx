@@ -1,13 +1,15 @@
 import { useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { readTextFile } from "@tauri-apps/plugin-fs";
 import { AnimatedModal } from "../ui/AnimatedModal";
 import { Button } from "../ui/Button";
 import { Select } from "../ui/Select";
 import { normalizeImport, coerceRow } from "../../lib/importNormalize";
+import { readImportFile, selectFileForGrant } from "../../lib/commands";
+import type { FileFilter } from "../../lib/fileGrant";
+import { fileGrantErrorKind, fileGrantErrorMessage } from "../../lib/fileGrant";
 
+// Row cap stays here; the 100 MB byte cap is enforced in the backend before the
+// file is read (see `read_import_file`).
 const MAX_ROWS = 100_000;
-const MAX_BYTES = 100 * 1024 * 1024;
 const SKIP = "<skip>";
 
 export interface ImportDialogProps {
@@ -37,21 +39,22 @@ export function ImportDialog({
   const [parsed, setParsed] = useState<{ headers: string[]; rows: string[][] } | null>(null);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [sourceName, setSourceName] = useState<string | null>(null);
 
   const chooseFile = async () => {
     try {
-      const path = await open({
-        filters: [{ name: "Data", extensions: ["csv", "json"] }],
+      // The import source is authorized by a backend-issued read grant: the
+      // renderer never names a path, and the grant is consumed by the read.
+      const filters: FileFilter[] = [{ name: "Data", extensions: ["csv", "json"] }];
+      const picked = await selectFileForGrant({
+        intent: "read",
+        title: "Choose a data file to import",
+        filters,
       });
-      if (!path || Array.isArray(path)) return;
+      if (!picked) return; // cancelled: nothing to authorize
 
-      const text = await readTextFile(path as string);
-      if (text.length > MAX_BYTES) {
-        setError("File exceeds 100 MB limit");
-        return;
-      }
-
-      const { headers, rows } = normalizeImport(text);
+      const source = await readImportFile(picked.id);
+      const { headers, rows } = normalizeImport(source.text);
 
       if (rows.length > MAX_ROWS) {
         setError(`File has ${rows.length.toLocaleString()} rows; limit is ${MAX_ROWS.toLocaleString()}`);
@@ -59,6 +62,7 @@ export function ImportDialog({
       }
 
       setParsed({ headers, rows });
+      setSourceName(source.displayName);
       setMapping(
         Object.fromEntries(
           headers.map((h, i) => [h, columns[i] ?? SKIP]),
@@ -66,7 +70,10 @@ export function ImportDialog({
       );
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // A grant rejection (expired, already used, wrong intent) is shown with
+      // its own recovery text instead of a raw backend error.
+      setError(fileGrantErrorMessage(e) ?? (e instanceof Error ? e.message : String(e)));
+      if (fileGrantErrorKind(e)) setParsed(null);
     }
   };
 
@@ -113,7 +120,9 @@ export function ImportDialog({
         <div className="space-y-4">
           <div className="flex items-center gap-3">
             <Button onClick={chooseFile}>Choose file</Button>
-            <span className="text-xs text-text-muted">CSV or JSON, up to 100 MB / 100,000 rows</span>
+            <span className="text-xs text-text-muted">
+              {sourceName ?? "CSV or JSON, up to 100 MB / 100,000 rows"}
+            </span>
           </div>
 
           {error && (

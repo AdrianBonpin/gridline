@@ -826,3 +826,172 @@ async fn mysql_export_live() {
         .execute(&mut conn)
         .await;
 }
+
+// ── Export destination is authorized by a Write File Grant ────────
+
+#[test]
+fn a_raw_renderer_path_authorizes_no_export_output() {
+    let grants = crate::file_grant::FileGrantStore::new();
+
+    // The exact string a pre-fix renderer sent as the export `path`.
+    let err = resolve_export_output(&grants, "/tmp/renderer-chosen.csv").unwrap_err();
+
+    assert!(
+        err.starts_with(crate::file_grant::CODE_INVALID),
+        "a bare path must be rejected as an invalid grant, got: {err}"
+    );
+}
+
+#[test]
+fn an_export_grant_resolves_its_destination_exactly_once() {
+    let grants = crate::file_grant::FileGrantStore::new();
+    let grant = grants.mint(
+        PathBuf::from("/tmp/gridline-granted.csv"),
+        crate::file_grant::FileIntent::Write,
+    );
+
+    assert_eq!(
+        resolve_export_output(&grants, &grant.id).unwrap(),
+        PathBuf::from("/tmp/gridline-granted.csv")
+    );
+
+    let replay = resolve_export_output(&grants, &grant.id).unwrap_err();
+    assert!(
+        replay.starts_with(crate::file_grant::CODE_CONSUMED),
+        "a replayed grant must report the consumed state, got: {replay}"
+    );
+}
+
+#[test]
+fn a_read_grant_cannot_authorize_an_export_write() {
+    let grants = crate::file_grant::FileGrantStore::new();
+    let grant = grants.mint(
+        PathBuf::from("/tmp/restore-input.dump"),
+        crate::file_grant::FileIntent::Read,
+    );
+
+    let err = resolve_export_output(&grants, &grant.id).unwrap_err();
+    assert!(
+        err.starts_with(crate::file_grant::CODE_WRONG_INTENT),
+        "a read grant must not authorize an export write, got: {err}"
+    );
+}
+
+#[test]
+fn an_expired_export_grant_reports_the_expired_state() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    let base = std::time::Instant::now();
+    let elapsed = Arc::new(AtomicU64::new(0));
+    let clock: crate::file_grant::Clock = {
+        let elapsed = elapsed.clone();
+        Box::new(move || base + std::time::Duration::from_millis(elapsed.load(Ordering::SeqCst)))
+    };
+    let grants = crate::file_grant::FileGrantStore::with_clock(crate::file_grant::GRANT_TTL, clock);
+    let grant = grants.mint(
+        PathBuf::from("/tmp/stale.csv"),
+        crate::file_grant::FileIntent::Write,
+    );
+
+    elapsed.store(5 * 60 * 1000 + 1, Ordering::SeqCst);
+
+    let err = resolve_export_output(&grants, &grant.id).unwrap_err();
+    assert!(
+        err.starts_with(crate::file_grant::CODE_EXPIRED),
+        "an expired grant must report the expired state, got: {err}"
+    );
+}
+
+/// Every sibling of `path` that this export wrote as its own temporary output.
+fn partial_siblings(path: &Path) -> Vec<PathBuf> {
+    let dir = path.parent().expect("temp path has a parent");
+    let name = path
+        .file_name()
+        .expect("temp path names a file")
+        .to_string_lossy()
+        .to_string();
+    let prefix = format!(".{name}");
+    std::fs::read_dir(dir)
+        .expect("temp dir is readable")
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|candidate| {
+            candidate
+                .file_name()
+                .map(|n| n.to_string_lossy().starts_with(&prefix))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// The acceptance criterion for a failed export: its temporary output is gone
+/// and a pre-existing destination is byte-for-byte intact.
+#[tokio::test]
+async fn a_failed_export_keeps_the_prior_destination_and_removes_its_temporary_output() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE t (a INTEGER);
+         INSERT INTO t VALUES (1),(2),(3);",
+    )
+    .unwrap();
+
+    let path = temp_path("atomic-fail");
+    std::fs::write(&path, b"prior contents").unwrap();
+
+    // `b` does not exist, so the export fails after it has started writing.
+    let error = run_sqlite_export(
+        &mut conn,
+        "SELECT a, b FROM t",
+        ExportFormat::Csv,
+        &path,
+        &mut |_| {},
+    )
+    .await
+    .expect_err("bad column must fail");
+    assert!(!error.is_empty());
+
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"prior contents",
+        "a failed export must leave the prior destination untouched"
+    );
+    assert!(
+        partial_siblings(&path).is_empty(),
+        "a failed export must remove its own temporary output"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn a_successful_export_replaces_the_prior_destination_and_leaves_no_temporary_output() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE t (a INTEGER);
+         INSERT INTO t VALUES (1),(2),(3);",
+    )
+    .unwrap();
+
+    let path = temp_path("atomic-publish");
+    std::fs::write(&path, b"stale destination").unwrap();
+
+    let summary = run_sqlite_export(
+        &mut conn,
+        "SELECT a FROM t ORDER BY a",
+        ExportFormat::Csv,
+        &path,
+        &mut |_| {},
+    )
+    .await
+    .expect("export runs");
+    assert_eq!(summary.rows_written, 3);
+
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(bytes.starts_with(&[0xEF, 0xBB, 0xBF]), "UTF-8 BOM first");
+    let text = String::from_utf8_lossy(&bytes[3..]).to_string();
+    assert_eq!(text.lines().collect::<Vec<_>>(), vec!["a", "1", "2", "3"]);
+    assert!(
+        partial_siblings(&path).is_empty(),
+        "a published export must not leave its temporary output behind"
+    );
+    let _ = std::fs::remove_file(&path);
+}
