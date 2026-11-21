@@ -7,9 +7,9 @@
 **Seams:** Viewer interaction seam: catches which schema and rows the foreign-key affordance requests; change-application seam: catches the referenced row lookup.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/95
-**Status:** ready
+**Status:** done
 
-- [ ] A foreign-key preview from one schema opens the referenced schema's row.
-- [ ] A same-named table in the current schema is never substituted for the referenced one.
-- [ ] Foreign-key option search returns matches beyond an initial small page.
-- [ ] Editing a foreign-key value selects the intended referenced row and stages that value.
+- [x] A foreign-key preview from one schema opens the referenced schema's row.
+- [x] A same-named table in the current schema is never substituted for the referenced one.
+- [x] Foreign-key option search returns matches beyond an initial small page.
+- [x] Editing a foreign-key value selects the intended referenced row and stages that value.

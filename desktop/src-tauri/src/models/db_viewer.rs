@@ -31,7 +31,12 @@ pub struct ColumnInfo {
     pub is_nullable: bool,
     pub is_pk: bool,
     pub is_fk: bool,
-    pub fk_ref: Option<(String, String)>,
+    /// Referenced `(schema, table, column)` for a foreign-key column.
+    ///
+    /// The referenced schema is carried explicitly: a foreign key may point
+    /// into another schema, and following it against the browsing schema would
+    /// silently read a same-named local table instead.
+    pub fk_ref: Option<(String, String, String)>,
     pub default_value: Option<String>,
     pub editable: bool,
     pub is_generated: bool,
@@ -590,14 +595,30 @@ mod tests {
             is_nullable: true,
             is_pk: false,
             is_fk: true,
-            fk_ref: Some(("users".to_string(), "id".to_string())),
+            fk_ref: Some((
+                "reporting".to_string(),
+                "users".to_string(),
+                "id".to_string(),
+            )),
             default_value: None,
             editable: true,
             is_generated: false,
         };
         let json = serde_json::to_string(&col).unwrap();
         assert!(json.contains("user_id"));
-        assert!(json.contains("users"));
+        assert_eq!(
+            col.fk_ref,
+            Some((
+                "reporting".to_string(),
+                "users".to_string(),
+                "id".to_string()
+            )),
+            "fk_ref must keep the referenced schema, table and column"
+        );
+        assert!(
+            json.contains("\"reporting\""),
+            "the referenced schema must be serialized: {json}"
+        );
     }
 
     #[test]

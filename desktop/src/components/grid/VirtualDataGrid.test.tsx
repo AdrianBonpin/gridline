@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { VirtualDataGrid } from "./VirtualDataGrid";
+import { useDbViewerStore } from "../../stores/dbViewerStore";
+import * as commands from "../../lib/commands";
 import type { ColumnInfo } from "../../lib/types";
 
 const mockColumns: ColumnInfo[] = [
@@ -34,6 +36,7 @@ vi.mock("@tanstack/react-virtual", () => ({
 describe("VirtualDataGrid", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useDbViewerStore.getState().reset();
   });
 
   it("focuses a cell on click and opens the editor on Enter for an editable cell", () => {
@@ -258,7 +261,7 @@ describe("VirtualDataGrid", () => {
 
   it("renders FK cells with an FK reference icon button", () => {
     const fkCols: ColumnInfo[] = [
-      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["users", "id"], default_value: null, editable: true, is_generated: false },
+      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["public", "users", "id"], default_value: null, editable: true, is_generated: false },
     ];
     mockGetTotalSize.mockReturnValue(36);
     mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
@@ -520,7 +523,7 @@ describe("VirtualDataGrid", () => {
 
   it("opens the FK preview popover from the context menu", () => {
     const fkCols: ColumnInfo[] = [
-      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["users", "id"], default_value: null, editable: true, is_generated: false },
+      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["public", "users", "id"], default_value: null, editable: true, is_generated: false },
     ];
     mockGetTotalSize.mockReturnValue(36);
     mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
@@ -539,7 +542,7 @@ describe("VirtualDataGrid", () => {
 
   it("clicking an FK cell does NOT open the FK preview (only the icon does)", () => {
     const fkCols: ColumnInfo[] = [
-      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["users", "id"], default_value: null, editable: true, is_generated: false },
+      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["public", "users", "id"], default_value: null, editable: true, is_generated: false },
     ];
     mockGetTotalSize.mockReturnValue(36);
     mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
@@ -594,7 +597,7 @@ describe("VirtualDataGrid", () => {
 
   it("renders a searchable FK dropdown with the referenced rows when editing", () => {
     const fkCols: ColumnInfo[] = [
-      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["users", "id"], default_value: null, editable: true, is_generated: false },
+      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["public", "users", "id"], default_value: null, editable: true, is_generated: false },
     ];
     mockGetTotalSize.mockReturnValue(36);
     mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
@@ -628,5 +631,123 @@ describe("VirtualDataGrid", () => {
     expect(screen.getByLabelText(/search foreign key/i)).toBeInTheDocument();
     expect(screen.getByText("1 — Alice")).toBeInTheDocument();
     expect(screen.getByText("2 — Bob")).toBeInTheDocument();
+  });
+
+  it("follows a cross-schema FK to the referenced schema's row, never a same-named local table", async () => {
+    // The grid is browsing public.orders; the FK points at reporting.users.
+    // The lookup must be requested for the source column (so the backend
+    // resolves the target) and the "Open" action must land on reporting.users.
+    const getFkPreview = vi.spyOn(commands, "getFkPreview").mockResolvedValue({
+      columns: [
+        { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+        { name: "name", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      ],
+      rows: [[42, "reporting-alice"]],
+      total_rows: 1,
+      page: 1,
+      page_size: 1,
+    } as never);
+
+    const fkCols: ColumnInfo[] = [
+      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["reporting", "users", "id"], default_value: null, editable: true, is_generated: false },
+    ];
+    mockGetTotalSize.mockReturnValue(36);
+    mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
+
+    render(
+      <VirtualDataGrid
+        connectionId="c1"
+        schema="public"
+        table="orders"
+        rows={[[42]]}
+        columns={fkCols}
+        hiddenColumns={new Set()}
+        selectedRows={new Set()}
+        onToggleRow={vi.fn()}
+        onToggleAll={vi.fn()}
+        dbType="postgresql"
+        tabType="table"
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText(/open fk reference/i));
+
+    await waitFor(() =>
+      expect(getFkPreview).toHaveBeenCalledWith(
+        "c1",
+        "public",
+        "orders",
+        "user_id",
+        "42",
+      ),
+    );
+
+    // The popover names the referenced relation, not the browsed one.
+    const header = await screen.findByText("reporting.users");
+    expect(header).toBeInTheDocument();
+    expect(screen.queryByText("public.users")).toBeNull();
+
+    // "Open" navigates to the referenced schema's table.
+    fireEvent.click(screen.getByRole("button", { name: /^open$/i }));
+    const tabs = useDbViewerStore.getState().tabs;
+    expect(tabs.some((t) => t.schema === "reporting" && t.table === "users")).toBe(true);
+    expect(tabs.some((t) => t.schema === "public" && t.table === "users")).toBe(false);
+  });
+
+  it("stages the value of a row found by server-side FK search", async () => {
+    // Only page one is passed in; the wanted row is found by searching.
+    const onStageEdit = vi.fn();
+    const fkSearches = {
+      user_id: vi.fn(async (q: string) =>
+        q.trim() === ""
+          ? [{ value: "7", label: "7 — Reporting Alice" }]
+          : [{ value: "120", label: "120 — Grace Hopper" }],
+      ),
+    };
+    const fkCols: ColumnInfo[] = [
+      { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+      { name: "user_id", data_type: "integer", is_nullable: false, is_pk: false, is_fk: true, fk_ref: ["reporting", "users", "id"], default_value: null, editable: true, is_generated: false },
+    ];
+    mockGetTotalSize.mockReturnValue(36);
+    mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
+
+    render(
+      <VirtualDataGrid
+        connectionId="c1"
+        schema="public"
+        table="orders"
+        rows={[[1, 7]]}
+        columns={fkCols}
+        hiddenColumns={new Set()}
+        selectedRows={new Set()}
+        onToggleRow={vi.fn()}
+        onToggleAll={vi.fn()}
+        dbType="postgresql"
+        tabType="table"
+        getLocator={() => ({ id: 1 })}
+        onStageEdit={onStageEdit}
+        fkOptions={{ user_id: [{ value: "7", label: "7 — Reporting Alice" }] }}
+        fkSearches={fkSearches}
+      />,
+    );
+
+    // Open the editor on the FK cell and search for a row past the first page.
+    const cell = screen.getByText("7");
+    fireEvent.click(cell);
+    fireEvent.keyDown(cell, { key: "Enter" });
+    const input = screen.getByLabelText(/search foreign key/i);
+    fireEvent.change(input, { target: { value: "grace" } });
+
+    await waitFor(() => expect(fkSearches.user_id).toHaveBeenCalledWith("grace"));
+    fireEvent.click(await screen.findByText("120 — Grace Hopper"));
+
+    expect(onStageEdit).toHaveBeenCalledTimes(1);
+    const change = onStageEdit.mock.calls[0][0];
+    expect(change.table).toBe("orders");
+    expect(change.schema).toBe("public");
+    expect(change.primaryKey).toEqual({ id: 1 });
+    // The staged value is the referenced row's key, not the search text.
+    expect(change.newData).toEqual({ user_id: "120" });
+    expect(change.oldData).toEqual({ user_id: 7 });
   });
 });

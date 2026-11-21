@@ -69,6 +69,16 @@ pub fn pg_databases_query() -> String {
 /// each row includes PK / FK information when applicable. Binds `$1` = schema
 /// and `$2` = table, so a legal name containing a quote cannot alter the
 /// predicate.
+///
+/// Row shape (indices are part of the contract for every caller):
+/// `0` name, `1` data type, `2` is_nullable, `3` character length,
+/// `4` numeric precision, `5` numeric scale, `6` default, `7` ordinal,
+/// `8` PK constraint type, `9` referenced **schema**, `10` referenced table,
+/// `11` referenced column, `12` `attgenerated`, `13` `attidentity`.
+///
+/// The referenced schema is selected explicitly: a foreign key may point into
+/// another schema, and reporting only the table name lets a caller fall back to
+/// the browsing schema and read a same-named local table instead.
 pub fn pg_columns_query() -> String {
     r#"SELECT
     c.column_name,
@@ -82,7 +92,9 @@ pub fn pg_columns_query() -> String {
     pk.constraint_type,
     fk.foreign_table_schema,
     fk.foreign_table_name,
-    fk.foreign_column_name
+    fk.foreign_column_name,
+    a.attgenerated,
+    a.attidentity
 FROM information_schema.columns c
 LEFT JOIN (
     SELECT kcu.column_name, kcu.table_schema, kcu.table_name, 'PRIMARY KEY' AS constraint_type
@@ -112,6 +124,11 @@ LEFT JOIN (
         AND tc.constraint_name = ccu.constraint_name
     WHERE tc.constraint_type = 'FOREIGN KEY'
 ) fk ON c.table_schema = fk.table_schema AND c.table_name = fk.table_name AND c.column_name = fk.column_name
+LEFT JOIN pg_attribute a
+    ON a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass
+    AND a.attname = c.column_name
+    AND a.attnum > 0
+    AND NOT a.attisdropped
 WHERE c.table_schema = $1 AND c.table_name = $2
 ORDER BY c.ordinal_position"#
         .to_string()

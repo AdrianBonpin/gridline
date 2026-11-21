@@ -44,6 +44,7 @@ import { ObjectSearchPalette } from "./ObjectSearchPalette";
 import * as cmd from "../../lib/commands";
 import type { EnumInfo } from "../../lib/types";
 import type { FkOption } from "../grid/CellEditor";
+import { fkRelation, fkTarget } from "../../lib/fkTarget";
 import type { QueueItem } from "../../stores/dbViewerStore";
 import { rowIdentityFor } from "../../lib/rowIdentity";
 import { itemsForChangeTarget } from "../../lib/changeOrigin";
@@ -164,6 +165,46 @@ export function pickDisplayColumn(
             /text|char|name|uuid/i.test(c.data_type),
     );
     return textish ? textish.name : refCol;
+}
+
+/** Page size for FK option search (one dropdown page). */
+const FK_OPTION_PAGE_SIZE = 50;
+
+/**
+ * Build FK dropdown options from one page of the referenced table.
+ *
+ * `refCol` is the referenced key column (the value that gets staged); the label
+ * pairs it with a human-friendly display column.
+ */
+export function fkOptionsFrom(
+    result: { columns: { name: string; data_type: string }[]; rows: unknown[][] },
+    refCol: string,
+): FkOption[] {
+    const refIdx = result.columns.findIndex((c) => c.name === refCol);
+    if (refIdx < 0) return [];
+    const displayCol = pickDisplayColumn(result.columns, refCol);
+    const displayIdx =
+        displayCol === refCol
+            ? refIdx
+            : result.columns.findIndex((c) => c.name === displayCol);
+    return result.rows.map((row) => {
+        const refValue = String(row[refIdx]);
+        const dispValue =
+            displayIdx >= 0 && displayIdx !== refIdx
+                ? String(row[displayIdx])
+                : "";
+        return {
+            value: refValue,
+            label:
+                dispValue && dispValue !== refValue
+                    ? `${refValue} — ${dispValue}`
+                    : refValue,
+            // Referenced-row cells for the FK-reference-style one-row dropdown.
+            cells: result.columns
+                .slice(0, 5)
+                .map((c, i) => ({ name: c.name, value: String(row[i] ?? "") })),
+        };
+    });
 }
 
 /**
@@ -370,6 +411,7 @@ export function DbViewerScreen({
         enums: Record<string, string[]>;
         fks: Record<string, FkOption[]>;
         fkPlaceholders: Record<string, string>;
+        fkSearches: Record<string, (query: string) => Promise<FkOption[]>>;
     } | null>(null);
     const enumCacheRef = useRef<Map<string, EnumInfo[]>>(new Map());
     // Key identifying the (connection, tab, schema) the options were fetched for;
@@ -714,6 +756,12 @@ export function DbViewerScreen({
     // active table tab. Fetched once per tab/schema (enums additionally cached
     // per connection+schema across tabs); a failed fetch for one FK column is
     // skipped without breaking the tab. Never refetches on in-place data updates.
+    //
+    // FK options come from `search_fk_options`, which resolves the *referenced*
+    // relation in the backend and searches it in the engine. Fetching the
+    // referenced table from the tab's own schema is what used to substitute a
+    // same-named local table, and taking only page one is what truncated the
+    // dropdown's search.
     useEffect(() => {
         const key =
             activeTab && activeTab.tabType === "table" && activeTab.data
@@ -748,57 +796,33 @@ export function DbViewerScreen({
                 if (match) enums[col.name] = match.labels;
             }
 
-            // FK options: referenced rows (page 1, 50) per FK column.
-            const fkCols = cols.filter((c) => c.is_fk && c.fk_ref);
+            // FK options: one page of the *referenced* relation per FK column,
+            // plus a search function so the dropdown queries the whole table.
+            const fkSearches: Record<
+                string,
+                (query: string) => Promise<FkOption[]>
+            > = {};
+            const fkCols = cols.filter((c) => fkTarget(c));
             await Promise.all(
                 fkCols.map(async (col) => {
-                    const [refTable, refCol] = col.fk_ref!;
-                    try {
-                        const result = await cmd.getTableData(
+                    const ref = fkTarget(col);
+                    if (!ref) return;
+                    fkPlaceholders[col.name] = `Search ${fkRelation(ref)}…`;
+                    const load = async (search: string) => {
+                        const result = await cmd.searchFkOptions(
                             connectionId,
                             tab.schema,
-                            refTable,
+                            tab.table,
+                            col.name,
+                            search,
                             1,
-                            50,
+                            FK_OPTION_PAGE_SIZE,
                         );
-                        const refIdx = result.columns.findIndex(
-                            (c) => c.name === refCol,
-                        );
-                        if (refIdx >= 0) {
-                            const displayCol = pickDisplayColumn(
-                                result.columns,
-                                refCol,
-                            );
-                            const displayIdx =
-                                displayCol === refCol
-                                    ? refIdx
-                                    : result.columns.findIndex(
-                                          (c) => c.name === displayCol,
-                                      );
-                            fks[col.name] = result.rows.map((row) => {
-                                const refValue = String(row[refIdx]);
-                                const dispValue =
-                                    displayIdx >= 0 && displayIdx !== refIdx
-                                        ? String(row[displayIdx])
-                                        : "";
-                                return {
-                                    value: refValue,
-                                    label:
-                                        dispValue && dispValue !== refValue
-                                            ? `${refValue} — ${dispValue}`
-                                            : refValue,
-                                    // Referenced-row cells for the FK-reference-style
-                                    // one-row dropdown (first 5 columns).
-                                    cells: result.columns
-                                        .slice(0, 5)
-                                        .map((c, i) => ({
-                                            name: c.name,
-                                            value: String(row[i] ?? ""),
-                                        })),
-                                };
-                            });
-                            fkPlaceholders[col.name] = `Search ${refTable}…`;
-                        }
+                        return fkOptionsFrom(result, ref.column);
+                    };
+                    try {
+                        fks[col.name] = await load("");
+                        fkSearches[col.name] = load;
                     } catch {
                         // Skip this FK column; the cell keeps the plain editor.
                     }
@@ -807,7 +831,12 @@ export function DbViewerScreen({
 
             // Apply only if no newer fetch superseded this one (tab/schema switched).
             if (editorOptionsKeyRef.current === key) {
-                setEditorOptions({ enums, fks, fkPlaceholders });
+                setEditorOptions({
+                    enums,
+                    fks,
+                    fkPlaceholders,
+                    fkSearches,
+                });
             }
         })();
     }, [activeTab, connectionId]);
@@ -1295,6 +1324,7 @@ const onQueriesPanelResizeStart = useCallback(
             enumValues: editorOptions?.enums,
             fkOptions: editorOptions?.fks,
             fkPlaceholders: editorOptions?.fkPlaceholders,
+            fkSearches: editorOptions?.fkSearches,
             stagedValues,
             pendingKeys,
             pendingInsertChangeIds,
@@ -1700,6 +1730,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 enumValues={editorOptions?.enums}
                                                 fkOptions={editorOptions?.fks}
                                                 fkPlaceholders={editorOptions?.fkPlaceholders}
+                                                fkSearches={editorOptions?.fkSearches}
                                                 stagedValues={stagedValues}
                                                 pendingKeys={pendingKeys}
                                                 pendingInsertChangeIds={pendingInsertChangeIds}

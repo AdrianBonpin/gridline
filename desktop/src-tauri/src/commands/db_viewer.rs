@@ -1556,12 +1556,13 @@ pub async fn get_tables(
 }
 
 /// Load column metadata (name, type, nullability, PK, default, generated) for
-/// a MySQL table, then mark FK columns with their referenced (table, column).
+/// a MySQL table, then mark FK columns with their referenced
+/// `(schema, table, column)`.
 ///
 /// PK and generated columns are read-only (`editable: false`), mirroring the
-/// PostgreSQL rule. `fk_ref` carries the referenced table + column only — the
-/// same contract the frontend expects (MySQL FKs are assumed to live in the
-/// same database, matching how PostgreSQL's `fk_ref` assumes the same schema).
+/// PostgreSQL rule. `fk_ref` carries the referenced schema reported by the
+/// catalog, because a foreign key may point into another database — assuming
+/// the browsing schema would follow a same-named local table instead.
 pub(crate) async fn mysql_load_columns(
     pool: &sqlx::MySqlPool,
     schema: &str,
@@ -1613,11 +1614,18 @@ pub(crate) async fn mysql_load_columns(
         .map_err(|e| sanitize_error(&format!("{e}")))?;
     for r in fk_rows {
         let col = crate::db::mysql::mysql_row_string(&r, 0);
+        let ref_schema = crate::db::mysql::mysql_row_string(&r, 1);
         let ref_table = crate::db::mysql::mysql_row_string(&r, 2);
         let ref_col = crate::db::mysql::mysql_row_string(&r, 3);
+        let target = crate::db::fk::target_from_catalog(
+            schema,
+            Some(ref_schema.as_str()),
+            &ref_table,
+            &ref_col,
+        )?;
         if let Some(c) = columns.iter_mut().find(|c| c.name == col) {
             c.is_fk = true;
-            c.fk_ref = Some((ref_table, ref_col));
+            c.fk_ref = Some((target.schema, target.table, target.column));
         }
     }
     Ok(columns)
@@ -1709,92 +1717,17 @@ pub(crate) async fn get_table_data_inner(
                 .map(|r| r.get::<_, bool>(0))
                 .unwrap_or(false);
 
-            // Get column info with FK detection and enum type names
-            let col_query = r#"SELECT
-    c.column_name,
-    CASE WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name ELSE c.data_type END AS data_type,
-    c.is_nullable,
-    COALESCE(pk.is_pk, false) AS is_pk,
-    COALESCE(fk.is_fk, false) AS is_fk,
-    fk.foreign_table_name,
-    fk.foreign_column_name,
-    c.column_default,
-    a.attgenerated,
-    a.attidentity
-FROM information_schema.columns c
-LEFT JOIN (
-    SELECT ku.column_name, true AS is_pk
-    FROM information_schema.table_constraints tc
-    JOIN information_schema.key_column_usage ku
-        ON tc.constraint_catalog = ku.constraint_catalog
-        AND tc.constraint_schema = ku.constraint_schema
-        AND tc.constraint_name = ku.constraint_name
-    WHERE tc.constraint_type = 'PRIMARY KEY'
-        AND tc.table_schema = $1
-        AND tc.table_name = $2
-) pk ON c.column_name = pk.column_name
-LEFT JOIN (
-    SELECT
-        ku.column_name,
-        true AS is_fk,
-        ccu.table_name AS foreign_table_name,
-        ccu.column_name AS foreign_column_name
-    FROM information_schema.table_constraints tc
-    JOIN information_schema.key_column_usage ku
-        ON tc.constraint_catalog = ku.constraint_catalog
-        AND tc.constraint_schema = ku.constraint_schema
-        AND tc.constraint_name = ku.constraint_name
-    JOIN information_schema.constraint_column_usage ccu
-        ON tc.constraint_catalog = ccu.constraint_catalog
-        AND tc.constraint_schema = ccu.constraint_schema
-        AND tc.constraint_name = ccu.constraint_name
-    WHERE tc.constraint_type = 'FOREIGN KEY'
-        AND tc.table_schema = $1
-        AND tc.table_name = $2
-) fk ON c.column_name = fk.column_name
-LEFT JOIN pg_attribute a
-    ON a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass
-    AND a.attname = c.column_name
-    AND a.attnum > 0
-    AND NOT a.attisdropped
-WHERE c.table_schema = $1 AND c.table_name = $2
-ORDER BY c.ordinal_position"#;
+            // Column metadata (PK/FK/read-only flags) is derived from the same
+            // shared query + mapper the column-introspection command uses, so a
+            // cross-schema foreign key keeps its referenced schema here too.
             let col_rows = client
-                .query(col_query, &[&schema, &table])
+                .query(
+                    &crate::db::introspection::pg_columns_query(),
+                    &[&schema, &table],
+                )
                 .await
                 .map_err(|e| e.to_string())?;
-            let columns: Vec<ColumnInfo> = col_rows
-                .iter()
-                .map(|r| {
-                    let is_fk: bool = r.get(4);
-                    let fk_table: Option<String> = r.get(5);
-                    let fk_column: Option<String> = r.get(6);
-                    // pg_attribute.attgenerated/attidentity are PG's internal
-                    // "char" type (OID 18) → tokio-postgres delivers i8, not
-                    // String; deserializing as String panics. Convert safely.
-                    let attgenerated =
-                        pg_char_to_att(r.try_get::<_, Option<i8>>(8).unwrap_or(None));
-                    let attidentity = pg_char_to_att(r.try_get::<_, Option<i8>>(9).unwrap_or(None));
-                    let is_pk: bool = r.get(3);
-                    ColumnInfo {
-                        name: r.get(0),
-                        data_type: r.get(1),
-                        is_nullable: r.get::<_, String>(2) == "YES",
-                        is_pk,
-                        is_fk,
-                        fk_ref: if is_fk {
-                            Some((fk_table.unwrap_or_default(), fk_column.unwrap_or_default()))
-                        } else {
-                            None
-                        },
-                        default_value: r.get::<_, Option<String>>(7),
-                        editable: editable_from_att(&attgenerated, &attidentity)
-                            && !is_pk
-                            && !is_view,
-                        is_generated: !attgenerated.is_empty(),
-                    }
-                })
-                .collect();
+            let columns: Vec<ColumnInfo> = pg_columns_from_rows(schema, &col_rows, is_view)?;
 
             // Get data (with filters and sorts applied).
             // Custom/enum types need explicit ::text cast because tokio-postgres
@@ -1961,27 +1894,7 @@ ORDER BY c.ordinal_position"#;
                     HashMap::new()
                 };
 
-            let columns: Vec<ColumnInfo> = col_meta
-                .iter()
-                .map(|(name, dtype, notnull, is_pk, default_val)| {
-                    let fk = fk_map.get(name);
-                    ColumnInfo {
-                        name: name.clone(),
-                        data_type: if dtype.is_empty() {
-                            "TEXT".to_string()
-                        } else {
-                            dtype.clone()
-                        },
-                        is_nullable: !notnull,
-                        is_pk: *is_pk,
-                        is_fk: fk.is_some(),
-                        fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
-                        default_value: default_val.clone(),
-                        editable: !*is_pk && !is_view,
-                        is_generated: false,
-                    }
-                })
-                .collect();
+            let columns: Vec<ColumnInfo> = sqlite_columns_from_rows(&col_meta, &fk_map, is_view)?;
 
             // Get data (with filters and sorts applied).
             // `rowid` is appended last for no-PK tables so later UPDATE/DELETE
@@ -2123,9 +2036,110 @@ pub async fn get_table_data(
     .await
 }
 
+/// Map `pg_columns_query` rows onto [`ColumnInfo`].
+///
+/// Shared by table browsing, column introspection and the FK preview so a
+/// foreign-key column's referenced `(schema, table, column)` is derived in
+/// exactly one place. Deriving it per call site is how the referenced schema
+/// went missing, leaving the viewer to substitute the browsing schema.
+///
+/// `source_schema` is only a fallback for catalog metadata that reports no
+/// referenced schema at all; a reported schema always wins.
+pub(crate) fn pg_columns_from_rows(
+    source_schema: &str,
+    rows: &[tokio_postgres::Row],
+    is_view: bool,
+) -> Result<Vec<ColumnInfo>, String> {
+    rows.iter()
+        .map(|r| {
+            let is_pk = r.get::<_, Option<String>>(8).as_deref() == Some("PRIMARY KEY");
+            let fk_schema: Option<String> = r.get(9);
+            let fk_table: Option<String> = r.get(10);
+            let fk_column: Option<String> = r.get(11);
+            // pg_attribute.attgenerated/attidentity are PG's internal "char"
+            // type (OID 18) → tokio-postgres delivers i8, not String;
+            // deserializing as String panics. Convert safely.
+            let attgenerated = pg_char_to_att(r.try_get::<_, Option<i8>>(12).unwrap_or(None));
+            let attidentity = pg_char_to_att(r.try_get::<_, Option<i8>>(13).unwrap_or(None));
+
+            let fk_ref = match (fk_table, fk_column) {
+                (Some(table), Some(column)) => {
+                    let target = crate::db::fk::target_from_catalog(
+                        source_schema,
+                        fk_schema.as_deref(),
+                        &table,
+                        &column,
+                    )?;
+                    Some((target.schema, target.table, target.column))
+                }
+                _ => None,
+            };
+
+            Ok(ColumnInfo {
+                name: r.get(0),
+                data_type: r.get(1),
+                is_nullable: r.get::<_, String>(2) == "YES",
+                is_pk,
+                is_fk: fk_ref.is_some(),
+                fk_ref,
+                default_value: r.get::<_, Option<String>>(6),
+                editable: editable_from_att(&attgenerated, &attidentity) && !is_pk && !is_view,
+                is_generated: !attgenerated.is_empty(),
+            })
+        })
+        .collect()
+}
+
+/// Map SQLite `PRAGMA table_info` metadata plus `PRAGMA foreign_key_list`
+/// metadata onto [`ColumnInfo`].
+///
+/// `col_meta` is `(name, declared type, notnull, is_pk, default)`;
+/// `fk_map` is `(referenced table, referenced column)` keyed by the referencing
+/// column. SQLite resolves foreign keys within one database, but the referenced
+/// relation is still carried explicitly as `(main, table, column)` so the viewer
+/// never has to guess which table a value belongs to.
+pub(crate) fn sqlite_columns_from_rows(
+    col_meta: &[(String, String, bool, bool, Option<String>)],
+    fk_map: &HashMap<String, (String, String)>,
+    read_only_view: bool,
+) -> Result<Vec<ColumnInfo>, String> {
+    col_meta
+        .iter()
+        .map(|(name, dtype, notnull, is_pk, default_val)| {
+            let fk_ref = match fk_map.get(name) {
+                Some((ref_table, ref_col)) => {
+                    let target = crate::db::fk::target_from_catalog(
+                        "main",
+                        Some("main"),
+                        ref_table,
+                        ref_col,
+                    )?;
+                    Some((target.schema, target.table, target.column))
+                }
+                None => None,
+            };
+            Ok(ColumnInfo {
+                name: name.clone(),
+                data_type: if dtype.is_empty() {
+                    "TEXT".to_string()
+                } else {
+                    dtype.clone()
+                },
+                is_nullable: !notnull,
+                is_pk: *is_pk,
+                is_fk: fk_ref.is_some(),
+                fk_ref,
+                default_value: default_val.clone(),
+                editable: !*is_pk && !read_only_view,
+                is_generated: false,
+            })
+        })
+        .collect()
+}
+
 /// Headless column introspection for a table, shared by the `get_table_columns`
 /// command and integration tests (thin-command principle — no Tauri `State`).
-/// Mirrors the `pg_columns_query` row mapping `get_table_data` uses.
+/// Uses the same `pg_columns_query` row mapping as `get_table_data`.
 pub(crate) async fn get_table_columns_inner(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     connection_id: &str,
@@ -2145,29 +2159,7 @@ pub(crate) async fn get_table_columns_inner(
         )
         .await
         .map_err(|e| sanitize_error(&format!("{e}")))?;
-    Ok(rows
-        .iter()
-        .map(|r| {
-            let is_fk: bool = r.get::<_, Option<String>>(10).is_some();
-            let fk_schema: Option<String> = r.get(9);
-            let fk_table: Option<String> = r.get(10);
-            crate::models::ColumnInfo {
-                name: r.get(0),
-                data_type: r.get(1),
-                is_nullable: r.get::<_, String>(2) == "YES",
-                is_pk: r.get::<_, Option<String>>(8).as_deref() == Some("PRIMARY KEY"),
-                is_fk,
-                fk_ref: if is_fk {
-                    Some((fk_schema.unwrap_or_default(), fk_table.unwrap_or_default()))
-                } else {
-                    None
-                },
-                default_value: r.get::<_, Option<String>>(6),
-                editable: true,
-                is_generated: false,
-            }
-        })
-        .collect())
+    pg_columns_from_rows(schema, &rows, false)
 }
 
 #[tauri::command]
@@ -2180,95 +2172,113 @@ pub async fn get_table_columns(
     get_table_columns_inner(&state.pool_manager, &connection_id, &schema, &table).await
 }
 
-#[tauri::command]
-pub async fn get_fk_preview(
-    connection_id: String,
-    schema: String,
-    table: String,
-    column: String,
-    value: String,
-    state: State<'_, crate::AppState>,
+/// Resolve the relation a foreign key points at, from engine metadata.
+///
+/// `schema`/`table`/`column` identify the **source** column. The referenced
+/// schema is what the catalog reports — never the browsing schema — so a
+/// same-named table elsewhere can never answer for the referenced one.
+pub(crate) async fn resolve_fk_target(
+    client: &tokio_postgres::Client,
+    schema: &str,
+    table: &str,
+    column: &str,
+) -> Result<crate::db::fk::FkTarget, String> {
+    let row = client
+        .query_opt(
+            crate::db::fk::pg_fk_target_query(),
+            &[&schema, &table, &column],
+        )
+        .await
+        .map_err(|e| pg_error_message(&e))?
+        .ok_or_else(|| {
+            format!(
+                "column {column:?} has no foreign key in {}.{}",
+                schema, table
+            )
+        })?;
+    let ref_schema: String = row.get(0);
+    let ref_table: String = row.get(1);
+    let ref_column: String = row.get(2);
+    crate::db::fk::target_from_catalog(schema, Some(&ref_schema), &ref_table, &ref_column)
+}
+
+/// SQLite form of [`resolve_fk_target`] (no schemas: the target is `main`).
+pub(crate) fn resolve_fk_target_sqlite(
+    conn: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+) -> Result<crate::db::fk::FkTarget, String> {
+    let query = crate::db::fk::sqlite_fk_target_query(table);
+    let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, String)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(2)?, // referenced table
+                row.get::<_, String>(3)?, // from column
+                row.get::<_, String>(4)?, // to column
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    crate::db::fk::sqlite_fk_target(&rows, column)
+}
+
+/// MySQL form of [`resolve_fk_target`] (the referenced database is reported by
+/// `information_schema`).
+pub(crate) async fn resolve_fk_target_mysql(
+    pool: &sqlx::MySqlPool,
+    schema: &str,
+    table: &str,
+    column: &str,
+) -> Result<crate::db::fk::FkTarget, String> {
+    let row = sqlx::query(crate::db::fk::mysql_fk_target_query())
+        .bind(schema)
+        .bind(table)
+        .bind(column)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?
+        .ok_or_else(|| {
+            format!(
+                "column {column:?} has no foreign key in {}.{}",
+                schema, table
+            )
+        })?;
+    let ref_schema = crate::db::mysql::mysql_row_string(&row, 0);
+    let ref_table = crate::db::mysql::mysql_row_string(&row, 1);
+    let ref_column = crate::db::mysql::mysql_row_string(&row, 2);
+    crate::db::fk::target_from_catalog(schema, Some(&ref_schema), &ref_table, &ref_column)
+}
+
+/// Headless FK preview shared by the `get_fk_preview` command and tests.
+///
+/// `schema`/`table`/`column` are the **source** column: the referenced relation
+/// is resolved from catalog metadata, then its row is read from that
+/// schema-qualified relation.
+pub(crate) async fn get_fk_preview_inner(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    connection_id: &str,
+    schema: &str,
+    table: &str,
+    column: &str,
+    value: &str,
 ) -> Result<QueryResult, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    let mut pm = pm.lock().await;
+    match pm.get(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
-            // Get column info with FK detection
-            let col_query = r#"SELECT
-    c.column_name,
-    CASE WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name ELSE c.data_type END AS data_type,
-    c.is_nullable,
-    COALESCE(pk.is_pk, false) AS is_pk,
-    COALESCE(fk.is_fk, false) AS is_fk,
-    fk.foreign_table_name,
-    fk.foreign_column_name,
-    c.column_default
-FROM information_schema.columns c
-LEFT JOIN (
-    SELECT ku.column_name, true AS is_pk
-    FROM information_schema.table_constraints tc
-    JOIN information_schema.key_column_usage ku
-        ON tc.constraint_catalog = ku.constraint_catalog
-        AND tc.constraint_schema = ku.constraint_schema
-        AND tc.constraint_name = ku.constraint_name
-    WHERE tc.constraint_type = 'PRIMARY KEY'
-        AND tc.table_schema = $1
-        AND tc.table_name = $2
-) pk ON c.column_name = pk.column_name
-LEFT JOIN (
-    SELECT
-        ku.column_name,
-        true AS is_fk,
-        ccu.table_name AS foreign_table_name,
-        ccu.column_name AS foreign_column_name
-    FROM information_schema.table_constraints tc
-    JOIN information_schema.key_column_usage ku
-        ON tc.constraint_catalog = ku.constraint_catalog
-        AND tc.constraint_schema = ku.constraint_schema
-        AND tc.constraint_name = ku.constraint_name
-    JOIN information_schema.constraint_column_usage ccu
-        ON tc.constraint_catalog = ccu.constraint_catalog
-        AND tc.constraint_schema = ccu.constraint_schema
-        AND tc.constraint_name = ccu.constraint_name
-    WHERE tc.constraint_type = 'FOREIGN KEY'
-        AND tc.table_schema = $1
-        AND tc.table_name = $2
-) fk ON c.column_name = fk.column_name
-WHERE c.table_schema = $1 AND c.table_name = $2
-ORDER BY c.ordinal_position"#;
+            let target = resolve_fk_target(client, schema, table, column).await?;
+            // Column metadata describes the *referenced* table.
             let col_rows = client
-                .query(col_query, &[&schema, &table])
+                .query(
+                    &crate::db::introspection::pg_columns_query(),
+                    &[&target.schema, &target.table],
+                )
                 .await
                 .map_err(|e| pg_error_message(&e))?;
-            let columns: Vec<ColumnInfo> = col_rows
-                .iter()
-                .map(|r| {
-                    let is_fk: bool = r.get(4);
-                    let fk_table: Option<String> = r.get(5);
-                    let fk_column: Option<String> = r.get(6);
-                    ColumnInfo {
-                        name: r.get(0),
-                        data_type: r.get(1),
-                        is_nullable: r.get::<_, String>(2) == "YES",
-                        is_pk: r.get(3),
-                        is_fk,
-                        fk_ref: if is_fk {
-                            Some((fk_table.unwrap_or_default(), fk_column.unwrap_or_default()))
-                        } else {
-                            None
-                        },
-                        default_value: r.get::<_, Option<String>>(7),
-                        editable: true,
-                        is_generated: false,
-                    }
-                })
-                .collect();
+            let columns: Vec<ColumnInfo> = pg_columns_from_rows(&target.schema, &col_rows, false)?;
 
-            // Fetch the referenced row
-            let data_query = format!(
-                "SELECT * FROM {} WHERE {}::text = $1 LIMIT 1",
-                ident::qualified(Engine::PostgreSql, &schema, &table)?,
-                ident::quote(Engine::PostgreSql, &column)
-            );
+            let data_query = crate::db::fk::preview_sql(Engine::PostgreSql, &target)?;
             let data_rows = client
                 .query(&data_query, &[&value])
                 .await
@@ -2288,71 +2298,9 @@ ORDER BY c.ordinal_position"#;
             })
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
-            // Get column metadata via PRAGMA table_info (quoted identifier)
-            let pragma_query = crate::db::introspection::sqlite_columns_query(&table);
-            let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
-            let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, bool>(3)?,
-                        row.get::<_, bool>(5)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                })
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            // Get FK metadata
-            let fk_query = crate::db::introspection::sqlite_foreign_keys_query(&table);
-            let fk_map: HashMap<String, (String, String)> =
-                if let Ok(mut fk_stmt) = conn.prepare(&fk_query) {
-                    fk_stmt
-                        .query_map([], |row| {
-                            Ok((
-                                row.get::<_, String>(3)?,
-                                row.get::<_, String>(2)?,
-                                row.get::<_, String>(4)?,
-                            ))
-                        })
-                        .map_err(|e| e.to_string())?
-                        .filter_map(|r| r.ok())
-                        .map(|(from, ref_table, ref_col)| (from, (ref_table, ref_col)))
-                        .collect()
-                } else {
-                    HashMap::new()
-                };
-
-            let columns: Vec<ColumnInfo> = col_meta
-                .iter()
-                .map(|(name, dtype, notnull, is_pk, default_val)| {
-                    let fk = fk_map.get(name);
-                    ColumnInfo {
-                        name: name.clone(),
-                        data_type: if dtype.is_empty() {
-                            "TEXT".to_string()
-                        } else {
-                            dtype.clone()
-                        },
-                        is_nullable: !notnull,
-                        is_pk: *is_pk,
-                        is_fk: fk.is_some(),
-                        fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
-                        default_value: default_val.clone(),
-                        editable: true,
-                        is_generated: false,
-                    }
-                })
-                .collect();
-
-            // Fetch the referenced row
-            let data_query = format!(
-                "SELECT * FROM {} WHERE {} = ?1 LIMIT 1",
-                ident::qualified(Engine::Sqlite, &schema, &table)?,
-                ident::quote(Engine::Sqlite, &column)
-            );
+            let target = resolve_fk_target_sqlite(conn, table, column)?;
+            let columns = sqlite_table_columns(conn, &target)?;
+            let data_query = crate::db::fk::preview_sql(Engine::Sqlite, &target)?;
             let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
             let col_count = stmt.column_count();
             let rows: Vec<Vec<serde_json::Value>> = stmt
@@ -2378,16 +2326,11 @@ ORDER BY c.ordinal_position"#;
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
             let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-                               // The request already resolves the referenced table/column (the
-                               // frontend reads `fk_ref`); fetch the referenced row directly.
-            let columns = mysql_load_columns(pool, &schema, &table).await?;
-            let data_query = format!(
-                "SELECT * FROM {} WHERE {} = ? LIMIT 1",
-                ident::qualified(Engine::MySql, &schema, &table)?,
-                ident::quote(Engine::MySql, &column)
-            );
+            let target = resolve_fk_target_mysql(pool, schema, table, column).await?;
+            let columns = mysql_load_columns(pool, &target.schema, &target.table).await?;
+            let data_query = crate::db::fk::preview_sql(Engine::MySql, &target)?;
             let data_rows = sqlx::query(&data_query)
-                .bind(&value)
+                .bind(value)
                 .fetch_all(pool)
                 .await
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -2411,6 +2354,273 @@ ORDER BY c.ordinal_position"#;
         }
         None => Err("Connection not found".to_string()),
     }
+}
+
+/// Read a SQLite table's column metadata (with its own FKs) for display.
+pub(crate) fn sqlite_table_columns(
+    conn: &rusqlite::Connection,
+    target: &crate::db::fk::FkTarget,
+) -> Result<Vec<ColumnInfo>, String> {
+    let pragma_query = crate::db::introspection::sqlite_columns_query(&target.table);
+    let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
+    let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+                row.get::<_, bool>(5)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let fk_query = crate::db::introspection::sqlite_foreign_keys_query(&target.table);
+    let fk_map: HashMap<String, (String, String)> = match conn.prepare(&fk_query) {
+        Ok(mut fk_stmt) => fk_stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .map(|(from, ref_table, ref_col)| (from, (ref_table, ref_col)))
+            .collect(),
+        Err(_) => HashMap::new(),
+    };
+
+    sqlite_columns_from_rows(&col_meta, &fk_map, false)
+}
+
+#[tauri::command]
+pub async fn get_fk_preview(
+    connection_id: String,
+    schema: String,
+    table: String,
+    column: String,
+    value: String,
+    state: State<'_, crate::AppState>,
+) -> Result<QueryResult, String> {
+    get_fk_preview_inner(
+        &state.pool_manager,
+        &connection_id,
+        &schema,
+        &table,
+        &column,
+        &value,
+    )
+    .await
+}
+
+/// Headless foreign-key option search, shared by the `search_fk_options`
+/// command and tests.
+///
+/// `schema`/`table`/`column` identify the **source** column; the referenced
+/// relation is resolved from catalog metadata. The search runs in the engine
+/// (`LIMIT`/`OFFSET` over the whole referenced table), so matches beyond an
+/// initial page are reachable — a client-side filter over page one is exactly
+/// the bug this replaces.
+pub(crate) async fn search_fk_options_inner(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    connection_id: &str,
+    schema: &str,
+    table: &str,
+    column: &str,
+    search: &str,
+    page: Option<i64>,
+    page_size: Option<i64>,
+) -> Result<QueryResult, String> {
+    let page = page.unwrap_or(1);
+    if page < 1 {
+        return Err(format!(
+            "foreign-key option search page {page} must be 1 or greater"
+        ));
+    }
+    let page_size = page_size.unwrap_or(50);
+    if !(1..=crate::db::fk::MAX_FK_OPTION_PAGE_SIZE).contains(&page_size) {
+        return Err(format!(
+            "foreign-key option search page size {page_size} must be between 1 and {}",
+            crate::db::fk::MAX_FK_OPTION_PAGE_SIZE
+        ));
+    }
+    let offset = (page - 1)
+        .checked_mul(page_size)
+        .ok_or_else(|| "foreign-key option search page is too large".to_string())?;
+
+    let mut pm = pm.lock().await;
+    match pm.get(connection_id) {
+        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let target = resolve_fk_target(client, schema, table, column).await?;
+            let col_rows = client
+                .query(
+                    &crate::db::introspection::pg_columns_query(),
+                    &[&target.schema, &target.table],
+                )
+                .await
+                .map_err(|e| pg_error_message(&e))?;
+            let columns = pg_columns_from_rows(&target.schema, &col_rows, false)?;
+            let pairs: Vec<(String, String)> = columns
+                .iter()
+                .map(|c| (c.name.clone(), c.data_type.clone()))
+                .collect();
+            let search_columns = crate::db::fk::search_columns(&target, &pairs);
+            let sql = crate::db::fk::search_sql(
+                Engine::PostgreSql,
+                &target,
+                &search_columns,
+                page_size,
+                offset,
+            )?;
+
+            let data_rows = client
+                .query(&sql.rows, &[&search])
+                .await
+                .map_err(|e| pg_error_message(&e))?;
+            let rows: Vec<Vec<serde_json::Value>> = data_rows
+                .iter()
+                .map(|row| (0..row.len()).map(|i| pg_value_to_json(row, i)).collect())
+                .collect();
+            let total_rows: i64 = client
+                .query_one(&sql.count, &[&search])
+                .await
+                .map_err(|e| pg_error_message(&e))?
+                .get(0);
+
+            Ok(QueryResult {
+                columns,
+                rows,
+                total_rows,
+                page,
+                page_size,
+                execution_time_ms: None,
+            })
+        }
+        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            let target = resolve_fk_target_sqlite(conn, table, column)?;
+            let columns = sqlite_table_columns(conn, &target)?;
+            let pairs: Vec<(String, String)> = columns
+                .iter()
+                .map(|c| (c.name.clone(), c.data_type.clone()))
+                .collect();
+            let search_columns = crate::db::fk::search_columns(&target, &pairs);
+            let sql = crate::db::fk::search_sql(
+                Engine::Sqlite,
+                &target,
+                &search_columns,
+                page_size,
+                offset,
+            )?;
+
+            let mut stmt = conn.prepare(&sql.rows).map_err(|e| e.to_string())?;
+            let col_count = stmt.column_count();
+            let rows: Vec<Vec<serde_json::Value>> = stmt
+                .query_map([search], |row| {
+                    let mut vals = Vec::new();
+                    for i in 0..col_count {
+                        vals.push(sqlite_value_to_json(row, i));
+                    }
+                    Ok(vals)
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
+            let total_rows: i64 = conn
+                .query_row(&sql.count, [search], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+
+            Ok(QueryResult {
+                columns,
+                rows,
+                total_rows,
+                page,
+                page_size,
+                execution_time_ms: None,
+            })
+        }
+        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+            let pool = &*pool;
+            let target = resolve_fk_target_mysql(pool, schema, table, column).await?;
+            let columns = mysql_load_columns(pool, &target.schema, &target.table).await?;
+            let pairs: Vec<(String, String)> = columns
+                .iter()
+                .map(|c| (c.name.clone(), c.data_type.clone()))
+                .collect();
+            let search_columns = crate::db::fk::search_columns(&target, &pairs);
+            let sql = crate::db::fk::search_sql(
+                Engine::MySql,
+                &target,
+                &search_columns,
+                page_size,
+                offset,
+            )?;
+
+            // MySQL placeholders are positional: one bind per searched column.
+            let mut rows_query = sqlx::query(&sql.rows);
+            for _ in 0..sql.binds {
+                rows_query = rows_query.bind(search);
+            }
+            let data_rows = rows_query
+                .fetch_all(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            let rows: Vec<Vec<serde_json::Value>> = data_rows
+                .iter()
+                .map(|row| {
+                    (0..row.len())
+                        .map(|i| crate::commands::query::mysql_cell_to_json(row, i))
+                        .collect()
+                })
+                .collect();
+            let mut count_query = sqlx::query_scalar(&sql.count);
+            for _ in 0..sql.binds {
+                count_query = count_query.bind(search);
+            }
+            let total_rows: i64 = count_query
+                .fetch_one(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+
+            Ok(QueryResult {
+                columns,
+                rows,
+                total_rows,
+                page,
+                page_size,
+                execution_time_ms: None,
+            })
+        }
+        None => Err("Connection not found".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn search_fk_options(
+    connection_id: String,
+    schema: String,
+    table: String,
+    column: String,
+    search: Option<String>,
+    page: Option<i64>,
+    page_size: Option<i64>,
+    state: State<'_, crate::AppState>,
+) -> Result<QueryResult, String> {
+    search_fk_options_inner(
+        &state.pool_manager,
+        &connection_id,
+        &schema,
+        &table,
+        &column,
+        search.as_deref().unwrap_or_default(),
+        page,
+        page_size,
+    )
+    .await
 }
 
 /// Map a tokio_postgres/rusqlite affected-row count to a friendly error.
@@ -4069,3 +4279,7 @@ mod db_viewer_extra_tests;
 #[cfg(test)]
 #[path = "db_viewer_ident_live.test.rs"]
 mod db_viewer_ident_live_tests;
+
+#[cfg(test)]
+#[path = "db_viewer_fk.test.rs"]
+mod db_viewer_fk_tests;

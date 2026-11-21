@@ -175,6 +175,13 @@ export async function getTableDdl(connectionId: string, schema: string, table: s
   return invoke<string>("get_table_ddl", { connectionId, schema, table });
 }
 
+/**
+ * Fetch the row an FK cell points at.
+ *
+ * `schema`/`table`/`column` identify the **source** column (the one holding the
+ * value). The backend resolves the referenced relation from engine metadata, so
+ * the caller cannot substitute a same-named table from another schema.
+ */
 export async function getFkPreview(
   connectionId: string,
   schema: string,
@@ -183,6 +190,25 @@ export async function getFkPreview(
   value: string,
 ): Promise<QueryResult> {
   return invoke<QueryResult>("get_fk_preview", { connectionId, schema, table, column, value });
+}
+
+/**
+ * Search the referenced table for FK options.
+ *
+ * `schema`/`table`/`column` identify the **source** column; the backend resolves
+ * the referenced relation and searches it in the engine over the requested page,
+ * so matches past an initial small page are reachable.
+ */
+export async function searchFkOptions(
+  connectionId: string,
+  schema: string,
+  table: string,
+  column: string,
+  search?: string,
+  page?: number,
+  pageSize?: number,
+): Promise<QueryResult> {
+  return invoke<QueryResult>("search_fk_options", { connectionId, schema, table, column, search, page, pageSize });
 }
 
 export async function refreshConnection(connectionId: string): Promise<void> {
