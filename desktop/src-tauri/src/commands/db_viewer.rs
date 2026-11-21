@@ -3151,9 +3151,19 @@ pub(crate) async fn execute_change_inner(
                     conn.execute_batch(sql).map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-                Change::RebuildTable { sql, .. } => {
-                    // Rebuild script (create tmp / copy / drop / rename).
-                    conn.execute_batch(sql).map_err(|e| e.to_string())?;
+                Change::RebuildTable { table, sql, .. } => {
+                    // One transaction, re-validated against the live table shape:
+                    // a rebuild whose table has since gained an index, trigger, or
+                    // other unpreserved feature is refused before its first
+                    // mutating statement, and any failure rolls the whole script
+                    // back (no temporary table, no dropped rows).
+                    if table.is_empty() {
+                        return Err(
+                            "Rebuild change does not name its table; refusing to apply it"
+                                .to_string(),
+                        );
+                    }
+                    crate::db::sqlite_rebuild::apply_rebuild(conn, table, sql)?;
                     return Ok(());
                 }
                 Change::BulkInsert {

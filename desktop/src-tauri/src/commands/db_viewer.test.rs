@@ -291,6 +291,235 @@ async fn no_pk_delete_by_rowid_removes_only_that_row() {
 }
 
 // ---------------------------------------------------------------------------
+// SQLite rebuild: one transaction, or a refusal before the first mutation (ticket 08)
+//
+// The change-application seam: what a queued `rebuild_table` change actually
+// does to a real SQLite database. Each case asserts either the completed
+// rebuild or the exact absence of any durable effect.
+// ---------------------------------------------------------------------------
+
+/// A plain table a rebuild can reproduce: no index, trigger, key, check,
+/// unique, generated column, collation, expression default, or table option.
+const REBUILD_FIXTURE: &str = r#"
+CREATE TABLE t (
+    id    INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    note  TEXT
+);
+INSERT INTO t (id, label, note) VALUES (1, 'alpha', 'first'), (2, 'beta', 'second');
+"#;
+
+/// The same table with a child pointing at it, and foreign-key enforcement on:
+/// a rebuild that cascaded or leaked enforcement would be visible here.
+const REBUILD_FIXTURE_WITH_CHILD: &str = r#"
+PRAGMA foreign_keys = ON;
+CREATE TABLE t (
+    id    INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    note  TEXT
+);
+CREATE TABLE child (
+    id   INTEGER PRIMARY KEY,
+    t_id INTEGER REFERENCES t(id) ON DELETE CASCADE
+);
+INSERT INTO t (id, label, note) VALUES (1, 'alpha', 'first'), (2, 'beta', 'second');
+INSERT INTO child (id, t_id) VALUES (10, 1), (11, 2);
+"#;
+
+/// A rebuild must not swallow a trigger the script was not written to recreate.
+const REBUILD_FIXTURE_WITH_TRIGGER: &str = r#"
+CREATE TABLE t (
+    id    INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    note  TEXT
+);
+INSERT INTO t (id, label, note) VALUES (1, 'alpha', 'first'), (2, 'beta', 'second');
+CREATE TRIGGER trg_t_late AFTER UPDATE ON t BEGIN SELECT 1; END;
+"#;
+
+#[tokio::test]
+async fn sqlite_change_applies_a_rebuild_in_one_transaction() {
+    let (pm, id) = sqlite_pool(REBUILD_FIXTURE);
+    // Hand-written rebuild script: create the temp table, copy by Column
+    // Identity (dropping `note`), drop, rename.
+    let change = Change::RebuildTable {
+        id: "rb-ok".into(),
+        table: "t".into(),
+        sql: "CREATE TABLE \"main\".\"_gl_t_tmp\" (\"id\" INTEGER NOT NULL, \"label\" TEXT NOT NULL, PRIMARY KEY (\"id\"));\n\
+              INSERT INTO \"main\".\"_gl_t_tmp\" (\"id\", \"label\") SELECT \"id\", \"label\" FROM \"main\".\"t\";\n\
+              DROP TABLE \"main\".\"t\";\n\
+              ALTER TABLE \"main\".\"_gl_t_tmp\" RENAME TO \"t\""
+            .into(),
+    };
+    execute_change_inner(&pm, &id, change)
+        .await
+        .expect("a rebuild of a plain table applies");
+
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        sqlite_query(&mut guard, &id, "SELECT id, label FROM t ORDER BY id"),
+        vec![
+            vec![int(1), Value::Text("alpha".into())],
+            vec![int(2), Value::Text("beta".into())],
+        ],
+        "every row survived and values stayed in their columns"
+    );
+    let cols: Vec<String> = sqlite_query(&mut guard, &id, "PRAGMA table_info(t)")
+        .into_iter()
+        .map(|row| match &row[1] {
+            Value::Text(t) => t.clone(),
+            other => panic!("column name must be text, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        cols,
+        vec!["id", "label"],
+        "the rebuilt schema is the staged one"
+    );
+    assert_eq!(
+        sqlite_query(
+            &mut guard,
+            &id,
+            "SELECT count(*) FROM sqlite_master WHERE name = '_gl_t_tmp'"
+        ),
+        vec![vec![int(0)]],
+        "the temporary table is gone"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_change_failure_mid_rebuild_changes_nothing() {
+    let (pm, id) = sqlite_pool(REBUILD_FIXTURE_WITH_CHILD);
+    let before = {
+        let mut guard = pm.lock().await;
+        (
+            sqlite_query(&mut guard, &id, "SELECT id, label, note FROM t ORDER BY id"),
+            sqlite_query(&mut guard, &id, "SELECT id, t_id FROM child ORDER BY id"),
+            sqlite_query(
+                &mut guard,
+                &id,
+                "SELECT type, name, sql FROM sqlite_master ORDER BY type, name",
+            ),
+        )
+    };
+    // The script gets all the way to the rebuilt table and then fails on a
+    // primary-key collision: the failure is injected *after* the original table
+    // was dropped and the temp table renamed into place.
+    let change = Change::RebuildTable {
+        id: "rb-fail".into(),
+        table: "t".into(),
+        sql: "CREATE TABLE \"main\".\"_gl_t_tmp\" (\"id\" INTEGER NOT NULL, \"label\" TEXT NOT NULL, PRIMARY KEY (\"id\"));\n\
+              INSERT INTO \"main\".\"_gl_t_tmp\" (\"id\", \"label\") SELECT \"id\", \"label\" FROM \"main\".\"t\";\n\
+              DROP TABLE \"main\".\"t\";\n\
+              ALTER TABLE \"main\".\"_gl_t_tmp\" RENAME TO \"t\";\n\
+              INSERT INTO \"main\".\"t\" (\"id\", \"label\") VALUES (1, 'collision')"
+            .into(),
+    };
+    let err = execute_change_inner(&pm, &id, change)
+        .await
+        .expect_err("the injected failure must be reported");
+    assert!(
+        err.to_uppercase().contains("UNIQUE") || err.to_uppercase().contains("PRIMARY KEY"),
+        "the injected failure is a key collision: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        sqlite_query(&mut guard, &id, "SELECT id, label, note FROM t ORDER BY id"),
+        before.0,
+        "every row of the original table survived"
+    );
+    assert_eq!(
+        sqlite_query(&mut guard, &id, "SELECT id, t_id FROM child ORDER BY id"),
+        before.1,
+        "dropping the original table did not cascade into child rows"
+    );
+    assert_eq!(
+        sqlite_query(
+            &mut guard,
+            &id,
+            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+        ),
+        before.2,
+        "no temporary table, no dropped table, no partly rewritten schema"
+    );
+    // The rollback closed the transaction: an ordinary write still works and
+    // foreign-key enforcement is back on for this shared connection.
+    sqlite_exec(
+        &mut guard,
+        &id,
+        "INSERT INTO t (id, label, note) VALUES (3, 'gamma', NULL)",
+    );
+    assert_eq!(
+        sqlite_query(&mut guard, &id, "PRAGMA foreign_keys"),
+        vec![vec![int(1)]],
+        "the session's foreign key enforcement is restored"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_rebuild_change_refuses_an_unsupported_shape_before_mutating() {
+    let (pm, id) = sqlite_pool(REBUILD_FIXTURE_WITH_TRIGGER);
+    let before = {
+        let mut guard = pm.lock().await;
+        sqlite_query(
+            &mut guard,
+            &id,
+            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name",
+        )
+    };
+    let change = Change::RebuildTable {
+        id: "rb-refused".into(),
+        table: "t".into(),
+        sql: "CREATE TABLE \"main\".\"_gl_t_tmp\" (\"id\" INTEGER NOT NULL, \"label\" TEXT NOT NULL, PRIMARY KEY (\"id\"));\n\
+              INSERT INTO \"main\".\"_gl_t_tmp\" (\"id\", \"label\") SELECT \"id\", \"label\" FROM \"main\".\"t\";\n\
+              DROP TABLE \"main\".\"t\";\n\
+              ALTER TABLE \"main\".\"_gl_t_tmp\" RENAME TO \"t\""
+            .into(),
+    };
+    // A trigger staged *after* the script was built must refuse the rebuild, not
+    // be silently dropped by it.
+    let err = execute_change_inner(&pm, &id, change)
+        .await
+        .expect_err("a table with a trigger cannot be rebuilt faithfully");
+    assert!(
+        err.contains("trg_t_late") && err.contains("Cannot rebuild"),
+        "the refusal names the blocker: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        sqlite_query(
+            &mut guard,
+            &id,
+            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+        ),
+        before,
+        "refused before the first mutating statement"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_rebuild_change_without_a_table_name_is_refused() {
+    let (pm, id) = sqlite_pool(REBUILD_FIXTURE);
+    let change = Change::RebuildTable {
+        id: "rb-unnamed".into(),
+        table: String::new(),
+        sql: "DROP TABLE \"main\".\"t\"".into(),
+    };
+    let err = execute_change_inner(&pm, &id, change)
+        .await
+        .expect_err("a rebuild that cannot name its table fails closed");
+    assert!(err.contains("does not name its table"), "{err}");
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        sqlite_query(&mut guard, &id, "SELECT count(*) FROM t"),
+        vec![vec![int(2)]],
+        "nothing was applied"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Single-row writes are atomic and conflict-aware (ticket 03)
 //
 // The change-application seam: what a queued row write actually does to the

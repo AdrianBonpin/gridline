@@ -322,14 +322,23 @@ export function TableForm({
         }
     }, [dbType, params.schema]);
 
-    // Rebuild readiness check
+    // Rebuild readiness check.
+    //
+    // A SQLite edit asks with the columns it is about to stage, so the backend
+    // answers the question the editor actually has: would *this* submission
+    // need a rebuild, and can that rebuild be faithful? A PostgreSQL reorder is
+    // always a rebuild, so it asks about the live table.
+    const sqliteEdit = mode === "edit" && dbType === "sqlite";
     useEffect(() => {
-        if (!isRebuild) {
+        if (!isRebuild && !sqliteEdit) {
             setRefusal(null);
             return;
         }
         let active = true;
-        cmd.getTableRebuildReadiness(connectionId, params.schema, params.name)
+        const proposed = sqliteEdit
+            ? action.columns.map((c) => toSqlColumn(c, "edit", dbType))
+            : undefined;
+        cmd.getTableRebuildReadiness(connectionId, params.schema, params.name, proposed)
             .then((r) => {
                 if (active) setRefusal(r.ok ? null : r.reasons.join("; "));
             })
@@ -339,7 +348,15 @@ export function TableForm({
         return () => {
             active = false;
         };
-    }, [isRebuild, connectionId, params.schema, params.name]);
+    }, [
+        isRebuild,
+        sqliteEdit,
+        connectionId,
+        params.schema,
+        params.name,
+        action.columns,
+        dbType,
+    ]);
 
     // Edit mode: mark columns that participate in FKs (from the constraint list).
     useEffect(() => {
@@ -595,6 +612,7 @@ export function TableForm({
                     <button
                         type="button"
                         onClick={stage}
+                        data-testid="table-form-stage"
                         disabled={
                             !!error || !!refusal || staging || cols.length === 0
                         }
@@ -610,10 +628,13 @@ export function TableForm({
                 style={{ overscrollBehavior: "none" }}
             >
                 {refusal && (
-                    <div className="border-b border-border px-4 py-2">
+                    <div
+                        className="border-b border-border px-4 py-2"
+                        data-testid="rebuild-refusal"
+                    >
                         <p className="text-xs text-amber-400">
-                            Cannot reorder: {refusal}. Use the Query tab with
-                            pg_dump for these tables.
+                            Rebuild blocked — {refusal}. Nothing will be
+                            staged, so the table and its data stay as they are.
                         </p>
                     </div>
                 )}

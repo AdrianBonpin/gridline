@@ -734,6 +734,96 @@ describe("TableForm SQLite mode", () => {
     ).toBeInTheDocument();
   });
 
+  it("a SQLite edit that needs a rebuild is refused in the editor", async () => {
+    (cmd.getTableRebuildReadiness as any).mockResolvedValue({
+      ok: false,
+      reasons: [
+        "the table declares a CHECK constraint, which a rebuild would drop",
+      ],
+    });
+    const live = [
+      { name: "quantity", type: "INTEGER", nullable: false, default: "1", is_pk: false },
+    ];
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "main",
+          name: "order_items",
+          action: {
+            op: "edit",
+            columns: [
+              {
+                name: "quantity",
+                type: "TEXT",
+                nullable: false,
+                default: "1",
+                is_pk: false,
+                original_name: "quantity",
+              },
+            ],
+            old_columns: live,
+          },
+        },
+        title: "Edit Table",
+        description: "Edit main.order_items",
+        mode: "edit",
+      },
+      title: "Edit Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+
+    // The refusal is legible in the editor itself, not only as a queue error.
+    const banner = await screen.findByTestId("rebuild-refusal");
+    expect(banner.textContent).toContain("CHECK constraint");
+    expect(screen.getByRole("button", { name: "Stage" })).toBeDisabled();
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+
+    // …and the question included the columns about to be staged, so the answer
+    // is about this submission rather than the live table in general.
+    const calls = (cmd.getTableRebuildReadiness as any).mock.calls;
+    expect(calls[calls.length - 1][3]).toEqual([
+      expect.objectContaining({ name: "quantity", type: "TEXT" }),
+    ]);
+  });
+
+  it("a SQLite ALTER-only edit shows no rebuild refusal", async () => {
+    (cmd.getTableRebuildReadiness as any).mockResolvedValue({ ok: true, reasons: [] });
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "main",
+          name: "users",
+          action: {
+            op: "edit",
+            columns: [
+              { name: "id", type: "INTEGER", nullable: true, default: null, is_pk: true, original_name: "id" },
+              { name: "email", type: "TEXT", nullable: true, default: null, is_pk: false },
+            ],
+            old_columns: [
+              { name: "id", type: "INTEGER", nullable: true, default: null, is_pk: true },
+            ],
+          },
+        },
+        title: "Edit Table",
+        description: "Edit main.users",
+        mode: "edit",
+      },
+      title: "Edit Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+    await waitFor(() =>
+      expect(cmd.getTableRebuildReadiness).toHaveBeenCalled(),
+    );
+    expect(screen.queryByTestId("rebuild-refusal")).toBeNull();
+    expect(screen.getByRole("button", { name: "Stage" })).not.toBeDisabled();
+  });
+
   it("fixes schema to main and hides the schema picker", async () => {
     const tab = {
       id: "t1",
