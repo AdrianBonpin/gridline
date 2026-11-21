@@ -13,7 +13,7 @@ export const FLOWS = {
   "demo-smoke":
     "open the seeded demo SQLite database and assert that a demo table's rows are rendered",
   "destructive-rerun":
-    "prove a destructive script is confirmed from both the initial Run button and the toolbar re-run control",
+    "prove a destructive script is confirmed from both the initial Run button and the toolbar re-run control, and that a keyboard shortcut cannot execute the pending confirmation while Escape cancels it",
   "composite-edit":
     "edit one cell of the demo's composite-primary-key table and assert that only that row changed",
 };

@@ -2,6 +2,8 @@ import {
   DEMO_CONNECTION_NAME,
   connectionCardSelector,
   destructiveDialogCancelSelector,
+  destructiveDialogEscapeKey,
+  destructiveDialogRunShortcut,
   destructiveDialogSelector,
   newQueryTabSelector,
   queryEditorInputSelector,
@@ -109,6 +111,43 @@ export async function runDestructiveRerunFlow(driver, options = {}) {
     confirmedEntryPoints.push(entryPoint);
   }
 
+  /**
+   * Require the open confirmation to survive a key sent to it.
+   *
+   * A keyboard shortcut must not execute or relocate a pending confirmation, so
+   * the dialog has to be exactly where it was afterwards. The poll interval is
+   * waited out first: a click/shortcut that consumed the confirmation renders
+   * it away asynchronously, so an immediate check could read the stale dialog.
+   */
+  async function keepDialogOpen(entryPoint, key, label) {
+    const dialog = await waitForElement(driver, destructiveDialogSelector(), {
+      ...poll,
+      label: `${entryPoint} confirmation dialog`,
+    });
+    await driver.sendKeys(dialog, key);
+    await time.sleep(time.intervalMs);
+    const stillOpen = await driver.findElement(destructiveDialogSelector());
+    if (!stillOpen) {
+      throw new HarnessError(
+        `${label}: a keyboard shortcut consumed the pending confirmation — ` +
+          `a shortcut must never execute or relocate it`,
+      );
+    }
+  }
+
+  /** Cancel the open confirmation with Escape and require it to close. */
+  async function escapeFor(entryPoint) {
+    const dialog = await waitForElement(driver, destructiveDialogSelector(), {
+      ...poll,
+      label: `${entryPoint} confirmation dialog`,
+    });
+    await driver.sendKeys(dialog, destructiveDialogEscapeKey());
+    await waitForAbsent(driver, destructiveDialogSelector(), {
+      ...poll,
+      label: `Escape should cancel the ${entryPoint} pending confirmation`,
+    });
+  }
+
   /** Dismiss the open confirmation and require it to actually close. */
   async function cancelFor(entryPoint) {
     const cancel = await waitForElement(driver, destructiveDialogCancelSelector(), {
@@ -159,8 +198,22 @@ export async function runDestructiveRerunFlow(driver, options = {}) {
     await step("rerun: toolbar re-run requires confirmation again", async () => {
       await confirmFor("toolbar re-run", rerunQuerySelector());
     });
-    await step("rerun: cancel leaves the script unexecuted", () =>
-      cancelFor("toolbar re-run"),
+
+    // The built-product keyboard proof: with the confirmation open, the
+    // editor's own run shortcut must reach neither the database nor a
+    // different request…
+    await step(
+      "keyboard: the run shortcut cannot execute the pending confirmation",
+      () =>
+        keepDialogOpen(
+          "toolbar re-run",
+          destructiveDialogRunShortcut(),
+          "run shortcut while a destructive confirmation is pending",
+        ),
+    );
+    // …and Escape cancels the request it was raised for.
+    await step("keyboard: Escape cancels the pending confirmation", () =>
+      escapeFor("toolbar re-run"),
     );
 
     return {
@@ -171,9 +224,11 @@ export async function runDestructiveRerunFlow(driver, options = {}) {
         `confirmation required from: ${confirmedEntryPoints
           .map((name) => JSON.stringify(name))
           .join(", ")}`,
+        "keyboard: the run shortcut left the pending confirmation untouched",
+        "keyboard: Escape cancelled the pending confirmation",
       ],
       passMessage:
-        "both execution entry points required confirmation for a destructive script",
+        "both execution entry points required confirmation, the run shortcut could not execute the pending confirmation, and Escape cancelled it",
       script,
     };
   } catch (error) {

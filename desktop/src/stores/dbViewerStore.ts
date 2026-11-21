@@ -119,6 +119,18 @@ export interface ViewerTab {
    * request for it may reach the database until the target comes back.
    */
   outOfOrigin?: boolean;
+  /**
+   * Selected rows, as selection keys derived from Row Identity (see
+   * `lib/rowSelection.ts`) — never grid positions.
+   *
+   * A selection belongs to one tab, one result set, and one Change Origin, so
+   * the store clears it on every page, page-size, filter, sort, tab, origin,
+   * and dataset change. It is stored per tab so switching tabs cannot carry it
+   * to another table, and it never survives leaving the tab it was made in.
+   *
+   * Optional so hand-built tabs (fixtures/tests) stay valid.
+   */
+  selection?: string[];
   /** Set when the tab's text came from an OS-opened `.sql` file. */
   filePath?: string;
   objectType?: ObjectType | null;
@@ -168,10 +180,27 @@ const initialTab = (schema: string, table: string, defaultPageSize?: number): Vi
   filterRules: [],
   sortRules: [],
   hiddenColumns: [],
+  selection: [],
   smartSortApplied: false,
   tabType: "table",
   query: undefined,
 });
+
+/**
+ * Drop one tab's selection.
+ *
+ * A selection is only meaningful for the rows and context it was made in, so
+ * every lifecycle change that replaces those rows (page, page size, filter,
+ * sort, tab, origin, dataset) clears it rather than carrying it forward.
+ */
+const withoutSelection = (tab: ViewerTab): ViewerTab =>
+  (tab.selection?.length ?? 0) > 0 ? { ...tab, selection: [] } : tab;
+
+/** Drop every tab's selection (a tab or origin change invalidates all of them). */
+const withoutSelections = (tabs: ViewerTab[]): ViewerTab[] =>
+  tabs.some((t) => (t.selection?.length ?? 0) > 0)
+    ? tabs.map(withoutSelection)
+    : tabs;
 
 // ─── State interface ────────────────────────────────────────────
 
@@ -234,6 +263,11 @@ interface DbViewerState {
     origin?: ChangeOrigin | null,
   ) => void;
   setActiveTab: (tabId: string) => void;
+  /** Toggle one row's selection key in a tab. */
+  toggleRowSelection: (tabId: string, key: string) => void;
+  /** Replace a tab's selection with these keys (select-all / select-none). */
+  setRowSelection: (tabId: string, keys: string[]) => void;
+  clearRowSelection: (tabId: string) => void;
   setPage: (tabId: string, page: number) => void;
   setPageSize: (tabId: string, pageSize: number) => void;
   setTabData: (tabId: string, data: QueryResult) => void;
@@ -411,13 +445,13 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       };
       const existing = tabs.find((t) => isSameTab(t, identity));
       if (existing) {
-        set({ activeTabId: existing.id });
+        set({ tabs: withoutSelections(tabs), activeTabId: existing.id });
         return;
       }
     }
 
     const tab = initialTab(schema, table, get().defaultPageSize);
-    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+    set({ tabs: [...withoutSelections(tabs), tab], activeTabId: tab.id });
   },
 
   openQueryTab: (initial) => {
@@ -433,7 +467,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       };
       const existing = tabs.find((t) => isSameTab(t, identity));
       if (existing) {
-        set({ activeTabId: existing.id });
+        set({ tabs: withoutSelections(tabs), activeTabId: existing.id });
         return;
       }
     }
@@ -461,7 +495,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       query: initial?.sql ?? "",
       filePath: initial?.filePath,
     };
-    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+    set({ tabs: [...withoutSelections(tabs), tab], activeTabId: tab.id });
   },
 
   openObjectTab: (objectType, schema, name, item) => {
@@ -478,7 +512,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     };
     const existing = tabs.find((t) => isSameTab(t, identity));
     if (existing) {
-      set({ activeTabId: existing.id });
+      set({ tabs: withoutSelections(tabs), activeTabId: existing.id });
       return;
     }
 
@@ -504,7 +538,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       objectType,
       objectItem: item,
     };
-    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+    set({ tabs: [...withoutSelections(tabs), tab], activeTabId: tab.id });
   },
 
   openFormTab: ({ kind, schema, name, title, description, mode, params }) => {
@@ -536,7 +570,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     if (existing) {
       // Re-clicking the same form focuses the tab and never clobbers its
       // in-progress params.
-      set({ activeTabId: existing.id });
+      set({ tabs: withoutSelections(tabs), activeTabId: existing.id });
       return;
     }
 
@@ -562,7 +596,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       objectType: null,
       form: { kind, params, title, description, mode },
     };
-    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+    set({ tabs: [...withoutSelections(tabs), tab], activeTabId: tab.id });
   },
 
   updateFormTabParams: (tabId, params) =>
@@ -585,7 +619,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
           ? remaining[remaining.length - 1].id
           : null
         : activeTabId;
-    set({ tabs: remaining, activeTabId: newActiveId });
+    set({ tabs: withoutSelections(remaining), activeTabId: newActiveId });
   },
 
   // Move a tab to a new index (drag-to-reorder). The active tab is tracked by
@@ -627,16 +661,52 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
           ? remaining[remaining.length - 1].id
           : null
         : activeTabId;
-    set({ tabs: remaining, activeTabId: newActiveId });
+    set({ tabs: withoutSelections(remaining), activeTabId: newActiveId });
   },
 
-  setActiveTab: (tabId) => set({ activeTabId: tabId }),
+  // Switching tabs invalidates every selection: a selection made in one
+  // tab's context is never applied to another tab's rows. Re-activating the
+  // already-active tab is not a change, so it keeps the selection.
+  setActiveTab: (tabId) =>
+    set((state) => ({
+      tabs:
+        tabId === state.activeTabId
+          ? state.tabs
+          : withoutSelections(state.tabs),
+      activeTabId: tabId,
+    })),
+
+  toggleRowSelection: (tabId, key) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) => {
+        if (t.id !== tabId) return t;
+        const selection = t.selection ?? [];
+        return {
+          ...t,
+          selection: selection.includes(key)
+            ? selection.filter((k) => k !== key)
+            : [...selection, key],
+        };
+      }),
+    })),
+
+  setRowSelection: (tabId, keys) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, selection: [...keys] } : t,
+      ),
+    })),
+
+  clearRowSelection: (tabId) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) => (t.id === tabId ? withoutSelection(t) : t)),
+    })),
 
   setPage: (tabId, page) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? {
+          ? withoutSelection({
                 ...t,
                 page,
                 loading: true,
@@ -644,7 +714,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
                 // A page change is a new intent: any response still in flight
                 // for the previous page is no longer allowed to land.
                 requestSeq: (t.requestSeq ?? 0) + 1,
-            }
+            })
           : t,
       ),
     })),
@@ -653,14 +723,14 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? {
+          ? withoutSelection({
                 ...t,
                 pageSize,
                 page: 1,
                 loading: true,
                 error: null,
                 requestSeq: (t.requestSeq ?? 0) + 1,
-            }
+            })
           : t,
       ),
     })),
@@ -669,7 +739,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? {
+          ? withoutSelection({
                 ...t,
                 data,
                 multi: null,
@@ -677,14 +747,16 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
                 error: null,
                 stale: false,
                 staleReason: null,
-            }
+            })
           : t,
       ),
     })),
 
   setTabMulti: (tabId, multi) =>
     set((s) => ({
-      tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, multi } : t)),
+      tabs: s.tabs.map((t) =>
+        t.id === tabId ? withoutSelection({ ...t, multi }) : t,
+      ),
     })),
 
   setTabLoading: (tabId, loading) =>
@@ -729,7 +801,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? {
+          ? withoutSelection({
                 ...t,
                 data,
                 multi: null,
@@ -737,7 +809,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
                 error: null,
                 stale: false,
                 staleReason: null,
-            }
+            })
           : t,
       ),
     }));
@@ -785,7 +857,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? {
+          ? withoutSelection({
                 ...t,
                 outOfOrigin: true,
                 // The rows stay on screen so the user keeps context, but they
@@ -795,7 +867,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
                 loading: false,
                 // Seal off whatever is still in flight for this tab.
                 requestSeq: (t.requestSeq ?? 0) + 1,
-            }
+            })
           : t,
       ),
     })),
@@ -836,7 +908,10 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       }
       return t;
     });
-    if (changed) set({ tabs });
+    // Moving the viewer's target invalidates every selection, in both
+    // directions: a restored tab's rows come from a re-query, and a foreign
+    // tab's rows belong to another origin now.
+    if (changed) set({ tabs: withoutSelections(tabs) });
     return restored;
   },
 
@@ -864,14 +939,16 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setColumnFilter: (tabId, column, value) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, columnFilter: { column, value } } : t,
+        t.id === tabId
+          ? withoutSelection({ ...t, columnFilter: { column, value } })
+          : t,
       ),
     })),
 
   clearColumnFilter: (tabId) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, columnFilter: undefined } : t,
+        t.id === tabId ? withoutSelection({ ...t, columnFilter: undefined }) : t,
       ),
     })),
 
@@ -879,14 +956,14 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? {
+          ? withoutSelection({
                 ...t,
                 filterRules: rules,
                 page: 1,
                 loading: true,
                 error: null,
                 requestSeq: (t.requestSeq ?? 0) + 1,
-            }
+            })
           : t,
       ),
     })),
@@ -895,14 +972,14 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? {
+          ? withoutSelection({
                 ...t,
                 sortRules: rules,
                 page: 1,
                 loading: true,
                 error: null,
                 requestSeq: (t.requestSeq ?? 0) + 1,
-            }
+            })
           : t,
       ),
     })),
@@ -931,7 +1008,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setSmartSortApplied: (tabId) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, smartSortApplied: true } : t,
+        t.id === tabId ? withoutSelection({ ...t, smartSortApplied: true }) : t,
       ),
     })),
 
@@ -1018,7 +1095,14 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   toggleChangesPanel: () =>
     set((state) => ({ changesPanelExpanded: !state.changesPanelExpanded })),
 
-  setCurrentDatabase: (db) => set({ currentDatabase: db }),
+  // The selected database is part of every tab's Change Origin: moving it
+  // re-points the whole viewer, so no selection made in the old context may
+  // survive.
+  setCurrentDatabase: (db) =>
+    set((state) => ({
+      currentDatabase: db,
+      tabs: withoutSelections(state.tabs),
+    })),
   setCurrentSchema: (schema) => set({ currentSchema: schema }),
   setObjectSearchOpen: (open) => set({ objectSearchOpen: open }),
   setSelectedObjectType: (t) => set({ selectedObjectType: t }),

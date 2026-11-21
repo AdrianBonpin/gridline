@@ -5,6 +5,8 @@ import {
   connectionCardSelector,
   destructiveDialogCancelSelector,
   destructiveDialogConfirmSelector,
+  destructiveDialogEscapeKey,
+  destructiveDialogRunShortcut,
   destructiveDialogSelector,
   newQueryTabSelector,
   queryEditorInputSelector,
@@ -24,6 +26,8 @@ const RERUN = rerunQuerySelector();
 const DIALOG = destructiveDialogSelector();
 const CANCEL = destructiveDialogCancelSelector();
 const CONFIRM = destructiveDialogConfirmSelector();
+const ESCAPE = destructiveDialogEscapeKey();
+const RUN_SHORTCUT = destructiveDialogRunShortcut();
 
 function fakeClock() {
   let clock = 0;
@@ -42,10 +46,23 @@ const flush = () => Promise.resolve();
  * after a Run/Re-run click, and only while it has not been cancelled, exactly
  * like `DestructiveQueryDialog` (which returns `null` while closed).
  */
-function fakeDriver(options: { dialogNeverOpensFor?: "run" | "rerun" } = {}) {
+function fakeDriver(
+  options: {
+    dialogNeverOpensFor?: "run" | "rerun";
+    /** Simulates a bug where a shortcut silently confirms the request. */
+    shortcutConsumesDialog?: boolean;
+    /** Simulates a dialog that ignores Escape. */
+    ignoresEscape?: boolean;
+  } = {},
+) {
   const clicks: string[] = [];
   const typed: string[] = [];
-  const { dialogNeverOpensFor = null } = options;
+  const dialogKeys: string[] = [];
+  const {
+    dialogNeverOpensFor = null,
+    shortcutConsumesDialog = false,
+    ignoresEscape = false,
+  } = options;
   let dialogOpen = false;
   let editorReady = false;
 
@@ -73,7 +90,15 @@ function fakeDriver(options: { dialogNeverOpensFor?: "run" | "rerun" } = {}) {
           return null;
       }
     },
-    async sendKeys(_element: { elementId: string }, text: string) {
+    async sendKeys(element: { elementId: string }, text: string) {
+      if (element.elementId === "dialog") {
+        // Keys sent to the modal go to the modal: Escape cancels it, and the
+        // editor's run shortcut reaches the editor not at all.
+        dialogKeys.push(text);
+        if (text === ESCAPE && !ignoresEscape) dialogOpen = false;
+        if (text === RUN_SHORTCUT && shortcutConsumesDialog) dialogOpen = false;
+        return;
+      }
       typed.push(text);
       editorReady = true;
     },
@@ -109,6 +134,7 @@ function fakeDriver(options: { dialogNeverOpensFor?: "run" | "rerun" } = {}) {
     async deleteSession() {},
     clicks,
     typed,
+    dialogKeys,
     get dialogOpen() {
       return dialogOpen;
     },
@@ -145,13 +171,17 @@ describe("runDestructiveRerunFlow", () => {
       "run",
       "dialog-cancel",
       "rerun",
-      "dialog-cancel",
     ]);
     expect(result.confirmedEntryPoints).toEqual(["initial Run", "toolbar re-run"]);
     expect(result.evidence).toEqual([
       'confirmation required from: "initial Run", "toolbar re-run"',
+      "keyboard: the run shortcut left the pending confirmation untouched",
+      "keyboard: Escape cancelled the pending confirmation",
     ]);
     expect(result.passMessage).toMatch(/both execution entry points/);
+    // The keys went to the modal, never to the editor.
+    expect(driver.dialogKeys).toEqual([RUN_SHORTCUT, ESCAPE]);
+    expect(driver.typed).toEqual([DESTRUCTIVE_SCRIPT]);
     expect(result.steps.map((step) => step.name)).toEqual([
       `home: ${DEMO_CONNECTION_NAME} card visible`,
       "home: open the demo database",
@@ -160,8 +190,23 @@ describe("runDestructiveRerunFlow", () => {
       "run: initial Run requires confirmation",
       "run: cancel leaves the script unexecuted",
       "rerun: toolbar re-run requires confirmation again",
-      "rerun: cancel leaves the script unexecuted",
+      "keyboard: the run shortcut cannot execute the pending confirmation",
+      "keyboard: Escape cancels the pending confirmation",
     ]);
+  });
+
+  it("fails when a keyboard shortcut consumes the pending confirmation", async () => {
+    const driver = fakeDriver({ shortcutConsumesDialog: true });
+    await expect(runDestructiveRerunFlow(driver, options())).rejects.toThrow(
+      /keyboard shortcut .*(executed|relocated|consumed)/i,
+    );
+  });
+
+  it("fails when Escape does not cancel the pending confirmation", async () => {
+    const driver = fakeDriver({ ignoresEscape: true });
+    await expect(runDestructiveRerunFlow(driver, options())).rejects.toThrow(
+      /Escape .*pending confirmation/i,
+    );
   });
 
   it("fails with a specific message when the initial run never prompts", async () => {

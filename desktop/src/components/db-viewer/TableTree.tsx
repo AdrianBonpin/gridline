@@ -173,6 +173,7 @@ export function TableTree({ searchQuery, dbType }: { searchQuery?: string; dbTyp
                                 <TableOverflowMenu
                                     schema={table.schema}
                                     table={table.name}
+                                    tableType={table.table_type}
                                     connectionId={connectionId ?? undefined}
                                     dbType={dbType}
                                     columns={cols}
