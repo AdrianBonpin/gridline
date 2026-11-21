@@ -620,6 +620,82 @@ fn a_probe_reports_state_without_credentials() {
 }
 
 // ---------------------------------------------------------------------------
+// Store-backed provider: a real known-hosts file plus real SQLite records
+// ---------------------------------------------------------------------------
+
+#[test]
+fn store_backed_provider_honors_known_hosts_and_remembers_enrollments() {
+    let dir = std::env::temp_dir().join(format!("gridline-ssh-trust-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let known_hosts_path = dir.join("known_hosts");
+    let known = host_key("ssh-ed25519", 95);
+    std::fs::write(
+        &known_hosts_path,
+        format!(
+            "# hashed-style comment\n{}\n",
+            known_hosts_line("[db.example.com]:2222", &known)
+        ),
+    )
+    .unwrap();
+
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::store::migrations::run_migrations(&conn).unwrap();
+    let store = std::sync::Arc::new(std::sync::Mutex::new(crate::store::Store::from_connection(
+        conn,
+    )));
+    let trust = StoreHostTrust::with_known_hosts_paths(store, vec![known_hosts_path.clone()]);
+
+    // A real known-hosts entry verifies silently, on its own port.
+    let mut transport = FakeTransport::offering(known.clone());
+    let state = probe_host_trust(&mut transport, &trust, "db.example.com", 2222).unwrap();
+    assert!(matches!(
+        state,
+        SshHostTrustState::Trusted {
+            source: crate::models::ssh_trust::TrustSource::KnownHosts,
+            ..
+        }
+    ));
+
+    // An accepted fingerprint is persisted and trusted on the next attempt.
+    let enrolled = host_key("ssh-ed25519", 96);
+    let accepted = HostKeyFingerprint {
+        key_type: enrolled.key_type.clone(),
+        fingerprint: fingerprint_of(&enrolled.blob),
+    };
+    enroll_host_trust(
+        &mut FakeTransport::offering(enrolled.clone()),
+        &trust,
+        "new.example.com",
+        22,
+        &accepted,
+    )
+    .expect("enrollment writes through to the store");
+
+    let mut again = FakeTransport::offering(enrolled.clone());
+    let state = probe_host_trust(&mut again, &trust, "new.example.com", 22).unwrap();
+    assert!(matches!(
+        state,
+        SshHostTrustState::Trusted {
+            source: crate::models::ssh_trust::TrustSource::Enrolled,
+            ..
+        }
+    ));
+
+    let stored = trust
+        .lookup("new.example.com", 22)
+        .unwrap()
+        .expect("record");
+    assert_eq!(stored.key, enrolled, "the key blob survives SQLite");
+    assert_eq!(stored.fingerprint, fingerprint_of(&enrolled.blob));
+    assert!(
+        trust.lookup("new.example.com", 2222).unwrap().is_none(),
+        "trust is keyed by endpoint, not host name"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
 // IPC contract shared with the frontend
 // ---------------------------------------------------------------------------
 
