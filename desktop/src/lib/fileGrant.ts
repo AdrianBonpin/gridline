@@ -57,21 +57,21 @@ export const FILE_GRANT_STATE: Record<
   expired: {
     title: "File selection expired",
     detail:
-      "A file selection is valid for five minutes. Choose the output file again to continue.",
+      "A file selection is valid for five minutes. Choose the file again to continue.",
   },
   consumed: {
     title: "File selection already used",
     detail:
-      "Each backup needs its own file selection. Choose the output file again to continue.",
+      "Each file operation needs its own selection. Choose the file again to continue.",
   },
   "wrong-intent": {
     title: "File selection not valid for this operation",
-    detail: "Choose the output file again to continue.",
+    detail: "Choose the file again for this operation to continue.",
   },
   invalid: {
     title: "No file selected",
     detail:
-      "Choose the output file with Browse so Gridline can authorize the write.",
+      "Choose the file with Browse so Gridline can authorize it.",
   },
 };
 

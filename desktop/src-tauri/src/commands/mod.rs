@@ -5,6 +5,7 @@ pub mod demo;
 pub mod file_grant;
 pub mod folders;
 pub mod import_export;
+pub mod import_file;
 pub mod keychain;
 pub mod maintenance;
 pub mod objects;

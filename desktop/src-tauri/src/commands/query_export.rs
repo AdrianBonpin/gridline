@@ -315,25 +315,126 @@ fn write_row<W: Write>(
 }
 
 // ── Output handling ──────────────────────────────────────────────
+//
+// A streamed export never writes to its destination directly. It writes a
+// temporary sibling in the same directory, flushes, syncs and closes it, and
+// only then publishes it with one rename. Two guarantees follow from that
+// order: the prior destination survives any failure **byte for byte**, and a
+// failed export removes the only partial artifact it created.
 
 type ExportWriter = std::io::BufWriter<std::fs::File>;
 
-fn open_export_file(path: &Path) -> Result<ExportWriter, String> {
-    let file = std::fs::File::create(path).map_err(|e| format!("cannot create file: {e}"))?;
-    Ok(std::io::BufWriter::with_capacity(8 * 1024 * 1024, file))
+/// Consume the File Grant that authorizes the export destination and return its
+/// path.
+///
+/// Export writes a file, so the grant has to carry the `Write` intent: a
+/// restore/import read grant is refused here. A path the renderer supplied is
+/// not a grant, so handing one in fails closed with the `file-grant-invalid`
+/// state instead of naming a file for the export to overwrite.
+///
+pub fn resolve_export_output(
+    grants: &crate::file_grant::FileGrantStore,
+    grant_id: &str,
+) -> Result<PathBuf, String> {
+    let path = crate::file_grant::consume_granted_path(
+        grants,
+        grant_id,
+        crate::file_grant::FileIntent::Write,
+    )?;
+    Ok(PathBuf::from(path))
 }
 
-/// Open the destination and start the engine's read-only session: either both
-/// hold, or nothing is left behind (a failed start removes the empty file; a
-/// failed file creation closes the session so the connection stays usable).
+/// The temporary sibling a streamed export writes before publishing.
+///
+/// Same directory as the destination (so the publish is one atomic rename on
+/// the same filesystem) and dot-prefixed with a unique suffix (so it cannot
+/// collide with the destination or a concurrent export).
+fn partial_sibling_path(destination: &Path) -> Result<PathBuf, String> {
+    let name = destination
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Export destination must name a file".to_string())?;
+    let dir = destination
+        .parent()
+        .ok_or_else(|| "Export destination must have a parent directory".to_string())?;
+    Ok(dir.join(format!(".{name}.gridline-partial-{}", uuid::Uuid::new_v4())))
+}
+
+/// A destination being written: the temporary sibling, its writer, and the
+/// path it publishes to.
+struct ExportTarget {
+    destination: PathBuf,
+    partial: PathBuf,
+    writer: ExportWriter,
+}
+
+impl ExportTarget {
+    fn create(destination: &Path) -> Result<Self, String> {
+        let partial = partial_sibling_path(destination)?;
+        let file =
+            std::fs::File::create(&partial).map_err(|e| format!("cannot create file: {e}"))?;
+        Ok(Self {
+            destination: destination.to_path_buf(),
+            partial,
+            writer: std::io::BufWriter::with_capacity(8 * 1024 * 1024, file),
+        })
+    }
+
+    /// Flush, sync, close, then rename over the destination. Any failure here
+    /// removes the temporary output and reports why; the destination is never
+    /// touched.
+    fn publish(self) -> Result<(), String> {
+        let Self {
+            destination,
+            partial,
+            writer,
+        } = self;
+        let file = match writer.into_inner() {
+            Ok(file) => file,
+            Err(e) => {
+                let message = e.error().to_string();
+                drop(e); // close before removing the partial output
+                let _ = std::fs::remove_file(&partial);
+                return Err(format!("export write failed: {message}"));
+            }
+        };
+        if let Err(e) = file.sync_all() {
+            drop(file);
+            let _ = std::fs::remove_file(&partial);
+            return Err(format!("export write failed: {e}"));
+        }
+        drop(file);
+        if let Err(e) = std::fs::rename(&partial, &destination) {
+            let _ = std::fs::remove_file(&partial);
+            return Err(format!(
+                "export could not replace {}: {e}",
+                destination.display()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Drop this export's own partial output. The destination is untouched.
+    fn discard(self) {
+        let Self {
+            partial, writer, ..
+        } = self;
+        drop(writer);
+        let _ = std::fs::remove_file(&partial);
+    }
+}
+
+/// Open the destination's temporary sibling and start the engine's read-only
+/// session: either both hold, or nothing is left behind (a failed start removes
+/// the temporary output; a failed session start never creates one).
 async fn start_export<'a, C: ReadOnlyControl + ?Sized>(
     conn: &'a mut C,
     engine: ReadOnlyEngine,
-    path: &Path,
-) -> Result<(ReadOnlySession<'a, C>, ExportWriter), String> {
+    destination: &Path,
+) -> Result<(ReadOnlySession<'a, C>, ExportTarget), String> {
     let session = ReadOnlySession::start(conn, engine).await?;
-    match open_export_file(path) {
-        Ok(writer) => Ok((session, writer)),
+    match ExportTarget::create(destination) {
+        Ok(target) => Ok((session, target)),
         Err(e) => {
             let _ = session.finish().await;
             Err(e)
@@ -341,23 +442,18 @@ async fn start_export<'a, C: ReadOnlyControl + ?Sized>(
     }
 }
 
-/// Flush on success; on any failure delete the (partial) file and report the
+/// Publish on success; on any failure drop the temporary output and report the
 /// primary error. A session that could not be closed is a failure too: the
 /// connection's state is not what the caller would assume.
-fn settle_export<W: Write>(
-    path: &Path,
-    mut writer: std::io::BufWriter<W>,
+fn settle_export(
+    target: ExportTarget,
     body: Result<ExportSummary, String>,
     restored: Result<(), String>,
 ) -> Result<ExportSummary, String> {
     match (body, restored) {
-        (Ok(summary), Ok(())) => writer
-            .flush()
-            .map(|_| summary)
-            .map_err(|e| format!("export flush failed: {e}")),
+        (Ok(summary), Ok(())) => target.publish().map(|_| summary),
         (Ok(_), Err(e)) | (Err(e), _) => {
-            drop(writer);
-            let _ = std::fs::remove_file(path);
+            target.discard();
             Err(e)
         }
     }
@@ -422,10 +518,16 @@ pub async fn run_sqlite_export(
     progress: &mut (dyn FnMut(u64) + Send),
 ) -> Result<ExportSummary, String> {
     let request = validate_export_request(ReadOnlyEngine::Sqlite, sql, path)?;
-    let (mut session, mut writer) = start_export(conn, ReadOnlyEngine::Sqlite, path).await?;
-    let body = sqlite_export_body(session.conn(), &request, format, &mut writer, progress);
+    let (mut session, mut target) = start_export(conn, ReadOnlyEngine::Sqlite, path).await?;
+    let body = sqlite_export_body(
+        session.conn(),
+        &request,
+        format,
+        &mut target.writer,
+        progress,
+    );
     let restored = session.finish().await;
-    settle_export(path, writer, body, restored)
+    settle_export(target, body, restored)
 }
 
 fn sqlite_ref_to_json(row: &rusqlite::Row, i: usize) -> serde_json::Value {
@@ -529,10 +631,17 @@ pub async fn run_pg_export(
     progress: &mut (dyn FnMut(u64) + Send),
 ) -> Result<ExportSummary, String> {
     let request = validate_export_request(ReadOnlyEngine::PostgreSql, sql, path)?;
-    let (mut session, mut writer) = start_export(client, ReadOnlyEngine::PostgreSql, path).await?;
-    let body = pg_export_body(session.conn(), &request, format, &mut writer, progress).await;
+    let (mut session, mut target) = start_export(client, ReadOnlyEngine::PostgreSql, path).await?;
+    let body = pg_export_body(
+        session.conn(),
+        &request,
+        format,
+        &mut target.writer,
+        progress,
+    )
+    .await;
     let restored = session.finish().await;
-    settle_export(path, writer, body, restored)
+    settle_export(target, body, restored)
 }
 
 // ── MySQL (sqlx stream — native streaming) ─────────────────────────
@@ -603,10 +712,17 @@ pub async fn run_mysql_export(
     progress: &mut (dyn FnMut(u64) + Send),
 ) -> Result<ExportSummary, String> {
     let request = validate_export_request(ReadOnlyEngine::MySql, sql, path)?;
-    let (mut session, mut writer) = start_export(conn, ReadOnlyEngine::MySql, path).await?;
-    let body = mysql_export_body(session.conn(), &request, format, &mut writer, progress).await;
+    let (mut session, mut target) = start_export(conn, ReadOnlyEngine::MySql, path).await?;
+    let body = mysql_export_body(
+        session.conn(),
+        &request,
+        format,
+        &mut target.writer,
+        progress,
+    )
+    .await;
     let restored = session.finish().await;
-    settle_export(path, writer, body, restored)
+    settle_export(target, body, restored)
 }
 
 // ── Dispatcher + thin command ──────────────────────────────────────
@@ -638,14 +754,18 @@ pub async fn export_query_to_file(
     connection_id: String,
     sql: String,
     format: String,
-    path: String,
+    file_grant: String,
     state: State<'_, crate::AppState>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     use tauri::Emitter;
 
     let fmt = ExportFormat::from_str(&format)?;
-    let path_buf = PathBuf::from(&path);
+    // Authorize the write before anything is opened: the granted path is the
+    // only destination this command can be made to use, and a grant is not
+    // spent on a request that fails before the export starts.
+    let path_buf = resolve_export_output(&state.file_grants, &file_grant)?;
+    let path = path_buf.to_string_lossy().to_string();
     let job_id = uuid::Uuid::new_v4().to_string();
 
     let mut last_emit = std::time::Instant::now();
