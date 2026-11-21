@@ -2105,9 +2105,7 @@ fn cancelling_a_pg_dump_terminates_its_process_tree() {
 
     let job = JobControl::detached();
     let runner = job.clone();
-    let handle = std::thread::spawn(move || {
-        run_pg_dump_managed(&runner, &conn, &options, &tools)
-    });
+    let handle = std::thread::spawn(move || run_pg_dump_managed(&runner, &conn, &options, &tools));
 
     let helper = wait_for_pid(&pid_file, std::time::Duration::from_secs(5)).expect("helper pid");
     assert!(pid_alive(helper), "the dump helper should be running");
@@ -2118,7 +2116,10 @@ fn cancelling_a_pg_dump_terminates_its_process_tree() {
     let elapsed = started.elapsed();
 
     let failure = outcome.expect_err("a cancelled dump must not report success");
-    assert!(failure.cancelled, "cancellation must stay distinguishable: {failure:?}");
+    assert!(
+        failure.cancelled,
+        "cancellation must stay distinguishable: {failure:?}"
+    );
     assert!(
         elapsed < std::time::Duration::from_secs(5),
         "cancellation was not prompt: {elapsed:?}"
@@ -2149,9 +2150,7 @@ fn app_exit_cancellation_terminates_a_running_dump_tree() {
     let registry = crate::job::JobRegistry::new();
     let job = registry.begin("exit-job");
     let runner = job.clone();
-    let handle = std::thread::spawn(move || {
-        run_pg_dump_managed(&runner, &conn, &options, &tools)
-    });
+    let handle = std::thread::spawn(move || run_pg_dump_managed(&runner, &conn, &options, &tools));
 
     let helper = wait_for_pid(&pid_file, std::time::Duration::from_secs(5)).expect("helper pid");
 
@@ -2204,7 +2203,10 @@ fn a_progressing_pg_dump_is_not_killed_by_the_idle_bound() {
     let outcome = run_pg_dump_managed(&job, &conn, &options, &tools);
     let elapsed = started.elapsed();
 
-    assert!(outcome.is_ok(), "a progressing dump was killed: {outcome:?}");
+    assert!(
+        outcome.is_ok(),
+        "a progressing dump was killed: {outcome:?}"
+    );
     assert!(elapsed > idle, "the fixture must outlive the idle window");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2308,7 +2310,10 @@ fn cancelling_a_db_sync_kills_both_ends() {
     job.cancel();
     let outcome = handle.join().unwrap();
     assert!(outcome.expect_err("cancelled").cancelled);
-    assert!(wait_until_dead(dp, std::time::Duration::from_secs(5)), "dump survived");
+    assert!(
+        wait_until_dead(dp, std::time::Duration::from_secs(5)),
+        "dump survived"
+    );
     assert!(
         wait_until_dead(rp, std::time::Duration::from_secs(5)),
         "restore survived"
@@ -2360,9 +2365,8 @@ fn cancelling_a_mysql_dump_terminates_its_process_tree() {
 
     let job = JobControl::detached();
     let runner = job.clone();
-    let handle = std::thread::spawn(move || {
-        run_mysql_dump_managed(&runner, &conn, &options, &tools, None)
-    });
+    let handle =
+        std::thread::spawn(move || run_mysql_dump_managed(&runner, &conn, &options, &tools, None));
 
     let helper = wait_for_pid(&helper_pid, std::time::Duration::from_secs(5)).expect("helper pid");
     job.cancel();
@@ -2409,7 +2413,10 @@ fn job_outcomes_map_to_visible_progress_events() {
     let completed = progress_event("j1", &Ok(()));
     assert_eq!(completed.status, "completed");
 
-    let failed = progress_event("j1", &Err(JobFailure::failed("pg_dump: connection refused")));
+    let failed = progress_event(
+        "j1",
+        &Err(JobFailure::failed("pg_dump: connection refused")),
+    );
     assert_eq!(failed.status, "failed");
     assert_eq!(failed.error.as_deref(), Some("pg_dump: connection refused"));
 
@@ -2463,7 +2470,8 @@ fn sqlite_restore_cancellation_rolls_the_target_back() {
         "must report a cancellation"
     );
 
-    let count = |conn: &Connection, sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    let count =
+        |conn: &Connection, sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
     assert_eq!(
         count(
             &conn,
@@ -2498,9 +2506,8 @@ fn a_cancelled_sqlite_dump_reports_a_cancellation() {
     src.execute_batch("CREATE TABLE a (id INTEGER); CREATE TABLE b (id INTEGER);")
         .unwrap();
     let mut out: Vec<u8> = Vec::new();
-    let result = dump_sqlite_to_cancellable(&src, &mut std::io::Cursor::new(&mut out), |_| {}, &|| {
-        true
-    });
+    let result =
+        dump_sqlite_to_cancellable(&src, &mut std::io::Cursor::new(&mut out), |_| {}, &|| true);
     assert_eq!(result.unwrap_err(), CANCEL_MESSAGE);
     drop(src);
     let _ = std::fs::remove_dir_all(&dir);
@@ -2513,7 +2520,9 @@ fn a_bounded_probe_failure_is_surfaced_in_the_tool_status() {
     let status = build_pg_tool_status_with(
         &ToolResolution::none(),
         &ToolResolution::none(),
-        Some("/opt/homebrew/bin/pg_dump — The tool did not respond within 1s and was stopped".into()),
+        Some(
+            "/opt/homebrew/bin/pg_dump — The tool did not respond within 1s and was stopped".into(),
+        ),
         None,
     );
     assert!(!status.pg_dump_found);

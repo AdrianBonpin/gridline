@@ -396,8 +396,7 @@ pub fn run_pg_dump(
     options: &BackupOptions,
     tools: &PgToolPaths,
 ) -> Result<(), String> {
-    run_pg_dump_managed(&JobControl::detached(), conn, options, tools)
-        .map_err(|e| e.message)
+    run_pg_dump_managed(&JobControl::detached(), conn, options, tools).map_err(|e| e.message)
 }
 
 /// Runs `pg_restore` (or `psql`) against `conn` under `job`, reading from
@@ -444,8 +443,7 @@ pub fn run_pg_restore(
     options: &RestoreOptions,
     tools: &PgToolPaths,
 ) -> Result<(), String> {
-    run_pg_restore_managed(&JobControl::detached(), conn, options, tools)
-        .map_err(|e| e.message)
+    run_pg_restore_managed(&JobControl::detached(), conn, options, tools).map_err(|e| e.message)
 }
 
 /// Runs a DB-to-DB sync under `job`: `pg_dump` on `source` piped into
@@ -894,7 +892,12 @@ pub fn run_sqlite_sync_cancellable(
 ) -> Result<(), String> {
     let src = Connection::open(source_path).map_err(|e| format!("open source: {e}"))?;
     let mut buf: Vec<u8> = Vec::new();
-    dump_sqlite_to_cancellable(&src, &mut std::io::Cursor::new(&mut buf), |_| {}, is_cancelled)?;
+    dump_sqlite_to_cancellable(
+        &src,
+        &mut std::io::Cursor::new(&mut buf),
+        |_| {},
+        is_cancelled,
+    )?;
     if is_cancelled() {
         return Err(CANCEL_MESSAGE.to_string());
     }
@@ -932,16 +935,17 @@ fn client_is_mariadb(program: &str) -> bool {
         }
     }
 
-    let is_mariadb = crate::job::capture_bounded(program, &["--version"], tool_resolver::PROBE_TIMEOUT)
-        .map(|o| {
-            let mut text = o.stdout;
-            text.push_str(&o.stderr);
-            text.contains("MariaDB")
-        })
-        // A client that will not answer `--version` is treated as MySQL's (the
-        // MySQL-only flags below are the conservative choice: a MariaDB client
-        // rejects them visibly instead of silently dumping less).
-        .unwrap_or(false);
+    let is_mariadb =
+        crate::job::capture_bounded(program, &["--version"], tool_resolver::PROBE_TIMEOUT)
+            .map(|o| {
+                let mut text = o.stdout;
+                text.push_str(&o.stderr);
+                text.contains("MariaDB")
+            })
+            // A client that will not answer `--version` is treated as MySQL's (the
+            // MySQL-only flags below are the conservative choice: a MariaDB client
+            // rejects them visibly instead of silently dumping less).
+            .unwrap_or(false);
 
     if let Ok(mut map) = cache.lock() {
         map.insert(program.to_string(), is_mariadb);
@@ -1174,9 +1178,7 @@ pub fn run_mysql_sync_managed(
     let restore_args = mysql_sync_restore_args(target, restore_is_mariadb, tgt_tls);
 
     let mut dump_cmd = Command::new(&tools.mysqldump);
-    dump_cmd
-        .env("MYSQL_PWD", &source.password)
-        .args(&dump_args);
+    dump_cmd.env("MYSQL_PWD", &source.password).args(&dump_args);
 
     let mut restore_cmd = Command::new(&tools.mysql);
     restore_cmd
