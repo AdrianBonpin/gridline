@@ -31,7 +31,9 @@ interface VirtualDataGridProps {
     newData: Record<string, unknown>;
   }) => void;
   onOpenRowDetail?: (rowIndex: number) => void;
-  getLocator?: (row: unknown[]) => Record<string, unknown>;
+  /** Row Identity for a row: every PK column, or the backend physical locator.
+   * `null` when the row has no complete identity (edit/delete must not stage). */
+  getLocator?: (row: unknown[]) => Record<string, unknown> | null;
   readOnly?: boolean;
   /** When set, renders a pending-edit indicator on the staged cell at (row, col). */
   pendingCell?: { row: number; col: number } | null;
@@ -320,7 +322,13 @@ export function VirtualDataGrid({
           if (isInsertRow && insertChangeId) {
             onStageInsertCell?.(insertChangeId, col.name, committed);
           } else {
-            const locator = getLocator?.(row) ?? {};
+            // No complete Row Identity (no PK and no locator) → staging would
+            // stage a change that addresses nothing; refuse instead.
+            const locator = getLocator?.(row) ?? null;
+            if (!locator) {
+              setEditingCell(null);
+              return;
+            }
             onStageEdit?.(
               cellToUpdateChange({
                 schema,
@@ -469,7 +477,8 @@ export function VirtualDataGrid({
         if (changeId) onStageInsertCell?.(changeId, column.name, null);
         return;
       }
-      const locator = getLocator?.(rows[row]) ?? {};
+      const locator = getLocator?.(rows[row]) ?? null;
+      if (!locator) return;
       onStageEdit?.(
         cellToUpdateChange({
           schema,

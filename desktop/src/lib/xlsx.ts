@@ -1,4 +1,5 @@
 import { zipSync, strToU8 } from "fflate";
+import { projectDeclaredCells } from "./rowIdentity";
 import type { ColumnInfo } from "./types";
 
 /** Minimal OOXML spreadsheet: one sheet, every cell as an inline string
@@ -32,7 +33,9 @@ function buildCellsXML(rows: unknown[][], columns: ColumnInfo[]): string {
     .join("") + `</row>`;
   rows.forEach((row, rIdx) => {
     const r = rIdx + 2;
-    cells += `<row r="${r}">` + row
+    // Declared columns only — a trailing backend row locator (rowid/ctid) is
+    // not data and must not become a spreadsheet column.
+    cells += `<row r="${r}">` + projectDeclaredCells(row, columns)
       .map((v, i) => {
         const ref = `${colLetter(i + 1)}${r}`;
         const t = v === null || v === undefined ? "" : String(v);

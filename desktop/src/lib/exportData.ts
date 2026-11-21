@@ -1,4 +1,5 @@
 import { buildXlsx } from "./xlsx";
+import { projectDeclaredCells } from "./rowIdentity";
 import type { ColumnInfo } from "./types";
 
 /** Quote one CSV cell with formula-injection protection — mirrors the Rust
@@ -57,7 +58,9 @@ export function exportData(
     case "csv": {
       const csvRows = [headers.map((h) => csvCell(h)).join(",")];
       for (const row of rows) {
-        csvRows.push(row.map((cell) => csvCell(cell)).join(","));
+        // Declared columns only: a backend row locator (rowid/ctid) is appended
+        // to a no-PK row and must never shift or pad an exported row.
+        csvRows.push(projectDeclaredCells(row, columns).map((cell) => csvCell(cell)).join(","));
       }
       content = csvRows.join("\n");
       mime = "text/csv";
@@ -66,7 +69,7 @@ export function exportData(
     case "sql": {
       const lines = [`-- ${tableName}`];
       for (const row of rows) {
-        const vals = row.map((cell) =>
+        const vals = projectDeclaredCells(row, columns).map((cell) =>
           cell === null ? "NULL"
           : typeof cell === "number" ? String(cell)
           : `'${String(cell).replace(/'/g, "''")}'`,
@@ -80,7 +83,11 @@ export function exportData(
     case "md": {
       const mdRows = [`| ${headers.join(" | ")} |`, `| ${headers.map(() => "---").join(" | ")} |`];
       for (const row of rows) {
-        mdRows.push(`| ${row.map((cell) => cell === null ? "*NULL*" : String(cell)).join(" | ")} |`);
+        mdRows.push(
+          `| ${projectDeclaredCells(row, columns)
+            .map((cell) => (cell === null ? "*NULL*" : String(cell)))
+            .join(" | ")} |`,
+        );
       }
       content = mdRows.join("\n");
       mime = "text/markdown";

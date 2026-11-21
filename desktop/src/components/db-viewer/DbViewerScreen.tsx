@@ -44,6 +44,7 @@ import * as cmd from "../../lib/commands";
 import type { EnumInfo } from "../../lib/types";
 import type { FkOption } from "../grid/CellEditor";
 import type { QueueItem } from "../../stores/dbViewerStore";
+import { rowIdentityFor } from "../../lib/rowIdentity";
 
 /**
  * Derive optimistic staged cell values from the changes queue for a table
@@ -57,7 +58,7 @@ export function deriveStagedValues(
     schema: string,
     table: string,
     rows: unknown[][],
-    getLocator: (row: unknown[]) => Record<string, unknown>,
+    getLocator: (row: unknown[]) => Record<string, unknown> | null,
 ): Record<string, string | null> {
     const map: Record<string, string | null> = {};
     const updates = changesQueue.filter(
@@ -72,6 +73,7 @@ export function deriveStagedValues(
     if (updates.length === 0) return map;
     rows.forEach((row, rowIdx) => {
         const loc = getLocator(row);
+        if (!loc) return;
         for (const c of updates) {
             const pk = c.primaryKey!;
             const matches = Object.entries(pk).every(
@@ -97,7 +99,7 @@ export function derivePendingCellKeys(
     schema: string,
     table: string,
     rows: unknown[][],
-    getLocator: (row: unknown[]) => Record<string, unknown>,
+    getLocator: (row: unknown[]) => Record<string, unknown> | null,
 ): Record<string, boolean> {
     const keys: Record<string, boolean> = {};
     const updates = changesQueue.filter(
@@ -112,6 +114,7 @@ export function derivePendingCellKeys(
     if (updates.length === 0) return keys;
     rows.forEach((row, rowIdx) => {
         const loc = getLocator(row);
+        if (!loc) return;
         for (const c of updates) {
             const pk = c.primaryKey!;
             const matches = Object.entries(pk).every(
@@ -1019,21 +1022,12 @@ const onQueriesPanelResizeStart = useCallback(
     const activeTable = activeTab?.table ?? "";
 
     function renderQueryWorkspace() {
-        const getLocator = (row: unknown[]) => {
-            const pkCol = columns.find((c) => c.is_pk);
-            if (pkCol) {
-                const pkIndex = columns.findIndex(
-                    (c) => c.name === pkCol.name,
-                );
-                return { [pkCol.name]: row[pkIndex] };
-            }
-            const dbType = currentConnection?.db_type ?? "postgresql";
-            const locatorIndex = columns.length;
-            if (dbType === "sqlite") {
-                return { rowid: row[locatorIndex] };
-            }
-            return { ctid: row[locatorIndex] };
-        };
+        // Row Identity: every primary-key column, or the backend's physical
+        // locator (rowid/ctid) for a no-PK table. `null` means this row has no
+        // complete identity, so an edit/delete must not be staged for it.
+        const getLocator = (row: unknown[]) =>
+            rowIdentityFor(columns, row, currentConnection?.db_type ?? "postgresql")
+                ?.values ?? null;
 
         // Staged cell values derived from the changes queue (single source of
         // truth): keyed `${rowIndex}:${colName}` → optimistic value. Pending +
@@ -1291,6 +1285,10 @@ const onQueriesPanelResizeStart = useCallback(
                                                                     )
                                                                 }
                                                                 variant="query"
+                                                                dbType={
+                                                                    currentConnection?.db_type ??
+                                                                    "postgresql"
+                                                                }
                                                                 isMatview={readOnlyTable}
                                                                 onExportToFile={() =>
                                                                     setStreamExport({
@@ -1424,6 +1422,10 @@ const onQueriesPanelResizeStart = useCallback(
                                                 )}
                                                 onClearSelection={() =>
                                                     setSelectedRows(new Set())
+                                                }
+                                                dbType={
+                                                    currentConnection?.db_type ??
+                                                    "postgresql"
                                                 }
                                                 isMatview={readOnlyTable}
                                                 onExportToFile={() =>

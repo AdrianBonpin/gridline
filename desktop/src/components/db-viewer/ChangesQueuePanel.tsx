@@ -274,6 +274,7 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
           type="button"
           disabled={pendingCount === 0}
           onClick={handleCommitAll}
+          data-testid="commit-all"
           className="inline-flex items-center rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
         >
           Commit All ({pendingCount})

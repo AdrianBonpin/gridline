@@ -12,6 +12,8 @@ export const DEFAULT_FLOW = "demo-smoke";
 export const FLOWS = {
   "demo-smoke":
     "open the seeded demo SQLite database and assert that a demo table's rows are rendered",
+  "composite-edit":
+    "edit one cell of the demo's composite-primary-key table and assert that only that row changed",
 };
 
 const USAGE = `usage: bun run e2e [options]

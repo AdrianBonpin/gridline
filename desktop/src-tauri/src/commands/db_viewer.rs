@@ -357,7 +357,12 @@ fn build_pg_select_from_items(
 ) -> String {
     let mut all_cols = items;
     if append_locator {
-        all_cols.push("ctid".to_string());
+        // Cast to text: `ctid` is PostgreSQL's internal `tid` type, which the
+        // text decoders in `pg_value_to_json` reject (it would arrive as NULL),
+        // so the locator could never address a row. PostgreSQL parses the same
+        // textual "(block,offset)" back into a `tid` when the bound parameter is
+        // compared against `ctid` in the UPDATE/DELETE predicate.
+        all_cols.push("ctid::text".to_string());
     }
     format!(
         "SELECT {} FROM \"{}\".\"{}\"",
@@ -3460,6 +3465,20 @@ mod tests {
         assert!(
             sql.contains("order_summary"),
             "view name must be present; got: {}",
+            sql
+        );
+    }
+
+    /// The physical locator must arrive from PostgreSQL as text: `ctid` is the
+    /// internal `tid` type, which the Rust text decoders reject, so an uncast
+    /// locator would reach the frontend as NULL and no no-PK row could ever be
+    /// edited or deleted.
+    #[test]
+    fn pg_locator_select_casts_ctid_to_text() {
+        let sql = build_pg_data_select("public", "no_pk", &["id".into()], true);
+        assert!(
+            sql.contains("ctid::text"),
+            "the row locator must be selected as text; got: {}",
             sql
         );
     }

@@ -22,6 +22,27 @@ export const DEMO_TABLE = "products";
  */
 export const DEMO_TABLE_CELLS = ["GL-MSE-001", "Gridline Wireless Mouse"];
 
+/**
+ * Demo table with a composite primary key — the Row Identity fixture for the
+ * composite-key edit flow. `order_items` is keyed by `(order_id, product_id)`,
+ * and its first two rendered rows share `order_id`, so a single-column key
+ * would change both.
+ */
+export const COMPOSITE_TABLE = "order_items";
+
+/** `order_items` columns in the order the demo schema declares them. */
+export const COMPOSITE_TABLE_COLUMNS = ["order_id", "product_id", "quantity", "unit_price"];
+
+/** The editable column the composite-key flow rewrites. */
+export const COMPOSITE_EDIT_COLUMN = "quantity";
+
+/**
+ * Cell text that must be visible once `order_items` loads. Both values are the
+ * seeded `unit_price` of the first two rows (products 1 and 3), so seeing them
+ * proves the table rendered its own data rather than another table's.
+ */
+export const COMPOSITE_TABLE_CELLS = ["34.99", "44.99"];
+
 export function connectionCardSelector(name = DEMO_CONNECTION_NAME) {
   return `[data-testid="connection-card"][data-connection-name="${name}"]`;
 }
@@ -32,4 +53,27 @@ export function tableTreeItemSelector(table = DEMO_TABLE) {
 
 export function gridSelector() {
   return '[role="grid"]';
+}
+
+/**
+ * One data-row cell: the row's first child is the selection checkbox, so the
+ * declared column at `colIndex` is its `colIndex + 2`-th child.
+ */
+export function rowCellSelector(rowIndex, colIndex) {
+  return `[role="grid"] [data-index="${rowIndex}"] > div:nth-child(${colIndex + 2})`;
+}
+
+/** The open cell editor's input (the grid renders it inside the edited cell). */
+export function cellEditorSelector() {
+  return '[data-testid="cell-editor"] input';
+}
+
+/** The tab-bar toggle that opens the changes queue popover. */
+export function changesQueueSelector() {
+  return '[data-testid="changes-queue-toggle"]';
+}
+
+/** The popover's Commit All button. */
+export function commitAllSelector() {
+  return '[data-testid="commit-all"]';
 }

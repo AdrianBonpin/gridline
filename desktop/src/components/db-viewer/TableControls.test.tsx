@@ -460,3 +460,60 @@ describe("TableControls", () => {
     ).toBe(true);
   });
 });
+describe("bulk delete stages complete Row Identities", () => {
+  // order_items (demo SQLite): composite primary key (order_id, product_id).
+  const compositeColumns = [
+    { name: "order_id", data_type: "INTEGER", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+    { name: "product_id", data_type: "INTEGER", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+    { name: "quantity", data_type: "INTEGER", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+  ];
+  // page_views (demo SQLite): no primary key; the backend appends `rowid`.
+  const noPkColumns = [
+    { name: "url", data_type: "TEXT", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    { name: "session_id", data_type: "TEXT", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+  ];
+
+  function deleteSelected() {
+    fireEvent.click(screen.getByText("Actions"));
+    fireEvent.click(screen.getByText("Delete selected rows"));
+  }
+
+  it("stages one delete per selected row, each carrying every key column", () => {
+    seed([makeTab({ data: { columns: compositeColumns, rows: [[1, 1, 2], [1, 3, 1]], total_rows: 2, page: 1, page_size: 50 } as any })], "tab-1");
+    renderControls({
+      columns: compositeColumns as any,
+      rows: [[1, 1, 2], [1, 3, 1]],
+      selectedCount: 2,
+      selectedRows: [[1, 1, 2], [1, 3, 1]],
+      dbType: "sqlite",
+    });
+    deleteSelected();
+
+    const queue = useDbViewerStore.getState().changesQueue;
+    expect(queue).toHaveLength(2);
+    expect(queue.map((c) => c.type)).toEqual(["delete", "delete"]);
+    // Sibling rows share order_id — a single-column key would delete both.
+    expect(queue.map((c) => c.primaryKey)).toEqual([
+      { order_id: 1, product_id: 1 },
+      { order_id: 1, product_id: 3 },
+    ]);
+  });
+
+  it("stages a no-PK delete against rowid and never against a displayed cell", () => {
+    seed([makeTab({ data: { columns: noPkColumns, rows: [["/products", "sess-001", 17]], total_rows: 1, page: 1, page_size: 50 } as any })], "tab-1");
+    renderControls({
+      columns: noPkColumns as any,
+      rows: [["/products", "sess-001", 17]],
+      selectedCount: 1,
+      selectedRows: [["/products", "sess-001", 17]],
+      dbType: "sqlite",
+    });
+    deleteSelected();
+
+    const queue = useDbViewerStore.getState().changesQueue;
+    expect(queue).toHaveLength(1);
+    expect(queue[0].primaryKey).toEqual({ rowid: 17 });
+    // the row locator is not data: it must not leak into the change's row data
+    expect(queue[0].oldData).toEqual({ url: "/products", session_id: "sess-001" });
+  });
+});

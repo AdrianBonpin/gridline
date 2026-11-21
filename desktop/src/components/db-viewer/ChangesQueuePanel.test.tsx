@@ -218,6 +218,17 @@ describe("ChangesQueuePanel", () => {
     await waitFor(() => expect(onCommitted).toHaveBeenCalledTimes(1));
   });
 
+  it("exposes a stable Commit All anchor for the desktop E2E harness", async () => {
+    vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 }, description: "Insert row into t" } as any);
+    render(<ChangesQueuePanel />);
+    const commit = screen.getByTestId("commit-all");
+    // The harness clicks exactly this element; it must stay a button.
+    expect(commit.tagName).toBe("BUTTON");
+    fireEvent.click(commit);
+    await waitFor(() => expect(useDbViewerStore.getState().changesQueue[0].status).toBe("committed"));
+  });
+
   it("shows a green check on committed changes after Commit All", async () => {
     vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
     useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 }, description: "Insert row into t" } as any);
