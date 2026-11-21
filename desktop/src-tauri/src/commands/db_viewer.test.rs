@@ -189,6 +189,7 @@ async fn composite_key_delete_removes_exactly_one_row() {
         schema: "main".into(),
         table: "order_items".into(),
         primary_key: r#"{"order_id":1,"product_id":1}"#.into(),
+        old_data: r#"{"order_id":1,"product_id":1,"quantity":2}"#.into(),
     };
     execute_change_inner(&pm, &id, change)
         .await
@@ -214,6 +215,7 @@ async fn partial_composite_key_is_rejected_as_ambiguous() {
         schema: "main".into(),
         table: "order_items".into(),
         primary_key: r#"{"order_id":1}"#.into(),
+        old_data: String::new(),
     };
     let err = execute_change_inner(&pm, &id, change)
         .await
@@ -269,6 +271,9 @@ async fn no_pk_delete_by_rowid_removes_only_that_row() {
         schema: "main".into(),
         table: "page_views".into(),
         primary_key: r#"{"rowid":2}"#.into(),
+        // The grid stages the displayed row's values with its locator, so a
+        // reused locator can never delete a different row (ticket 03).
+        old_data: r#"{"url":"/cart","session_id":"sess-002","user_agent":"agent-b"}"#.into(),
     };
     execute_change_inner(&pm, &id, change)
         .await
@@ -282,6 +287,402 @@ async fn no_pk_delete_by_rowid_removes_only_that_row() {
             vec![Value::Text("/products".into())],
             vec![Value::Text("/orders".into())],
         ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Single-row writes are atomic and conflict-aware (ticket 03)
+//
+// The change-application seam: what a queued row write actually does to the
+// database when it does not match exactly one intended row. Each case asserts
+// both the reported failure AND the absence of a durable write.
+// ---------------------------------------------------------------------------
+
+/// Apply raw SQL on the SQLite handle — standing in for another session (or an
+/// earlier app state) that changed the data after the grid read it.
+fn sqlite_exec(pm: &mut ConnectionPoolManager, id: &str, sql: &str) {
+    match pm.get(id) {
+        Some(DbHandle::Sqlite(conn)) => {
+            conn.execute_batch(sql).expect("raw sql");
+        }
+        _ => panic!("expected a sqlite handle"),
+    }
+}
+
+fn quantities(pm: &mut ConnectionPoolManager, id: &str) -> Vec<Vec<Value>> {
+    sqlite_query(
+        pm,
+        id,
+        "SELECT order_id, product_id, quantity FROM order_items ORDER BY order_id, product_id",
+    )
+}
+
+fn page_view_urls(pm: &mut ConnectionPoolManager, id: &str) -> Vec<String> {
+    sqlite_query(pm, id, "SELECT url FROM page_views ORDER BY rowid")
+        .into_iter()
+        .map(|row| match &row[0] {
+            Value::Text(t) => t.clone(),
+            other => panic!("url must be text, got {other:?}"),
+        })
+        .collect()
+}
+
+/// Criterion 1: a write matching zero rows commits nothing and reports a
+/// stale-row error.
+#[tokio::test]
+async fn update_matching_zero_rows_reports_stale_and_writes_nothing() {
+    let (pm, id) = sqlite_pool(COMPOSITE_PK_FIXTURE);
+    let before = {
+        let mut guard = pm.lock().await;
+        quantities(&mut guard, &id)
+    };
+    // (1, 99) is not in the table: another session removed it (or it was never
+    // there). The edit must fail loudly and change nothing.
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Update {
+            id: "ch-03-1".into(),
+            schema: "main".into(),
+            table: "order_items".into(),
+            primary_key: r#"{"order_id":1,"product_id":99}"#.into(),
+            old_data: r#"{"quantity":1}"#.into(),
+            new_data: r#"{"quantity":9}"#.into(),
+        },
+    )
+    .await
+    .expect_err("zero matches must fail");
+    assert!(
+        err.contains("row was modified or removed by another session"),
+        "expected a stale-row error, got: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        quantities(&mut guard, &id),
+        before,
+        "nothing may be written"
+    );
+}
+
+/// Criterion 1 for deletes: zero matches is a stale row, never a silent no-op.
+#[tokio::test]
+async fn delete_matching_zero_rows_reports_stale_and_removes_nothing() {
+    let (pm, id) = sqlite_pool(COMPOSITE_PK_FIXTURE);
+    let before = {
+        let mut guard = pm.lock().await;
+        quantities(&mut guard, &id)
+    };
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Delete {
+            id: "ch-03-2".into(),
+            schema: "main".into(),
+            table: "order_items".into(),
+            primary_key: r#"{"order_id":7,"product_id":7}"#.into(),
+            old_data: String::new(),
+        },
+    )
+    .await
+    .expect_err("zero matches must fail");
+    assert!(
+        err.contains("row was modified or removed by another session"),
+        "expected a stale-row error, got: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        quantities(&mut guard, &id),
+        before,
+        "nothing may be deleted"
+    );
+}
+
+/// Criterion 2: a write matching more than one row rolls back before reporting
+/// an ambiguous match. A partial Row Identity addresses two rows; the earlier
+/// behaviour reported the ambiguity *after* the rows were already changed.
+#[tokio::test]
+async fn ambiguous_update_rolls_back_before_reporting() {
+    let (pm, id) = sqlite_pool(COMPOSITE_PK_FIXTURE);
+    let before = {
+        let mut guard = pm.lock().await;
+        quantities(&mut guard, &id)
+    };
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Update {
+            id: "ch-03-3".into(),
+            schema: "main".into(),
+            table: "order_items".into(),
+            // Only `order_id`: both order 1 rows match.
+            primary_key: r#"{"order_id":1}"#.into(),
+            old_data: String::new(),
+            new_data: r#"{"quantity":99}"#.into(),
+        },
+    )
+    .await
+    .expect_err("an ambiguous match must fail");
+    assert!(
+        err.contains("ambiguous row match"),
+        "expected an ambiguous-match error, got: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        quantities(&mut guard, &id),
+        before,
+        "the ambiguous write must be rolled back, not left durable"
+    );
+}
+
+/// Criterion 2 for deletes: both matching rows survive the rollback.
+#[tokio::test]
+async fn ambiguous_delete_rolls_back_before_reporting() {
+    let (pm, id) = sqlite_pool(COMPOSITE_PK_FIXTURE);
+    let before = {
+        let mut guard = pm.lock().await;
+        quantities(&mut guard, &id)
+    };
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Delete {
+            id: "ch-03-4".into(),
+            schema: "main".into(),
+            table: "order_items".into(),
+            primary_key: r#"{"order_id":1}"#.into(),
+            old_data: String::new(),
+        },
+    )
+    .await
+    .expect_err("an ambiguous match must fail");
+    assert!(
+        err.contains("ambiguous row match"),
+        "expected an ambiguous-match error, got: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        quantities(&mut guard, &id),
+        before,
+        "both rows must survive"
+    );
+}
+
+/// Criterion 3: changing a value another session has already changed reports a
+/// conflict and writes nothing. The original value the user saw is the
+/// predicate, so the newer value is never overwritten.
+#[tokio::test]
+async fn conflicting_update_reports_conflict_and_writes_nothing() {
+    let (pm, id) = sqlite_pool(COMPOSITE_PK_FIXTURE);
+    // Another session bumped quantity 2 -> 5 after the grid read the row.
+    {
+        let mut guard = pm.lock().await;
+        sqlite_exec(
+            &mut guard,
+            &id,
+            "UPDATE order_items SET quantity = 5 WHERE order_id = 1 AND product_id = 1",
+        );
+    }
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Update {
+            id: "ch-03-5".into(),
+            schema: "main".into(),
+            table: "order_items".into(),
+            primary_key: r#"{"order_id":1,"product_id":1}"#.into(),
+            // The value the user actually saw before editing.
+            old_data: r#"{"quantity":2}"#.into(),
+            new_data: r#"{"quantity":9}"#.into(),
+        },
+    )
+    .await
+    .expect_err("a concurrent change must conflict");
+    assert!(
+        err.contains("conflict") && err.contains("quantity"),
+        "expected a conflict naming the column, got: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    let rows = quantities(&mut guard, &id);
+    assert_eq!(
+        rows[0][2],
+        int(5),
+        "the other session's value must survive; rows: {rows:?}"
+    );
+}
+
+/// Criterion 4: a physical-locator write whose row has moved cannot modify a
+/// different row. SQLite reuses a freed `rowid` for the next inserted row, so a
+/// stale locator can point at a row the user never saw.
+#[tokio::test]
+async fn moved_locator_row_cannot_be_updated_through_a_reused_rowid() {
+    let (pm, id) = sqlite_pool(NO_PK_FIXTURE);
+    // Another session replaced rowid 3: the next insert takes the freed rowid.
+    {
+        let mut guard = pm.lock().await;
+        sqlite_exec(
+            &mut guard,
+            &id,
+            "DELETE FROM page_views WHERE rowid = 3;\
+             INSERT INTO page_views (url, session_id, user_agent) \
+             VALUES ('/evil', 'sess-evil', 'agent-x');",
+        );
+        assert_eq!(
+            sqlite_query(
+                &mut guard,
+                &id,
+                "SELECT rowid FROM page_views WHERE url = '/evil'"
+            )[0][0],
+            int(3),
+            "the fixture must actually reuse rowid 3"
+        );
+    }
+
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Update {
+            id: "ch-03-6".into(),
+            schema: "main".into(),
+            table: "page_views".into(),
+            primary_key: r#"{"rowid":3}"#.into(),
+            // The user saw /orders in that row.
+            old_data: r#"{"url":"/orders","session_id":"sess-003","user_agent":"agent-c"}"#.into(),
+            new_data: r#"{"url":"/hijacked"}"#.into(),
+        },
+    )
+    .await
+    .expect_err("a moved locator must not write");
+    assert!(
+        err.contains("conflict"),
+        "expected a locator conflict, got: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    let urls = page_view_urls(&mut guard, &id);
+    assert!(
+        urls.contains(&"/evil".to_string()),
+        "the different row must survive untouched: {urls:?}"
+    );
+    assert!(!urls.contains(&"/hijacked".to_string()));
+}
+
+/// Criterion 4 for deletes: a reused locator must never delete a different row.
+#[tokio::test]
+async fn moved_locator_row_cannot_be_deleted_through_a_reused_rowid() {
+    let (pm, id) = sqlite_pool(NO_PK_FIXTURE);
+    {
+        let mut guard = pm.lock().await;
+        sqlite_exec(
+            &mut guard,
+            &id,
+            "DELETE FROM page_views WHERE rowid = 3;\
+             INSERT INTO page_views (url, session_id, user_agent) \
+             VALUES ('/evil', 'sess-evil', 'agent-x');",
+        );
+    }
+
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Delete {
+            id: "ch-03-7".into(),
+            schema: "main".into(),
+            table: "page_views".into(),
+            primary_key: r#"{"rowid":3}"#.into(),
+            old_data: r#"{"url":"/orders","session_id":"sess-003","user_agent":"agent-c"}"#.into(),
+        },
+    )
+    .await
+    .expect_err("a moved locator must not delete");
+    assert!(
+        err.contains("conflict"),
+        "expected a locator conflict, got: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    let urls = page_view_urls(&mut guard, &id);
+    assert!(
+        urls.contains(&"/evil".to_string()),
+        "the different row must survive untouched: {urls:?}"
+    );
+}
+
+/// Fail closed: a physical-locator write with no original row values cannot be
+/// proven to address the row the user saw, so it is refused before any write.
+#[tokio::test]
+async fn locator_write_without_original_values_is_refused() {
+    let (pm, id) = sqlite_pool(NO_PK_FIXTURE);
+    let before = {
+        let mut guard = pm.lock().await;
+        page_view_urls(&mut guard, &id)
+    };
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Delete {
+            id: "ch-03-8".into(),
+            schema: "main".into(),
+            table: "page_views".into(),
+            primary_key: r#"{"rowid":2}"#.into(),
+            old_data: String::new(),
+        },
+    )
+    .await
+    .expect_err("an unguarded locator write must be refused");
+    assert!(
+        err.contains("physical locator") && err.contains("original"),
+        "expected a fail-closed locator error, got: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        page_view_urls(&mut guard, &id),
+        before,
+        "nothing may change"
+    );
+}
+
+/// A primary-key delete stays guarded by its complete Row Identity only: a
+/// concurrent change to another column is not a conflict for a delete (no
+/// full-row optimistic versioning is introduced).
+#[tokio::test]
+async fn pk_delete_is_not_blocked_by_an_unrelated_column_change() {
+    let (pm, id) = sqlite_pool(COMPOSITE_PK_FIXTURE);
+    {
+        let mut guard = pm.lock().await;
+        sqlite_exec(
+            &mut guard,
+            &id,
+            "UPDATE order_items SET quantity = 5 WHERE order_id = 2 AND product_id = 1",
+        );
+    }
+    execute_change_inner(
+        &pm,
+        &id,
+        Change::Delete {
+            id: "ch-03-9".into(),
+            schema: "main".into(),
+            table: "order_items".into(),
+            primary_key: r#"{"order_id":2,"product_id":1}"#.into(),
+            // The full row as staged; only the identity decides a delete.
+            old_data: r#"{"order_id":2,"product_id":1,"quantity":4,"unit_price":7.5}"#.into(),
+        },
+    )
+    .await
+    .expect("a primary-key delete addresses its row by identity");
+
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        quantities(&mut guard, &id)
+            .iter()
+            .map(|r| r[0].clone())
+            .collect::<Vec<_>>(),
+        vec![int(1), int(1)]
     );
 }
 
@@ -489,6 +890,8 @@ async fn live_pg_row_identity_addresses_exactly_one_row() {
             schema: "public".into(),
             table: no_pk.clone(),
             primary_key: format!(r#"{{"ctid":"{}"}}"#, fresh_locator),
+            // The row's values as displayed with that locator.
+            old_data: r#"{"url":"/cart-v2"}"#.into(),
         },
     )
     .await
@@ -511,4 +914,399 @@ async fn live_pg_row_identity_addresses_exactly_one_row() {
     )
     .await
     .expect("cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// Live PostgreSQL: single-row writes are atomic and conflict-aware (ticket 03)
+// ---------------------------------------------------------------------------
+
+/// Live test (opt-in). Every acceptance case of ticket 03 against a real
+/// PostgreSQL server: zero and multiple matches roll back, a changed original
+/// value conflicts, and a stale `ctid` can never modify a different row.
+#[tokio::test]
+#[ignore = "needs GRIDLINE_TEST_PG_* env vars pointing at a scratch PostgreSQL"]
+async fn live_pg_single_row_writes_are_atomic_and_conflict_aware() {
+    let (pm, id) = live_pg_pool().await;
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let composite = format!("gridline_t03_composite_{suffix}");
+    let no_pk = format!("gridline_t03_nopk_{suffix}");
+
+    pg_execute(
+        &pm,
+        &id,
+        &format!(
+            "CREATE TABLE public.\"{composite}\" (order_id int NOT NULL, product_id int NOT NULL, \
+             quantity int NOT NULL, PRIMARY KEY (order_id, product_id)); \
+             INSERT INTO public.\"{composite}\" VALUES (1, 1, 2), (1, 3, 1), (2, 1, 4); \
+             CREATE TABLE public.\"{no_pk}\" (url text NOT NULL); \
+             INSERT INTO public.\"{no_pk}\" VALUES ('/products'), ('/cart'), ('/orders')"
+        ),
+    )
+    .await
+    .expect("fixture tables");
+
+    let quantities_sql = format!(
+        "SELECT order_id::text || ':' || product_id::text || ':' || quantity::text \
+         FROM public.\"{composite}\" ORDER BY order_id, product_id"
+    );
+
+    // ── zero matches: stale row, nothing written ─────────────────────────
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Update {
+            id: "ch-pg-t3-1".into(),
+            schema: "public".into(),
+            table: composite.clone(),
+            primary_key: r#"{"order_id":1,"product_id":99}"#.into(),
+            old_data: r#"{"quantity":1}"#.into(),
+            new_data: r#"{"quantity":9}"#.into(),
+        },
+    )
+    .await
+    .expect_err("zero matches must fail");
+    assert!(
+        err.contains("row was modified or removed by another session"),
+        "expected a stale-row error, got: {err}"
+    );
+    assert_eq!(
+        pg_rows(&pm, &id, &quantities_sql).await,
+        vec![
+            vec!["1:1:2".to_string()],
+            vec!["1:3:1".to_string()],
+            vec!["2:1:4".to_string()],
+        ]
+    );
+
+    // ── multiple matches: ambiguous, rolled back ─────────────────────────
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Update {
+            id: "ch-pg-t3-2".into(),
+            schema: "public".into(),
+            table: composite.clone(),
+            primary_key: r#"{"order_id":1}"#.into(),
+            old_data: String::new(),
+            new_data: r#"{"quantity":99}"#.into(),
+        },
+    )
+    .await
+    .expect_err("multiple matches must fail");
+    assert!(
+        err.contains("ambiguous row match"),
+        "expected an ambiguous-match error, got: {err}"
+    );
+    assert_eq!(
+        pg_rows(&pm, &id, &quantities_sql).await,
+        vec![
+            vec!["1:1:2".to_string()],
+            vec!["1:3:1".to_string()],
+            vec!["2:1:4".to_string()],
+        ],
+        "the ambiguous write must be rolled back"
+    );
+
+    // ── concurrent change: conflict, nothing written ─────────────────────
+    pg_execute(
+        &pm,
+        &id,
+        &format!(
+            "UPDATE public.\"{composite}\" SET quantity = 5 WHERE order_id = 1 AND product_id = 1"
+        ),
+    )
+    .await
+    .expect("simulate another session");
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Update {
+            id: "ch-pg-t3-3".into(),
+            schema: "public".into(),
+            table: composite.clone(),
+            primary_key: r#"{"order_id":1,"product_id":1}"#.into(),
+            old_data: r#"{"quantity":2}"#.into(),
+            new_data: r#"{"quantity":9}"#.into(),
+        },
+    )
+    .await
+    .expect_err("a concurrent change must conflict");
+    assert!(
+        err.contains("row conflict") && err.contains("quantity"),
+        "expected a conflict naming the column, got: {err}"
+    );
+    assert_eq!(
+        pg_rows(&pm, &id, &quantities_sql).await,
+        vec![
+            vec!["1:1:5".to_string()],
+            vec!["1:3:1".to_string()],
+            vec!["2:1:4".to_string()],
+        ],
+        "the other session's value must survive"
+    );
+
+    // ── a moved row: the stale locator cannot delete a different row ─────
+    let data = get_table_data_inner(&pm, &id, "public", &no_pk, None, None, None, None)
+        .await
+        .expect("no-PK data fetch");
+    let cart_index = data
+        .rows
+        .iter()
+        .position(|row| row[0] == serde_json::Value::String("/cart".into()))
+        .expect("the /cart row is displayed");
+    let stale_locator = data.rows[cart_index][data.columns.len()]
+        .as_str()
+        .expect("ctid must decode as text")
+        .to_string();
+    // Another session updates that row: its ctid changes, so the displayed
+    // locator no longer addresses it.
+    pg_execute(
+        &pm,
+        &id,
+        &format!("UPDATE public.\"{no_pk}\" SET url = '/cart-v2' WHERE url = '/cart'"),
+    )
+    .await
+    .expect("simulate a moving row");
+
+    let err = execute_change_inner(
+        &pm,
+        &id,
+        Change::Delete {
+            id: "ch-pg-t3-4".into(),
+            schema: "public".into(),
+            table: no_pk.clone(),
+            primary_key: format!(r#"{{"ctid":"{stale_locator}"}}"#),
+            old_data: r#"{"url":"/cart"}"#.into(),
+        },
+    )
+    .await
+    .expect_err("a stale locator must not write");
+    assert!(
+        err.contains("row was modified or removed by another session")
+            || err.contains("row conflict"),
+        "expected a stale/conflict error, got: {err}"
+    );
+    let urls = pg_rows(
+        &pm,
+        &id,
+        &format!("SELECT url FROM public.\"{no_pk}\" ORDER BY url"),
+    )
+    .await;
+    assert_eq!(
+        urls,
+        vec![
+            vec!["/cart-v2".to_string()],
+            vec!["/orders".to_string()],
+            vec!["/products".to_string()],
+        ],
+        "no row may be deleted by a stale locator"
+    );
+
+    pg_execute(
+        &pm,
+        &id,
+        &format!("DROP TABLE public.\"{composite}\"; DROP TABLE public.\"{no_pk}\""),
+    )
+    .await
+    .expect("cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// Live MySQL: single-row writes are atomic and conflict-aware (ticket 03)
+// ---------------------------------------------------------------------------
+
+/// Live test (opt-in). MySQL has no physical locator, so the locator cases do
+/// not apply; the transactional and conflict guarantees are identical and are
+/// verified against a real server.
+#[tokio::test]
+#[ignore = "needs GRIDLINE_TEST_MYSQL_URL pointing at a scratch MySQL/MariaDB"]
+async fn live_mysql_single_row_writes_are_atomic_and_conflict_aware() {
+    use sqlx::mysql::MySqlPoolOptions;
+
+    let url = std::env::var("GRIDLINE_TEST_MYSQL_URL")
+        .expect("GRIDLINE_TEST_MYSQL_URL (e.g. mysql://root:pw@127.0.0.1:3306/scratch)");
+    let pool = MySqlPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .expect("connect to test MySQL");
+    let schema: String = sqlx::query_scalar("SELECT DATABASE()")
+        .fetch_one(&pool)
+        .await
+        .expect("current database");
+    let table = format!("gridline_t03_{}", uuid::Uuid::new_v4().simple());
+    let q_table =
+        crate::db::ident::qualified(crate::db::ident::Engine::MySql, &schema, &table).unwrap();
+
+    sqlx::query(&format!("DROP TABLE IF EXISTS {q_table}"))
+        .execute(&pool)
+        .await
+        .expect("drop leftovers");
+    sqlx::query(&format!(
+        "CREATE TABLE {q_table} (
+             `order_id` int NOT NULL,
+             `product_id` int NOT NULL,
+             `quantity` int NOT NULL,
+             PRIMARY KEY (`order_id`, `product_id`)
+         ) ENGINE = InnoDB"
+    ))
+    .execute(&pool)
+    .await
+    .expect("create fixture table");
+    sqlx::query(&format!(
+        "INSERT INTO {q_table} (`order_id`, `product_id`, `quantity`) VALUES (1, 1, 2), (1, 3, 1), (2, 1, 4)"
+    ))
+    .execute(&pool)
+    .await
+    .expect("seed rows");
+
+    let mut manager = ConnectionPoolManager::new();
+    manager.register("mysql-t03", DbHandle::MySql(pool.clone()));
+    let pm = tokio::sync::Mutex::new(manager);
+
+    let snapshot = |rows: Vec<sqlx::mysql::MySqlRow>| -> Vec<String> {
+        rows.iter()
+            .map(|r| {
+                format!(
+                    "{}:{}:{}",
+                    sqlx::Row::get::<i32, _>(r, 0),
+                    sqlx::Row::get::<i32, _>(r, 1),
+                    sqlx::Row::get::<i32, _>(r, 2)
+                )
+            })
+            .collect()
+    };
+    let read = || {
+        let pool = pool.clone();
+        let q = format!(
+            "SELECT `order_id`, `product_id`, `quantity` FROM {q_table} ORDER BY `order_id`, `product_id`"
+        );
+        async move {
+            let rows = sqlx::query(&q)
+                .fetch_all(&pool)
+                .await
+                .expect("read back rows");
+            snapshot(rows)
+        }
+    };
+
+    // ── zero matches: stale row, nothing written ─────────────────────────
+    let err = execute_change_inner(
+        &pm,
+        &"mysql-t03".to_string(),
+        Change::Update {
+            id: "ch-my-t3-1".into(),
+            schema: schema.clone(),
+            table: table.clone(),
+            primary_key: r#"{"order_id":1,"product_id":99}"#.into(),
+            old_data: r#"{"quantity":1}"#.into(),
+            new_data: r#"{"quantity":9}"#.into(),
+        },
+    )
+    .await
+    .expect_err("zero matches must fail");
+    assert!(
+        err.contains("row was modified or removed by another session"),
+        "expected a stale-row error, got: {err}"
+    );
+    assert_eq!(
+        read().await,
+        vec![
+            "1:1:2".to_string(),
+            "1:3:1".to_string(),
+            "2:1:4".to_string()
+        ]
+    );
+
+    // ── multiple matches: ambiguous, rolled back ─────────────────────────
+    let err = execute_change_inner(
+        &pm,
+        &"mysql-t03".to_string(),
+        Change::Delete {
+            id: "ch-my-t3-2".into(),
+            schema: schema.clone(),
+            table: table.clone(),
+            primary_key: r#"{"order_id":1}"#.into(),
+            old_data: String::new(),
+        },
+    )
+    .await
+    .expect_err("multiple matches must fail");
+    assert!(
+        err.contains("ambiguous row match"),
+        "expected an ambiguous-match error, got: {err}"
+    );
+    assert_eq!(
+        read().await,
+        vec![
+            "1:1:2".to_string(),
+            "1:3:1".to_string(),
+            "2:1:4".to_string()
+        ],
+        "the ambiguous delete must be rolled back"
+    );
+
+    // ── concurrent change: conflict, nothing written ─────────────────────
+    sqlx::query(&format!(
+        "UPDATE {q_table} SET `quantity` = 5 WHERE `order_id` = 1 AND `product_id` = 1"
+    ))
+    .execute(&pool)
+    .await
+    .expect("simulate another session");
+    let err = execute_change_inner(
+        &pm,
+        &"mysql-t03".to_string(),
+        Change::Update {
+            id: "ch-my-t3-3".into(),
+            schema: schema.clone(),
+            table: table.clone(),
+            primary_key: r#"{"order_id":1,"product_id":1}"#.into(),
+            old_data: r#"{"quantity":2}"#.into(),
+            new_data: r#"{"quantity":9}"#.into(),
+        },
+    )
+    .await
+    .expect_err("a concurrent change must conflict");
+    assert!(
+        err.contains("row conflict") && err.contains("quantity"),
+        "expected a conflict naming the column, got: {err}"
+    );
+    assert_eq!(
+        read().await,
+        vec![
+            "1:1:5".to_string(),
+            "1:3:1".to_string(),
+            "2:1:4".to_string()
+        ],
+        "the other session's value must survive"
+    );
+
+    // ── the guarded write still applies when nothing changed ─────────────
+    execute_change_inner(
+        &pm,
+        &"mysql-t03".to_string(),
+        Change::Update {
+            id: "ch-my-t3-4".into(),
+            schema: schema.clone(),
+            table: table.clone(),
+            primary_key: r#"{"order_id":2,"product_id":1}"#.into(),
+            old_data: r#"{"quantity":4}"#.into(),
+            new_data: r#"{"quantity":6}"#.into(),
+        },
+    )
+    .await
+    .expect("an unchanged original value applies");
+    assert_eq!(
+        read().await,
+        vec![
+            "1:1:5".to_string(),
+            "1:3:1".to_string(),
+            "2:1:6".to_string()
+        ]
+    );
+
+    sqlx::query(&format!("DROP TABLE {q_table}"))
+        .execute(&pool)
+        .await
+        .expect("cleanup");
 }

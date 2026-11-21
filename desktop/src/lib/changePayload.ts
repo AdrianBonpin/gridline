@@ -79,7 +79,10 @@ export function buildChangePayload(item: QueueItem): ChangePayload {
       return { id: item.id, type: "update", schema, table,
         primary_key: j(item.primaryKey), old_data: j(item.oldData), new_data: j(item.newData) };
     case "delete":
-      return { id: item.id, type: "delete", schema, table, primary_key: j(item.primaryKey) };
+      // `old_data` is the row's original values, as displayed. The backend uses
+      // them to guard a physical-locator (ctid/rowid) delete: a row that moved,
+      // or whose locator a different row now occupies, must never be deleted.
+      return { id: item.id, type: "delete", schema, table, primary_key: j(item.primaryKey), old_data: j(item.oldData) };
     case "alter_table":
       return { id: item.id, type: "alter_table", schema, table, sql: item.sql, rollback_sql: "" };
     case "bulk_insert":

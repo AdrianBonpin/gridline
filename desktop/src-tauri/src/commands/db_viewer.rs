@@ -444,75 +444,78 @@ pub(crate) fn build_sqlite_data_select(
     )
 }
 
+/// The statement for one SQLite single-row write.
+///
+/// The predicate is the complete Row Identity plus `guard` — the original
+/// values the user saw, which every engine binds the same way (see
+/// [`crate::db::row_write`]).
+fn sqlite_row_write(
+    kind: crate::db::row_write::WriteKind,
+    schema: &str,
+    table: &str,
+    identity: &[(String, serde_json::Value)],
+    new_data: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
+) -> Result<(String, Vec<serde_json::Value>), String> {
+    let stmt = crate::db::row_write::RowWrite {
+        engine: Engine::Sqlite,
+        schema,
+        table,
+        kind,
+        identity,
+        new_data,
+        guard: guard.to_vec(),
+    }
+    .statement()?;
+    Ok((stmt.sql, stmt.params))
+}
+
 /// Build a parameterized UPDATE SQL statement.
 ///
-/// The returned SQL uses `?` placeholders for both the SET values and the
-/// WHERE primary-key conditions.
+/// The returned SQL uses `?` placeholders for the SET values, then the
+/// primary-key conditions, then any original-value guards.
 ///
 /// Example output:
 /// ```sql
-/// UPDATE "public"."users" SET "name" = ?, "email" = ? WHERE "id" = ?
+/// UPDATE "public"."users" SET "name" = ? WHERE "id" = ? AND "name" = ?
 /// ```
 pub fn build_update_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
     new_data: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
 ) -> Result<(String, Vec<serde_json::Value>), String> {
-    if primary_key.is_empty() {
-        return Err("cannot update a row without a primary key or row locator".to_string());
-    }
-    let set_clause: Vec<String> = new_data
-        .iter()
-        .map(|(col, _)| format!("{} = ?", ident::quote(Engine::Sqlite, col)))
-        .collect();
-    let where_clause: Vec<String> = primary_key
-        .iter()
-        .map(|(col, _)| format!("{} = ?", ident::quote(Engine::Sqlite, col)))
-        .collect();
-    // Params must follow placeholder order: SET values first, then WHERE.
-    let params: Vec<serde_json::Value> = new_data
-        .iter()
-        .chain(primary_key.iter())
-        .map(|(_, v)| v.clone())
-        .collect();
-    Ok((
-        format!(
-            "UPDATE {} SET {} WHERE {}",
-            ident::qualified(Engine::Sqlite, schema, table)?,
-            set_clause.join(", "),
-            where_clause.join(" AND ")
-        ),
-        params,
-    ))
+    sqlite_row_write(
+        crate::db::row_write::WriteKind::Update,
+        schema,
+        table,
+        primary_key,
+        new_data,
+        guard,
+    )
 }
 
 /// Build a parameterized DELETE SQL statement.
 ///
 /// Example output:
 /// ```sql
-/// DELETE FROM "public"."users" WHERE "id" = ?
+/// DELETE FROM "public"."users" WHERE "id" = ? AND "name" = ?
 /// ```
 pub fn build_delete_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
 ) -> Result<(String, Vec<serde_json::Value>), String> {
-    if primary_key.is_empty() {
-        return Err("cannot delete a row without a primary key or row locator".to_string());
-    }
-    let where_clause: Vec<String> = primary_key
-        .iter()
-        .map(|(col, _)| format!("{} = ?", ident::quote(Engine::Sqlite, col)))
-        .collect();
-    Ok((
-        format!(
-            "DELETE FROM {} WHERE {}",
-            ident::qualified(Engine::Sqlite, schema, table)?,
-            where_clause.join(" AND ")
-        ),
-        primary_key.iter().map(|(_, v)| v.clone()).collect(),
-    ))
+    sqlite_row_write(
+        crate::db::row_write::WriteKind::Delete,
+        schema,
+        table,
+        primary_key,
+        &[],
+        guard,
+    )
 }
 
 /// Build a parameterized INSERT SQL statement.
@@ -558,42 +561,19 @@ pub fn build_pg_update_sql(
     table: &str,
     primary_key: &[(String, serde_json::Value)],
     new_data: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
 ) -> Result<(String, Vec<serde_json::Value>), String> {
-    if primary_key.is_empty() {
-        return Err("cannot update a row without a primary key or row locator".to_string());
+    let stmt = crate::db::row_write::RowWrite {
+        engine: Engine::PostgreSql,
+        schema,
+        table,
+        kind: crate::db::row_write::WriteKind::Update,
+        identity: primary_key,
+        new_data,
+        guard: guard.to_vec(),
     }
-    let mut params: Vec<serde_json::Value> = Vec::new();
-    let set_clause: Vec<String> = new_data
-        .iter()
-        .map(|(col, val)| {
-            params.push(val.clone());
-            format!(
-                "{} = ${}",
-                ident::quote(Engine::PostgreSql, col),
-                params.len()
-            )
-        })
-        .collect();
-    let where_clause: Vec<String> = primary_key
-        .iter()
-        .map(|(col, val)| {
-            params.push(val.clone());
-            format!(
-                "{} = ${}",
-                ident::quote(Engine::PostgreSql, col),
-                params.len()
-            )
-        })
-        .collect();
-    Ok((
-        format!(
-            "UPDATE {} SET {} WHERE {}",
-            ident::qualified(Engine::PostgreSql, schema, table)?,
-            set_clause.join(", "),
-            where_clause.join(" AND ")
-        ),
-        params,
-    ))
+    .statement()?;
+    Ok((stmt.sql, stmt.params))
 }
 
 /// Build a PostgreSQL DELETE statement.
@@ -601,30 +581,19 @@ pub fn build_pg_delete_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
 ) -> Result<(String, Vec<serde_json::Value>), String> {
-    if primary_key.is_empty() {
-        return Err("cannot delete a row without a primary key or row locator".to_string());
+    let stmt = crate::db::row_write::RowWrite {
+        engine: Engine::PostgreSql,
+        schema,
+        table,
+        kind: crate::db::row_write::WriteKind::Delete,
+        identity: primary_key,
+        new_data: &[],
+        guard: guard.to_vec(),
     }
-    let mut params: Vec<serde_json::Value> = Vec::new();
-    let where_clause: Vec<String> = primary_key
-        .iter()
-        .map(|(col, val)| {
-            params.push(val.clone());
-            format!(
-                "{} = ${}",
-                ident::quote(Engine::PostgreSql, col),
-                params.len()
-            )
-        })
-        .collect();
-    Ok((
-        format!(
-            "DELETE FROM {} WHERE {}",
-            ident::qualified(Engine::PostgreSql, schema, table)?,
-            where_clause.join(" AND ")
-        ),
-        params,
-    ))
+    .statement()?;
+    Ok((stmt.sql, stmt.params))
 }
 
 /// Build a PostgreSQL INSERT statement.
@@ -863,6 +832,19 @@ pub async fn apply_bulk_insert_pg(
 /// credential-like fragments (connection URLs, `password=...`) and cap length.
 pub(crate) fn sanitize_error(e: &str) -> String {
     truncate(&redact_secrets(e), 400)
+}
+
+/// Original values of a queued write, where "absent" is legitimately empty.
+///
+/// `old_data` is optional in the payload (a delete staged before the field
+/// existed, or a caller that has no original values). An empty string is
+/// therefore *no originals*, not malformed JSON — a locator write that then has
+/// nothing to guard it still fails closed in `db::row_write`.
+fn parse_optional_json_pairs(json: &str) -> Result<Vec<(String, serde_json::Value)>, String> {
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    parse_json_pairs(json)
 }
 
 /// Parse a JSON object string (e.g. `{"id": 1}`) into ordered (column, value)
@@ -2644,14 +2626,185 @@ pub async fn search_fk_options(
     .await
 }
 
-/// Map a tokio_postgres/rusqlite affected-row count to a friendly error.
-/// Exactly 1 -> Ok (None). 0 -> stale; >1 -> ambiguous.
-pub(crate) fn affected_count_error(n: u64) -> Option<String> {
-    match n {
-        0 => Some("row was modified or removed by another session".to_string()),
-        1 => None,
-        _ => Some("ambiguous row match".to_string()),
+// ---------------------------------------------------------------------------
+// Single-row writes: one row or nothing (ticket 03)
+//
+// A queued update/delete addresses exactly one intended row. The predicate is
+// the Row Identity plus the original values the user saw, the statement runs in
+// a transaction, and only an exactly-one-row match is committed. Zero and
+// multiple matches roll back *before* the failure is reported, so a reported
+// failure can never conceal a durable write.
+// ---------------------------------------------------------------------------
+
+/// Describe a queued single-row write, computing the original-value guards it
+/// must carry (and failing closed when a physical locator has none).
+fn single_row_write<'a>(
+    engine: Engine,
+    schema: &'a str,
+    table: &'a str,
+    kind: crate::db::row_write::WriteKind,
+    identity: &'a [(String, serde_json::Value)],
+    new_data: &'a [(String, serde_json::Value)],
+    original: &[(String, serde_json::Value)],
+) -> Result<crate::db::row_write::RowWrite<'a>, String> {
+    let guard = crate::db::row_write::guards_for(kind, identity, original)?;
+    Ok(crate::db::row_write::RowWrite {
+        engine,
+        schema,
+        table,
+        kind,
+        identity,
+        new_data,
+        guard,
+    })
+}
+
+/// The error for a write that did not match exactly one row.
+fn single_row_failure(
+    w: &crate::db::row_write::RowWrite<'_>,
+    affected: u64,
+    identity_rows: Option<u64>,
+) -> Result<(), String> {
+    let guarded: Vec<String> = w.guard.iter().map(|(c, _)| c.clone()).collect();
+    match crate::db::row_write::failure_message(
+        affected,
+        identity_rows,
+        crate::db::row_write::is_physical_locator(w.identity),
+        &guarded,
+    ) {
+        Some(msg) => Err(msg),
+        None => Ok(()),
     }
+}
+
+/// Box change values for `tokio-postgres` parameter binding.
+fn pg_bound(params: &[serde_json::Value]) -> Vec<Box<dyn ToSql + Send + Sync>> {
+    params.iter().map(pg_box_value).collect()
+}
+
+/// Borrow boxed parameters the way `tokio_postgres` expects them: `Send` is
+/// dropped from the auto-trait list because the slice is used within one await.
+fn pg_param_refs(boxed: &[Box<dyn ToSql + Send + Sync>]) -> Vec<&(dyn ToSql + Sync)> {
+    boxed
+        .iter()
+        .map(|b| {
+            let r: &(dyn ToSql + Sync) = &**b;
+            r
+        })
+        .collect()
+}
+
+/// Does a row still carry this Row Identity? `None` when the write carries no
+/// original-value guard, so there is nothing to explain beyond a stale row.
+async fn probe_identity_pg(
+    tx: &tokio_postgres::Transaction<'_>,
+    w: &crate::db::row_write::RowWrite<'_>,
+) -> Result<Option<u64>, String> {
+    if w.guard.is_empty() {
+        return Ok(None);
+    }
+    let probe = w.identity_probe()?;
+    let boxed = pg_bound(&probe.params);
+    let refs = pg_param_refs(&boxed);
+    let rows = tx
+        .query(&probe.sql, &refs)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(rows.len() as u64))
+}
+
+async fn apply_pg_single_row(
+    client: &mut tokio_postgres::Client,
+    w: &crate::db::row_write::RowWrite<'_>,
+) -> Result<(), String> {
+    let stmt = w.statement()?;
+    let tx = client
+        .build_transaction()
+        .start()
+        .await
+        .map_err(|e| e.to_string())?;
+    let affected = {
+        let boxed = pg_bound(&stmt.params);
+        let refs = pg_param_refs(&boxed);
+        tx.execute(&stmt.sql, &refs)
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    if affected == 1 {
+        return tx.commit().await.map_err(|e| e.to_string());
+    }
+    // Explain the failure from inside the same transaction, then roll back: the
+    // write is never durable unless it matched exactly one row.
+    let identity_rows = probe_identity_pg(&tx, w).await?;
+    tx.rollback().await.map_err(|e| e.to_string())?;
+    single_row_failure(w, affected, identity_rows)
+}
+
+fn apply_sqlite_single_row(
+    conn: &mut rusqlite::Connection,
+    w: &crate::db::row_write::RowWrite<'_>,
+) -> Result<(), String> {
+    let stmt = w.statement()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let params: Vec<rusqlite::types::Value> =
+        stmt.params.iter().map(json_to_sqlite_value).collect();
+    let affected = tx
+        .execute(&stmt.sql, rusqlite::params_from_iter(params))
+        .map_err(|e| e.to_string())? as u64;
+    if affected == 1 {
+        return tx.commit().map_err(|e| e.to_string());
+    }
+    let identity_rows = if w.guard.is_empty() {
+        None
+    } else {
+        let probe = w.identity_probe()?;
+        let probe_params: Vec<rusqlite::types::Value> =
+            probe.params.iter().map(json_to_sqlite_value).collect();
+        let mut statement = tx.prepare(&probe.sql).map_err(|e| e.to_string())?;
+        let mut rows = statement
+            .query(rusqlite::params_from_iter(probe_params))
+            .map_err(|e| e.to_string())?;
+        let found = rows.next().map_err(|e| e.to_string())?.is_some();
+        Some(u64::from(found))
+    };
+    tx.rollback().map_err(|e| e.to_string())?;
+    single_row_failure(w, affected, identity_rows)
+}
+
+async fn apply_mysql_single_row(
+    pool: &sqlx::MySqlPool,
+    w: &crate::db::row_write::RowWrite<'_>,
+) -> Result<(), String> {
+    let stmt = w.statement()?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?;
+    let affected = bind_mysql_params(sqlx::query(&stmt.sql), &stmt.params)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?
+        .rows_affected();
+    if affected == 1 {
+        return tx
+            .commit()
+            .await
+            .map_err(|e| sanitize_error(&format!("{e}")));
+    }
+    let identity_rows = if w.guard.is_empty() {
+        None
+    } else {
+        let probe = w.identity_probe()?;
+        let found = bind_mysql_params(sqlx::query(&probe.sql), &probe.params)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| sanitize_error(&format!("{e}")))?;
+        Some(u64::from(found.is_some()))
+    };
+    tx.rollback()
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?;
+    single_row_failure(w, affected, identity_rows)
 }
 
 /// Headless change-application shared by the `execute_change` command and
@@ -2664,18 +2817,28 @@ pub(crate) async fn execute_change_inner(
     let mut pm = pm.lock().await;
     match pm.get(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
-            // Build the parameterized SQL + bound values from the change.
-            let (sql, params): (String, Vec<serde_json::Value>) = match &change {
+            match &change {
                 Change::Update {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     new_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
                     let data = parse_json_pairs(new_data)?;
-                    build_pg_update_sql(schema, table, &pk, &data)?
+                    let w = single_row_write(
+                        Engine::PostgreSql,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Update,
+                        &identity,
+                        &data,
+                        &original,
+                    )?;
+                    return apply_pg_single_row(client, &w).await;
                 }
                 Change::Insert {
                     schema,
@@ -2684,16 +2847,34 @@ pub(crate) async fn execute_change_inner(
                     ..
                 } => {
                     let pairs = parse_json_pairs(data)?;
-                    build_pg_insert_sql(schema, table, &pairs)
+                    let (sql, params) = build_pg_insert_sql(schema, table, &pairs);
+                    let boxed = pg_bound(&params);
+                    let refs = pg_param_refs(&boxed);
+                    client
+                        .execute(&sql, &refs)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    return Ok(());
                 }
                 Change::Delete {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
-                    build_pg_delete_sql(schema, table, &pk)?
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
+                    let w = single_row_write(
+                        Engine::PostgreSql,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Delete,
+                        &identity,
+                        &[],
+                        &original,
+                    )?;
+                    return apply_pg_single_row(client, &w).await;
                 }
                 Change::AlterTable { sql, .. } => {
                     // Execute the raw DDL directly; no bound parameters.
@@ -2748,44 +2929,31 @@ pub(crate) async fn execute_change_inner(
                         .map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-            };
-
-            // Box each value for trait-object binding (`$N` placeholders). The
-            // boxed values must be `Send` so the async command future stays
-            // `Send` across the `.await`.
-            let boxed: Vec<Box<dyn ToSql + Send + Sync>> =
-                params.iter().map(pg_box_value).collect();
-            // Coerce each `&(dyn ToSql + Send + Sync)` reference down to
-            // `&(dyn ToSql + Sync)` (dropping the `Send` auto-trait) to match
-            // `tokio_postgres::Client::execute`'s expected slice type.
-            let refs: Vec<&(dyn ToSql + Sync)> = boxed
-                .iter()
-                .map(|b| {
-                    let r: &(dyn ToSql + Sync) = &**b;
-                    r
-                })
-                .collect();
-            let n = client
-                .execute(&sql, &refs)
-                .await
-                .map_err(|e| e.to_string())?;
-            if let Some(msg) = affected_count_error(n) {
-                return Err(msg);
             }
-            Ok(())
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
-            let (sql, params): (String, Vec<serde_json::Value>) = match &change {
+            match &change {
                 Change::Update {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     new_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
                     let data = parse_json_pairs(new_data)?;
-                    build_update_sql(schema, table, &pk, &data)?
+                    let w = single_row_write(
+                        Engine::Sqlite,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Update,
+                        &identity,
+                        &data,
+                        &original,
+                    )?;
+                    return apply_sqlite_single_row(conn, &w);
                 }
                 Change::Insert {
                     schema,
@@ -2795,19 +2963,36 @@ pub(crate) async fn execute_change_inner(
                 } => {
                     let pairs = parse_json_pairs(data)?;
                     let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
-                    (
-                        build_insert_sql(schema, table, &columns),
-                        pairs.iter().map(|(_, v)| v.clone()).collect(),
+                    let params: Vec<serde_json::Value> =
+                        pairs.iter().map(|(_, v)| v.clone()).collect();
+                    let sqlite_params: Vec<rusqlite::types::Value> =
+                        params.iter().map(json_to_sqlite_value).collect();
+                    conn.execute(
+                        &build_insert_sql(schema, table, &columns),
+                        rusqlite::params_from_iter(sqlite_params),
                     )
+                    .map_err(|e| e.to_string())?;
+                    return Ok(());
                 }
                 Change::Delete {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
-                    build_delete_sql(schema, table, &pk)?
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
+                    let w = single_row_write(
+                        Engine::Sqlite,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Delete,
+                        &identity,
+                        &[],
+                        &original,
+                    )?;
+                    return apply_sqlite_single_row(conn, &w);
                 }
                 Change::AlterTable { sql, .. } => {
                     conn.execute(sql, []).map_err(|e| e.to_string())?;
@@ -2843,31 +3028,32 @@ pub(crate) async fn execute_change_inner(
                         .map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-            };
-
-            let sqlite_params: Vec<rusqlite::types::Value> =
-                params.iter().map(json_to_sqlite_value).collect();
-            let n = conn
-                .execute(&sql, rusqlite::params_from_iter(sqlite_params))
-                .map_err(|e| e.to_string())?;
-            if let Some(msg) = affected_count_error(n as u64) {
-                return Err(msg);
             }
-            Ok(())
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
             let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-            let (sql, params): (String, Vec<serde_json::Value>) = match &change {
+            match &change {
                 Change::Update {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     new_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
                     let data = parse_json_pairs(new_data)?;
-                    crate::db::mysql::mysql_build_update_sql(schema, table, &pk, &data)?
+                    let w = single_row_write(
+                        Engine::MySql,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Update,
+                        &identity,
+                        &data,
+                        &original,
+                    )?;
+                    return apply_mysql_single_row(pool, &w).await;
                 }
                 Change::Insert {
                     schema,
@@ -2876,16 +3062,33 @@ pub(crate) async fn execute_change_inner(
                     ..
                 } => {
                     let pairs = parse_json_pairs(data)?;
-                    crate::db::mysql::mysql_build_insert_sql(schema, table, &pairs)
+                    let (sql, params) =
+                        crate::db::mysql::mysql_build_insert_sql(schema, table, &pairs);
+                    bind_mysql_params(sqlx::query(&sql), &params)
+                        .execute(pool)
+                        .await
+                        .map_err(|e| sanitize_error(&format!("{e}")))?;
+                    return Ok(());
                 }
                 Change::Delete {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
-                    crate::db::mysql::mysql_build_delete_sql(schema, table, &pk)?
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
+                    let w = single_row_write(
+                        Engine::MySql,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Delete,
+                        &identity,
+                        &[],
+                        &original,
+                    )?;
+                    return apply_mysql_single_row(pool, &w).await;
                 }
                 Change::AlterTable { sql, .. } => {
                     // Raw DDL, no bound parameters.
@@ -2940,16 +3143,7 @@ pub(crate) async fn execute_change_inner(
                         .map_err(|e| sanitize_error(&format!("{e}")))?;
                     return Ok(());
                 }
-            };
-
-            let result = bind_mysql_params(sqlx::query(&sql), &params)
-                .execute(pool)
-                .await
-                .map_err(|e| sanitize_error(&format!("{e}")))?;
-            if let Some(msg) = affected_count_error(result.rows_affected()) {
-                return Err(msg);
             }
-            Ok(())
         }
         None => Err("Connection not found".to_string()),
     }
@@ -3514,7 +3708,7 @@ mod tests {
             ("email".to_string(), serde_json::json!("bob@example.com")),
         ];
 
-        let (sql, _params) = build_update_sql("public", "users", &pk, &data).unwrap();
+        let (sql, _params) = build_update_sql("public", "users", &pk, &data, &[]).unwrap();
 
         assert!(
             sql.to_uppercase().contains("UPDATE"),
@@ -3539,7 +3733,7 @@ mod tests {
     fn build_change_delete_sql_is_valid() {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
 
-        let (sql, _params) = build_delete_sql("public", "users", &pk).unwrap();
+        let (sql, _params) = build_delete_sql("public", "users", &pk, &[]).unwrap();
 
         assert!(
             sql.to_uppercase().contains("DELETE FROM"),
@@ -3835,7 +4029,7 @@ mod tests {
         // The frontend supplies ctid as the "primary_key" pair for no-PK rows.
         let locator = vec![("ctid".to_string(), serde_json::json!("(0,1)"))];
         let data = vec![("name".to_string(), serde_json::json!("Bob"))];
-        let (sql, params) = build_pg_update_sql("public", "no_pk", &locator, &data).unwrap();
+        let (sql, params) = build_pg_update_sql("public", "no_pk", &locator, &data, &[]).unwrap();
         assert!(
             sql.contains("\"ctid\" = $"),
             "locator update must WHERE on ctid; got: {}",
@@ -3848,7 +4042,7 @@ mod tests {
     fn pg_update_with_pk_uses_pk_where() {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
         let data = vec![("name".to_string(), serde_json::json!("Bob"))];
-        let (sql, _params) = build_pg_update_sql("public", "users", &pk, &data).unwrap();
+        let (sql, _params) = build_pg_update_sql("public", "users", &pk, &data, &[]).unwrap();
         assert!(
             sql.contains("\"id\" = $"),
             "PK update must WHERE on id; got: {}",
@@ -3866,24 +4060,30 @@ mod tests {
         // Defense-in-depth: an empty locator must NOT yield `UPDATE ... WHERE `.
         let pk: Vec<(String, serde_json::Value)> = vec![];
         let data = vec![("name".to_string(), serde_json::json!("Bob"))];
-        let result = build_pg_update_sql("public", "no_pk", &pk, &data);
+        let result = build_pg_update_sql("public", "no_pk", &pk, &data, &[]);
         assert!(
             result.is_err(),
             "empty primary_key must be rejected, not produce broken SQL"
         );
     }
 
+    /// The single-row outcome rules the engines share: one match commits, zero
+    /// is stale or conflicting, more than one is ambiguous. All three report
+    /// that nothing was written.
     #[test]
-    fn affected_row_count_message_for_zero_rows() {
+    fn single_row_outcome_messages() {
+        use crate::db::row_write::{failure_message, STALE_ROW};
+        assert_eq!(failure_message(1, None, false, &[]), None);
         assert_eq!(
-            affected_count_error(0u64),
-            Some("row was modified or removed by another session".to_string())
+            failure_message(0, None, false, &[]),
+            Some(STALE_ROW.to_string())
         );
-        assert_eq!(affected_count_error(1u64), None);
         assert_eq!(
-            affected_count_error(2u64),
-            Some("ambiguous row match".to_string())
+            failure_message(0, Some(0), false, &[]),
+            Some(STALE_ROW.to_string())
         );
+        let ambiguous = failure_message(2, None, false, &[]).expect("ambiguous message");
+        assert!(ambiguous.contains("ambiguous row match"), "{ambiguous}");
     }
 
     // -----------------------------------------------------------------------
@@ -4019,11 +4219,8 @@ mod tests {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
         let data = vec![("name".to_string(), serde_json::json!("x"))];
         let (sql, _params) =
-            crate::db::mysql::mysql_build_update_sql("shop", "orders", &pk, &data).unwrap();
-        assert_eq!(
-            sql,
-            "UPDATE `shop`.`orders` SET `name` = ? WHERE `id` = ? LIMIT 1"
-        );
+            crate::db::mysql::mysql_build_update_sql("shop", "orders", &pk, &data, &[]).unwrap();
+        assert_eq!(sql, "UPDATE `shop`.`orders` SET `name` = ? WHERE `id` = ?");
     }
 
     #[tokio::test]
