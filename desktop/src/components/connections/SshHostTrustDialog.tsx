@@ -86,7 +86,8 @@ export function SshHostTrustDialog({
             </dl>
             <p className="text-sm text-text-muted mb-4">
               A changed key cannot be accepted while connecting. If the server key was rotated
-              on purpose, re-enroll the host deliberately instead.
+              on purpose, open this connection's SSH settings and re-enroll the host key
+              there — that is a separate, deliberate action, never an inline override.
             </p>
             <div className="flex justify-end">
               <Button variant="ghost" onClick={onClose}>

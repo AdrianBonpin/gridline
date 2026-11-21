@@ -2,6 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Input } from "../ui/Input";
 import { PasswordInput } from "./PasswordInput";
 import { SelectDropdown } from "../ui/SelectDropdown";
+import { SshHostTrustPanel } from "./SshHostTrustPanel";
 import { useNotificationStore } from "../../stores/notificationStore";
 
 export interface SshFieldsProps {
@@ -113,6 +114,12 @@ export function SshFields({ values, onChange }: SshFieldsProps) {
             aria-label="SSH Password"
           />
         </div>
+      )}
+      {String(values.ssh_host ?? "").trim() !== "" && (
+        <SshHostTrustPanel
+          host={values.ssh_host as string}
+          port={(values.ssh_port as number) ?? 22}
+        />
       )}
     </div>
   );

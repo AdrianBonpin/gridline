@@ -43,4 +43,26 @@ describe("SshFields", () => {
     expect(screen.queryByLabelText("Private Key")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Passphrase")).not.toBeInTheDocument();
   });
+
+  it("surfaces the connection's host-key trust state without a connection attempt", () => {
+    // Ticket 22: deliberate re-enrollment is reachable from the connection's
+    // SSH settings, not only after a failed connect.
+    render(
+      <SshFields
+        values={{ ssh_host: "db.example.com", ssh_port: 2222 }}
+        onChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByTestId("ssh-host-trust-panel")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /check host key/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the host-key trust panel when no SSH host is configured", () => {
+    render(<SshFields values={{}} onChange={() => {}} />);
+
+    expect(screen.queryByTestId("ssh-host-trust-panel")).not.toBeInTheDocument();
+  });
 });

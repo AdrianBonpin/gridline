@@ -990,6 +990,101 @@ fn store_backed_re_enrollment_replaces_the_row_with_public_metadata_only() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn store_backed_re_enrollment_is_verified_by_later_connections() {
+    // The durable half of ticket 22: the replacement is written to the local
+    // store, so a later connection — after a restart, through a freshly
+    // constructed provider — verifies the new key and refuses the old one.
+    let dir = std::env::temp_dir().join(format!(
+        "gridline-ssh-reenroll-later-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("store.sqlite");
+    let known_hosts_path = dir.join("known_hosts");
+
+    let stale = host_key("ssh-ed25519", 120);
+    let rotated = host_key("ssh-ed25519", 121);
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::store::migrations::run_migrations(&conn).unwrap();
+        let store = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::store::Store::from_connection(conn),
+        ));
+        let trust = StoreHostTrust::with_known_hosts_paths(store, vec![known_hosts_path.clone()]);
+        trust
+            .remember(&record_for("db.example.com", 2222, &stale))
+            .unwrap();
+
+        let accepted = HostKeyFingerprint {
+            key_type: rotated.key_type.clone(),
+            fingerprint: fingerprint_of(&rotated.blob),
+        };
+        reenroll_host_trust(
+            &mut FakeTransport::offering(rotated.clone()),
+            &trust,
+            "db.example.com",
+            2222,
+            &accepted,
+        )
+        .expect("the confirmed fingerprint replaces the stored trust");
+    }
+
+    // A later connection re-opens the store from disk, as an app restart would.
+    let later_conn = rusqlite::Connection::open(&db_path).unwrap();
+    crate::store::migrations::run_migrations(&later_conn).unwrap();
+    let later_store = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::store::Store::from_connection(later_conn),
+    ));
+    let later = StoreHostTrust::with_known_hosts_paths(later_store, vec![known_hosts_path]);
+
+    // The new key verifies without prompting and is allowed to authenticate.
+    let state = probe_host_trust(
+        &mut FakeTransport::offering(rotated.clone()),
+        &later,
+        "db.example.com",
+        2222,
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            state,
+            SshHostTrustState::Trusted {
+                source: TrustSource::Enrolled,
+                ..
+            }
+        ),
+        "the re-enrolled key verifies on a later connection, got {state:?}"
+    );
+
+    let mut session = FakeTransport::offering(rotated.clone());
+    establish_trusted_session(
+        &mut session,
+        &later,
+        &ssh_config("db.example.com", 2222, "password"),
+        Some("db-password"),
+        None,
+    )
+    .expect("the re-enrolled key connects");
+    assert!(session.saw_credentials());
+
+    // The replaced key is a conflict again, before any credential is sent.
+    let mut replaced = FakeTransport::offering(stale);
+    let err = establish_trusted_session(
+        &mut replaced,
+        &later,
+        &ssh_config("db.example.com", 2222, "password"),
+        Some("db-password"),
+        None,
+    )
+    .expect_err("the replaced key is no longer trusted");
+    assert!(matches!(err, SshTunnelError::HostKeyMismatch(_)));
+    assert!(!replaced.saw_credentials());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // ---------------------------------------------------------------------------
 // IPC contract shared with the frontend
 // ---------------------------------------------------------------------------

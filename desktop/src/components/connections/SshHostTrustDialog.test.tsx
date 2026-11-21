@@ -72,6 +72,15 @@ describe("SshHostTrustDialog", () => {
       screen.queryByRole("button", { name: /accept/i }),
       "a changed key is never accepted during authentication",
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /re-enroll/i }),
+      "re-enrollment is a separate action, never reachable from the connect path",
+    ).not.toBeInTheDocument();
+    // The user is pointed at the deliberate flow instead of being offered one.
+    expect(
+      screen.getByText(/ssh settings/i),
+      "the mismatch error tells the user where re-enrollment lives",
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /close/i }));
     expect(onClose).toHaveBeenCalled();
