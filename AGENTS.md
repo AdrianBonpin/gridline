@@ -200,6 +200,12 @@ Direct pushes to `prod` will be bypassed only in emergencies; prefer the PR path
 - Ref/tag metadata and secrets reach shell steps through `env:`, never through `${{ }}` inside a `run:` body. Tag values are compared as data (shell/`awk`), never spliced into a `jq` program or a rendered template body.
 - `pull_request_target` is not used anywhere.
 
+### Linux support claims and issue #62
+
+**Support copy describes verified reality, not aspirations.** Linux releases are one build from Ubuntu 22.04 (glibc 2.35, x86_64) repackaged as `.deb` / `.rpm` / `.AppImage`; there is no per-distribution certification and no ARM/32-bit build. Do not reintroduce "works on every distro"-style claims in the README, the landing page, or release notes. The user-facing statement of what is verified lives in the README's **Linux support and troubleshooting** section; the landing page lists macOS architectures and Linux packages explicitly (`www/src/pages/index.astro`) instead of guessing from the user agent — `www/public/landing.js` only links Windows directly, and routes macOS/Linux visitors to the `#download` list.
+
+**Issue #62 (AppImage black window on Fedora) is open and unconfirmed.** The reporter has not supplied an exact Fedora release, session type, GPU/driver, or terminal output, no root cause is known, and Gridline ships **no** unconditional WebKit/graphics workaround (the `WEBKIT_DISABLE_DMABUF_RENDERER=1` default in `desktop/e2e/preflight.mjs` is harness-only). The README's diagnostic checklist is what closes that gap for the reporter. #62 is closed only after the reporter, or an equivalent Fedora environment reproducing the same behaviour, confirms the result — a green build, an AppImage that starts in CI, or a workaround that happens to work does **not** close it, and no release notes claim it fixed.
+
 ### Release ref protection (owner-applied repository settings)
 
 These are **repository settings, not files** — they cannot be committed, so the repo cannot prove them and `scripts/check-workflows.sh` cannot assert them. An owner with admin rights must apply and periodically re-verify them:
