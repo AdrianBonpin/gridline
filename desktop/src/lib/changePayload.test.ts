@@ -12,10 +12,21 @@ describe("buildChangePayload", () => {
     expect(p).toEqual({ id: "c1", type: "insert", schema: "public", table: "t", data: "{\"a\":1}" });
   });
 
-  it("delete -> {schema, table, primary_key}", () => {
+  it("delete -> {schema, table, primary_key, old_data}", () => {
+    const item = { ...base, type: "delete", sql: "", schema: "public", table: "t",
+      primaryKey: { rowid: 5 }, oldData: { url: "/cart" } } as unknown as QueueItem;
+    expect(buildChangePayload(item)).toEqual({
+      id: "c1", type: "delete", schema: "public", table: "t",
+      primary_key: "{\"rowid\":5}", old_data: "{\"url\":\"/cart\"}",
+    });
+  });
+
+  it("delete without original values sends an empty old_data, never an undefined one", () => {
+    // The backend treats empty as "no originals", so a locator delete staged
+    // without them fails closed instead of writing unguarded.
     const item = { ...base, type: "delete", sql: "", schema: "public", table: "t",
       primaryKey: { id: 5 } } as unknown as QueueItem;
-    expect(buildChangePayload(item)).toEqual({ id: "c1", type: "delete", schema: "public", table: "t", primary_key: "{\"id\":5}" });
+    expect(buildChangePayload(item)).toMatchObject({ old_data: "{}" });
   });
 
   it("bulk_insert -> {schema, table, columns, rows}", () => {

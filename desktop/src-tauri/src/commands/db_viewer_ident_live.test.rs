@@ -255,6 +255,7 @@ async fn sqlite_edits_cells_in_awkward_column_names() {
         WEIRD_TABLE,
         &[("id".to_string(), serde_json::json!(2))],
         &[("a\"b".to_string(), serde_json::json!("edited"))],
+        &[],
     )
     .expect("build update");
     let sqlite_params: Vec<rusqlite::types::Value> = params
@@ -285,6 +286,7 @@ async fn sqlite_edits_no_pk_table_through_rowid_with_awkward_names() {
         WEIRD_TABLE,
         &[("rowid".to_string(), serde_json::json!(1))],
         &[("Mixed Case".to_string(), serde_json::json!("rowid-edit"))],
+        &[],
     )
     .expect("build update");
     let sqlite_params: Vec<rusqlite::types::Value> = params
@@ -529,6 +531,7 @@ async fn pg_legal_names_browse_filter_sort_edit_and_introspect() {
         table,
         &[("id".to_string(), serde_json::json!(2))],
         &[("a\"b".to_string(), serde_json::json!("edited"))],
+        &[],
     )
     .expect("build pg update");
     let changed = {
@@ -718,6 +721,7 @@ async fn mysql_legal_names_browse_filter_sort_edit_and_introspect() {
         table,
         &[("id".to_string(), serde_json::json!(2))],
         &[("a\"b".to_string(), serde_json::json!("edited"))],
+        &[],
     )
     .expect("build mysql update");
     let mut q = sqlx::query(&sql);
