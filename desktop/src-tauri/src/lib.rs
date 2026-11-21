@@ -5,6 +5,7 @@
 mod cancel;
 mod commands;
 mod db;
+mod diagnostics;
 mod file_grant;
 mod job;
 mod keychain_acl;

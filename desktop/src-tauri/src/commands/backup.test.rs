@@ -2698,24 +2698,24 @@ fn mysql_sync_succeeds_when_both_processes_succeed() {
 fn mysql_cli_tls_mode_prefers_each_endpoints_own_setting() {
     // Direct connections honour their own ssl_mode.
     assert_eq!(
-        mysql_cli_tls_mode("db.example.com", Some("verify-full"), false).as_deref(),
+        mysql_cli_tls_mode("db.example.com", Some("verify-full"), false)
+            .unwrap()
+            .as_deref(),
         Some("verify-full")
     );
     assert_eq!(
-        mysql_cli_tls_mode("db.example.com", Some("disable"), false).as_deref(),
+        mysql_cli_tls_mode("db.example.com", Some("disable"), false)
+            .unwrap()
+            .as_deref(),
         Some("disable")
     );
-    assert_eq!(mysql_cli_tls_mode("db.example.com", None, false), None);
+    assert_eq!(mysql_cli_tls_mode("db.example.com", None, false), Ok(None));
 
     // Managed hosts default to `require` (pre-fix saved connections).
     assert_eq!(
-        mysql_cli_tls_mode("xxxx.us-east-2.psdb.cloud", None, false).as_deref(),
-        Some("require")
-    );
-
-    // A tunnel makes the peer loopback, so verification degrades to require.
-    assert_eq!(
-        mysql_cli_tls_mode("db.example.com", Some("verify-full"), true).as_deref(),
+        mysql_cli_tls_mode("xxxx.us-east-2.psdb.cloud", None, false)
+            .unwrap()
+            .as_deref(),
         Some("require")
     );
 
@@ -2723,6 +2723,41 @@ fn mysql_cli_tls_mode_prefers_each_endpoints_own_setting() {
     let source = mysql_cli_tls_mode("src.example.com", Some("disable"), false);
     let target = mysql_cli_tls_mode("tgt.example.com", Some("verify-full"), false);
     assert_ne!(source, target);
+}
+
+#[test]
+fn mysql_cli_tls_mode_refuses_a_tunnel_rather_than_downgrading_verification() {
+    // The client tools verify the address they dial, which through a tunnel is
+    // loopback. A verify mode must therefore be refused, never silently turned
+    // into encryption-only `require`.
+    for mode in ["verify-ca", "verify-full"] {
+        let err = mysql_cli_tls_mode("db.example.com", Some(mode), true)
+            .expect_err("verify mode through a tunnel must fail closed");
+        assert!(err.contains(mode), "error should name the mode: {err}");
+        assert!(
+            err.contains("db.example.com"),
+            "error should name the host: {err}"
+        );
+    }
+
+    // `require` asked for encryption without verification, so encrypting
+    // through the tunnel is exactly what was requested.
+    assert_eq!(
+        mysql_cli_tls_mode("db.example.com", Some("require"), true)
+            .unwrap()
+            .as_deref(),
+        Some("require")
+    );
+    // And an empty mode keeps the established tunnel default.
+    assert_eq!(
+        mysql_cli_tls_mode("db.example.com", None, true)
+            .unwrap()
+            .as_deref(),
+        Some("require")
+    );
+    // An unknown mode is refused on both paths.
+    assert!(mysql_cli_tls_mode("db.example.com", Some("bogus"), true).is_err());
+    assert!(mysql_cli_tls_mode("db.example.com", Some("bogus"), false).is_err());
 }
 
 // ------------------------------------------------------------------

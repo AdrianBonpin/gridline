@@ -644,3 +644,30 @@ fn a_legacy_file_with_null_optional_fields_still_imports() {
         "an absent opt-out flag means the default"
     );
 }
+
+/// A transfer file with an unrecognized TLS mode is refused record by record,
+/// naming the valid set: an import must never quietly downgrade the mode the
+/// file asked for (nor land a mode no connect path can resolve).
+#[test]
+fn an_import_with_an_unknown_ssl_mode_is_skipped_with_the_valid_set_named() {
+    let file = r#"{"version": 1, "connections": [
+        {"name": "Bogus TLS", "db_type": "postgresql", "host": "h", "port": 5432,
+         "ssl_mode": "prefer", "use_keychain": false},
+        {"name": "Good TLS", "db_type": "postgresql", "host": "h", "port": 5432,
+         "ssl_mode": "verify-full", "use_keychain": false}
+    ]}"#;
+    let target = store();
+
+    let result = import_connections_inner(&target, file.to_string()).unwrap();
+
+    assert_eq!(result.imported, 1, "the valid record still imports");
+    assert_eq!(result.skipped, 1);
+    let reason = &result.skipped_records[0].reason;
+    assert!(reason.contains("prefer"), "got: {reason}");
+    for valid in crate::db::tls::VALID_SSL_MODES {
+        assert!(reason.contains(valid), "reason {reason} must name {valid}");
+    }
+    let actual = only_connection(&target);
+    assert_eq!(actual.name, "Good TLS");
+    assert_eq!(actual.ssl_mode.as_deref(), Some("verify-full"));
+}

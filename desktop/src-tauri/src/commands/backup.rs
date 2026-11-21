@@ -2618,19 +2618,30 @@ pub async fn detect_mysql_tools(force: Option<bool>, app_handle: AppHandle) -> M
 
 /// Effective TLS mode for one MySQL-family CLI endpoint.
 ///
-/// A tunnelled endpoint is loopback, so certificate verification is
-/// meaningless there — it degrades to `require`, mirroring how the driver
-/// connections degrade through a tunnel. Otherwise the connection's own
-/// `ssl_mode` decides, with managed hosts (`*.psdb.cloud`, `*.supabase.co`,
-/// `*.neon.tech`) defaulting to `require` so pre-fix saved connections keep
-/// working.
+/// A tunnelled endpoint is loopback, and both MariaDB's
+/// `--ssl-verify-server-cert` and MySQL's `VERIFY_CA`/`VERIFY_IDENTITY` check
+/// the address the client dials — so certificate verification cannot be honored
+/// through a tunnel. Rather than silently degrade a verify mode to
+/// encryption-only, a tunnelled endpoint with a verify mode is refused; an
+/// explicit `require` (or a managed host's default) still encrypts.
+///
+/// Otherwise the connection's own `ssl_mode` decides, with managed hosts
+/// (`*.psdb.cloud`, `*.supabase.co`, `*.neon.tech`) defaulting to `require` so
+/// pre-fix saved connections keep working. An unrecognized mode is an error.
 pub fn mysql_cli_tls_mode(
     original_host: &str,
     ssl_mode: Option<&str>,
     via_tunnel: bool,
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     if via_tunnel {
-        return Some("require".to_string());
+        let mode = crate::db::tls::parse_ssl_mode(ssl_mode)?;
+        if mode.is_some_and(crate::db::tls::SslMode::verifies_certificate) {
+            return Err(format!(
+                "{} through an SSH tunnel cannot verify the certificate for {original_host}: the MySQL client tools verify the address they dial, which is the tunnel's loopback endpoint. Use require to encrypt through the tunnel, or connect without the tunnel",
+                mode.map(|m| m.as_str()).unwrap_or_default()
+            ));
+        }
+        return Ok(Some("require".to_string()));
     }
     crate::db::tls::resolve_ssl_mode(original_host, ssl_mode)
 }
@@ -2756,8 +2767,10 @@ pub async fn mysql_dump(
         password,
     );
     let tools = resolve_mysql_tool_paths(&app_handle);
-    // Honour the connection's own ssl_mode; a tunnel degrades to `require`.
-    let tls = mysql_cli_tls_mode(&conn.host, conn.ssl_mode.as_deref(), via_tunnel);
+    // Honour the connection's own ssl_mode; a verify mode through a tunnel is
+    // refused rather than silently weakened to encryption-only.
+    let tls = mysql_cli_tls_mode(&conn.host, conn.ssl_mode.as_deref(), via_tunnel)
+        .map_err(|e| sanitize_error(&e))?;
 
     // Authorize the write last: the granted path is the only destination this
     // command can be made to use, and a grant is not spent on a request that
@@ -2841,7 +2854,10 @@ pub async fn mysql_restore(
         ssl_mode.as_deref(),
         ssl_ca.as_deref(),
         via_tunnel,
-    );
+    )
+    // A mode this engine cannot honor (unknown, or verify-full through a
+    // tunnel) is refused before the restore starts, not silently weakened.
+    .map_err(|e| sanitize_error(&e))?;
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
@@ -3057,12 +3073,14 @@ pub async fn mysql_sync(
         &source_conn.host,
         source_conn.ssl_mode.as_deref(),
         src_via_tunnel,
-    );
+    )
+    .map_err(|e| sanitize_error(&e))?;
     let tgt_tls = mysql_cli_tls_mode(
         &target_conn.host,
         target_conn.ssl_mode.as_deref(),
         tgt_via_tunnel,
-    );
+    )
+    .map_err(|e| sanitize_error(&e))?;
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
