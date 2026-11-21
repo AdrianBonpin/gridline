@@ -973,6 +973,57 @@ fn a_clean_restore_targets_the_dotted_name_the_dump_creates() {
 }
 
 #[test]
+fn a_mysqldump_shaped_script_splits_into_exactly_its_statements() {
+    // End-to-end at the job seam: a dump with mysqldump's header/trailer
+    // comments, executable version comments, extended inserts carrying both
+    // escape forms, a dotted quoted table name, and a DELIMITER-wrapped trigger.
+    let dump = "\
+-- MySQL dump 10.13  Distrib 8.0.36, for macos14 (arm64)\n\
+-- Host: localhost    Database: shop\n\
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;\n\
+/*!40101 SET NAMES utf8mb4 */;\n\
+DROP TABLE IF EXISTS `orders`;\n\
+CREATE TABLE `orders` (id int NOT NULL, note varchar(50));\n\
+LOCK TABLES `orders` WRITE;\n\
+/*!40000 ALTER TABLE `orders` DISABLE KEYS */;\n\
+INSERT INTO `orders` VALUES (1,'it\\'s O''Brien; ok'),(2,'back\\\\slash; too');\n\
+/*!40000 ALTER TABLE `orders` ENABLE KEYS */;\n\
+UNLOCK TABLES;\n\
+CREATE TABLE `gl.dot.orders` (id int);\n\
+DELIMITER ;;\n\
+/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `orders_bi` BEFORE INSERT ON `orders` FOR EACH ROW BEGIN SET @n = 1; END */;;\n\
+DELIMITER ;\n\
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;\n\
+-- Dump completed on 2026-11-21\n";
+
+    let statements = parse_mysql_restore_script(dump).expect("parse");
+    let texts: Vec<&str> = statements.iter().map(|s| s.text.as_ref()).collect();
+    assert_eq!(texts.len(), 12, "got {texts:#?}");
+    assert_eq!(
+        texts[6], "INSERT INTO `orders` VALUES (1,'it\\'s O''Brien; ok'),(2,'back\\\\slash; too')",
+        "insert escapes and inner semicolons must survive intact"
+    );
+    assert!(texts[9].starts_with("CREATE TABLE `gl.dot.orders`"));
+    assert!(texts[10].contains("TRIGGER `orders_bi`"));
+    assert_eq!(
+        texts[10].matches("DELIMITER").count(),
+        0,
+        "the client directive must never reach the server"
+    );
+
+    // Clean planning over the same dump names exactly what it recreates.
+    let drops = crate::db::mysql_clean::plan_clean_drops("shop", &statements);
+    assert_eq!(
+        drops,
+        vec![
+            "DROP TRIGGER IF EXISTS `shop`.`orders_bi`".to_string(),
+            "DROP TABLE IF EXISTS `shop`.`orders`".to_string(),
+            "DROP TABLE IF EXISTS `shop`.`gl.dot.orders`".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn parsing_a_restore_script_borrows_instead_of_copying() {
     // Criterion 3: the file is read into one buffer and each statement is a
     // borrowed slice of it, so a 100 MB dump is not duplicated in memory.
@@ -1002,6 +1053,41 @@ fn parsing_a_restore_script_borrows_instead_of_copying() {
         "statements must not duplicate the script text ({total} > {})",
         script.len()
     );
+}
+
+#[test]
+#[ignore = "allocates a 100 MB script; run with --ignored to prove the size-limit memory behavior"]
+fn a_script_at_the_hundred_megabyte_cap_parses_without_a_second_copy() {
+    // The documented restore cap is MAX_RESTORE_FILE_BYTES (100 MB). Parsing at
+    // that size must add only the statement index: every statement borrows from
+    // the one buffer read from disk.
+    // ~200-byte rows, so the script stays inside the 1,000,000-statement budget.
+    let row = "INSERT INTO `t` VALUES (1,'it\'s; O''Brien ''; pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad');\n";
+    let cap = MAX_RESTORE_FILE_BYTES as usize;
+    let mut script = String::with_capacity(cap + row.len());
+    while script.len() < cap {
+        script.push_str(row);
+    }
+    let start = script.as_ptr() as usize;
+    let end = start + script.len();
+
+    let statements = parse_mysql_restore_script(&script).expect("parse");
+    assert!(
+        statements.len() > 100_000 && statements.len() < 1_000_000,
+        "got {}",
+        statements.len()
+    );
+    let mut total = 0usize;
+    for stmt in &statements {
+        assert!(
+            matches!(stmt.text, std::borrow::Cow::Borrowed(_)),
+            "no statement may be copied out of the script buffer"
+        );
+        let p = stmt.text.as_ref().as_ptr() as usize;
+        assert!(p >= start && p + stmt.text.len() <= end);
+        total += stmt.text.len();
+    }
+    assert!(total <= script.len());
 }
 
 #[test]
