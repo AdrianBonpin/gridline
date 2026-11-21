@@ -10,6 +10,7 @@ import { CellEditor, type FkOption } from "./CellEditor";
 import { CellContextMenu } from "./CellContextMenu";
 import { cellToUpdateChange, isCellEditable, type TabKind } from "./gridEditability";
 import { nextCell, type CellPos } from "./keyboardNav";
+import { copyCellText } from "../../lib/exportData";
 
 interface VirtualDataGridProps {
   connectionId: string;
@@ -275,7 +276,9 @@ export function VirtualDataGrid({
         if (!col) return;
         const ci = columns.findIndex((c) => c.name === col.name);
         const value = rows[activeCell.row]?.[ci];
-        navigator.clipboard.writeText(String(value));
+        // Copying a NULL yields the explicit uppercase marker — an empty
+        // clipboard string would be indistinguishable from an empty value.
+        navigator.clipboard.writeText(copyCellText(value));
       }
     },
     [activeCell, columns, dbType, editingCell, rows, tabType, visibleColumns, virtualizer],
@@ -466,7 +469,7 @@ export function VirtualDataGrid({
       if (!column) return;
       const ci = columns.findIndex((c) => c.name === column.name);
       const value = rows[row]?.[ci];
-      await navigator.clipboard.writeText(String(value));
+      await navigator.clipboard.writeText(copyCellText(value));
     },
     [columns, rows, visibleColumns],
   );

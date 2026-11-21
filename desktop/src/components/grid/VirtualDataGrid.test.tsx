@@ -114,6 +114,58 @@ describe("VirtualDataGrid", () => {
     expect(writeText).toHaveBeenCalledWith("Alice");
   });
 
+  it("Ctrl+C on a NULL cell copies an explicit uppercase NULL marker", () => {
+    const writeText = vi.fn();
+    Object.assign(navigator, { clipboard: { writeText } });
+    const rows = [[1, null], [2, ""]];
+    mockGetTotalSize.mockReturnValue(rows.length * 36);
+    mockGetVirtualItems.mockReturnValue(rows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={rows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" />);
+    const nullCell = screen.getByText("NULL");
+    fireEvent.click(nullCell);
+    fireEvent.keyDown(nullCell, { key: "c", ctrlKey: true });
+    // Not "null", not an empty string: the marker a paste can read as NULL.
+    expect(writeText).toHaveBeenLastCalledWith("NULL");
+  });
+
+  it("Ctrl+C on an empty-string cell copies an empty string, not the NULL marker", () => {
+    const writeText = vi.fn();
+    Object.assign(navigator, { clipboard: { writeText } });
+    const rows = [[2, ""]];
+    mockGetTotalSize.mockReturnValue(rows.length * 36);
+    mockGetVirtualItems.mockReturnValue(rows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="users" rows={rows} columns={mockColumns}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" />);
+    // The name cell of row 1 is the empty string, rendered as an empty cell.
+    const cells = screen.getAllByTitle("");
+    expect(cells.length).toBeGreaterThan(0);
+    fireEvent.click(cells[0]);
+    fireEvent.keyDown(cells[0], { key: "c", ctrlKey: true });
+    expect(writeText).toHaveBeenLastCalledWith("");
+  });
+
+  it("Ctrl+C on a decoded json cell copies its JSON text", () => {
+    const writeText = vi.fn();
+    Object.assign(navigator, { clipboard: { writeText } });
+    const cols: ColumnInfo[] = [
+      { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+      { name: "payload", data_type: "jsonb", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    ];
+    const rows = [[1, { a: 1 }]];
+    mockGetTotalSize.mockReturnValue(rows.length * 36);
+    mockGetVirtualItems.mockReturnValue(rows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));
+    render(<VirtualDataGrid connectionId="c1" schema="public" table="events" rows={rows} columns={cols}
+      hiddenColumns={new Set()} selectedRows={new Set()} onToggleRow={vi.fn()} onToggleAll={vi.fn()}
+      dbType="postgresql" tabType="table" />);
+    const cell = screen.getByTitle("Click to view JSON");
+    fireEvent.click(cell);
+    fireEvent.keyDown(cell, { key: "c", ctrlKey: true });
+    expect(writeText).toHaveBeenLastCalledWith('{"a":1}');
+  });
+
   it("does not open an editor for a PK cell", () => {
     mockGetTotalSize.mockReturnValue(mockRows.length * 36);
     mockGetVirtualItems.mockReturnValue(mockRows.map((_, i) => ({ key: i, index: i, start: i * 36, size: 36 })));

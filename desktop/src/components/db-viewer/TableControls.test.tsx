@@ -630,3 +630,63 @@ describe("bulk delete stages complete Row Identities", () => {
     expect(queue[0].oldData).toEqual({ url: "/products", session_id: "sess-001" });
   });
 });
+
+describe("bulk copy writers emit declared columns with format-correct quoting", () => {
+  // page_views (no primary key): `rowid` is appended to every row by the
+  // backend and is not a declared column.
+  const noPkColumns = [
+    { name: "url", data_type: "TEXT", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    { name: "note", data_type: "TEXT", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+  ];
+  const nastyRow = ["/products", 'a,b"c\nQ'];
+
+  function copyAs(label: string): string {
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    Object.assign(navigator, { clipboard: { writeText } });
+    fireEvent.click(screen.getByText("Actions"));
+    fireEvent.click(screen.getByText(label));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    return writeText.mock.calls[0][0] as string;
+  }
+
+  function seedNoPkRow(row: unknown[] = nastyRow) {
+    seed([makeTab({ data: { columns: noPkColumns, rows: [row], total_rows: 1, page: 1, page_size: 50 } as any })], "tab-1");
+    renderControls({
+      table: "page_views",
+      columns: noPkColumns as any,
+      rows: [row],
+      selectedCount: 1,
+      selectedRows: [row],
+      dbType: "postgresql",
+    });
+  }
+
+  it("Copy as CSV drops the locator and quotes commas, quotes and newlines", () => {
+    seedNoPkRow([...nastyRow, 17]);
+    const csv = copyAs("Copy as CSV");
+    // RFC 4180: the comma/quote/newline cell is quoted and its quote doubled.
+    expect(csv.split("\n")).toEqual(["url,note", '/products,"a,b""c', 'Q"']);
+    expect(csv.endsWith('Q"')).toBe(true);
+    expect(csv).not.toContain("17");
+  });
+
+  it("Copy as CSV marks a NULL explicitly", () => {
+    seedNoPkRow(["/products", null, 17]);
+    expect(copyAs("Copy as CSV").split("\n")[1]).toBe("/products,NULL");
+  });
+
+  it("Copy as JSON keeps exactly the declared keys and a real null", () => {
+    seedNoPkRow(["/products", null, 17]);
+    const json = copyAs("Copy as JSON");
+    expect(JSON.parse(json)).toEqual([{ url: "/products", note: null }]);
+  });
+
+  it("Copy as SQL INSERT is replayable for every value", () => {
+    seedNoPkRow(["/products", null, 17]);
+    const sql = copyAs("Copy as SQL INSERT");
+    expect(sql).toBe(
+      'INSERT INTO "public"."page_views" ("url", "note") VALUES (\'/products\', NULL);',
+    );
+    expect(sql).not.toContain("17");
+  });
+});
