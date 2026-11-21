@@ -192,24 +192,47 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      # Pinned tool inputs (scripts/tool-inputs.env) are cached between runs so
+      # a release does not re-download the Windows archives every time. A cache
+      # hit is NEVER trusted: scripts/verified-fetch.sh re-hashes the cached
+      # archive against the pin on every build and fails the job on a mismatch,
+      # so neither a corrupted nor a poisoned cache can reach the bundle. The
+      # key includes the pin file, so bumping a version misses the cache
+      # instead of reusing the previous archive.
+      - name: Cache pinned tool inputs
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/gridline-tool-inputs
+          key: gridline-tool-inputs-${{ runner.os }}-${{ hashFiles('scripts/tool-inputs.env') }}
+
+      # Build inputs come from scripts/tool-inputs.env (version + digest) and
+      # are retrieved only through scripts/verified-fetch.sh, which fails the
+      # step on a digest mismatch — never warns and continues. No upstream tool
+      # host and no digest literal appears in this workflow: scripts/
+      # check-workflows.sh enforces both.
       - name: Build PostgreSQL client tools (bundled)
         shell: bash
-        # Runner label via env: no `${{ }}` expression is interpolated into the
-        # shell body (same rule that applies to tag metadata).
+        # Runner label / cache dir via env: no `${{ }}` expression is
+        # interpolated into the shell body (same rule that applies to tag
+        # metadata).
         env:
           PLATFORM: ${{ matrix.platform }}
+          TOOL_INPUT_CACHE: ${{ runner.temp }}/gridline-tool-inputs
         run: |
           set -euo pipefail
-          PG_VER="16.4"
+          SCRIPTS="${GITHUB_WORKSPACE}/scripts"
+          # shellcheck disable=SC1091
+          set -a; . "${SCRIPTS}/tool-inputs.env"; set +a
           OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/pg_tools"
-          mkdir -p "$OUT"
+          mkdir -p "$OUT" "$TOOL_INPUT_CACHE"
+          PG_TARBALL="${TOOL_INPUT_CACHE}/postgresql-${PG_TOOLS_VERSION}.tar.bz2"
           case "$PLATFORM" in
             ubuntu-22.04)
               sudo apt-get update -y
               sudo apt-get install -y build-essential libreadline-dev zlib1g-dev flex bison patchelf
-              curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2" -o /tmp/pg.tar.bz2
-              tar -xf /tmp/pg.tar.bz2 -C /tmp
-              cd /tmp/postgresql-${PG_VER}
+              "${SCRIPTS}/verified-fetch.sh" fetch "$PG_SOURCE_URL" "$PG_SOURCE_SHA256" "$PG_TARBALL"
+              tar -xf "$PG_TARBALL" -C /tmp
+              cd "/tmp/postgresql-${PG_TOOLS_VERSION}"
               ./configure --prefix=/tmp/pgbuild --without-readline --without-icu CFLAGS="-O2"
               # Build the shared prerequisites (catalog headers + libpq/common/
               # port archives) SERIALLY FIRST. Parallel `make -C` runs recurse
@@ -232,9 +255,9 @@ jobs:
               done
               ;;
             macos-latest|macos-15-intel)
-              curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2" -o /tmp/pg.tar.bz2
-              tar -xf /tmp/pg.tar.bz2 -C /tmp
-              cd /tmp/postgresql-${PG_VER}
+              "${SCRIPTS}/verified-fetch.sh" fetch "$PG_SOURCE_URL" "$PG_SOURCE_SHA256" "$PG_TARBALL"
+              tar -xf "$PG_TARBALL" -C /tmp
+              cd "/tmp/postgresql-${PG_TOOLS_VERSION}"
               # ac_cv_func_strchrnul=no: Xcode 16.4's SDK marks strchrnul as
               # introduced in macOS 15.4, so configure detects it and PG's
               # snprintf.c calls the system symbol — which fails to compile
@@ -277,12 +300,9 @@ jobs:
               fi
               ;;
             windows-latest)
-              URL="https://get.enterprisedb.com/postgresql/postgresql-${PG_VER}-1-windows-x64-binaries.zip"
-              curl -fsSL "$URL" -o /tmp/pg.zip
-              EXPECTED="3508d8f085bc3980f38211a82e3f31e5fcae9952105d3dc2f8be67b64a822baa"
-              echo "$EXPECTED  /tmp/pg.zip" | sha256sum -c -
-              sha256sum /tmp/pg.zip
-              unzip -o /tmp/pg.zip -d /tmp/pg
+              PG_ZIP="${TOOL_INPUT_CACHE}/${PG_WINDOWS_PACKAGE_URL##*/}"
+              "${SCRIPTS}/verified-fetch.sh" fetch "$PG_WINDOWS_PACKAGE_URL" "$PG_WINDOWS_SHA256" "$PG_ZIP"
+              unzip -o "$PG_ZIP" -d /tmp/pg
               cp /tmp/pg/pgsql/bin/pg_dump.exe /tmp/pg/pgsql/bin/pg_restore.exe /tmp/pg/pgsql/bin/psql.exe "$OUT"/
               # pg_dump.exe needs far more than libpq.dll (libcrypto-3-x64.dll,
               # libssl-3-x64.dll, libiconv-2.dll, libintl-9.dll,
@@ -291,6 +311,9 @@ jobs:
               cp /tmp/pg/pgsql/bin/*.dll "$OUT"/
               ;;
           esac
+          # The packaged manifest: the digests of exactly the files that will
+          # be bundled. scripts/verify-bundled-tools.sh re-checks it (and the
+          # tools' versions) right before anything is uploaded.
           (cd "$OUT" && sha256sum * | tee checksums.txt)
           # Resolve the per-platform binary suffix WITHOUT a command
           # substitution: `$( [ ... ] && echo .exe )` returns exit 1 when the
@@ -314,17 +337,25 @@ jobs:
         shell: bash
         env:
           PLATFORM: ${{ matrix.platform }}
+          TOOL_INPUT_CACHE: ${{ runner.temp }}/gridline-tool-inputs
         run: |
           set -euo pipefail
-          MARIADB_VER="11.4.5"
+          SCRIPTS="${GITHUB_WORKSPACE}/scripts"
+          # shellcheck disable=SC1091
+          set -a; . "${SCRIPTS}/tool-inputs.env"; set +a
           OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/mysql_tools"
-          mkdir -p "$OUT"
+          mkdir -p "$OUT" "$TOOL_INPUT_CACHE"
+          MARIADB_SRC="/tmp/mariadb-server"
           case "$PLATFORM" in
             ubuntu-22.04)
               sudo apt-get update -y
               sudo apt-get install -y cmake build-essential libssl-dev libzstd-dev pkg-config libgnutls28-dev patchelf
-              git clone --depth 1 --branch "mariadb-${MARIADB_VER}" https://github.com/MariaDB/server.git /tmp/mariadb-server
-              cd /tmp/mariadb-server
+              git clone --depth 1 --branch "$MARIADB_GIT_TAG" "$MARIADB_GIT_URL" "$MARIADB_SRC"
+              # The tag only says where to fetch from: the tree is used only if
+              # HEAD is exactly the pinned commit, so a moved upstream tag fails
+              # here instead of being built.
+              "${SCRIPTS}/verified-fetch.sh" commit "$MARIADB_SRC" "$MARIADB_GIT_COMMIT"
+              cd "$MARIADB_SRC"
               # Client-only build: wolfSSL + zlib are vendored. The in-tree
               # Connector C still probes GnuTLS on Unix regardless of WITH_SSL,
               # so libgnutls28-dev is required at build time.
@@ -364,8 +395,9 @@ jobs:
               done
               ;;
             macos-latest|macos-15-intel)
-              git clone --depth 1 --branch "mariadb-${MARIADB_VER}" https://github.com/MariaDB/server.git /tmp/mariadb-server
-              cd /tmp/mariadb-server
+              git clone --depth 1 --branch "$MARIADB_GIT_TAG" "$MARIADB_GIT_URL" "$MARIADB_SRC"
+              "${SCRIPTS}/verified-fetch.sh" commit "$MARIADB_SRC" "$MARIADB_GIT_COMMIT"
+              cd "$MARIADB_SRC"
               # macOS connects the in-tree Connector C against brew OpenSSL
               # (proven to build+run on the runners); the Linux-only GnuTLS
               # probe does not fire here. Absolute brew paths are rewritten to
@@ -419,18 +451,10 @@ jobs:
               done
               ;;
             windows-latest)
-              URL="https://archive.mariadb.org/mariadb-${MARIADB_VER}/winx64-packages/mariadb-${MARIADB_VER}-winx64.zip"
-              # Pinned digest for mariadb-${MARIADB_VER}-winx64.zip, taken from the
-              # version's signed sum file:
-              #   https://archive.mariadb.org/mariadb-<ver>/winx64-packages/sha256sums.txt
-              #   (sha256sums.txt.asc is signed by MariaDB's release key)
-              # MOVE THIS DIGEST WHENEVER MARIADB_VER MOVES: a mismatched pair
-              # fails this job before anything is extracted, which is the point.
-              MARIADB_WIN_SHA256="b7c11d38657f16b837e68199d73670510aadb78f42dfa5d5fdea31a7aab342e3"
-              curl -fsSL "$URL" -o /tmp/mariadb.zip
-              echo "${MARIADB_WIN_SHA256}  /tmp/mariadb.zip" | sha256sum -c -
-              unzip -o /tmp/mariadb.zip -d /tmp/mariadb
-              WINROOT="/tmp/mariadb/mariadb-${MARIADB_VER}-winx64"
+              MARIADB_ZIP="${TOOL_INPUT_CACHE}/${MARIADB_WINDOWS_PACKAGE_URL##*/}"
+              "${SCRIPTS}/verified-fetch.sh" fetch "$MARIADB_WINDOWS_PACKAGE_URL" "$MARIADB_WINDOWS_SHA256" "$MARIADB_ZIP"
+              unzip -o "$MARIADB_ZIP" -d /tmp/mariadb
+              WINROOT="/tmp/mariadb/mariadb-${MARIADB_TOOLS_VERSION}-winx64"
               cp "$WINROOT"/bin/mariadb-dump.exe "$WINROOT"/bin/mariadb.exe "$OUT"/
               # The clients' only runtime dependency is the client library
               # (lib/libmariadb.dll); the winx64 package statically links
@@ -439,6 +463,9 @@ jobs:
               cp "$WINROOT"/lib/libmariadb.dll "$OUT"/
               ;;
           esac
+          # The packaged manifest: the digests of exactly the files that will
+          # be bundled. scripts/verify-bundled-tools.sh re-checks it (and the
+          # tools' versions) right before anything is uploaded.
           (cd "$OUT" && sha256sum * | tee checksums.txt)
           # Resolve the per-platform binary suffix WITHOUT a command
           # substitution (see the pg_tools step for why).
@@ -456,6 +483,18 @@ jobs:
           for b in mariadb-dump mariadb; do
             "$OUT/${b}${BIN_EXT}" --version >/dev/null 2>&1 || { echo "$b failed to run from resource dir"; exit 1; }
           done
+
+      # Gate: the packaged tool manifests are checked HERE, before tauri-action
+      # copies these directories into the installers and opens the draft
+      # release. A missing tool, a file that no longer matches the digest its
+      # manifest recorded (e.g. one swapped after the build step), an unexpected
+      # extra file, or a tool that reports a version other than the pin fails
+      # this job, so no unverified executable can be uploaded.
+      - name: Verify bundled tool manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${GITHUB_WORKSPACE}/scripts/verify-bundled-tools.sh"
 
       - name: Build and upload to GitHub Release
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2

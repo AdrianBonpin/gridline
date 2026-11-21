@@ -9,7 +9,7 @@
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/101
 **Status:** ready
 
-- [ ] PostgreSQL and MariaDB source inputs are pinned and cryptographically verified.
-- [ ] A digest or signature mismatch stops the build.
-- [ ] Packaged tool manifests are checked before artifacts are uploaded.
-- [ ] Any cached archive used by a build is verified rather than trusted.
+- [x] PostgreSQL and MariaDB source inputs are pinned and cryptographically verified.
+- [x] A digest or signature mismatch stops the build.
+- [x] Packaged tool manifests are checked before artifacts are uploaded.
+- [x] Any cached archive used by a build is verified rather than trusted.
