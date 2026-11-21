@@ -80,6 +80,16 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// Largest page a table browse may request.
+///
+/// The bounds exist because the page window reaches the `LIMIT`/`OFFSET` of a
+/// generated statement: an unbounded size can exhaust memory, and an unbounded
+/// page can overflow the offset. 500 matches the largest page the grid offers.
+pub const MAX_TABLE_PAGE_SIZE: i64 = 500;
+
+/// Default page size when the caller does not ask for one.
+pub const DEFAULT_TABLE_PAGE_SIZE: i64 = 50;
+
 /// Calculate the database offset for a given page and page size.
 ///
 /// Uses 1-based page indexing:
@@ -88,6 +98,35 @@ fn truncate(s: &str, max: usize) -> String {
 /// - page 5, page_size 25 => offset 100
 pub fn offset(page: i64, page_size: i64) -> i64 {
     (page - 1) * page_size
+}
+
+/// Resolve a requested page window into `(page, page_size, offset)`.
+///
+/// The page window is **untrusted input** from the renderer, so it is either
+/// used exactly as asked or rejected — it is never clamped, rounded, or
+/// silently replaced with a different window. Quietly turning `page_size: 0`
+/// into a default, or `page: 0` into page 1, would describe rows the caller did
+/// not ask for; turning a huge page into a wrapped offset would return a
+/// different page entirely.
+///
+/// * `page` must be 1 or greater (pages are 1-based).
+/// * `page_size` must be within `1..=MAX_TABLE_PAGE_SIZE`.
+/// * `(page - 1) * page_size` must be representable as an `i64`.
+pub fn page_window(page: Option<i64>, page_size: Option<i64>) -> Result<(i64, i64, i64), String> {
+    let page = page.unwrap_or(1);
+    if page < 1 {
+        return Err(format!("page {page} must be 1 or greater"));
+    }
+    let page_size = page_size.unwrap_or(DEFAULT_TABLE_PAGE_SIZE);
+    if !(1..=MAX_TABLE_PAGE_SIZE).contains(&page_size) {
+        return Err(format!(
+            "page size {page_size} must be between 1 and {MAX_TABLE_PAGE_SIZE}"
+        ));
+    }
+    let offset = (page - 1)
+        .checked_mul(page_size)
+        .ok_or_else(|| format!("page {page} with page size {page_size} is out of range"))?;
+    Ok((page, page_size, offset))
 }
 
 /// Split a `pg_get_indexdef(...,0,true)` / `pg_attribute` column CSV into a
@@ -524,17 +563,25 @@ pub fn build_delete_sql(
 /// ```sql
 /// INSERT INTO "public"."users" ("id", "name") VALUES (?, ?)
 /// ```
+///
+/// A table with no editable columns (every field left at its default — e.g. a
+/// row whose only editable columns are all `DEFAULT`) has nothing to bind, and
+/// `INSERT INTO t () VALUES ()` is a syntax error. `DEFAULT VALUES` is SQLite's
+/// valid spelling, mirroring the PostgreSQL builder.
 pub fn build_insert_sql(schema: &str, table: &str, columns: &[String]) -> String {
-    let cols: Vec<String> = columns
-        .iter()
-        .map(|c| ident::quote(Engine::Sqlite, c))
-        .collect();
-    let placeholders: Vec<&str> = vec!["?"; columns.len()];
     // `build_insert_sql` stays infallible for its many callers; a name that
     // cannot be represented yields SQL the server rejects loudly (never a
     // statement against a different object), while the filter/sort seams
     // reject such names up front.
     let into = ident::qualified_unchecked(Engine::Sqlite, schema, table);
+    if columns.is_empty() {
+        return format!("INSERT INTO {into} DEFAULT VALUES");
+    }
+    let cols: Vec<String> = columns
+        .iter()
+        .map(|c| ident::quote(Engine::Sqlite, c))
+        .collect();
+    let placeholders: Vec<&str> = vec!["?"; columns.len()];
     format!(
         "INSERT INTO {into} ({}) VALUES ({})",
         cols.join(", "),
@@ -1542,13 +1589,15 @@ pub async fn get_tables(
 /// `(schema, table, column)`.
 ///
 /// PK and generated columns are read-only (`editable: false`), mirroring the
-/// PostgreSQL rule. `fk_ref` carries the referenced schema reported by the
-/// catalog, because a foreign key may point into another database — assuming
-/// the browsing schema would follow a same-named local table instead.
+/// PostgreSQL rule, and every column of a read-only relation (a view) is too.
+/// `fk_ref` carries the referenced schema reported by the catalog, because a
+/// foreign key may point into another database — assuming the browsing schema
+/// would follow a same-named local table instead.
 pub(crate) async fn mysql_load_columns(
     pool: &sqlx::MySqlPool,
     schema: &str,
     table: &str,
+    read_only_relation: bool,
 ) -> Result<Vec<ColumnInfo>, String> {
     let col_query = crate::db::mysql::mysql_columns_query();
     let col_rows = sqlx::query(&col_query)
@@ -1580,7 +1629,7 @@ pub(crate) async fn mysql_load_columns(
                 is_fk: false,
                 fk_ref: None,
                 default_value,
-                editable: !is_pk && !is_generated,
+                editable: !is_pk && !is_generated && !read_only_relation,
                 is_generated,
             }
         })
@@ -1652,9 +1701,8 @@ pub(crate) async fn get_table_data_inner(
     filters: Option<Vec<crate::models::db_viewer::FilterRule>>,
     sorts: Option<Vec<crate::models::db_viewer::SortRule>>,
 ) -> Result<QueryResult, String> {
-    let p = page.unwrap_or(1);
-    let ps = page_size.unwrap_or(50);
-    let off = (p - 1) * ps;
+    // Untrusted page window: rejected, never clamped (see `page_window`).
+    let (p, ps, off) = page_window(page, page_size)?;
     let filters = filters.unwrap_or_default();
     let sorts = sorts.unwrap_or_default();
 
@@ -1687,17 +1735,10 @@ pub(crate) async fn get_table_data_inner(
             };
             let total_rows: i64 = count_row.get(0);
 
-            // Views expose no `ctid`; detect them so no row-locator is appended
-            // to the data SELECT and columns stay read-only.
-            let is_view: bool = client
-                .query_one(
-                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
-                     WHERE table_schema = $1 AND table_name = $2 AND table_type = 'VIEW')",
-                    &[&schema, &table],
-                )
-                .await
-                .map(|r| r.get::<_, bool>(0))
-                .unwrap_or(false);
+            // Views and materialized views expose no `ctid` and are read-only;
+            // detect them so no row-locator is appended to the data SELECT and
+            // columns never offer an edit.
+            let read_only_relation = pg_relation_is_read_only(client, schema, table).await;
 
             // Column metadata (PK/FK/read-only flags) is derived from the same
             // shared query + mapper the column-introspection command uses, so a
@@ -1709,7 +1750,8 @@ pub(crate) async fn get_table_data_inner(
                 )
                 .await
                 .map_err(|e| e.to_string())?;
-            let columns: Vec<ColumnInfo> = pg_columns_from_rows(schema, &col_rows, is_view)?;
+            let columns: Vec<ColumnInfo> =
+                pg_columns_from_rows(schema, &col_rows, read_only_relation)?;
 
             // Get data (with filters and sorts applied).
             // Custom/enum types need explicit ::text cast because tokio-postgres
@@ -1767,10 +1809,15 @@ pub(crate) async fn get_table_data_inner(
                 .collect();
             // `ctid` is appended last for no-PK tables so later UPDATE/DELETE
             // queue changes can target the exact row. It stays out of `columns`.
-            // Views are excluded — they expose no ctid and are read-only.
+            // Views/materialized views are excluded — they are read-only.
             let data_query = format!(
                 "{} WHERE 1=1{} {} LIMIT {} OFFSET {}",
-                build_pg_select_from_items(&schema, &table, select_items, !has_pk && !is_view)?,
+                build_pg_select_from_items(
+                    &schema,
+                    &table,
+                    select_items,
+                    !has_pk && !read_only_relation
+                )?,
                 filter_clause,
                 order_clause,
                 ps,
@@ -1809,16 +1856,6 @@ pub(crate) async fn get_table_data_inner(
             })
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
-            // Views expose no `rowid`; detect them so no row-locator is appended
-            // to the data SELECT and columns stay read-only.
-            let is_view: bool = conn
-                .query_row(
-                    "SELECT type = 'view' FROM sqlite_master WHERE name = ?1 AND type IN ('table', 'view')",
-                    rusqlite::params![table],
-                    |r| r.get::<_, bool>(0),
-                )
-                .unwrap_or(false);
-
             // Build filter clause (shared by COUNT and data queries)
             let (filter_clause, filter_vals) = build_sqlite_filter_clause(&filters)?;
             let order_clause = build_order_clause(Engine::Sqlite, &sorts)?;
@@ -1842,44 +1879,9 @@ pub(crate) async fn get_table_data_inner(
                 .map_err(|e| e.to_string())?
             };
 
-            // Get column metadata via PRAGMA table_info (quoted identifier)
-            let pragma_query = crate::db::introspection::sqlite_columns_query(table);
-            let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
-            let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(1)?,         // name
-                        row.get::<_, String>(2)?,         // type
-                        row.get::<_, bool>(3)?,           // notnull
-                        row.get::<_, bool>(5)?,           // pk
-                        row.get::<_, Option<String>>(4)?, // dflt_value
-                    ))
-                })
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            // Get FK metadata via PRAGMA foreign_key_list (quoted identifier)
-            let fk_query = crate::db::introspection::sqlite_foreign_keys_query(table);
-            let fk_map: HashMap<String, (String, String)> =
-                if let Ok(mut fk_stmt) = conn.prepare(&fk_query) {
-                    fk_stmt
-                        .query_map([], |row| {
-                            Ok((
-                                row.get::<_, String>(3)?, // from (column)
-                                row.get::<_, String>(2)?, // table
-                                row.get::<_, String>(4)?, // to (column)
-                            ))
-                        })
-                        .map_err(|e| e.to_string())?
-                        .filter_map(|r| r.ok())
-                        .map(|(from, ref_table, ref_col)| (from, (ref_table, ref_col)))
-                        .collect()
-                } else {
-                    HashMap::new()
-                };
-
-            let columns: Vec<ColumnInfo> = sqlite_columns_from_rows(&col_meta, &fk_map, is_view)?;
+            // Metadata comes from the catalog, never from a row page: SQLite
+            // column introspection is PRAGMA-based and has no `LIMIT`.
+            let (columns, is_view) = sqlite_column_metadata(conn, table)?;
 
             // Get data (with filters and sorts applied).
             // `rowid` is appended last for no-PK tables so later UPDATE/DELETE
@@ -1940,15 +1942,23 @@ pub(crate) async fn get_table_data_inner(
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
             let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-            let columns = mysql_load_columns(pool, schema, table).await?;
+            let read_only_relation = mysql_relation_is_read_only(pool, schema, table).await;
+            let columns = mysql_load_columns(pool, schema, table, read_only_relation).await?;
 
-            // Total count (filters do not affect the count — MySQL has no
-            // per-filter count query, mirroring the select builder's scope).
-            let total_rows: i64 =
-                sqlx::query_scalar::<_, i64>(&crate::db::mysql::mysql_count_query(schema, table))
-                    .fetch_one(pool)
-                    .await
-                    .map_err(|e| sanitize_error(&format!("{e}")))?;
+            // Filtered total: the count carries exactly the WHERE clause (and
+            // the same bound values, in the same order) as the data query, so a
+            // filtered browse reports the filtered total and page count instead
+            // of the whole-table count.
+            let count_query =
+                crate::db::mysql::mysql_count_query_filtered(schema, table, &filters)?;
+            let mut count_q = sqlx::query_scalar::<_, i64>(&count_query);
+            for value in crate::db::mysql::mysql_filter_values(&filters) {
+                count_q = count_q.bind(value);
+            }
+            let total_rows: i64 = count_q
+                .fetch_one(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
 
             // mysql_select_data_query already embeds ORDER BY from `sorts`
             // (falling back to a smart default sort) — no shared order-clause
@@ -1964,12 +1974,8 @@ pub(crate) async fn get_table_data_inner(
             )?;
 
             let mut q = sqlx::query(&data_query);
-            for f in &filters {
-                // null/notnull operators emit IS [NOT] NULL — no bound param.
-                if f.operator == "null" || f.operator == "notnull" {
-                    continue;
-                }
-                q = q.bind(&f.value);
+            for value in crate::db::mysql::mysql_filter_values(&filters) {
+                q = q.bind(value);
             }
             let data_rows = q
                 .bind(ps)
@@ -2130,7 +2136,16 @@ pub(crate) fn sqlite_columns_from_rows(
 
 /// Headless column introspection for a table, shared by the `get_table_columns`
 /// command and integration tests (thin-command principle — no Tauri `State`).
-/// Uses the same `pg_columns_query` row mapping as `get_table_data`.
+///
+/// **Metadata is not a row page.** This reads the catalog only: no `LIMIT`, no
+/// `OFFSET`, and no dependency on whatever page the grid happens to be showing,
+/// so introspecting a table can neither truncate its data nor consume a page of
+/// it. Browsers that need columns must call this instead of asking
+/// `get_table_data` for a zero-row page.
+///
+/// Read-only relations (views, materialized views) are reported with
+/// `editable: false`, so the viewer never offers an edit the engine would
+/// reject.
 pub(crate) async fn get_table_columns_inner(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     connection_id: &str,
@@ -2138,19 +2153,128 @@ pub(crate) async fn get_table_columns_inner(
     table: &str,
 ) -> Result<Vec<crate::models::ColumnInfo>, String> {
     let mut pm = pm.lock().await;
-    let client = match pm.get(connection_id) {
-        Some(crate::db::pool::DbHandle::Postgresql(c, _)) => c,
-        Some(_) => return Err("Table columns are PostgreSQL-only".into()),
-        None => return Err("Connection not found".into()),
-    };
-    let rows = client
-        .query(
-            &crate::db::introspection::pg_columns_query(),
+    match pm.get(connection_id) {
+        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let read_only = pg_relation_is_read_only(client, schema, table).await;
+            let rows = client
+                .query(
+                    &crate::db::introspection::pg_columns_query(),
+                    &[&schema, &table],
+                )
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            pg_columns_from_rows(schema, &rows, read_only)
+        }
+        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            sqlite_column_metadata(conn, table).map(|(columns, _)| columns)
+        }
+        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+            let read_only = mysql_relation_is_read_only(pool, schema, table).await;
+            mysql_load_columns(pool, schema, table, read_only).await
+        }
+        None => Err("Connection not found".into()),
+    }
+}
+
+/// Whether a PostgreSQL relation is read-only for the viewer: a view or a
+/// materialized view.
+///
+/// Materialized views are *not* in `information_schema.tables`, so checking only
+/// `table_type = 'VIEW'` reported them as ordinary tables — offering edits the
+/// engine refuses and appending a `ctid` locator to their data SELECT.
+pub(crate) async fn pg_relation_is_read_only(
+    client: &tokio_postgres::Client,
+    schema: &str,
+    table: &str,
+) -> bool {
+    client
+        .query_one(
+            &crate::db::introspection::pg_relation_read_only_query(),
             &[&schema, &table],
         )
         .await
-        .map_err(|e| sanitize_error(&format!("{e}")))?;
-    pg_columns_from_rows(schema, &rows, false)
+        .map(|r| r.get::<_, bool>(0))
+        .unwrap_or(false)
+}
+
+/// Whether a MySQL relation is read-only for the viewer.
+///
+/// MySQL has no materialized views; a `VIEW` (or a system view) cannot be
+/// edited through the viewer's single-row statements. An unknown relation is
+/// treated as a table, which is the pre-existing behavior.
+pub(crate) async fn mysql_relation_is_read_only(
+    pool: &sqlx::MySqlPool,
+    schema: &str,
+    table: &str,
+) -> bool {
+    let kind: Option<String> =
+        sqlx::query_scalar(crate::db::introspection::mysql_relation_type_query().as_str())
+            .bind(schema)
+            .bind(table)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    match kind {
+        Some(kind) => !kind.eq_ignore_ascii_case("BASE TABLE"),
+        None => false,
+    }
+}
+
+/// SQLite column metadata, read straight from the catalog.
+///
+/// Returns the columns plus whether the relation is a view (so callers can skip
+/// the `rowid` locator and mark every column read-only). `PRAGMA table_info` has
+/// no page concept — introspection cannot truncate or consume row data.
+pub(crate) fn sqlite_column_metadata(
+    conn: &rusqlite::Connection,
+    table: &str,
+) -> Result<(Vec<ColumnInfo>, bool), String> {
+    let is_view: bool = conn
+        .query_row(
+            "SELECT type = 'view' FROM sqlite_master WHERE name = ?1 AND type IN ('table', 'view')",
+            rusqlite::params![table],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+
+    let pragma_query = crate::db::introspection::sqlite_columns_query(table);
+    let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
+    let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,         // name
+                row.get::<_, String>(2)?,         // type
+                row.get::<_, bool>(3)?,           // notnull
+                row.get::<_, bool>(5)?,           // pk
+                row.get::<_, Option<String>>(4)?, // dflt_value
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let fk_query = crate::db::introspection::sqlite_foreign_keys_query(table);
+    let fk_map: HashMap<String, (String, String)> = if let Ok(mut fk_stmt) = conn.prepare(&fk_query)
+    {
+        fk_stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(3)?, // from (column)
+                    row.get::<_, String>(2)?, // table
+                    row.get::<_, String>(4)?, // to (column)
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .map(|(from, ref_table, ref_col)| (from, (ref_table, ref_col)))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let columns = sqlite_columns_from_rows(&col_meta, &fk_map, is_view)?;
+    Ok((columns, is_view))
 }
 
 #[tauri::command]
@@ -2320,7 +2444,7 @@ pub(crate) async fn get_fk_preview_inner(
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
             let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
             let target = resolve_fk_target_mysql(pool, schema, table, column).await?;
-            let columns = mysql_load_columns(pool, &target.schema, &target.table).await?;
+            let columns = mysql_load_columns(pool, &target.schema, &target.table, false).await?;
             let data_query = crate::db::fk::preview_sql(Engine::MySql, &target)?;
             let data_rows = sqlx::query(&data_query)
                 .bind(value)
@@ -2546,7 +2670,7 @@ pub(crate) async fn search_fk_options_inner(
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
             let pool = &*pool;
             let target = resolve_fk_target_mysql(pool, schema, table, column).await?;
-            let columns = mysql_load_columns(pool, &target.schema, &target.table).await?;
+            let columns = mysql_load_columns(pool, &target.schema, &target.table, false).await?;
             let pairs: Vec<(String, String)> = columns
                 .iter()
                 .map(|c| (c.name.clone(), c.data_type.clone()))
@@ -3636,6 +3760,35 @@ mod tests {
         assert_eq!(offset(5, 25), 100, "page 5, size 25 => offset 100");
     }
 
+    /// The page window is untrusted: absent values fall back to page 1 / 50, and
+    /// anything outside `page >= 1`, `1..=500` is rejected rather than clamped
+    /// into a different query.
+    #[test]
+    fn page_window_defaults_and_bounds() {
+        assert_eq!(
+            page_window(None, None).unwrap(),
+            (1, DEFAULT_TABLE_PAGE_SIZE, 0),
+            "an unspecified window is the first page"
+        );
+        assert_eq!(
+            page_window(Some(3), Some(MAX_TABLE_PAGE_SIZE)).unwrap(),
+            (3, MAX_TABLE_PAGE_SIZE, 2 * MAX_TABLE_PAGE_SIZE)
+        );
+
+        for bad_page in [0_i64, -1] {
+            let err = page_window(Some(bad_page), Some(10)).expect_err("page must be positive");
+            assert!(err.contains("page"), "got: {err}");
+        }
+        for bad_size in [0_i64, -1, MAX_TABLE_PAGE_SIZE + 1] {
+            let err =
+                page_window(Some(1), Some(bad_size)).expect_err("page size must be in 1..=500");
+            assert!(err.contains("page size"), "got: {err}");
+        }
+        let err = page_window(Some(i64::MAX), Some(MAX_TABLE_PAGE_SIZE))
+            .expect_err("an overflowing offset is not a page");
+        assert!(err.contains("out of range"), "got: {err}");
+    }
+
     /// Verify that a `Change::Update` serializes with the correct `type` tag.
     #[test]
     fn execute_change_serialization() {
@@ -4329,7 +4482,7 @@ mod tests {
             Some(crate::db::pool::DbHandle::MySql(p)) => p.clone(),
             _ => panic!("mysql handle missing"),
         };
-        let cols = mysql_load_columns(&pool, &first.schema, &first.name)
+        let cols = mysql_load_columns(&pool, &first.schema, &first.name, false)
             .await
             .expect("columns");
         assert_eq!(cols.len(), data.columns.len());
@@ -4501,3 +4654,7 @@ mod db_viewer_ident_live_tests;
 #[cfg(test)]
 #[path = "db_viewer_fk.test.rs"]
 mod db_viewer_fk_tests;
+
+#[cfg(test)]
+#[path = "db_viewer_pagination.test.rs"]
+mod db_viewer_pagination_tests;
