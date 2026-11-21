@@ -2,9 +2,32 @@
 //!
 //! Headless `run_*_export` functions (testable without Tauri State) + one
 //! thin command that owns the pool lock, the cancel registration, and the
-//! `export-progress` events. Fail-closed: any error deletes the partial file.
+//! `export-progress` events.
+//!
+//! Export is an Execution Entry Point that must never become a write path, so
+//! the promise is enforced in two layers *in the backend*:
+//!
+//! 1. [`validate_export_request`] runs the shared, corpus-pinned classifier
+//!    (`db::sql_classify`) behind an engine-appropriate allowlist: exactly one
+//!    statement, it must be provably `Read`, and its leading verb must be one
+//!    of the result-producing statements that engine actually supports.
+//!    Leading comments, MySQL executable comments, data-modifying CTEs, unknown
+//!    verbs, session/maintenance commands and multi-statement scripts are
+//!    rejected with a reason that names the engine and the offending shape —
+//!    no frontend analysis is involved or trusted.
+//! 2. The statement then runs inside the engine's own read-only mechanism
+//!    (`db::read_only`): a PostgreSQL/MySQL read-only transaction, or SQLite
+//!    `PRAGMA query_only`. A write that somehow got past the gate is refused by
+//!    the server, not by a comment.
+//!
+//! Fail-closed: any error deletes the partial file.
 
 use crate::db::pool::DbHandle;
+use crate::db::read_only::{ReadOnlyControl, ReadOnlyEngine, ReadOnlySession};
+use crate::db::sql_classify::{
+    classify_statement, scan_words, StatementKind, CTE_WRITE_VERBS, SCHEMA_VERBS, WRITE_VERBS,
+};
+use crate::db::sql_split::split_statements;
 use crate::models::db_viewer::ColumnInfo;
 use serde::{Deserialize, Serialize};
 use sqlx::{Column, Row};
@@ -51,34 +74,168 @@ pub struct ExportProgressEvent {
     pub error: Option<String>,
 }
 
-/// Read-only heuristic mirroring the frontend `isDestructiveQuery` set (spec §2:
-/// never trust the frontend guard alone).
-pub fn is_read_only_sql(sql: &str) -> bool {
-    let k: String = sql
-        .trim_start()
-        .chars()
-        .take_while(|c| c.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_uppercase();
-    !matches!(
-        k.as_str(),
-        "INSERT" | "UPDATE" | "DELETE" | "DROP" | "ALTER" | "TRUNCATE" | "CREATE" | "REPLACE"
-    )
+// ── The read-only export contract ─────────────────────────────────
+
+/// A statement the backend has proven read-only. The text it carries is the
+/// exact text that was classified, so what runs cannot differ from what was
+/// proven (no re-parse, no re-join, no client-side rewrite).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportStatement {
+    engine: ReadOnlyEngine,
+    sql: String,
 }
 
-/// Validate export inputs: single, read-only statement + absolute path.
-fn validate_export_inputs(sql: &str, path: &Path) -> Result<(), String> {
+impl ExportStatement {
+    pub fn engine(&self) -> ReadOnlyEngine {
+        self.engine
+    }
+
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+}
+
+/// The verbs export will run for an engine: the subset of the shared
+/// classifier's read set that returns a result set *that engine supports*.
+///
+/// This narrows, never widens, [`crate::db::sql_classify`]: a statement still
+/// has to be classified `Read` before its verb is looked at. It exists because
+/// the shared classifier answers "does this write?" for the destructive-query
+/// prompt — a question `VACUUM`, `REINDEX`, `SET`, `BEGIN` and `LOCK` can
+/// legitimately answer "no" — while export has to answer "is this a query I can
+/// run and export?", which those commands are not. The lists also keep each
+/// engine to statements it can parse, so `SHOW TABLES` on SQLite is refused at
+/// the gate with a reason instead of failing at the server.
+pub fn exportable_verbs(engine: ReadOnlyEngine) -> &'static [&'static str] {
+    match engine {
+        ReadOnlyEngine::PostgreSql => &["SELECT", "VALUES", "TABLE", "WITH", "SHOW", "EXPLAIN"],
+        ReadOnlyEngine::MySql => &[
+            "SELECT", "VALUES", "TABLE", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN",
+        ],
+        // `PRAGMA` stays exportable: read-only pragmas are how SQLite exposes
+        // introspection, and `PRAGMA query_only` refuses the assignment forms
+        // at the engine rather than being guessed at here.
+        ReadOnlyEngine::Sqlite => &["SELECT", "VALUES", "WITH", "EXPLAIN", "PRAGMA"],
+    }
+}
+
+/// The backend gate every export runs through, for the engine it is exporting
+/// from. Accepts only a single statement the shared classifier proves read-only
+/// and whose verb is an exportable read on that engine.
+pub fn validate_export_request(
+    engine: ReadOnlyEngine,
+    sql: &str,
+    path: &Path,
+) -> Result<ExportStatement, String> {
     if !path.is_absolute() {
         return Err("Export path must be absolute".to_string());
     }
-    if !is_read_only_sql(sql) {
-        return Err("Export accepts read-only queries only (INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/REPLACE are rejected)".to_string());
+
+    let statements = split_statements(sql);
+    match statements.len() {
+        1 => {}
+        0 => {
+            return Err(format!(
+                "export rejected on {}: no statement to export",
+                engine.as_str()
+            ))
+        }
+        found => {
+            return Err(format!(
+                "export rejected on {}: export accepts a single statement, found {found}",
+                engine.as_str()
+            ))
+        }
     }
-    let statements = crate::db::sql_split::split_statements(sql);
-    if statements.len() != 1 {
-        return Err("Export accepts a single query".to_string());
+
+    let statement = &statements[0];
+    if classify_statement(statement) != StatementKind::Read {
+        return Err(not_exportable(engine, statement));
     }
-    Ok(())
+
+    // A leading verb the shared classifier calls read-only, but that is not a
+    // query this engine can export.
+    let leading = leading_verb(statement);
+    if !leading
+        .as_deref()
+        .is_some_and(|verb| exportable_verbs(engine).contains(&verb))
+    {
+        return Err(not_an_exportable_query(engine, leading.as_deref()));
+    }
+
+    Ok(ExportStatement {
+        engine,
+        sql: statement.clone(),
+    })
+}
+
+/// The statement's leading keyword, with comments, quoted regions and
+/// dollar-quoted bodies skipped — the same first word the shared classifier
+/// dispatches on, so the allowlist cannot disagree with it about which verb a
+/// statement starts with.
+fn leading_verb(statement: &str) -> Option<String> {
+    scan_words(statement).into_iter().next()
+}
+
+/// Why this statement is not exportable, naming the engine and the shape that
+/// made it unprovable rather than a generic refusal.
+fn not_exportable(engine: ReadOnlyEngine, statement: &str) -> String {
+    let kind = classify_statement(statement);
+    let words = scan_words(statement);
+    let verb = words.first().map(String::as_str);
+    // The first word (if any) among `verbs`, so a wrapped or nested statement
+    // names the verb that actually writes instead of the wrapper around it.
+    let inner = |verbs: &[&str]| {
+        words
+            .iter()
+            .find(|word| verbs.iter().any(|verb| verb == word))
+            .cloned()
+    };
+    let detail = match (kind, verb) {
+        // `EXPLAIN DELETE …` writes (EXPLAIN ANALYZE executes); the outer verb
+        // is not the offender, so name the wrapped one.
+        (StatementKind::Write, Some("EXPLAIN")) => format!(
+            "the EXPLAIN wraps {} which changes data",
+            inner(WRITE_VERBS).unwrap_or_else(|| "a write".to_string())
+        ),
+        (StatementKind::Schema, Some("EXPLAIN")) => format!(
+            "the EXPLAIN wraps {} which changes schema",
+            inner(SCHEMA_VERBS).unwrap_or_else(|| "a schema change".to_string())
+        ),
+        // A write that hides in a CTE chain: the leading verb is misleading, so
+        // name where the write actually is.
+        (StatementKind::Write, Some("WITH")) => format!(
+            "the statement is a data-modifying CTE ({})",
+            inner(CTE_WRITE_VERBS).unwrap_or_else(|| "a write".to_string())
+        ),
+        (StatementKind::Write, Some(verb)) => format!("{verb} changes data"),
+        (StatementKind::Schema, Some(verb)) => format!("{verb} changes schema"),
+        (StatementKind::Unknown, Some(verb)) => format!("{verb} cannot be proven read-only"),
+        _ => "the statement cannot be proven read-only".to_string(),
+    };
+    format!(
+        "export rejected on {}: {detail}; export accepts only read-only queries",
+        engine.as_str()
+    )
+}
+
+/// Why a read-classified statement is still not exportable: it is not a query
+/// that returns rows, or not one this engine supports.
+fn not_an_exportable_query(engine: ReadOnlyEngine, verb: Option<&str>) -> String {
+    let accepted = exportable_verbs(engine).join(", ");
+    match verb {
+        Some(verb) => format!(
+            "export rejected on {}: {verb} is not an exportable read query on {}; \
+             export accepts only read-only queries that return rows ({accepted})",
+            engine.as_str(),
+            engine.as_str()
+        ),
+        None => format!(
+            "export rejected on {}: the statement has no exportable read verb; \
+             export accepts only read-only queries that return rows ({accepted})",
+            engine.as_str()
+        ),
+    }
 }
 
 // ── Format writers (pure) ─────────────────────────────────────────
@@ -157,19 +314,49 @@ fn write_row<W: Write>(
     }
 }
 
-/// Run the export, deleting the partial file on any failure (fail-closed).
-fn with_partial_cleanup<W, F>(path: &PathBuf, w: W, f: F) -> Result<ExportSummary, String>
-where
-    W: Write,
-    F: FnOnce(&mut std::io::BufWriter<W>) -> Result<ExportSummary, String>,
-{
-    let mut writer = std::io::BufWriter::with_capacity(8 * 1024 * 1024, w);
-    match f(&mut writer) {
-        Ok(summary) => {
-            writer.flush().map_err(|e| e.to_string())?;
-            Ok(summary)
-        }
+// ── Output handling ──────────────────────────────────────────────
+
+type ExportWriter = std::io::BufWriter<std::fs::File>;
+
+fn open_export_file(path: &Path) -> Result<ExportWriter, String> {
+    let file = std::fs::File::create(path).map_err(|e| format!("cannot create file: {e}"))?;
+    Ok(std::io::BufWriter::with_capacity(8 * 1024 * 1024, file))
+}
+
+/// Open the destination and start the engine's read-only session: either both
+/// hold, or nothing is left behind (a failed start removes the empty file; a
+/// failed file creation closes the session so the connection stays usable).
+async fn start_export<'a, C: ReadOnlyControl + ?Sized>(
+    conn: &'a mut C,
+    engine: ReadOnlyEngine,
+    path: &Path,
+) -> Result<(ReadOnlySession<'a, C>, ExportWriter), String> {
+    let session = ReadOnlySession::start(conn, engine).await?;
+    match open_export_file(path) {
+        Ok(writer) => Ok((session, writer)),
         Err(e) => {
+            let _ = session.finish().await;
+            Err(e)
+        }
+    }
+}
+
+/// Flush on success; on any failure delete the (partial) file and report the
+/// primary error. A session that could not be closed is a failure too: the
+/// connection's state is not what the caller would assume.
+fn settle_export<W: Write>(
+    path: &Path,
+    mut writer: std::io::BufWriter<W>,
+    body: Result<ExportSummary, String>,
+    restored: Result<(), String>,
+) -> Result<ExportSummary, String> {
+    match (body, restored) {
+        (Ok(summary), Ok(())) => writer
+            .flush()
+            .map(|_| summary)
+            .map_err(|e| format!("export flush failed: {e}")),
+        (Ok(_), Err(e)) | (Err(e), _) => {
+            drop(writer);
             let _ = std::fs::remove_file(path);
             Err(e)
         }
@@ -178,58 +365,67 @@ where
 
 // ── SQLite (native streaming) ─────────────────────────────────────
 
-pub fn run_sqlite_export(
+fn sqlite_export_body(
     conn: &rusqlite::Connection,
+    request: &ExportStatement,
+    format: ExportFormat,
+    writer: &mut ExportWriter,
+    progress: &mut (dyn FnMut(u64) + Send),
+) -> Result<ExportSummary, String> {
+    let mut stmt = conn.prepare(request.sql()).map_err(|e| e.to_string())?;
+    let columns: Vec<ColumnInfo> = (0..stmt.column_count())
+        .map(|i| ColumnInfo {
+            name: stmt.column_name(i).unwrap_or("?").to_string(),
+            data_type: "TEXT".to_string(),
+            is_nullable: true,
+            is_pk: false,
+            is_fk: false,
+            fk_ref: None,
+            default_value: None,
+            editable: true,
+            is_generated: false,
+        })
+        .collect();
+    if format == ExportFormat::Csv {
+        write!(writer, "\u{FEFF}").map_err(|e| e.to_string())?; // UTF-8 BOM
+        writeln!(writer, "{}", csv_header(&columns)).map_err(|e| e.to_string())?;
+    }
+    if format == ExportFormat::Json {
+        write!(writer, "[").map_err(|e| e.to_string())?;
+    }
+    let col_count = columns.len();
+    let mut rows_written: u64 = 0;
+    let mut first = true;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let values: Vec<serde_json::Value> =
+            (0..col_count).map(|i| sqlite_ref_to_json(row, i)).collect();
+        write_row(writer, format, &columns, &values, first).map_err(|e| e.to_string())?;
+        first = false;
+        rows_written += 1;
+        if rows_written % PROGRESS_ROWS == 0 {
+            progress(rows_written);
+        }
+    }
+    if format == ExportFormat::Json {
+        writeln!(writer, "]").map_err(|e| e.to_string())?;
+    }
+    progress(rows_written);
+    Ok(ExportSummary { rows_written })
+}
+
+pub async fn run_sqlite_export(
+    conn: &mut rusqlite::Connection,
     sql: &str,
     format: ExportFormat,
     path: &PathBuf,
     progress: &mut (dyn FnMut(u64) + Send),
 ) -> Result<ExportSummary, String> {
-    validate_export_inputs(sql, path)?;
-    let file = std::fs::File::create(path).map_err(|e| format!("cannot create file: {e}"))?;
-
-    with_partial_cleanup(path, file, |writer| {
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-        let columns: Vec<ColumnInfo> = (0..stmt.column_count())
-            .map(|i| ColumnInfo {
-                name: stmt.column_name(i).unwrap_or("?").to_string(),
-                data_type: "TEXT".to_string(),
-                is_nullable: true,
-                is_pk: false,
-                is_fk: false,
-                fk_ref: None,
-                default_value: None,
-                editable: true,
-                is_generated: false,
-            })
-            .collect();
-        if format == ExportFormat::Csv {
-            write!(writer, "\u{FEFF}").map_err(|e| e.to_string())?; // UTF-8 BOM
-            writeln!(writer, "{}", csv_header(&columns)).map_err(|e| e.to_string())?;
-        }
-        if format == ExportFormat::Json {
-            write!(writer, "[").map_err(|e| e.to_string())?;
-        }
-        let col_count = columns.len();
-        let mut rows_written: u64 = 0;
-        let mut first = true;
-        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
-        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let values: Vec<serde_json::Value> =
-                (0..col_count).map(|i| sqlite_ref_to_json(row, i)).collect();
-            write_row(writer, format, &columns, &values, first).map_err(|e| e.to_string())?;
-            first = false;
-            rows_written += 1;
-            if rows_written % PROGRESS_ROWS == 0 {
-                progress(rows_written);
-            }
-        }
-        if format == ExportFormat::Json {
-            writeln!(writer, "]").map_err(|e| e.to_string())?;
-        }
-        progress(rows_written);
-        Ok(ExportSummary { rows_written })
-    })
+    let request = validate_export_request(ReadOnlyEngine::Sqlite, sql, path)?;
+    let (mut session, mut writer) = start_export(conn, ReadOnlyEngine::Sqlite, path).await?;
+    let body = sqlite_export_body(session.conn(), &request, format, &mut writer, progress);
+    let restored = session.finish().await;
+    settle_export(path, writer, body, restored)
 }
 
 fn sqlite_ref_to_json(row: &rusqlite::Row, i: usize) -> serde_json::Value {
@@ -246,120 +442,158 @@ fn sqlite_ref_to_json(row: &rusqlite::Row, i: usize) -> serde_json::Value {
 
 // ── PostgreSQL (cursor FETCH loop — constant memory, stable order) ──
 
+async fn pg_export_body(
+    client: &mut tokio_postgres::Client,
+    request: &ExportStatement,
+    format: ExportFormat,
+    writer: &mut ExportWriter,
+    progress: &mut (dyn FnMut(u64) + Send),
+) -> Result<ExportSummary, String> {
+    let trimmed = request.sql().trim();
+    client
+        .simple_query(&format!("DECLARE {CURSOR_NAME} CURSOR FOR ({trimmed})"))
+        .await
+        .map_err(|e| format!("export declare failed: {e}"))?;
+
+    let mut columns: Vec<ColumnInfo> = Vec::new();
+    let mut rows_written: u64 = 0;
+    let mut first = true;
+    if format == ExportFormat::Json {
+        write!(writer, "[").map_err(|e| e.to_string())?;
+    }
+    loop {
+        let msgs = client
+            .simple_query(&format!("FETCH FORWARD {CURSOR_FETCH} FROM {CURSOR_NAME}"))
+            .await
+            .map_err(|e| format!("export fetch failed: {e}"))?;
+        let mut batch_rows: Vec<Vec<serde_json::Value>> = Vec::new();
+        for msg in msgs {
+            if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+                if columns.is_empty() {
+                    columns = row
+                        .columns()
+                        .iter()
+                        .map(|c| ColumnInfo {
+                            name: c.name().to_string(),
+                            data_type: "text".to_string(),
+                            is_nullable: true,
+                            is_pk: false,
+                            is_fk: false,
+                            fk_ref: None,
+                            default_value: None,
+                            editable: true,
+                            is_generated: false,
+                        })
+                        .collect();
+                }
+                // Simple-query protocol returns every value as text; decode
+                // as &str (usize has no FromSql impl) and NULL as None.
+                let values: Vec<serde_json::Value> = (0..row.len())
+                    .map(|i| match row.try_get(i) {
+                        Ok(Some(s)) => serde_json::Value::String(s.to_string()),
+                        _ => serde_json::Value::Null,
+                    })
+                    .collect();
+                batch_rows.push(values);
+            }
+        }
+        if batch_rows.is_empty() {
+            break;
+        }
+        if format == ExportFormat::Csv && rows_written == 0 {
+            write!(writer, "\u{FEFF}").map_err(|e| e.to_string())?; // UTF-8 BOM
+            writeln!(writer, "{}", csv_header(&columns)).map_err(|e| e.to_string())?;
+        }
+        for row in batch_rows {
+            write_row(writer, format, &columns, &row, first).map_err(|e| e.to_string())?;
+            first = false;
+            rows_written += 1;
+            if rows_written % PROGRESS_ROWS == 0 {
+                progress(rows_written);
+            }
+        }
+    }
+    if format == ExportFormat::Json {
+        writeln!(writer, "]").map_err(|e| e.to_string())?;
+    }
+    let _ = client.simple_query(&format!("CLOSE {CURSOR_NAME}")).await;
+    progress(rows_written);
+    Ok(ExportSummary { rows_written })
+}
+
 pub async fn run_pg_export(
-    client: &tokio_postgres::Client,
+    client: &mut tokio_postgres::Client,
     sql: &str,
     format: ExportFormat,
     path: &PathBuf,
     progress: &mut (dyn FnMut(u64) + Send),
 ) -> Result<ExportSummary, String> {
-    validate_export_inputs(sql, path)?;
-    let file = std::fs::File::create(path).map_err(|e| format!("cannot create file: {e}"))?;
-    let trimmed = sql.trim();
-    let mut writer = std::io::BufWriter::with_capacity(8 * 1024 * 1024, file);
-
-    // LINEAR FORM: run the cursor loop inline; on any error drop the writer
-    // and remove the partial file.
-    let run = async {
-        client
-            .simple_query("BEGIN")
-            .await
-            .map_err(|e| format!("export begin failed: {e}"))?;
-        if let Err(e) = client
-            .simple_query(&format!("DECLARE {CURSOR_NAME} CURSOR FOR ({trimmed})"))
-            .await
-        {
-            let _ = client.simple_query("ROLLBACK").await;
-            return Err(format!("export declare failed: {e}"));
-        }
-        let mut columns: Vec<ColumnInfo> = Vec::new();
-        let mut rows_written: u64 = 0;
-        let mut first = true;
-        if format == ExportFormat::Json {
-            write!(writer, "[").map_err(|e| e.to_string())?;
-        }
-        loop {
-            let msgs = client
-                .simple_query(&format!("FETCH FORWARD {CURSOR_FETCH} FROM {CURSOR_NAME}"))
-                .await;
-            let msgs = match msgs {
-                Ok(m) => m,
-                Err(e) => {
-                    let _ = client.simple_query("ROLLBACK").await;
-                    return Err(format!("export fetch failed: {e}"));
-                }
-            };
-            let mut batch_rows: Vec<Vec<serde_json::Value>> = Vec::new();
-            for msg in msgs {
-                if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
-                    if columns.is_empty() {
-                        columns = row
-                            .columns()
-                            .iter()
-                            .map(|c| ColumnInfo {
-                                name: c.name().to_string(),
-                                data_type: "text".to_string(),
-                                is_nullable: true,
-                                is_pk: false,
-                                is_fk: false,
-                                fk_ref: None,
-                                default_value: None,
-                                editable: true,
-                                is_generated: false,
-                            })
-                            .collect();
-                    }
-                    // Simple-query protocol returns every value as text; decode
-                    // as &str (usize has no FromSql impl) and NULL as None.
-                    let values: Vec<serde_json::Value> = (0..row.len())
-                        .map(|i| match row.try_get(i) {
-                            Ok(Some(s)) => serde_json::Value::String(s.to_string()),
-                            _ => serde_json::Value::Null,
-                        })
-                        .collect();
-                    batch_rows.push(values);
-                }
-            }
-            if batch_rows.is_empty() {
-                break;
-            }
-            if format == ExportFormat::Csv && rows_written == 0 {
-                write!(writer, "\u{FEFF}").map_err(|e| e.to_string())?; // UTF-8 BOM
-                writeln!(writer, "{}", csv_header(&columns)).map_err(|e| e.to_string())?;
-            }
-            for row in batch_rows {
-                write_row(&mut writer, format, &columns, &row, first).map_err(|e| e.to_string())?;
-                first = false;
-                rows_written += 1;
-                if rows_written % PROGRESS_ROWS == 0 {
-                    progress(rows_written);
-                }
-            }
-        }
-        if format == ExportFormat::Json {
-            writeln!(writer, "]").map_err(|e| e.to_string())?;
-        }
-        let _ = client.simple_query(&format!("CLOSE {CURSOR_NAME}")).await;
-        let _ = client.simple_query("ROLLBACK").await;
-        progress(rows_written);
-        Ok(ExportSummary { rows_written })
-    }
-    .await;
-
-    match run {
-        Ok(summary) => {
-            writer.flush().map_err(|e| e.to_string())?;
-            Ok(summary)
-        }
-        Err(e) => {
-            drop(writer);
-            let _ = std::fs::remove_file(path);
-            Err(e)
-        }
-    }
+    let request = validate_export_request(ReadOnlyEngine::PostgreSql, sql, path)?;
+    let (mut session, mut writer) = start_export(client, ReadOnlyEngine::PostgreSql, path).await?;
+    let body = pg_export_body(session.conn(), &request, format, &mut writer, progress).await;
+    let restored = session.finish().await;
+    settle_export(path, writer, body, restored)
 }
 
 // ── MySQL (sqlx stream — native streaming) ─────────────────────────
+
+async fn mysql_export_body(
+    conn: &mut sqlx::mysql::MySqlConnection,
+    request: &ExportStatement,
+    format: ExportFormat,
+    writer: &mut ExportWriter,
+    progress: &mut (dyn FnMut(u64) + Send),
+) -> Result<ExportSummary, String> {
+    use futures_util::TryStreamExt;
+    let mut stream = sqlx::query(request.sql()).fetch(&mut *conn);
+    let mut columns: Vec<ColumnInfo> = Vec::new();
+    let mut rows_written: u64 = 0;
+    let mut first = true;
+    if format == ExportFormat::Json {
+        write!(writer, "[").map_err(|e| e.to_string())?;
+    }
+    while let Some(row) = stream
+        .try_next()
+        .await
+        .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?
+    {
+        if columns.is_empty() {
+            columns = row
+                .columns()
+                .iter()
+                .map(|c| ColumnInfo {
+                    name: c.name().to_string(),
+                    data_type: c.type_info().to_string(),
+                    is_nullable: true,
+                    is_pk: false,
+                    is_fk: false,
+                    fk_ref: None,
+                    default_value: None,
+                    editable: true,
+                    is_generated: false,
+                })
+                .collect();
+            if format == ExportFormat::Csv {
+                write!(writer, "\u{FEFF}").map_err(|e| e.to_string())?; // UTF-8 BOM
+                writeln!(writer, "{}", csv_header(&columns)).map_err(|e| e.to_string())?;
+            }
+        }
+        let values: Vec<serde_json::Value> = (0..row.len())
+            .map(|i| crate::commands::query::mysql_cell_to_json(&row, i))
+            .collect();
+        write_row(writer, format, &columns, &values, first).map_err(|e| e.to_string())?;
+        first = false;
+        rows_written += 1;
+        if rows_written % PROGRESS_ROWS == 0 {
+            progress(rows_written);
+        }
+    }
+    if format == ExportFormat::Json {
+        writeln!(writer, "]").map_err(|e| e.to_string())?;
+    }
+    progress(rows_written);
+    Ok(ExportSummary { rows_written })
+}
 
 pub async fn run_mysql_export(
     conn: &mut sqlx::mysql::MySqlConnection,
@@ -368,74 +602,11 @@ pub async fn run_mysql_export(
     path: &PathBuf,
     progress: &mut (dyn FnMut(u64) + Send),
 ) -> Result<ExportSummary, String> {
-    validate_export_inputs(sql, path)?;
-    let file = std::fs::File::create(path).map_err(|e| format!("cannot create file: {e}"))?;
-    use futures_util::TryStreamExt;
-    let mut writer = std::io::BufWriter::with_capacity(8 * 1024 * 1024, file);
-
-    let run = async {
-        let mut stream = sqlx::query(sql).fetch(&mut *conn);
-        let mut columns: Vec<ColumnInfo> = Vec::new();
-        let mut rows_written: u64 = 0;
-        let mut first = true;
-        if format == ExportFormat::Json {
-            write!(writer, "[").map_err(|e| e.to_string())?;
-        }
-        while let Some(row) = stream
-            .try_next()
-            .await
-            .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?
-        {
-            if columns.is_empty() {
-                columns = row
-                    .columns()
-                    .iter()
-                    .map(|c| ColumnInfo {
-                        name: c.name().to_string(),
-                        data_type: c.type_info().to_string(),
-                        is_nullable: true,
-                        is_pk: false,
-                        is_fk: false,
-                        fk_ref: None,
-                        default_value: None,
-                        editable: true,
-                        is_generated: false,
-                    })
-                    .collect();
-                if format == ExportFormat::Csv {
-                    write!(writer, "\u{FEFF}").map_err(|e| e.to_string())?; // UTF-8 BOM
-                    writeln!(writer, "{}", csv_header(&columns)).map_err(|e| e.to_string())?;
-                }
-            }
-            let values: Vec<serde_json::Value> = (0..row.len())
-                .map(|i| crate::commands::query::mysql_cell_to_json(&row, i))
-                .collect();
-            write_row(&mut writer, format, &columns, &values, first).map_err(|e| e.to_string())?;
-            first = false;
-            rows_written += 1;
-            if rows_written % PROGRESS_ROWS == 0 {
-                progress(rows_written);
-            }
-        }
-        if format == ExportFormat::Json {
-            writeln!(writer, "]").map_err(|e| e.to_string())?;
-        }
-        progress(rows_written);
-        Ok(ExportSummary { rows_written })
-    }
-    .await;
-
-    match run {
-        Ok(summary) => {
-            writer.flush().map_err(|e| e.to_string())?;
-            Ok(summary)
-        }
-        Err(e) => {
-            drop(writer);
-            let _ = std::fs::remove_file(path);
-            Err(e)
-        }
-    }
+    let request = validate_export_request(ReadOnlyEngine::MySql, sql, path)?;
+    let (mut session, mut writer) = start_export(conn, ReadOnlyEngine::MySql, path).await?;
+    let body = mysql_export_body(session.conn(), &request, format, &mut writer, progress).await;
+    let restored = session.finish().await;
+    settle_export(path, writer, body, restored)
 }
 
 // ── Dispatcher + thin command ──────────────────────────────────────
@@ -450,14 +621,14 @@ pub(crate) async fn run_export_query(
     progress: &mut (dyn FnMut(u64) + Send),
 ) -> Result<ExportSummary, String> {
     match handle {
-        DbHandle::Sqlite(conn) => run_sqlite_export(conn, sql, format, path, progress),
+        DbHandle::Sqlite(conn) => run_sqlite_export(conn, sql, format, path, progress).await,
         DbHandle::Postgresql(client, _) => run_pg_export(client, sql, format, path, progress).await,
         DbHandle::MySql(pool) => {
             let mut conn = pool
                 .acquire()
                 .await
                 .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
-            run_mysql_export(&mut *conn, sql, format, path, progress).await
+            run_mysql_export(&mut conn, sql, format, path, progress).await
         }
     }
 }
@@ -515,7 +686,7 @@ pub async fn export_query_to_file(
             state
                 .cancel_registry
                 .set_mysql_conn_id(&connection_id, Some(conn_id));
-            let r = run_mysql_export(&mut *conn, &sql, fmt, &path_buf, &mut progress_cb).await;
+            let r = run_mysql_export(&mut conn, &sql, fmt, &path_buf, &mut progress_cb).await;
             state
                 .cancel_registry
                 .set_mysql_conn_id(&connection_id, None);

@@ -7,10 +7,10 @@
 **Seams:** SQL safety seam: catches rejected shapes across engines; tool-job seam: catches the engine read-only mechanism actually being used.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/97
-**Status:** ready
+**Status:** done
 
-- [ ] Export rejects leading-comment writes, executable-comment writes, and CTE writes on PostgreSQL, MySQL, and SQLite.
-- [ ] Export accepts genuine read queries for all three engines.
-- [ ] Each engine runs the export inside its available read-only mechanism.
-- [ ] A direct invocation that skips frontend analysis is still rejected.
-- [ ] Rejections name why the statement is not exportable.
+- [x] Export rejects leading-comment writes, executable-comment writes, and CTE writes on PostgreSQL, MySQL, and SQLite.
+- [x] Export accepts genuine read queries for all three engines.
+- [x] Each engine runs the export inside its available read-only mechanism.
+- [x] A direct invocation that skips frontend analysis is still rejected.
+- [x] Rejections name why the statement is not exportable.
