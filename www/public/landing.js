@@ -47,9 +47,15 @@
     });
 
   // OS-aware download buttons (nav + hero). Any element with [data-download]
-  // gets the platform-specific download URL; labels are only rewritten when the
-  // element does NOT opt out via a data-download-label attribute (nav keeps its
-  // compact "Download" label, hero gets "Download for macOS" etc.).
+  // gets a download URL; labels are only rewritten when the element does NOT
+  // opt out via a data-download-label attribute (nav keeps its compact
+  // "Download" label, hero gets "Download for macOS" etc.).
+  //
+  // Detection is only trusted where it is unambiguous: Windows ships a single
+  // x64 installer, so a direct link is safe. A browser cannot tell an Intel Mac
+  // from Apple Silicon, nor which Linux package a distribution uses, so those
+  // visitors are sent to the explicit per-architecture / per-package list in
+  // the #download section instead of being guessed at.
   document.querySelectorAll("a[data-download]").forEach((downloadBtn) => {
     const platform = navigator.platform || "";
     const userAgent = navigator.userAgent || "";
@@ -61,18 +67,19 @@
 
     const releasesUrl = "https://github.com/AdrianBonpin/gridline/releases";
     const version = "0.8.4";
+    const choicesUrl = "#download";
 
     if (isMobile) {
       downloadBtn.href = releasesUrl;
       if (!keepLabel) downloadBtn.textContent = "Get it on GitHub";
     } else if (isMac) {
-      downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline_${version}_aarch64.dmg`;
+      downloadBtn.href = choicesUrl;
       if (!keepLabel) downloadBtn.textContent = "Download for macOS";
     } else if (isWin) {
       downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline_${version}_x64-setup.exe`;
       if (!keepLabel) downloadBtn.textContent = "Download for Windows";
     } else if (isLinux) {
-      downloadBtn.href = `${releasesUrl}/download/v${version}/Gridline-${version}-1.x86_64.rpm`;
+      downloadBtn.href = choicesUrl;
       if (!keepLabel) downloadBtn.textContent = "Download for Linux";
     } else {
       downloadBtn.href = releasesUrl;

@@ -7,9 +7,9 @@
 **Seams:** Built-product seam: catches documentation claims against the published artifacts; the diagnostic outcomes themselves depend on the reporter.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/85
-**Status:** ready
+**Status:** done
 
-- [ ] A troubleshooting path requests the exact distribution release, session type, GPU and driver, terminal output, and the documented graphics workaround ladder.
-- [ ] README support language no longer claims every distribution works.
-- [ ] Website download choices present macOS architecture and Linux package options explicitly when detection is unreliable.
-- [ ] Issue #62 remains open, with its state and next steps recorded accurately.
+- [x] A troubleshooting path requests the exact distribution release, session type, GPU and driver, terminal output, and the documented graphics workaround ladder.
+- [x] README support language no longer claims every distribution works.
+- [x] Website download choices present macOS architecture and Linux package options explicitly when detection is unreliable.
+- [x] Issue #62 remains open, with its state and next steps recorded accurately.
