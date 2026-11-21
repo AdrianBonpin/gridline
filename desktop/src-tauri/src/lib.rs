@@ -175,6 +175,7 @@ pub fn run() {
             db_viewer::get_table_data,
             db_viewer::get_table_columns,
             db_viewer::get_fk_preview,
+            db_viewer::search_fk_options,
             db_viewer::execute_change,
             db_viewer::get_table_ddl,
             db_viewer::refresh_connection,

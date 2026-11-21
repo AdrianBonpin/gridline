@@ -86,6 +86,9 @@ export function useDbConnection(connectionId: string) {
       };
       await cmd.dbConnect(connectionId, input);
       setConnectionError(null);
+      // A (re)connect may point at another server/database: every cached
+      // column mapping from the previous session is no longer evidence.
+      useDbViewerStore.getState().invalidateMetadata();
       inputRef.current = input;
       connectedDbRef.current =
         input.db_type === "sqlite"
@@ -156,6 +159,8 @@ export function useDbConnection(connectionId: string) {
         await cmd.dbConnect(connectionId, input);
         if (cancelled) return;
         connectedDbRef.current = currentDatabase;
+        // The database changed, so cached columns belong to another environment.
+        useDbViewerStore.getState().invalidateMetadata();
         const schemas = await cmd
           .getSchemas(connectionId)
           .catch(() => [] as string[]);

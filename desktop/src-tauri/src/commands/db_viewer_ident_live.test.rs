@@ -104,7 +104,7 @@ async fn sqlite_browses_table_and_columns_with_quotes_spaces_and_keywords() {
     .await
     .expect("browse must succeed with legal-but-awkward names");
 
-    assert_eq!(result.total_rows, 3);
+    assert_eq!(result.total_rows, Some(3));
     assert_eq!(result.rows.len(), 3);
     for name in ["id", "a\"b", "o'brien", "select", "Mixed Case"] {
         column_index(&result, name);
@@ -138,7 +138,8 @@ async fn sqlite_filters_on_awkward_column_names() {
         .unwrap_or_else(|e| panic!("filter on {column:?} must succeed: {e}"));
 
         assert_eq!(
-            result.total_rows as usize, expected,
+            result.total_rows.unwrap() as usize,
+            expected,
             "filter {column} {operator} {value:?} must actually restrict rows"
         );
         assert_eq!(
@@ -462,7 +463,7 @@ async fn pg_legal_names_browse_filter_sort_edit_and_introspect() {
     )
     .await
     .expect("browse must succeed");
-    assert_eq!(all.total_rows, 3);
+    assert_eq!(all.total_rows, Some(3));
     for name in ["id", "a\"b", "o'brien", "select", "Mixed Case"] {
         column_index(&all, name);
     }
@@ -486,7 +487,8 @@ async fn pg_legal_names_browse_filter_sort_edit_and_introspect() {
         .await
         .unwrap_or_else(|e| panic!("filter on {column:?} must succeed: {e}"));
         assert_eq!(
-            filtered.total_rows as usize, expected,
+            filtered.total_rows.unwrap() as usize,
+            expected,
             "filter {column} {operator} {value:?} must restrict the count"
         );
         assert_eq!(filtered.rows.len(), expected);

@@ -31,7 +31,12 @@ pub struct ColumnInfo {
     pub is_nullable: bool,
     pub is_pk: bool,
     pub is_fk: bool,
-    pub fk_ref: Option<(String, String)>,
+    /// Referenced `(schema, table, column)` for a foreign-key column.
+    ///
+    /// The referenced schema is carried explicitly: a foreign key may point
+    /// into another schema, and following it against the browsing schema would
+    /// silently read a same-named local table instead.
+    pub fk_ref: Option<(String, String, String)>,
     pub default_value: Option<String>,
     pub editable: bool,
     pub is_generated: bool,
@@ -66,7 +71,20 @@ pub struct ConstraintInfo {
 pub struct QueryResult {
     pub columns: Vec<ColumnInfo>,
     pub rows: Vec<Vec<serde_json::Value>>,
-    pub total_rows: i64,
+    /// Exact total row count when the backend knows it **without running the
+    /// statement again**; `None` means unknown.
+    ///
+    /// A page request executes the statement exactly once, so a total is only
+    /// reported when that single execution already revealed it (the verbatim
+    /// path sees every row). The paged path reports `None` instead of counting,
+    /// because counting would execute the statement a second time and repeat
+    /// whatever side effects it has (volatile functions, sequences, `nextval`,
+    /// `pg_sleep`). Unknown is reported, never recomputed.
+    pub total_rows: Option<i64>,
+    /// True when at least one more row exists after this page. Always exact:
+    /// it comes from the same single execution (one row fetched beyond the
+    /// page), so pagination keeps working while the total is unknown.
+    pub has_more: bool,
     pub page: i64,
     pub page_size: i64,
     pub execution_time_ms: Option<i64>,
@@ -486,13 +504,33 @@ mod tests {
         let result = QueryResult {
             columns: vec![],
             rows: vec![],
-            total_rows: 0,
+            total_rows: Some(0),
+            has_more: false,
             page: 1,
             page_size: 100,
             execution_time_ms: None,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains(r#""rows":[]"#));
+    }
+
+    #[test]
+    fn query_result_reports_an_unknown_total_as_null() {
+        let result = QueryResult {
+            columns: vec![],
+            rows: vec![],
+            total_rows: None,
+            has_more: true,
+            page: 1,
+            page_size: 100,
+            execution_time_ms: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(
+            json.contains(r#""total_rows":null"#),
+            "an unavailable total must cross IPC as null (unknown), not as a number; got {json}"
+        );
+        assert!(json.contains(r#""has_more":true"#));
     }
 
     #[test]
@@ -590,14 +628,30 @@ mod tests {
             is_nullable: true,
             is_pk: false,
             is_fk: true,
-            fk_ref: Some(("users".to_string(), "id".to_string())),
+            fk_ref: Some((
+                "reporting".to_string(),
+                "users".to_string(),
+                "id".to_string(),
+            )),
             default_value: None,
             editable: true,
             is_generated: false,
         };
         let json = serde_json::to_string(&col).unwrap();
         assert!(json.contains("user_id"));
-        assert!(json.contains("users"));
+        assert_eq!(
+            col.fk_ref,
+            Some((
+                "reporting".to_string(),
+                "users".to_string(),
+                "id".to_string()
+            )),
+            "fk_ref must keep the referenced schema, table and column"
+        );
+        assert!(
+            json.contains("\"reporting\""),
+            "the referenced schema must be serialized: {json}"
+        );
     }
 
     #[test]

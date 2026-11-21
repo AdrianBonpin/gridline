@@ -18,6 +18,12 @@ interface CellEditorProps {
   enumValues?: string[];  // when present → render <select> of these values
   fkOptions?: FkOption[]; // when present → render searchable dropdown
   fkPlaceholder?: string; // placeholder for the FK search input
+  /**
+   * Server-side search over the *whole* referenced table, in the engine.
+   * Present → typing queries this instead of filtering the first page locally,
+   * so an option past the initial page is still reachable.
+   */
+  onSearchFk?: (query: string) => Promise<FkOption[]>;
   onCommit: (value: string | null) => void;
   onCancel: () => void;
 }
@@ -76,6 +82,7 @@ export function CellEditor({
   enumValues,
   fkOptions,
   fkPlaceholder,
+  onSearchFk,
   onCommit,
   onCancel,
 }: CellEditorProps) {
@@ -86,6 +93,10 @@ export function CellEditor({
   );
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** Rows returned by the server-side search for the current query. */
+  const [remoteOptions, setRemoteOptions] = useState<FkOption[] | null>(null);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const ref = useRef<HTMLTextAreaElement | HTMLInputElement>(null);
   const enumRef = useRef<HTMLSelectElement>(null);
@@ -127,6 +138,34 @@ export function CellEditor({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Server-side FK option search: the dropdown asks the referenced table for
+  // matches instead of filtering the (small) first page it was given.
+  useEffect(() => {
+    if (!onSearchFk) return;
+    let cancelled = false;
+    const handle = setTimeout(() => {
+      setSearching(true);
+      onSearchFk(query)
+        .then((rows) => {
+          if (cancelled) return;
+          setRemoteOptions(rows);
+          setRemoteError(null);
+        })
+        .catch((e: unknown) => {
+          if (cancelled) return;
+          setRemoteOptions(null);
+          setRemoteError(e instanceof Error ? e.message : String(e));
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [onSearchFk, query]);
 
   const large = ["json", "jsonb", "text"].some((t) =>
     dataType.toLowerCase().includes(t)
@@ -208,17 +247,18 @@ export function CellEditor({
   if (fkOptions && fkOptions.length > 0) {
     const q = query.trim().toLowerCase();
     const fkSearchText = (o: FkOption) =>
-    [
-      o.label,
-      ...(o.cells ?? []).map((c) => `${c.name}:${c.value}`),
-    ]
-      .join(" ")
-      .toLowerCase();
+      [o.label, ...(o.cells ?? []).map((c) => `${c.name}:${c.value}`)]
+        .join(" ")
+        .toLowerCase();
 
-  const filtered =
-    q === ""
-      ? fkOptions
-      : fkOptions.filter((o) => fkSearchText(o).includes(q));
+    // With a server-side search the returned rows are already the matches for
+    // this query (and can include rows far past the initial page); without one,
+    // fall back to filtering the provided options.
+    const filtered = onSearchFk
+      ? (remoteOptions ?? (q === "" ? fkOptions : []))
+      : q === ""
+        ? fkOptions
+        : fkOptions.filter((o) => fkSearchText(o).includes(q));
     return (
       <div ref={rootRef} className={`flex h-full w-full items-center gap-1.5 px-1.5 ${error ? "ring-1 ring-inset ring-red-500/60" : ""}`}>
         <input
@@ -265,8 +305,18 @@ export function CellEditor({
               NULL
             </button>
           )}
-          {filtered.length === 0 && (
-            <div className="px-2 py-1 text-xs text-text-muted">No matches</div>
+          {remoteError && (
+            <div className="px-2 py-1 text-xs text-red-500">{remoteError}</div>
+          )}
+          {!remoteError && filtered.length === 0 && (
+            <div className="px-2 py-1 text-xs text-text-muted">
+              {searching ? "Searching…" : "No matches"}
+            </div>
+          )}
+          {searching && filtered.length > 0 && (
+            <div className="px-2 py-1 text-[10px] text-text-muted">
+              Searching…
+            </div>
           )}
           {filtered.map((o) => (
             <button

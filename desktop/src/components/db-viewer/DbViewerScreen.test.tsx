@@ -6,7 +6,7 @@ import {
     derivePendingCellKeys,
     pickDisplayColumn,
 } from "./DbViewerScreen";
-import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useDbViewerStore, currentChangeOrigin } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useQueryStore } from "../../stores/queryStore";
@@ -911,6 +911,8 @@ describe("DbViewerScreen", () => {
                     hiddenColumns: [],
                     smartSortApplied: true,
                     tabType: "table",
+                    // a real tab always carries the origin it was opened on
+                    origin: currentChangeOrigin(),
                 },
             ],
             activeTabId: "tab-1",
@@ -938,7 +940,7 @@ describe("DbViewerScreen", () => {
         await waitFor(() => expect(getTableData).toHaveBeenCalledTimes(1));
     });
 
-    it("fetches enum labels and FK reference rows for the active table tab", async () => {
+    it("fetches FK options for the referenced relation instead of a same-named local table", async () => {
         const getEnums = vi
             .spyOn(commands, "getEnums")
             .mockResolvedValue([
@@ -948,8 +950,10 @@ describe("DbViewerScreen", () => {
                     labels: ["admin", "user"],
                 },
             ]);
-        const getTableData = vi
-            .spyOn(commands, "getTableData")
+        // The option source: rows of the *referenced* table, keyed by its own
+        // key column. Never a page of the browsing schema's table.
+        const searchFkOptions = vi
+            .spyOn(commands, "searchFkOptions")
             .mockResolvedValue({
                 columns: [
                     {
@@ -963,19 +967,32 @@ describe("DbViewerScreen", () => {
                         editable: false,
                         is_generated: false,
                     },
+                    {
+                        name: "name",
+                        data_type: "text",
+                        is_nullable: true,
+                        is_pk: false,
+                        is_fk: false,
+                        fk_ref: null,
+                        default_value: null,
+                        editable: true,
+                        is_generated: false,
+                    },
                 ],
-                rows: [[1], [2]],
-                total_rows: 2,
+                rows: [[7, "Reporting Alice"]],
+                total_rows: 1,
                 page: 1,
                 page_size: 50,
             } as any);
+        const getTableData = vi.spyOn(commands, "getTableData");
 
         useDbViewerStore.setState({
             tabs: [
                 {
                     id: "tab-1",
                     schema: "public",
-                    table: "users",
+                    // The FK from public.orders points at reporting.users.
+                    table: "orders",
                     page: 1,
                     pageSize: 50,
                     loading: false,
@@ -999,7 +1016,7 @@ describe("DbViewerScreen", () => {
                                 is_nullable: true,
                                 is_pk: false,
                                 is_fk: true,
-                                fk_ref: ["users", "id"],
+                                fk_ref: ["reporting", "users", "id"],
                                 default_value: null,
                                 editable: true,
                                 is_generated: false,
@@ -1016,7 +1033,7 @@ describe("DbViewerScreen", () => {
                                 is_generated: false,
                             },
                         ],
-                        rows: [[1, 2, "admin"]],
+                        rows: [[1, 7, "admin"]],
                         total_rows: 1,
                         page: 1,
                         page_size: 50,
@@ -1043,15 +1060,27 @@ describe("DbViewerScreen", () => {
         await waitFor(() =>
             expect(getEnums).toHaveBeenCalledWith("c1", "public"),
         );
-        // FK reference rows are fetched from the referenced table (page 1, 50).
+        // The FK source column is what gets searched; the backend resolves the
+        // referenced relation from engine metadata.
         await waitFor(() =>
-            expect(getTableData).toHaveBeenCalledWith(
+            expect(searchFkOptions).toHaveBeenCalledWith(
                 "c1",
                 "public",
-                "users",
+                "orders",
+                "user_id",
+                "",
                 1,
                 50,
             ),
+        );
+        // The bug: options were fetched with getTableData under the browsing
+        // schema, so a same-named local table supplied the rows.
+        expect(getTableData).not.toHaveBeenCalledWith(
+            "c1",
+            "public",
+            "users",
+            1,
+            50,
         );
     });
 
@@ -1924,5 +1953,190 @@ describe("query workspace truth", () => {
                 /cancel handle/i,
             ),
         );
+    });
+});
+
+describe("viewer identity and freshness", () => {
+    const usersResult = (rows: unknown[][] = [["appdb row"]]) => ({
+        columns: [
+            { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+            { name: "name", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+        ],
+        rows,
+        total_rows: rows.length,
+        page: 1,
+        page_size: 50,
+    });
+
+    function mockTableData() {
+        const calls: unknown[][] = [];
+        const spy = vi
+            .spyOn(commands, "getTableData")
+            .mockImplementation((( ...args: unknown[]) => {
+                calls.push(args);
+                if (args[2] === "posts") return Promise.resolve({ ...usersResult([["post row"]]), rows: [["post row"]] });
+                return Promise.resolve(usersResult());
+            }) as never);
+        return { spy, calls };
+    }
+
+    function renderScreen() {
+        return render(
+            <DbViewerScreen connectionId="c1" onHome={() => {}} onSettings={() => {}} />,
+        );
+    }
+
+    beforeEach(() => {
+        useDbViewerStore.getState().reset();
+        useConnectionStore.setState({
+            connections: [
+                { id: "c1", name: "local", db_type: "postgresql", host: "localhost", port: 5432, username: "dev", database: "mydb", folder_id: null, keychain_ref: null, tag_ids: [], favorite: false, created_at: "", updated_at: "" },
+            ] as Connection[],
+        });
+        useUiStore.setState({ activeConnectionId: "c1" });
+        useDbViewerStore.setState({
+            databases: ["mydb", "archive"],
+            schemas: ["public"],
+            tables: [
+                { name: "users", schema: "public", table_type: "TABLE" },
+                { name: "posts", schema: "public", table_type: "TABLE" },
+            ],
+            currentDatabase: "mydb",
+            currentSchema: "public",
+        });
+        vi.resetAllMocks();
+    });
+
+    it("never queries a tab against a newly selected database, and re-queries its own when it comes back", async () => {
+        const { calls } = mockTableData();
+        useDbViewerStore.getState().openTab("public", "users");
+        renderScreen();
+
+        // The first load (plus the smart default sort it applies) settles.
+        const tabId = useDbViewerStore.getState().activeTabId!;
+        await waitFor(() =>
+            expect(useDbViewerStore.getState().tabs.find((t) => t.id === tabId)?.loading).toBe(false),
+        );
+        const settled = calls.length;
+        expect(settled).toBeGreaterThan(0);
+        expect(calls[0].slice(0, 3)).toEqual(["c1", "public", "users"]);
+
+        // The database selector moves: the pool is somewhere else now, so the
+        // tab's rows must not be re-queried (or silently read as current).
+        act(() => useDbViewerStore.getState().setCurrentDatabase("archive"));
+        await waitFor(() =>
+            expect(screen.getByTestId("stale-results")).toHaveTextContent(/mydb/),
+        );
+        expect(calls).toHaveLength(settled);
+
+        // Switching back re-queries the database the tab belongs to.
+        act(() => useDbViewerStore.getState().setCurrentDatabase("mydb"));
+        await waitFor(() => expect(calls.length).toBeGreaterThan(settled));
+        expect(calls[calls.length - 1].slice(0, 3)).toEqual(["c1", "public", "users"]);
+        await waitFor(() => expect(screen.queryByTestId("stale-results")).toBeNull());
+    });
+
+    it("refuses to run a query tab outside the database it was opened on", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue({ result_sets: [mockQueryResult], notices: [], execution_time_ms: 42 } as any);
+        useDbViewerStore.getState().openQueryTab({ sql: "SELECT 1" });
+        renderScreen();
+
+        act(() => useDbViewerStore.getState().setCurrentDatabase("archive"));
+        await waitFor(() =>
+            expect(screen.getByTestId("stale-results")).toHaveTextContent(/mydb/),
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
+        // The old tab's identity must not execute SQL against the new database.
+        await waitFor(() => expect(executeQuery).not.toHaveBeenCalled());
+        expect(screen.getByTestId("stale-results")).toBeInTheDocument();
+    });
+
+    it("refreshes every affected tab after Commit All and clears its optimistic markers", async () => {
+        vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+        const { calls } = mockTableData();
+        const store = useDbViewerStore.getState();
+        store.openTab("public", "users");
+        const usersTab = useDbViewerStore.getState().activeTabId!;
+        store.setTabData(usersTab, usersResult() as any);
+        store.openTab("public", "posts", true);
+        const postsTab = useDbViewerStore.getState().activeTabId!;
+        store.setTabData(postsTab, usersResult([["post row"]]) as any);
+        // An untouched table: opening no tab means nothing to refresh
+        store.addChange({
+            type: "update",
+            schema: "public",
+            table: "users",
+            primaryKey: { id: 1 },
+            oldData: { name: "appdb row" },
+            newData: { name: "edited row" },
+        });
+        store.addChange({
+            type: "update",
+            schema: "public",
+            table: "posts",
+            primaryKey: { id: 1 },
+            oldData: { name: "post row" },
+            newData: { name: "edited post" },
+        });
+
+        renderScreen();
+        fireEvent.click(await screen.findByTestId("commit-all"));
+
+        // EVERY affected tab is refreshed, not only the active one.
+        await waitFor(() => {
+            const tables = calls.map((c) => c[2]);
+            expect(tables).toContain("users");
+            expect(tables).toContain("posts");
+        });
+        // …and their committed optimistic markers are cleared once refreshed.
+        await waitFor(() => expect(useDbViewerStore.getState().changesQueue).toHaveLength(0));
+    });
+
+    it("visibly marks a tab stale when its post-commit refresh fails", async () => {
+        vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+        vi.spyOn(commands, "getTableData").mockImplementation((( ...args: unknown[]) => {
+            if (args[2] === "posts") return Promise.reject(new Error("refresh failed"));
+            return Promise.resolve(usersResult());
+        }) as never);
+        const store = useDbViewerStore.getState();
+        store.openTab("public", "users");
+        store.setTabData(useDbViewerStore.getState().activeTabId!, usersResult() as any);
+        store.openTab("public", "posts", true);
+        const postsTab = useDbViewerStore.getState().activeTabId!;
+        store.setTabData(postsTab, usersResult([["post row"]]) as any);
+        store.addChange({
+            type: "update",
+            schema: "public",
+            table: "users",
+            primaryKey: { id: 1 },
+            oldData: { name: "appdb row" },
+            newData: { name: "edited row" },
+        });
+        store.addChange({
+            type: "update",
+            schema: "public",
+            table: "posts",
+            primaryKey: { id: 1 },
+            oldData: { name: "post row" },
+            newData: { name: "edited post" },
+        });
+
+        renderScreen();
+        fireEvent.click(await screen.findByTestId("commit-all"));
+
+        await waitFor(() =>
+            expect(useDbViewerStore.getState().tabs.find((t) => t.id === postsTab)?.stale).toBe(true),
+        );
+        act(() => useDbViewerStore.getState().setActiveTab(postsTab));
+        await waitFor(() =>
+            expect(screen.getByTestId("stale-results")).toBeInTheDocument(),
+        );
+        expect(screen.getByTestId("tab-error")).toHaveTextContent(/refresh failed/);
+        // The failed table keeps its optimistic marker; only refreshed ones clear.
+        const remaining = useDbViewerStore.getState().changesQueue.map((c) => c.table);
+        expect(remaining).toEqual(["posts"]);
     });
 });

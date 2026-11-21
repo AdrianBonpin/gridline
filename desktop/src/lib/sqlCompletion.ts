@@ -1,5 +1,6 @@
 import type { TableInfo, GraphColumn } from "./types";
 import { getSchemaGraph } from "./commands";
+import { columnCacheKey, type MetadataScope } from "./tabIdentity";
 
 export const SQL_KEYWORDS = [
   "SELECT",
@@ -101,18 +102,32 @@ export function buildColumnSuggestions(
   }));
 }
 
-// Cache of table columns, keyed by "schema.table".
+// Cache of table columns, scoped by Change Origin (connection + database) and
+// keyed per table. One environment's columns are never offered in another, and
+// the whole mapping is dropped after relevant DDL or a reconnect.
 const columnCache = new Map<string, GraphColumn[]>();
 
 /**
- * Synchronously read cached columns for a table, if the schema graph for its
- * schema has already been fetched.
+ * Drop every cached column list.
+ *
+ * Called when schema metadata changed (DDL, rebuild, reconnect) or the origin
+ * moved: the next completion re-introspects instead of suggesting columns that
+ * may no longer exist or belong to another database.
+ */
+export function invalidateColumnCache(): void {
+  columnCache.clear();
+}
+
+/**
+ * Synchronously read cached columns for a table in one metadata scope, if that
+ * scope's schema graph has already been fetched.
  */
 export function getCachedColumns(
+  scope: MetadataScope,
   schema: string,
   table: string,
 ): GraphColumn[] | undefined {
-  return columnCache.get(`${schema}.${table}`);
+  return columnCache.get(columnCacheKey(scope, schema, table));
 }
 
 /**
@@ -121,20 +136,20 @@ export function getCachedColumns(
  * autocomplete degrades gracefully.
  */
 export async function getColumnsForTable(
-  connectionId: string | null,
+  scope: MetadataScope,
   schema: string | null,
   table: string,
 ): Promise<GraphColumn[]> {
   const resolvedSchema = schema ?? "public";
-  const key = `${resolvedSchema}.${table}`;
+  const key = columnCacheKey(scope, resolvedSchema, table);
   const cached = columnCache.get(key);
   if (cached) return cached;
-  if (!connectionId) return [];
+  if (!scope.connectionId) return [];
 
   try {
-    const graph = await getSchemaGraph(connectionId, resolvedSchema);
+    const graph = await getSchemaGraph(scope.connectionId, resolvedSchema);
     for (const t of graph.tables) {
-      columnCache.set(`${resolvedSchema}.${t.name}`, t.columns);
+      columnCache.set(columnCacheKey(scope, resolvedSchema, t.name), t.columns);
     }
   } catch {
     return [];

@@ -17,9 +17,13 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ListChecks, Play, Table2, Layers, Eye, Terminal, X, Plus, Pencil } from "lucide-react";
-import { useDbViewerStore, type ViewerTab } from "../../stores/dbViewerStore";
+import {
+  useDbViewerStore,
+  type QueueItem,
+  type ViewerTab,
+} from "../../stores/dbViewerStore";
 import { useActiveChangeOrigin } from "../../hooks/useActiveChangeOrigin";
-import { itemsForChangeTarget } from "../../lib/changeOrigin";
+import { itemsForChangeTarget, type ChangeOrigin } from "../../lib/changeOrigin";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
 import { OBJECT_ICONS } from "./objects/ObjectDetail";
 
@@ -85,7 +89,14 @@ function SortableTab({
   );
 }
 
-export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
+export function TabBar({
+  onCommitted,
+}: {
+  onCommitted?: (
+    committed: QueueItem[],
+    origin: ChangeOrigin,
+  ) => void | Promise<void>;
+} = {}) {
   const tabs = useDbViewerStore((state) => state.tabs);
   const tables = useDbViewerStore((state) => state.tables);
   const activeTabId = useDbViewerStore((state) => state.activeTabId);

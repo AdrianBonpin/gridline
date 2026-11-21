@@ -14,7 +14,11 @@ export function ResultSetPanels({
         <section key={i} className="border-b border-border flex flex-col min-h-0">
           <header className="px-3 py-1.5 text-xs text-text-muted bg-surface-raised border-b border-border flex items-center gap-2 shrink-0">
             <span className="font-medium text-text">Result {i + 1}</span>
-            <span>— {set.total_rows} row{set.total_rows === 1 ? "" : "s"}</span>
+            <span>
+              {set.total_rows === null
+                ? "— total unknown"
+                : `— ${set.total_rows} row${set.total_rows === 1 ? "" : "s"}`}
+            </span>
           </header>
           <div className="min-h-0" style={{ height: Math.min(Math.max(set.rows.length * 28 + 32, 160), 480) }}>
             {renderGrid(set, i)}

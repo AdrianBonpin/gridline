@@ -196,6 +196,60 @@ describe("TableControls query variant", () => {
     expect(tab?.loading).toBe(false);
   });
 
+  it("reports an unknown total as unknown instead of inventing one", () => {
+    // A paged query executes its statement once, so the exact total is
+    // unavailable. The toolbar says so rather than recomputing it (which would
+    // run the statement again and repeat its side effects).
+    seed(
+      [
+        makeTab({
+          tabType: "query",
+          data: {
+            columns,
+            rows: [[1], [2]],
+            total_rows: null,
+            has_more: true,
+            page: 1,
+            page_size: 2,
+          },
+        }),
+      ],
+      "tab-1",
+    );
+    renderControls({ variant: "query", rows: [[1], [2]] });
+
+    expect(screen.getByText(/total unknown/i)).toBeInTheDocument();
+    // Page navigation stays usable: `has_more` is exact, so Next is enabled and
+    // the page label does not pretend to know the last page.
+    const next = screen.getByLabelText(/next page/i);
+    expect(next).not.toBeDisabled();
+    expect(screen.queryByText(/^1\//)).toBeNull();
+  });
+
+  it("disables Next on the last page when the total is unknown", () => {
+    seed(
+      [
+        makeTab({
+          tabType: "query",
+          page: 3,
+          data: {
+            columns,
+            rows: [[1]],
+            total_rows: null,
+            has_more: false,
+            page: 3,
+            page_size: 2,
+          },
+        }),
+      ],
+      "tab-1",
+    );
+    renderControls({ variant: "query", rows: [[1]] });
+
+    expect(screen.getByLabelText(/next page/i)).toBeDisabled();
+    expect(screen.getByLabelText(/previous page/i)).not.toBeDisabled();
+  });
+
   it("routes page-size changes through onRequestPageSize when provided", () => {
     seed(
       [
