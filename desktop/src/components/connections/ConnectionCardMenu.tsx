@@ -14,8 +14,9 @@ import {
 } from "lucide-react";
 import type { Connection } from "../../lib/types";
 import { useConnectionStore } from "../../stores/connectionStore";
+import { useNotificationStore } from "../../stores/notificationStore";
 import { buildConfigFromConnection } from "./ConnectionCard";
-import { buildConnectionUrl } from "../../lib/connectionString";
+import { copyConnectionUrl } from "../../lib/connectionUrlCopy";
 import { useConnectionStatus } from "./useConnectionStatus";
 
 interface ConnectionCardMenuProps {
@@ -43,6 +44,7 @@ export function ConnectionCardMenu({
     const [open, setOpen] = useState(false);
     const [manageOpen, setManageOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
+    const notify = useNotificationStore((s) => s.notify);
     const { state, info, check } = useConnectionStatus(
         connection.id,
         (pw) => buildConfigFromConnection(connection, pw),
@@ -85,15 +87,35 @@ export function ConnectionCardMenu({
     };
 
     const copyUrl = async (withPassword: boolean) => {
-        let password: string | null = null;
-        if (withPassword) {
-            password = await useConnectionStore
-                .getState()
-                .getConnectionPassword(connection.id)
-                .catch(() => null);
+        // Report what actually happened: a keychain or clipboard failure is
+        // never presented as a successful copy, and a password-less URL is
+        // never passed off as the credential string the user asked for.
+        const result = await copyConnectionUrl(
+            connection,
+            { withPassword },
+            {
+                readPassword: () =>
+                    useConnectionStore
+                        .getState()
+                        .getConnectionPassword(connection.id),
+                writeClipboard: (text) => {
+                    if (!navigator.clipboard?.writeText) {
+                        return Promise.reject(new Error("clipboard unavailable"));
+                    }
+                    return navigator.clipboard.writeText(text);
+                },
+            },
+        );
+        if (result.ok) {
+            notify(
+                result.copiedWithPassword
+                    ? "Connection URL with password copied"
+                    : "Connection URL copied",
+                "success",
+            );
+        } else {
+            notify(result.error, "error");
         }
-        const url = buildConnectionUrl(connection, password);
-        await navigator.clipboard.writeText(url).catch(() => {});
         close();
     };
 

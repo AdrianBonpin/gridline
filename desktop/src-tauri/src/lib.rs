@@ -170,6 +170,7 @@ pub fn run() {
             import_export::import_connections,
             import_export::export_connections,
             commands::test_connection::test_connection,
+            commands::test_connection::create_sqlite_database,
             db_viewer::db_connect,
             db_viewer::db_disconnect,
             db_viewer::get_databases,
