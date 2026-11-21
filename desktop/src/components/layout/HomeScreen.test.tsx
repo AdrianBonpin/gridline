@@ -1,12 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HomeScreen } from "./HomeScreen";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useNotificationStore } from "../../stores/notificationStore";
+import { SEARCH_DEBOUNCE_MS } from "../search/SearchBar";
 import type { Connection, Folder } from "../../lib/types";
+
+const CONNECTION_STRING = "postgresql://user:pass@localhost:5432/mydb";
 
 vi.mock("../../lib/commands", () => ({
   getConnections: vi.fn().mockResolvedValue([]),
@@ -31,12 +34,14 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 describe("HomeScreen", () => {
   beforeEach(() => {
     useConnectionStore.setState({ connections: [], folders: [], tags: [], recent: [], loading: false, error: null });
-    useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home", selectedItemIds: [] });
+    useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home", selectedItemIds: [], prefilledConnectionString: null });
     useSettingsStore.setState({ settings: null, loading: false, error: null });
     useNotificationStore.setState({ notifications: [] });
-    // SearchBar stores its debounce timer on window.__sb; clear any timer leaked
-    // by a previous test (e.g. typing a URL) so it can't fire mid-test.
-    window.clearTimeout((window as unknown as { __sb?: number }).__sb);
+  });
+
+  // A test that installs a fake clock must never leak it into the next one.
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("renders SearchBar and ActionRow", () => {
@@ -51,13 +56,37 @@ describe("HomeScreen", () => {
     expect(screen.getByText(/no connections yet/i)).toBeInTheDocument();
   });
 
-  it("opens new connection screen when a connection string is typed in search", async () => {
-    const user = userEvent.setup();
+  it("opens new connection screen when a connection string is typed in search", () => {
+    // The search box debounces its store update, so the clock is advanced by
+    // hand: leaving that debounce to real wall-clock time made this test fail
+    // whenever the timer happened to land mid-typing under load.
+    vi.useFakeTimers();
     render(<HomeScreen />);
-    const input = screen.getByPlaceholderText(/search connections/i);
-    await user.type(input, "postgresql://user:pass@localhost:5432/mydb");
+    const input = screen.getByPlaceholderText(/search connections/i) as HTMLInputElement;
+
+    // Each change carries one more character than the value already in the
+    // box, exactly as a keystroke does.
+    const typeText = (text: string) => {
+      for (const char of text) {
+        fireEvent.change(input, { target: { value: input.value + char } });
+      }
+    };
+
+    // `postgresql://user:pass@` has no host yet, so it is not a connection
+    // string: it arms the search debounce. The next character makes it one.
+    typeText("postgresql://user:pass@");
+    typeText("l");
+    // Let the debounce elapse while the user pauses mid-address. A pending
+    // debounce must not commit its now-stale prefix — that prefix used to come
+    // back through the store mirror and truncate both the box and the prefill.
+    act(() => {
+      vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS * 2);
+    });
+    typeText("ocalhost:5432/mydb");
+
+    expect(input).toHaveValue(CONNECTION_STRING);
     expect(useUiStore.getState().activeView).toBe("new-connection");
-    expect(useUiStore.getState().prefilledConnectionString).toBe("postgresql://user:pass@localhost:5432/mydb");
+    expect(useUiStore.getState().prefilledConnectionString).toBe(CONNECTION_STRING);
     expect(useUiStore.getState().searchQuery).toBe("");
   });
 
