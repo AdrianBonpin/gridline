@@ -190,6 +190,8 @@ fn pg_tool_status_serialization() {
         pg_restore_resolved_name: None,
         pg_dump_bundled_available: true,
         pg_restore_bundled_available: false,
+        pg_dump_probe_error: None,
+        pg_restore_probe_error: None,
     };
     let json = serde_json::to_string(&status).unwrap();
     assert!(json.contains("pg_dump_found"));
@@ -1990,4 +1992,557 @@ exit 0
     let _ = std::fs::remove_file(pg_restore);
 
     assert!(result.is_err(), "got {result:?}");
+}
+
+// ------------------------------------------------------------------
+// Ticket 31: tool jobs are owned, bounded, and cancellable.
+//
+// These tests exercise the *command seam* (`run_pg_dump_managed`,
+// `run_db_sync_managed`, `run_mysql_dump_managed`, the SQLite engines and the
+// progress-event mapping) with real processes, so the process-tree assertions
+// are observations of the operating system rather than of our bookkeeping.
+// ------------------------------------------------------------------
+
+#[cfg(unix)]
+fn job_temp_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "gridline_backup_job_{tag}_{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 performs the existence/permission check only.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(unix)]
+fn wait_for_pid(path: &std::path::Path, timeout: std::time::Duration) -> Option<u32> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(pid) = text.trim().parse::<u32>() {
+                return Some(pid);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    None
+}
+
+#[cfg(unix)]
+fn wait_until_dead(pid: u32, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if !pid_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    !pid_alive(pid)
+}
+
+#[cfg(unix)]
+fn pg_dump_options(file_path: &std::path::Path) -> BackupOptions {
+    BackupOptions {
+        format: "custom".into(),
+        file_path: file_path.to_string_lossy().into_owned(),
+        schema: None,
+        tables: None,
+        no_owner: true,
+    }
+}
+
+#[cfg(unix)]
+fn pg_params() -> PgConnParams {
+    PgConnParams::new(
+        "localhost".into(),
+        5432,
+        "test".into(),
+        "db".into(),
+        "secret".into(),
+    )
+}
+
+/// A fake `pg_dump` that spawns a helper of its own (exactly like the real tool
+/// spawning a helper), writes the helper's pid, and then runs forever.
+#[cfg(unix)]
+fn forking_dump_script(dir: &std::path::Path, pid_file: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("pg_dump");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nsh -c 'while :; do sleep 0.05; done' &\necho $! > '{}'\nwait\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+    path
+}
+
+/// Cancelling a backup from the UI must terminate the dump **and its children**,
+/// not just the process we happen to wait on.
+#[cfg(unix)]
+#[test]
+fn cancelling_a_pg_dump_terminates_its_process_tree() {
+    let dir = job_temp_dir("pg_dump_tree");
+    let pid_file = dir.join("helper.pid");
+    let script = forking_dump_script(&dir, &pid_file);
+    let tools = PgToolPaths {
+        pg_dump: script.to_string_lossy().into_owned(),
+        pg_restore: String::new(),
+        psql: String::new(),
+    };
+    let options = pg_dump_options(&dir.join("dump.out"));
+    let conn = pg_params();
+
+    let job = JobControl::detached();
+    let runner = job.clone();
+    let handle = std::thread::spawn(move || {
+        run_pg_dump_managed(&runner, &conn, &options, &tools)
+    });
+
+    let helper = wait_for_pid(&pid_file, std::time::Duration::from_secs(5)).expect("helper pid");
+    assert!(pid_alive(helper), "the dump helper should be running");
+
+    let started = std::time::Instant::now();
+    job.cancel();
+    let outcome = handle.join().unwrap();
+    let elapsed = started.elapsed();
+
+    let failure = outcome.expect_err("a cancelled dump must not report success");
+    assert!(failure.cancelled, "cancellation must stay distinguishable: {failure:?}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "cancellation was not prompt: {elapsed:?}"
+    );
+    assert!(
+        wait_until_dead(helper, std::time::Duration::from_secs(5)),
+        "the dump's helper process {helper} survived cancellation"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Quitting during a job: the app-exit hook calls `JobRegistry::cancel_all`,
+/// which must reach a dump that another thread is supervising.
+#[cfg(unix)]
+#[test]
+fn app_exit_cancellation_terminates_a_running_dump_tree() {
+    let dir = job_temp_dir("pg_dump_exit");
+    let pid_file = dir.join("helper.pid");
+    let script = forking_dump_script(&dir, &pid_file);
+    let tools = PgToolPaths {
+        pg_dump: script.to_string_lossy().into_owned(),
+        pg_restore: String::new(),
+        psql: String::new(),
+    };
+    let options = pg_dump_options(&dir.join("dump.out"));
+    let conn = pg_params();
+
+    let registry = crate::job::JobRegistry::new();
+    let job = registry.begin("exit-job");
+    let runner = job.clone();
+    let handle = std::thread::spawn(move || {
+        run_pg_dump_managed(&runner, &conn, &options, &tools)
+    });
+
+    let helper = wait_for_pid(&pid_file, std::time::Duration::from_secs(5)).expect("helper pid");
+
+    assert_eq!(registry.cancel_all(), 1, "the running job must be known");
+    let outcome = handle.join().unwrap();
+
+    assert!(outcome.expect_err("cancelled").cancelled);
+    assert!(
+        wait_until_dead(helper, std::time::Duration::from_secs(5)),
+        "quitting left the dump's helper process {helper} running"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A backup that keeps writing must not be killed by the idle bound, however
+/// long it runs — the deadline exists for hung tools, not big databases.
+#[cfg(unix)]
+#[test]
+fn a_progressing_pg_dump_is_not_killed_by_the_idle_bound() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = job_temp_dir("pg_dump_progress");
+    let out = dir.join("dump.out");
+    let script = dir.join("pg_dump");
+    // Mirrors `pg_dump --file=<path>`: the tool writes to its own output file.
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ni=0\nwhile [ $i -lt 30 ]; do\n  printf 'chunk %s\\n' \"$i\" >> '{}'\n  i=$((i+1))\n  sleep 0.05\ndone\nexit 0\n",
+            out.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).unwrap();
+
+    let tools = PgToolPaths {
+        pg_dump: script.to_string_lossy().into_owned(),
+        pg_restore: String::new(),
+        psql: String::new(),
+    };
+    let options = pg_dump_options(&out);
+    let conn = pg_params();
+
+    let job = JobControl::detached();
+    let idle = std::time::Duration::from_millis(800);
+    job.set_idle_timeout(idle);
+
+    let started = std::time::Instant::now();
+    let outcome = run_pg_dump_managed(&job, &conn, &options, &tools);
+    let elapsed = started.elapsed();
+
+    assert!(outcome.is_ok(), "a progressing dump was killed: {outcome:?}");
+    assert!(elapsed > idle, "the fixture must outlive the idle window");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A dump that stops producing output is treated as hung and stopped instead of
+/// waiting forever.
+#[cfg(unix)]
+#[test]
+fn a_stalled_pg_dump_is_stopped_by_the_idle_bound() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = job_temp_dir("pg_dump_stall");
+    let pid_file = dir.join("helper.pid");
+    let out = dir.join("dump.out");
+    let script = dir.join("pg_dump");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nsh -c 'while :; do sleep 0.05; done' &\necho $! > '{}'\nwait\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).unwrap();
+
+    let tools = PgToolPaths {
+        pg_dump: script.to_string_lossy().into_owned(),
+        pg_restore: String::new(),
+        psql: String::new(),
+    };
+    let options = pg_dump_options(&out);
+    let conn = pg_params();
+
+    let job = JobControl::detached();
+    job.set_idle_timeout(std::time::Duration::from_millis(400));
+
+    let outcome = run_pg_dump_managed(&job, &conn, &options, &tools);
+    match outcome {
+        Err(ref f) => assert!(!f.cancelled, "a stall is not a cancellation: {f:?}"),
+        Ok(_) => panic!("a stalled dump must be stopped"),
+    }
+    let helper = wait_for_pid(&pid_file, std::time::Duration::from_secs(2));
+    if let Some(helper) = helper {
+        assert!(
+            wait_until_dead(helper, std::time::Duration::from_secs(5)),
+            "the stalled dump's helper {helper} survived"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Cancelling a sync must kill both ends of the pipe.
+#[cfg(unix)]
+#[test]
+fn cancelling_a_db_sync_kills_both_ends() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = job_temp_dir("pg_sync_cancel");
+    let dump_pid = dir.join("dump.pid");
+    let restore_pid = dir.join("restore.pid");
+    let write_script = |name: &str, body: String| {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path.to_string_lossy().into_owned()
+    };
+
+    let dump = write_script(
+        "pg_dump",
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nwhile :; do echo x; sleep 0.05; done\n",
+            dump_pid.display()
+        ),
+    );
+    let restore = write_script(
+        "pg_restore",
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nwhile :; do sleep 0.05; done\n",
+            restore_pid.display()
+        ),
+    );
+
+    let tools = PgToolPaths {
+        pg_dump: dump,
+        pg_restore: restore,
+        psql: String::new(),
+    };
+    let job = JobControl::detached();
+    let runner = job.clone();
+    let source = pg_params();
+    let target = pg_params();
+    let handle = std::thread::spawn(move || {
+        run_db_sync_managed(&runner, &source, &target, None, None, &tools)
+    });
+
+    let dp = wait_for_pid(&dump_pid, std::time::Duration::from_secs(5)).expect("dump pid");
+    let rp = wait_for_pid(&restore_pid, std::time::Duration::from_secs(5)).expect("restore pid");
+
+    job.cancel();
+    let outcome = handle.join().unwrap();
+    assert!(outcome.expect_err("cancelled").cancelled);
+    assert!(wait_until_dead(dp, std::time::Duration::from_secs(5)), "dump survived");
+    assert!(
+        wait_until_dead(rp, std::time::Duration::from_secs(5)),
+        "restore survived"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The MySQL dump path is owned the same way.
+#[cfg(unix)]
+#[test]
+fn cancelling_a_mysql_dump_terminates_its_process_tree() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = job_temp_dir("mysql_dump_tree");
+    let helper_pid = dir.join("helper.pid");
+    let result_file = dir.join("dump.sql");
+    let script = dir.join("mariadb-dump");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'mariadb-dump 11.4.5-MariaDB'; exit 0; fi\nsh -c 'while :; do sleep 0.05; done' &\necho $! > '{}'\nwait\n",
+            helper_pid.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).unwrap();
+
+    let tools = MySqlToolPaths {
+        mysqldump: script.to_string_lossy().into_owned(),
+        mysql: String::new(),
+    };
+    let conn = MySqlConnParams::new(
+        "localhost".into(),
+        3306,
+        "root".into(),
+        "app".into(),
+        "secret".into(),
+    );
+    let options = MySqlBackupOptions {
+        database: "app".into(),
+        file_path: result_file.to_string_lossy().into_owned(),
+        single_transaction: true,
+        no_data: false,
+        routines: true,
+        triggers: true,
+        events: false,
+    };
+
+    let job = JobControl::detached();
+    let runner = job.clone();
+    let handle = std::thread::spawn(move || {
+        run_mysql_dump_managed(&runner, &conn, &options, &tools, None)
+    });
+
+    let helper = wait_for_pid(&helper_pid, std::time::Duration::from_secs(5)).expect("helper pid");
+    job.cancel();
+    let outcome = handle.join().unwrap();
+
+    assert!(outcome.expect_err("cancelled").cancelled);
+    assert!(
+        wait_until_dead(helper, std::time::Duration::from_secs(5)),
+        "the MySQL dump's helper {helper} survived cancellation"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A MySQL client that ignores `--version` must not hang job start-up, and the
+/// bounded probe must answer promptly.
+#[cfg(unix)]
+#[test]
+fn the_mariadb_version_probe_is_bounded() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = job_temp_dir("mariadb_probe");
+    let script = dir.join("hanging-mariadb-dump");
+    std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+    let mut perms = std::fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).unwrap();
+
+    let started = std::time::Instant::now();
+    let is_mariadb = client_is_mariadb(&script.to_string_lossy());
+    let elapsed = started.elapsed();
+
+    assert!(!is_mariadb);
+    assert!(
+        elapsed < std::time::Duration::from_secs(6),
+        "the version probe was not bounded: {elapsed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A failed job maps to a visible failure event with the tool's message, and a
+/// cancelled job to a distinct cancelled event (the UI's recovery action keys
+/// off these).
+#[test]
+fn job_outcomes_map_to_visible_progress_events() {
+    let completed = progress_event("j1", &Ok(()));
+    assert_eq!(completed.status, "completed");
+
+    let failed = progress_event("j1", &Err(JobFailure::failed("pg_dump: connection refused")));
+    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.error.as_deref(), Some("pg_dump: connection refused"));
+
+    let cancelled = progress_event(
+        "j1",
+        &Err(JobFailure {
+            message: CANCEL_MESSAGE.into(),
+            cancelled: true,
+        }),
+    );
+    assert_eq!(cancelled.status, "cancelled", "a cancel is not a failure");
+    assert_eq!(cancelled.error.as_deref(), Some(CANCEL_MESSAGE));
+}
+
+#[test]
+fn a_managed_cancellation_marks_the_failure_cancelled() {
+    let failure = JobFailure::from(crate::job::JobError::Cancelled);
+    assert!(failure.cancelled);
+    // A tool error is never mistaken for a cancellation.
+    let failure = JobFailure::failed("psql: syntax error");
+    assert!(!failure.cancelled);
+    // The in-process engines report a `KILL QUERY` abort with their own text.
+    assert!(JobFailure::from_engine(QUERY_CANCEL_MESSAGE.to_string()).cancelled);
+    assert!(JobFailure::from_engine(CANCEL_MESSAGE.to_string()).cancelled);
+    assert!(!JobFailure::from_engine("Statement 3 of 9 failed".to_string()).cancelled);
+}
+
+/// SQLite in-process jobs are cancellable too, and a cancelled restore rolls
+/// its transaction back instead of leaving a half-applied script.
+#[cfg(unix)]
+#[test]
+fn sqlite_restore_cancellation_rolls_the_target_back() {
+    let dir = job_temp_dir("sqlite_cancel");
+    let target = dir.join("target.db");
+    let conn = Connection::open(&target).unwrap();
+    conn.execute_batch("CREATE TABLE keep (id INTEGER); INSERT INTO keep VALUES (1);")
+        .unwrap();
+
+    let dump = "CREATE TABLE new_table (id INTEGER);\nINSERT INTO new_table VALUES (7);\n";
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let is_cancelled = move || {
+        // The clean phase already dropped `keep`; cancel before the second
+        // replayed statement so the rollback (not the replay) is observed.
+        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1
+    };
+
+    let result = restore_sqlite_cancellable(&conn, dump, true, &is_cancelled);
+    assert_eq!(
+        result.unwrap_err(),
+        CANCEL_MESSAGE,
+        "must report a cancellation"
+    );
+
+    let count = |conn: &Connection, sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='keep'"
+        ),
+        1,
+        "the clean phase dropped the table, so the transaction must roll back"
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='new_table'"
+        ),
+        0,
+        "a cancelled restore must apply nothing"
+    );
+    drop(conn);
+
+    // Reopening the file shows the rollback is durable, not just in-memory.
+    let conn = Connection::open(&target).unwrap();
+    assert_eq!(count(&conn, "SELECT count(*) FROM keep"), 1);
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cancelled_sqlite_dump_reports_a_cancellation() {
+    let dir = job_temp_dir("sqlite_dump_cancel");
+    let src_path = dir.join("source.db");
+    let src = Connection::open(&src_path).unwrap();
+    src.execute_batch("CREATE TABLE a (id INTEGER); CREATE TABLE b (id INTEGER);")
+        .unwrap();
+    let mut out: Vec<u8> = Vec::new();
+    let result = dump_sqlite_to_cancellable(&src, &mut std::io::Cursor::new(&mut out), |_| {}, &|| {
+        true
+    });
+    assert_eq!(result.unwrap_err(), CANCEL_MESSAGE);
+    drop(src);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A probe that timed out is reported in the tool status instead of looking
+/// like "not installed" (which would send the user to install a tool they have).
+#[test]
+fn a_bounded_probe_failure_is_surfaced_in_the_tool_status() {
+    let status = build_pg_tool_status_with(
+        &ToolResolution::none(),
+        &ToolResolution::none(),
+        Some("/opt/homebrew/bin/pg_dump — The tool did not respond within 1s and was stopped".into()),
+        None,
+    );
+    assert!(!status.pg_dump_found);
+    assert!(
+        status
+            .pg_dump_probe_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("did not respond"),
+        "the probe failure must be visible"
+    );
+
+    // A resolved tool has nothing to explain.
+    let resolved = ToolResolution {
+        resolved: Some(tool_resolver::Resolution {
+            program: "/usr/bin/pg_dump".into(),
+            source: tool_resolver::ToolSource::Path,
+            name: "pg_dump".into(),
+        }),
+        bundled_path: None,
+        bundled_available: false,
+        version: Some("pg_dump 16".into()),
+    };
+    let status = build_pg_tool_status_with(
+        &resolved,
+        &ToolResolution::none(),
+        Some("stale note".into()),
+        None,
+    );
+    assert!(status.pg_dump_found);
+    assert!(status.pg_dump_probe_error.is_none());
 }

@@ -204,13 +204,17 @@ fn a_continuously_progressing_job_is_not_killed_by_the_idle_bound() {
         &dir,
         "slow-but-progressing",
         &format!(
-            "#!/bin/sh\nfor i in $(seq 1 24); do echo \"row $i\" >> '{}'; sleep 0.05; done\nexit 0\n",
+            "#!/bin/sh\nfor i in $(seq 1 30); do echo \"row $i\" >> '{}'; sleep 0.05; done\nexit 0\n",
             output.display()
         ),
     );
     let probe_path = output.clone();
     let job = JobControl::detached();
-    job.set_idle_timeout(Duration::from_millis(400));
+    // Half the write interval is far too tight: a loaded machine (the whole
+    // test suite runs in parallel) can delay both processes by more than that
+    // and make a healthy job look stalled.
+    let idle = Duration::from_millis(800);
+    job.set_idle_timeout(idle);
 
     let started = Instant::now();
     let outcome = run_managed(
@@ -227,7 +231,7 @@ fn a_continuously_progressing_job_is_not_killed_by_the_idle_bound() {
         "a progressing job must not be killed, got {outcome:?}"
     );
     assert!(
-        elapsed > Duration::from_millis(400),
+        elapsed > idle,
         "the fixture must outlive the idle window (ran {elapsed:?})"
     );
     let _ = std::fs::remove_dir_all(&dir);

@@ -203,3 +203,66 @@ describe("BackupPage tool provenance and re-check", () => {
     );
   });
 });
+describe("BackupPage job cancellation", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockConnections.length = 0;
+    useBackupStore.setState({ jobs: [], activeJobId: null, progress: 0 });
+    useNotificationStore.setState({ notifications: [] });
+    vi.spyOn(commands, "getSchemas").mockResolvedValue([]);
+    vi.spyOn(commands, "detectPgTools").mockResolvedValue({
+      pg_dump_found: true,
+      pg_restore_found: true,
+      pg_dump_version: "16",
+      pg_restore_version: "16",
+      pg_dump_source: "system",
+      pg_restore_source: "system",
+    });
+  });
+
+  it("cancels the running job by the backend's job id", async () => {
+    mockConnections.push({ id: "c1", db_type: "postgresql", name: "p" });
+    const cancel = vi.spyOn(commands, "cancelToolJob").mockResolvedValue(true);
+    useBackupStore.getState().startJob("backend-uuid", "dump");
+
+    render(<BackupPage connectionId="c1" />);
+    await waitFor(() => expect(screen.getByText("In progress...")).toBeTruthy());
+
+    fireEvent.click(screen.getByText("Cancel"));
+
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith("backend-uuid"));
+    await waitFor(() =>
+      expect(useBackupStore.getState().jobs[0].status).toBe("cancelled"),
+    );
+  });
+
+  it("offers a retry after a failed backup", async () => {
+    mockConnections.push({ id: "c2", db_type: "postgresql", name: "p" });
+    useBackupStore.getState().startJob("job-failed", "dump");
+    useBackupStore.getState().failJob("job-failed", "pg_dump: connection refused");
+
+    render(<BackupPage connectionId="c2" />);
+    await waitFor(() => expect(screen.getByTestId("backup-retry")).toBeTruthy());
+    expect(screen.getByText(/connection refused/)).toBeTruthy();
+  });
+
+  it("shows why a bounded tool probe failed instead of only 'not found'", async () => {
+    mockConnections.push({ id: "c3", db_type: "postgresql", name: "p" });
+    vi.spyOn(commands, "detectPgTools").mockResolvedValue({
+      pg_dump_found: false,
+      pg_restore_found: false,
+      pg_dump_version: null,
+      pg_restore_version: null,
+      pg_dump_source: null,
+      pg_restore_source: null,
+      pg_dump_probe_error:
+        "/opt/homebrew/bin/pg_dump — The tool did not respond within 1s and was stopped",
+    });
+
+    render(<BackupPage connectionId="c3" />);
+    await waitFor(() => expect(screen.getByTestId("tool-probe-error")).toBeTruthy());
+    expect(screen.getByTestId("tool-probe-error").textContent).toContain(
+      "did not respond",
+    );
+  });
+});

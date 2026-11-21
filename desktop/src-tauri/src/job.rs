@@ -686,9 +686,22 @@ fn supervise(
             if seen != last_seen {
                 last_seen = seen;
                 last_progress = Instant::now();
-            } else if let Some(silent) = job.is_idle(last_progress) {
-                terminate_all(job, children);
-                return Err(JobError::Idle(silent));
+            } else if job.is_idle(last_progress).is_some() {
+                // A starved supervisor thread misses progress samples, which
+                // would make a healthy backup on a busy machine look stalled.
+                // Re-read, and require one more quiet poll interval before
+                // condemning the job.
+                if !confirm_silence(drains, activity.as_ref(), &mut last_seen) {
+                    // The sample was simply late; the job is progressing.
+                    last_progress = Instant::now();
+                } else {
+                    std::thread::sleep(POLL_INTERVAL);
+                    if confirm_silence(drains, activity.as_ref(), &mut last_seen) {
+                        terminate_all(job, children);
+                        return Err(JobError::Idle(last_progress.elapsed()));
+                    }
+                    last_progress = Instant::now();
+                }
             }
         }
 
@@ -698,6 +711,19 @@ fn supervise(
 
 fn total_bytes(drains: &[&Drain], activity: Option<&Activity>) -> u64 {
     drains.iter().map(|d| d.bytes()).sum::<u64>() + activity.map(|a| a()).unwrap_or(0)
+}
+
+/// Whether the job produced nothing new since `last_seen` (which it updates
+/// when it did). Used to double-check an apparently silent job before stopping
+/// it.
+fn confirm_silence(drains: &[&Drain], activity: Option<&Activity>, last_seen: &mut u64) -> bool {
+    let seen = total_bytes(drains, activity);
+    if seen == *last_seen {
+        true
+    } else {
+        *last_seen = seen;
+        false
+    }
 }
 
 fn terminate_all(job: &JobControl, children: &[Arc<ManagedChild>]) {

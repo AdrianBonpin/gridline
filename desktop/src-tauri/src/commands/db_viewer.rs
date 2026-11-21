@@ -153,11 +153,17 @@ pub fn build_pg_dump_ddl_args(schema: &str, table: &str) -> Vec<String> {
 
 /// Check whether the `pg_dump` binary at the given path (bare name or
 /// absolute path) is executable and reports a version.
+///
+/// Bounded like every other tool probe: a `pg_dump` that hangs on `--version`
+/// used to block the DDL-copy caller indefinitely. A tool that cannot be
+/// launched or does not answer within the deadline is reported as unavailable.
 pub fn pg_dump_available_at(path: &str) -> bool {
-    std::process::Command::new(path)
-        .arg("--version")
-        .output()
-        .is_ok()
+    crate::db::tool_resolver::probe_outcome(
+        std::path::Path::new(path),
+        crate::db::tool_resolver::PROBE_TIMEOUT,
+    )
+    .map(|ok| ok)
+    .unwrap_or(false)
 }
 
 /// Extract a single table's DDL from a PostgreSQL database by shelling out to
@@ -3801,6 +3807,31 @@ mod tests {
         // A bare name that resolves on PATH passes; a bogus path fails.
         assert!(pg_dump_available_at("pg_dump") || !pg_dump_available_at("pg_dump"));
         assert!(!pg_dump_available_at("/nonexistent/pg_dump_999999"));
+    }
+
+    /// A `pg_dump` that never answers `--version` must report "unavailable"
+    /// within the probe deadline instead of wedging the caller.
+    #[cfg(unix)]
+    #[test]
+    fn pg_dump_availability_probe_is_bounded() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = std::env::temp_dir().join(format!(
+            "gridline_hanging_pg_dump_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&path, "#!/bin/sh\nsleep 30\n").unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let started = std::time::Instant::now();
+        assert!(!pg_dump_available_at(&path.to_string_lossy()));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(6),
+            "the availability probe was not bounded: {:?}",
+            started.elapsed()
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }
 
