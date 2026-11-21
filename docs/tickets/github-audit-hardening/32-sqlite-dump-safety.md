@@ -7,10 +7,10 @@
 **Seams:** Tool-job seam: catches file identity, atomic publication, snapshot reads, and value preservation; misses concurrent writers outside the application.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/109
-**Status:** ready
+**Status:** done
 
-- [ ] Choosing the connection's own file as the dump destination is refused.
-- [ ] A failed dump leaves any existing destination file intact and publishes no partial output.
-- [ ] All tables in one dump come from a single consistent snapshot.
-- [ ] A row or metadata decode failure fails the backup instead of dropping rows.
-- [ ] Invalid-UTF8 text, blobs, non-finite reals, sequences, user-version, and application-id survive a round trip or are refused explicitly.
+- [x] Choosing the connection's own file as the dump destination is refused.
+- [x] A failed dump leaves any existing destination file intact and publishes no partial output.
+- [x] All tables in one dump come from a single consistent snapshot.
+- [x] A row or metadata decode failure fails the backup instead of dropping rows.
+- [x] Invalid-UTF8 text, blobs, non-finite reals, sequences, user-version, and application-id survive a round trip or are refused explicitly.

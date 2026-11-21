@@ -34,6 +34,10 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 urlencoding = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+# File identity for the "is the dump destination the database itself?" check:
+# device+inode on Unix, volume+file index on Windows, so a symlink or hard link
+# to the source is caught instead of slipping past a string comparison.
+same-file = "1"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tokio = { version = "1", features = ["full"] }

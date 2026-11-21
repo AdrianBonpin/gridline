@@ -1813,6 +1813,7 @@ dependencies = [
  "rustls-native-certs",
  "rustls-pemfile 2.2.0",
  "rustls-pki-types",
+ "same-file",
  "security-framework 3.7.0",
  "security-framework-sys",
  "serde",

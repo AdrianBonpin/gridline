@@ -1,5 +1,6 @@
 use rusqlite::{types::ValueRef, Connection};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -1047,20 +1048,179 @@ fn sqlite_quote_ident(name: &str) -> String {
     crate::db::ident::quote(crate::db::ident::Engine::Sqlite, name)
 }
 
-/// SQL literal for a rusqlite value (mirrors sqlite3 .dump output).
+/// Upper-case-free hex of `bytes`, for SQLite's `X'…'` literal form.
+fn hex_bytes(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        // Writing to a String cannot fail.
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+/// A REAL literal that restores as the same REAL.
+///
+/// `{:?}` is the shortest decimal that round-trips and always carries a `.` or
+/// an exponent, so SQLite cannot re-read `5.0` as the INTEGER `5` and change the
+/// value's storage class. SQLite stores no NaN (it stores NaN as NULL), and its
+/// infinities are expressible only as a decimal exponent large enough to
+/// overflow — `to_string()` would produce `inf`, which is not SQL.
+fn sqlite_real_literal(r: f64) -> String {
+    if r.is_nan() {
+        // Unreachable for values read back out of SQLite; kept explicit so this
+        // never silently emits an unparsable literal.
+        return "NULL".to_string();
+    }
+    if r.is_infinite() {
+        return if r.is_sign_positive() {
+            "9e999"
+        } else {
+            "-9e999"
+        }
+        .to_string();
+    }
+    format!("{r:?}")
+}
+
+/// SQL literal that reproduces `v` exactly when the dump is replayed.
+///
+/// Deliberately not lossy. `sqlite3 .dump` renders TEXT through its UTF-8
+/// decoder, which silently replaces invalid bytes — for a backup that is data
+/// corruption. Here:
+///
+/// * TEXT that is valid UTF-8 and NUL-free is a quoted literal (readable, and
+///   what `.dump` produces).
+/// * TEXT with invalid UTF-8 or an embedded NUL becomes `CAST(X'…' AS TEXT)`,
+///   which restores the exact bytes while keeping the TEXT storage class.
+/// * BLOBs are always `X'…'`, so embedded NULs and high bytes survive.
+/// * REALs keep their storage class and sign, including ±Infinity.
 fn sqlite_literal(v: ValueRef) -> String {
     match v {
         ValueRef::Null => "NULL".to_string(),
         ValueRef::Integer(i) => i.to_string(),
-        ValueRef::Real(r) => r.to_string(),
-        ValueRef::Text(t) => format!("'{}'", String::from_utf8_lossy(t).replace('\'', "''")),
-        ValueRef::Blob(b) => {
-            format!(
-                "X'{}'",
-                b.iter().map(|x| format!("{:02x}", x)).collect::<String>()
-            )
-        }
+        ValueRef::Real(r) => sqlite_real_literal(r),
+        ValueRef::Text(t) => match std::str::from_utf8(t) {
+            // A quoted SQL literal cannot carry a NUL: the statement is passed as
+            // a C string, which would be truncated there.
+            Ok(text) if !text.as_bytes().contains(&0) => {
+                format!("'{}'", text.replace('\'', "''"))
+            }
+            _ => format!("CAST(X'{}' AS TEXT)", hex_bytes(t)),
+        },
+        ValueRef::Blob(b) => format!("X'{}'", hex_bytes(b)),
     }
+}
+
+// --- Dump destination safety ------------------------------------------------
+
+/// The one message a self-dumping destination earns. It names no path (dump
+/// errors cross the IPC boundary) and says what to do instead.
+fn source_is_destination_message() -> String {
+    "The dump destination is the same file as the source database. Gridline refuses to write \
+     a dump onto the database it reads, because that would destroy the source. Choose a \
+     different file."
+        .to_string()
+}
+
+/// Resolve `path` to the file it really names.
+///
+/// A destination that does not exist yet has no inode, so its identity is its
+/// resolved parent directory plus the file name. Failing to resolve means file
+/// identity is uncertain, which fails closed rather than guessing.
+fn resolved_output_path(path: &Path) -> Result<PathBuf, String> {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return Ok(real);
+    }
+    let name = path.file_name().ok_or_else(|| {
+        format!(
+            "the dump destination {} does not name a file",
+            path.display()
+        )
+    })?;
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let parent_real = std::fs::canonicalize(parent).map_err(|e| {
+        format!(
+            "cannot resolve the dump destination's directory {}: {e}",
+            parent.display()
+        )
+    })?;
+    Ok(parent_real.join(name))
+}
+
+/// Refuse a dump destination that is the database being dumped.
+///
+/// Identity is resolved rather than compared as text: a symlink to the source
+/// and a hard link to it are the same file under different names, and writing
+/// through either would truncate the source. `same_file` compares device+inode
+/// (Unix) or volume+file index (Windows), and the resolved paths cover a
+/// destination that does not exist yet.
+pub fn refuse_source_as_dump_destination(source: &Path, destination: &Path) -> Result<(), String> {
+    if same_file::is_same_file(source, destination).unwrap_or(false) {
+        return Err(source_is_destination_message());
+    }
+    let source_real = std::fs::canonicalize(source)
+        .map_err(|e| format!("cannot resolve the database file {}: {e}", source.display()))?;
+    if source_real == resolved_output_path(destination)? {
+        return Err(source_is_destination_message());
+    }
+    Ok(())
+}
+
+/// The temporary sibling a dump is written to before publication: dot-prefixed
+/// with a unique suffix, so it can collide with neither the destination nor a
+/// concurrent dump.
+fn dump_partial_sibling(destination: &Path) -> Result<PathBuf, String> {
+    let name = destination
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            format!(
+                "the dump destination {} does not name a file",
+                destination.display()
+            )
+        })?;
+    let dir = match destination.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    Ok(dir.join(format!(".{name}.gridline-partial-{}", uuid::Uuid::new_v4())))
+}
+
+/// Flush, sync, and close the temporary output, then rename it over the
+/// destination. Any failure here removes the temporary output and reports why;
+/// the destination is never opened for writing, so it survives a failed dump.
+fn publish_dump(
+    partial: PathBuf,
+    destination: &Path,
+    writer: std::io::BufWriter<std::fs::File>,
+) -> Result<(), String> {
+    let file = match writer.into_inner() {
+        Ok(file) => file,
+        Err(e) => {
+            let message = e.error().to_string();
+            drop(e); // close the handle before removing the partial output
+            let _ = std::fs::remove_file(&partial);
+            return Err(format!("dump write failed: {message}"));
+        }
+    };
+    if let Err(e) = file.sync_all() {
+        drop(file);
+        let _ = std::fs::remove_file(&partial);
+        return Err(format!("dump write failed: {e}"));
+    }
+    drop(file);
+    if let Err(e) = std::fs::rename(&partial, destination) {
+        let _ = std::fs::remove_file(&partial);
+        return Err(format!(
+            "the dump could not replace {}: {e}",
+            destination.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Generate a `.dump`-format SQL script from `conn`, streaming to `out`. Calls
@@ -1075,35 +1235,92 @@ pub fn dump_sqlite_to<W: Write, F: FnMut(&str)>(
 
 /// [`dump_sqlite_to`] with a cancellation check between tables, so a large
 /// SQLite backup can be stopped from the UI instead of running to completion.
+/// Every value of a one-column query as a `String`, propagating a decode
+/// failure instead of skipping the row. `what` names the step in the error a
+/// user sees, so a failure says which catalog read could not be decoded.
+fn sqlite_string_column(conn: &Connection, sql: &str, what: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| format!("query {what}: {e}"))?;
+    let mut rows = stmt.query([]).map_err(|e| format!("query {what}: {e}"))?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().map_err(|e| format!("read {what}: {e}"))? {
+        let value: String = row.get(0).map_err(|e| format!("decode {what}: {e}"))?;
+        out.push(value);
+    }
+    Ok(out)
+}
+
 pub fn dump_sqlite_to_cancellable<W: Write, F: FnMut(&str)>(
     conn: &Connection,
     out: &mut W,
     mut on_progress: F,
     is_cancelled: CancelCheck<'_>,
 ) -> Result<(), String> {
+    if is_cancelled() {
+        return Err(CANCEL_MESSAGE.to_string());
+    }
+
+    // Every read below — the schema, each table's rows, sequences — goes through
+    // one transaction, so a writer committing midway (even from another process)
+    // cannot produce a dump whose tables come from different points in time. The
+    // first read pins the snapshot; the transaction is dropped (rolled back) at
+    // the end, since a dump never writes to the source.
+    //
+    // A caller that already owns a transaction keeps it: nesting one is an
+    // error, and its snapshot is already the right answer.
+    let snapshot = if conn.is_autocommit() {
+        Some(
+            conn.unchecked_transaction()
+                .map_err(|e| format!("begin dump snapshot: {e}"))?,
+        )
+    } else {
+        None
+    };
+    let reader: &Connection = match &snapshot {
+        Some(txn) => txn,
+        None => conn,
+    };
+
     writeln!(out, "PRAGMA foreign_keys=OFF;").map_err(|e| e.to_string())?;
     writeln!(out, "BEGIN TRANSACTION;").map_err(|e| e.to_string())?;
 
+    // `user_version` and `application_id` live in the database header, so no
+    // CREATE statement carries them and a dump without them silently resets an
+    // application's schema versioning. They are the only pragmas the dump emits:
+    // journal mode, page size and synchronisation are local to the machine, and
+    // replaying them is how a restore breaks a database.
+    let user_version: i64 = reader
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .map_err(|e| format!("read user_version: {e}"))?;
+    let application_id: i64 = reader
+        .pragma_query_value(None, "application_id", |r| r.get(0))
+        .map_err(|e| format!("read application_id: {e}"))?;
+    writeln!(out, "PRAGMA user_version = {user_version};").map_err(|e| e.to_string())?;
+    writeln!(out, "PRAGMA application_id = {application_id};").map_err(|e| e.to_string())?;
+
     // 1. Tables (schema + data), fail-closed on virtual tables.
-    let table_names: Vec<String> = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY name")
-        .map_err(|e| e.to_string())?
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+    //
+    // Decode failures propagate everywhere below: a row or catalog entry this
+    // dump cannot represent fails the backup, because a silently dropped table or
+    // row is worse than a failed dump.
+    let table_names = sqlite_string_column(
+        reader,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY name",
+        "the table list from sqlite_master",
+    )?;
 
     for name in &table_names {
         if is_cancelled() {
             return Err(CANCEL_MESSAGE.to_string());
         }
-        let create_sql: String = conn
+        let create_sql: String = reader
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
                 [name],
                 |r| r.get::<_, String>(0),
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("decode the schema of table \"{name}\": {e}"))?;
         if create_sql.to_lowercase().contains("create virtual table") {
             return Err(format!(
                 "SQLite virtual tables are not supported for .dump in v0.7.8 (table: {name})"
@@ -1113,21 +1330,33 @@ pub fn dump_sqlite_to_cancellable<W: Write, F: FnMut(&str)>(
         on_progress(name);
 
         // Columns excluding generated/hidden (hidden != 0) via pragma_table_xinfo.
-        let xinfo: Vec<(String, i64)> = conn
-            .prepare(&format!(
-                "SELECT name, hidden FROM pragma_table_xinfo({})",
-                sqlite_quote_ident(name)
-            ))
-            .map_err(|e| e.to_string())?
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        let emitted: Vec<String> = xinfo
-            .iter()
-            .filter(|(_, h)| *h == 0)
-            .map(|(n, _)| n.clone())
-            .collect();
+        let emitted: Vec<String> = {
+            let mut stmt = reader
+                .prepare(&format!(
+                    "SELECT name, hidden FROM pragma_table_xinfo({})",
+                    sqlite_quote_ident(name)
+                ))
+                .map_err(|e| format!("query the columns of \"{name}\": {e}"))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| format!("query the columns of \"{name}\": {e}"))?;
+            let mut emitted = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| format!("read the columns of \"{name}\": {e}"))?
+            {
+                let column: String = row
+                    .get(0)
+                    .map_err(|e| format!("decode a column name of \"{name}\": {e}"))?;
+                let hidden: i64 = row
+                    .get(1)
+                    .map_err(|e| format!("decode a column of \"{name}\": {e}"))?;
+                if hidden == 0 {
+                    emitted.push(column);
+                }
+            }
+            emitted
+        };
         let col_list = emitted
             .iter()
             .map(|n| sqlite_quote_ident(n))
@@ -1143,59 +1372,78 @@ pub fn dump_sqlite_to_cancellable<W: Write, F: FnMut(&str)>(
                 .join(", "),
             sqlite_quote_ident(name)
         );
-        let mut stmt = conn.prepare(&select).map_err(|e| e.to_string())?;
-        let nrows = stmt
-            .query_map([], |row| {
-                let vals: Vec<String> = (0..emitted.len())
-                    .map(|i| sqlite_literal(row.get_ref(i).unwrap_or(ValueRef::Null)))
-                    .collect();
-                Ok(format!(
-                    "INSERT INTO {} ({}) VALUES ({});",
-                    sqlite_quote_ident(name),
-                    col_list,
-                    vals.join(", ")
-                ))
-            })
+        let mut stmt = reader
+            .prepare(&select)
+            .map_err(|e| format!("query the rows of \"{name}\": {e}"))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| format!("query the rows of \"{name}\": {e}"))?;
+        let mut row_number = 0u64;
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| format!("read row {row_number} of \"{name}\": {e}"))?
+        {
+            let mut vals: Vec<String> = Vec::with_capacity(emitted.len());
+            for (index, column) in emitted.iter().enumerate() {
+                let value = row.get_ref(index).map_err(|e| {
+                    format!("decode \"{name}\".\"{column}\" in row {row_number}: {e}")
+                })?;
+                vals.push(sqlite_literal(value));
+            }
+            writeln!(
+                out,
+                "INSERT INTO {} ({}) VALUES ({});",
+                sqlite_quote_ident(name),
+                col_list,
+                vals.join(", ")
+            )
             .map_err(|e| e.to_string())?;
-        for r in nrows.filter_map(|r| r.ok()) {
-            writeln!(out, "{r}").map_err(|e| e.to_string())?;
+            row_number += 1;
         }
     }
 
     // 2. Indexes, triggers, views (sql not null).
     for ty in ["index", "trigger", "view"] {
-        let sqls: Vec<String> = conn
-            .prepare("SELECT sql FROM sqlite_master WHERE type=?1 AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY name")
-            .map_err(|e| e.to_string())?
-            .query_map([ty], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
+        let sqls = sqlite_string_column(
+            reader,
+            &format!(
+                "SELECT sql FROM sqlite_master WHERE type='{ty}' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ),
+            &format!("the {ty} definitions from sqlite_master"),
+        )?;
         for s in sqls {
             writeln!(out, "{s};").map_err(|e| e.to_string())?;
         }
     }
 
     // 3. sqlite_sequence (AUTOINCREMENT counters) if it exists.
-    if conn
+    let has_sequence = reader
         .prepare("SELECT name FROM sqlite_master WHERE name='sqlite_sequence'")
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("query sqlite_master for sqlite_sequence: {e}"))?
         .exists([])
-        .unwrap_or(false)
-    {
+        .map_err(|e| format!("query sqlite_master for sqlite_sequence: {e}"))?;
+    if has_sequence {
         writeln!(out, "DELETE FROM sqlite_sequence;").map_err(|e| e.to_string())?;
-        let rows: Vec<(String, i64)> = conn
+        let mut stmt = reader
             .prepare("SELECT name, seq FROM sqlite_sequence")
-            .map_err(|e| e.to_string())?
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        for (t, seq) in rows {
+            .map_err(|e| format!("query sqlite_sequence: {e}"))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| format!("query sqlite_sequence: {e}"))?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| format!("read sqlite_sequence: {e}"))?
+        {
+            let table: String = row
+                .get(0)
+                .map_err(|e| format!("decode sqlite_sequence: {e}"))?;
+            let seq: i64 = row
+                .get(1)
+                .map_err(|e| format!("decode the sequence of \"{table}\": {e}"))?;
             writeln!(
                 out,
                 "INSERT INTO sqlite_sequence VALUES ('{}', {});",
-                t.replace('\'', "''"),
+                table.replace('\'', "''"),
                 seq
             )
             .map_err(|e| e.to_string())?;
@@ -1204,6 +1452,72 @@ pub fn dump_sqlite_to_cancellable<W: Write, F: FnMut(&str)>(
 
     writeln!(out, "COMMIT;").map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Dump the SQLite database at `source_path` into `out_path` (one-shot).
+///
+/// The source is refused as a destination, and output is published atomically —
+/// see [`dump_sqlite_to_path_cancellable`].
+pub fn dump_sqlite_to_path(source_path: &str, out_path: &str) -> Result<(), String> {
+    dump_sqlite_to_path_cancellable(source_path, out_path, |_| {}, &never_cancel)
+}
+
+/// Dump the SQLite database at `source_path` into the file at `out_path`,
+/// safely.
+///
+/// Three guarantees the byte-sink form cannot give:
+///
+/// * **The source is never the destination.** A resolved-identity check refuses
+///   the connection's own file, including a symlink or hard link to it: writing
+///   a dump onto the database it reads would destroy the source.
+/// * **The destination is published, not truncated.** Output goes to a
+///   temporary sibling and is renamed over the destination only after the whole
+///   dump is written, flushed, and synced. A failed or cancelled dump leaves an
+///   existing destination byte-identical and leaves no partial artifact behind.
+/// * **A missing database is an error.** The source is not opened for creation,
+///   so a mistyped path cannot look like an empty backup.
+pub fn dump_sqlite_to_path_cancellable<F: FnMut(&str)>(
+    source_path: &str,
+    out_path: &str,
+    on_progress: F,
+    is_cancelled: CancelCheck<'_>,
+) -> Result<(), String> {
+    let source = Path::new(source_path);
+    let destination = Path::new(out_path);
+    if !source.is_file() {
+        return Err(format!(
+            "the SQLite database to dump is not an existing file: {}",
+            source.display()
+        ));
+    }
+    refuse_source_as_dump_destination(source, destination)?;
+    if is_cancelled() {
+        return Err(CANCEL_MESSAGE.to_string());
+    }
+
+    // Opening the source first means a database that cannot be read creates no
+    // temporary output at all.
+    let conn = Connection::open(source).map_err(|e| format!("open source: {e}"))?;
+    let partial = dump_partial_sibling(destination)?;
+    let file = std::fs::File::create(&partial)
+        .map_err(|e| format!("cannot create the dump file {}: {e}", partial.display()))?;
+    let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
+
+    let dumped = dump_sqlite_to_cancellable(&conn, &mut writer, on_progress, is_cancelled);
+    drop(conn);
+    let result = match dumped {
+        Ok(()) => publish_dump(partial.clone(), destination, writer),
+        Err(e) => {
+            // Closing the writer first lets the temporary file be removed on
+            // every platform.
+            drop(writer);
+            Err(e)
+        }
+    };
+    if result.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    result
 }
 
 /// First bare word of a statement (uppercased), skipping leading whitespace
@@ -1252,6 +1566,34 @@ fn restore_harness_statement(keyword: &str) -> bool {
         keyword,
         "PRAGMA" | "BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT" | "RELEASE"
     )
+}
+
+/// The only pragmas a dump must replay, because they describe the database's own
+/// contents rather than the machine it came from.
+///
+/// `user_version` and `application_id` are header fields: an application's
+/// schema versioning and file typing live there, and dropping them silently
+/// changes what a restored database claims to be. Everything else a `PRAGMA` can
+/// do (`journal_mode`, `page_size`, `synchronous`, `foreign_keys`, …) is
+/// connection- or device-local, so the target keeps its own.
+///
+/// Only integer assignments to exactly these two names are recognised, so this
+/// exemption cannot widen into replaying an arbitrary pragma statement.
+fn restore_roundtrip_pragma(stmt: &str) -> bool {
+    let lower = stmt.trim().to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("pragma") else {
+        return false;
+    };
+    let Some((name, value)) = rest.trim_start().split_once('=') else {
+        return false;
+    };
+    let name = name.trim();
+    if name != "user_version" && name != "application_id" {
+        return false;
+    }
+    let value = value.trim().trim_end_matches(';').trim();
+    let digits = value.strip_prefix('-').unwrap_or(value);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Statements that cannot run inside a transaction, rejected before anything
@@ -1339,6 +1681,12 @@ pub fn restore_sqlite_cancellable(
             return Err(format!(
                 "{keyword} cannot run inside the restore transaction — restore this dump with the sqlite3 CLI instead"
             ));
+        }
+        // Round-trip header metadata is replayed; every other pragma is a local
+        // setting of the target and is dropped by `restore_harness_statement`.
+        if restore_roundtrip_pragma(&stmt) {
+            replay.push(stmt);
+            continue;
         }
         if restore_harness_statement(&keyword) {
             continue;
@@ -2753,10 +3101,10 @@ pub async fn sqlite_dump(
             move || job.is_cancelled()
         };
         let result = (|| -> Result<(), String> {
-            let src = Connection::open(&path).map_err(|e| format!("open source: {e}"))?;
-            let mut out =
-                std::fs::File::create(&out_path).map_err(|e| format!("create dump file: {e}"))?;
-            dump_sqlite_to_cancellable(&src, &mut out, |_| {}, &is_cancelled)
+            // Never the connection's own file, never a truncated destination:
+            // the core resolves file identity, refuses the source, and publishes
+            // the dump atomically (temp sibling + rename).
+            dump_sqlite_to_path_cancellable(&path, &out_path, |_| {}, &is_cancelled)
         })();
         jobs.finish(&job_id_clone);
         emit_result(&app_handle_clone, &job_id_clone, result);
