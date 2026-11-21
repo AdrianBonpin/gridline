@@ -62,9 +62,32 @@ impl ReadOnlyEngine {
             ReadOnlyEngine::Sqlite => "PRAGMA query_only = OFF",
         }
     }
+
+    /// Fail-closed wording for a mechanism that could not be applied.
+    fn start_failure(self, detail: impl std::fmt::Display) -> String {
+        format!(
+            "{}: could not start a read-only session ({}): {detail}",
+            self.as_str(),
+            self.begin_statement()
+        )
+    }
+
+    /// Reported (never swallowed) wording for a mechanism that could not be
+    /// released.
+    fn finish_failure(self, detail: impl std::fmt::Display) -> String {
+        format!(
+            "{}: the read-only session could not be closed ({}): {detail}",
+            self.as_str(),
+            self.finish_statement()
+        )
+    }
 }
 
 /// A connection that can run its engine's read-only control statements.
+///
+/// Each implementation names its own mechanism, so a new engine cannot be added
+/// without saying which server feature makes the session read-only. The future
+/// is `Send` so an export stays usable from a Tauri command.
 pub trait ReadOnlyControl {
     fn control<'a>(&'a mut self, statement: &'a str) -> ControlFuture<'a>;
 }
@@ -89,23 +112,24 @@ impl ReadOnlyControl for tokio_postgres::Client {
 
 impl ReadOnlyControl for sqlx::MySqlConnection {
     fn control<'a>(&'a mut self, statement: &'a str) -> ControlFuture<'a> {
-        Box::pin(mysql_control(self, statement))
+        // `raw_sql` sends the statement unprepared, which is what transaction
+        // control needs (transaction statements cannot be prepared).
+        //
+        // The stream is drained rather than collected and the statement is
+        // owned: sqlx implements `Executor` for `&mut MySqlConnection` with one
+        // lifetime serving as both the connection borrow and the query lifetime
+        // (`impl<'c> Executor<'c> for &'c mut MySqlConnection`), and a control
+        // statement borrowed from the caller makes that region impossible to
+        // prove from inside this future (`implementation of Executor is not
+        // general enough`).
+        let sql = statement.to_string();
+        Box::pin(async move {
+            use futures_util::TryStreamExt;
+            let mut stream = sqlx::raw_sql(&sql).execute_many(&mut *self);
+            while let Some(_result) = stream.try_next().await.map_err(|e| format!("{e}"))? {}
+            Ok(())
+        })
     }
-}
-
-/// Separate `async fn` so the sqlx executor bounds are named rather than
-/// inferred inside a boxed block.
-async fn mysql_control<'a>(
-    conn: &'a mut sqlx::MySqlConnection,
-    statement: &'a str,
-) -> Result<(), String> {
-    // `raw_sql` sends the statement unprepared, which is what transaction
-    // control needs.
-    sqlx::raw_sql(statement)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(|e| format!("{e}"))
 }
 
 /// A connection that is currently inside its engine's read-only mechanism.
@@ -134,13 +158,7 @@ impl<'a, C: ReadOnlyControl + ?Sized> ReadOnlySession<'a, C> {
     pub async fn start(conn: &'a mut C, engine: ReadOnlyEngine) -> Result<Self, String> {
         conn.control(engine.begin_statement())
             .await
-            .map_err(|e| {
-                format!(
-                    "{}: could not start a read-only session ({}): {e}",
-                    engine.as_str(),
-                    engine.begin_statement()
-                )
-            })?;
+            .map_err(|e| engine.start_failure(e))?;
         Ok(Self { conn, engine })
     }
 
@@ -155,13 +173,7 @@ impl<'a, C: ReadOnlyControl + ?Sized> ReadOnlySession<'a, C> {
         self.conn
             .control(self.engine.finish_statement())
             .await
-            .map_err(|e| {
-                format!(
-                    "{}: the read-only session could not be closed ({}): {e}",
-                    self.engine.as_str(),
-                    self.engine.finish_statement()
-                )
-            })
+            .map_err(|e| self.engine.finish_failure(e))
     }
 }
 

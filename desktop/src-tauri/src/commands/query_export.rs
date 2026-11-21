@@ -8,9 +8,11 @@
 //! the promise is enforced in two layers *in the backend*:
 //!
 //! 1. [`validate_export_request`] runs the shared, corpus-pinned classifier
-//!    (`db::sql_classify`) behind an allowlist: exactly one statement, and it
-//!    must be provably `Read`. Leading comments, MySQL executable comments,
-//!    data-modifying CTEs, unknown verbs and multi-statement scripts are
+//!    (`db::sql_classify`) behind an engine-appropriate allowlist: exactly one
+//!    statement, it must be provably `Read`, and its leading verb must be one
+//!    of the result-producing statements that engine actually supports.
+//!    Leading comments, MySQL executable comments, data-modifying CTEs, unknown
+//!    verbs, session/maintenance commands and multi-statement scripts are
 //!    rejected with a reason that names the engine and the offending shape —
 //!    no frontend analysis is involved or trusted.
 //! 2. The statement then runs inside the engine's own read-only mechanism
@@ -22,7 +24,9 @@
 
 use crate::db::pool::DbHandle;
 use crate::db::read_only::{ReadOnlyControl, ReadOnlyEngine, ReadOnlySession};
-use crate::db::sql_classify::{classify_statement, scan_words, StatementKind};
+use crate::db::sql_classify::{
+    classify_statement, scan_words, StatementKind, CTE_WRITE_VERBS, SCHEMA_VERBS, WRITE_VERBS,
+};
 use crate::db::sql_split::split_statements;
 use crate::models::db_viewer::ColumnInfo;
 use serde::{Deserialize, Serialize};
@@ -91,8 +95,33 @@ impl ExportStatement {
     }
 }
 
+/// The verbs export will run for an engine: the subset of the shared
+/// classifier's read set that returns a result set *that engine supports*.
+///
+/// This narrows, never widens, [`crate::db::sql_classify`]: a statement still
+/// has to be classified `Read` before its verb is looked at. It exists because
+/// the shared classifier answers "does this write?" for the destructive-query
+/// prompt — a question `VACUUM`, `REINDEX`, `SET`, `BEGIN` and `LOCK` can
+/// legitimately answer "no" — while export has to answer "is this a query I can
+/// run and export?", which those commands are not. The lists also keep each
+/// engine to statements it can parse, so `SHOW TABLES` on SQLite is refused at
+/// the gate with a reason instead of failing at the server.
+pub fn exportable_verbs(engine: ReadOnlyEngine) -> &'static [&'static str] {
+    match engine {
+        ReadOnlyEngine::PostgreSql => &["SELECT", "VALUES", "TABLE", "WITH", "SHOW", "EXPLAIN"],
+        ReadOnlyEngine::MySql => &[
+            "SELECT", "VALUES", "TABLE", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN",
+        ],
+        // `PRAGMA` stays exportable: read-only pragmas are how SQLite exposes
+        // introspection, and `PRAGMA query_only` refuses the assignment forms
+        // at the engine rather than being guessed at here.
+        ReadOnlyEngine::Sqlite => &["SELECT", "VALUES", "WITH", "EXPLAIN", "PRAGMA"],
+    }
+}
+
 /// The backend gate every export runs through, for the engine it is exporting
-/// from. Accepts only a single statement the shared classifier proves read-only.
+/// from. Accepts only a single statement the shared classifier proves read-only
+/// and whose verb is an exportable read on that engine.
 pub fn validate_export_request(
     engine: ReadOnlyEngine,
     sql: &str,
@@ -124,21 +153,61 @@ pub fn validate_export_request(
         return Err(not_exportable(engine, statement));
     }
 
+    // A leading verb the shared classifier calls read-only, but that is not a
+    // query this engine can export.
+    let leading = leading_verb(statement);
+    if !leading
+        .as_deref()
+        .is_some_and(|verb| exportable_verbs(engine).contains(&verb))
+    {
+        return Err(not_an_exportable_query(engine, leading.as_deref()));
+    }
+
     Ok(ExportStatement {
         engine,
         sql: statement.clone(),
     })
 }
 
+/// The statement's leading keyword, with comments, quoted regions and
+/// dollar-quoted bodies skipped — the same first word the shared classifier
+/// dispatches on, so the allowlist cannot disagree with it about which verb a
+/// statement starts with.
+fn leading_verb(statement: &str) -> Option<String> {
+    scan_words(statement).into_iter().next()
+}
+
 /// Why this statement is not exportable, naming the engine and the shape that
 /// made it unprovable rather than a generic refusal.
 fn not_exportable(engine: ReadOnlyEngine, statement: &str) -> String {
     let kind = classify_statement(statement);
-    let verb = scan_words(statement).into_iter().next();
-    let detail = match (kind, verb.as_deref()) {
+    let words = scan_words(statement);
+    let verb = words.first().map(String::as_str);
+    // The first word (if any) among `verbs`, so a wrapped or nested statement
+    // names the verb that actually writes instead of the wrapper around it.
+    let inner = |verbs: &[&str]| {
+        words
+            .iter()
+            .find(|word| verbs.iter().any(|verb| verb == word))
+            .cloned()
+    };
+    let detail = match (kind, verb) {
+        // `EXPLAIN DELETE …` writes (EXPLAIN ANALYZE executes); the outer verb
+        // is not the offender, so name the wrapped one.
+        (StatementKind::Write, Some("EXPLAIN")) => format!(
+            "the EXPLAIN wraps {} which changes data",
+            inner(WRITE_VERBS).unwrap_or_else(|| "a write".to_string())
+        ),
+        (StatementKind::Schema, Some("EXPLAIN")) => format!(
+            "the EXPLAIN wraps {} which changes schema",
+            inner(SCHEMA_VERBS).unwrap_or_else(|| "a schema change".to_string())
+        ),
         // A write that hides in a CTE chain: the leading verb is misleading, so
         // name where the write actually is.
-        (StatementKind::Write, Some("WITH")) => "the statement is a data-modifying CTE".to_string(),
+        (StatementKind::Write, Some("WITH")) => format!(
+            "the statement is a data-modifying CTE ({})",
+            inner(CTE_WRITE_VERBS).unwrap_or_else(|| "a write".to_string())
+        ),
         (StatementKind::Write, Some(verb)) => format!("{verb} changes data"),
         (StatementKind::Schema, Some(verb)) => format!("{verb} changes schema"),
         (StatementKind::Unknown, Some(verb)) => format!("{verb} cannot be proven read-only"),
@@ -148,6 +217,25 @@ fn not_exportable(engine: ReadOnlyEngine, statement: &str) -> String {
         "export rejected on {}: {detail}; export accepts only read-only queries",
         engine.as_str()
     )
+}
+
+/// Why a read-classified statement is still not exportable: it is not a query
+/// that returns rows, or not one this engine supports.
+fn not_an_exportable_query(engine: ReadOnlyEngine, verb: Option<&str>) -> String {
+    let accepted = exportable_verbs(engine).join(", ");
+    match verb {
+        Some(verb) => format!(
+            "export rejected on {}: {verb} is not an exportable read query on {}; \
+             export accepts only read-only queries that return rows ({accepted})",
+            engine.as_str(),
+            engine.as_str()
+        ),
+        None => format!(
+            "export rejected on {}: the statement has no exportable read verb; \
+             export accepts only read-only queries that return rows ({accepted})",
+            engine.as_str()
+        ),
+    }
 }
 
 // ── Format writers (pure) ─────────────────────────────────────────
@@ -441,8 +529,7 @@ pub async fn run_pg_export(
     progress: &mut (dyn FnMut(u64) + Send),
 ) -> Result<ExportSummary, String> {
     let request = validate_export_request(ReadOnlyEngine::PostgreSql, sql, path)?;
-    let (mut session, mut writer) =
-        start_export(client, ReadOnlyEngine::PostgreSql, path).await?;
+    let (mut session, mut writer) = start_export(client, ReadOnlyEngine::PostgreSql, path).await?;
     let body = pg_export_body(session.conn(), &request, format, &mut writer, progress).await;
     let restored = session.finish().await;
     settle_export(path, writer, body, restored)

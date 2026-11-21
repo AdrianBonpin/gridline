@@ -153,9 +153,7 @@ async fn sqlite_query_only_actually_blocks_a_write_and_is_restored() {
         .expect("pragma readable");
     assert_eq!(active, 1, "query_only must be ON inside the session");
 
-    let write = session
-        .conn()
-        .execute_batch("INSERT INTO t VALUES (2)");
+    let write = session.conn().execute_batch("INSERT INTO t VALUES (2)");
     assert!(
         write.is_err(),
         "a write inside the read-only session must be refused by SQLite"
@@ -168,10 +166,47 @@ async fn sqlite_query_only_actually_blocks_a_write_and_is_restored() {
             row.get(0)
         })
         .expect("pragma readable");
-    assert_eq!(restored, 0, "the connection is read-write again after export");
+    assert_eq!(
+        restored, 0,
+        "the connection is read-write again after export"
+    );
 
     let rows: i64 = conn
         .query_row("SELECT count(*) FROM t", [], |row| row.get(0))
         .expect("count");
     assert_eq!(rows, 1, "the refused write changed nothing");
+}
+
+/// All three engines share ONE control seam. If a driver needed its own
+/// session type again, this assertion is where the divergence would surface.
+#[test]
+fn every_engine_connection_implements_the_single_control_seam() {
+    fn assert_control<C: ReadOnlyControl + ?Sized>() {}
+
+    assert_control::<rusqlite::Connection>();
+    assert_control::<tokio_postgres::Client>();
+    assert_control::<sqlx::MySqlConnection>();
+}
+
+/// `PRAGMA name = value` is classified as a read by the shared classifier (the
+/// statement writes no rows), so the SQLite mechanism has to be the thing that
+/// refuses it. It does: `query_only` rejects pragma writes to the database.
+#[tokio::test]
+async fn sqlite_query_only_refuses_a_pragma_assignment() {
+    let mut conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+
+    let mut session = ReadOnlySession::start(&mut conn, ReadOnlyEngine::Sqlite)
+        .await
+        .expect("query_only applies");
+    let write = session.conn().execute_batch("PRAGMA user_version = 5");
+    assert!(
+        write.is_err(),
+        "a pragma write inside the read-only session must be refused by SQLite"
+    );
+    session.finish().await.expect("query_only restored");
+
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("pragma readable");
+    assert_eq!(version, 0, "the refused pragma changed nothing");
 }
