@@ -76,9 +76,12 @@ export function BackupProgress({
                 />
             </div>
 
-            {/* Error message */}
+            {/* Error message. Multi-line diagnostics (a tool's stderr plus what
+                the target now looks like) keep their line breaks. */}
             {errorMessage && status === "failed" && (
-                <p className="text-sm text-red-400">{errorMessage}</p>
+                <p className="whitespace-pre-line break-words text-sm text-red-400">
+                    {errorMessage}
+                </p>
             )}
             {status === "cancelled" && (
                 <p className="text-sm text-amber-300">

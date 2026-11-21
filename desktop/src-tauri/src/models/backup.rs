@@ -68,6 +68,12 @@ pub struct PgRestoreRequest {
     pub format: String,
     pub clean: bool,
     pub schema: Option<String>,
+    /// The user explicitly accepted a non-atomic restore after the backend named
+    /// the dump's incompatibility and the partial-application risk. Absent (or
+    /// false) means an incompatible dump is refused instead of silently
+    /// downgraded.
+    #[serde(default)]
+    pub accept_non_atomic: bool,
 }
 
 impl PgRestoreRequest {
