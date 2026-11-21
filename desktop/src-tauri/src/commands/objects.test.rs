@@ -414,6 +414,35 @@ async fn sqlite_rebuild_readiness_answers_for_the_proposed_columns() {
     );
 }
 
+/// The real seeded demo schema: the shapes the demo deliberately contains
+/// (AUTOINCREMENT, FKs, CHECKs, UNIQUEs, indexes, expression defaults) are the
+/// regression fixture for the guard — a rebuild that would drop any of them must
+/// be refused rather than performed.
+const DEMO_SCHEMA: &str = include_str!("demo_schema.sql");
+
+#[tokio::test]
+async fn sqlite_rebuild_guard_refuses_the_demo_tables_it_cannot_reproduce() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(&pm, &[DEMO_SCHEMA.to_string()]).await;
+    for (table, blocker) in [
+        ("users", "AUTOINCREMENT"),
+        ("products", "FOREIGN KEY"),
+        ("order_items", "CHECK"),
+        ("audit_log", "CHECK"),
+        ("app_settings", "DEFAULT"),
+        ("page_views", "indexes"),
+    ] {
+        let readiness = get_table_rebuild_readiness_inner(&pm, "c", "main", table, None)
+            .await
+            .unwrap_or_else(|e| panic!("{table}: {e}"));
+        assert!(!readiness.ok, "{table} must not be rebuilt: {readiness:?}");
+        assert!(
+            readiness.reasons.iter().any(|r| r.contains(blocker)),
+            "{table}'s refusal names {blocker}: {readiness:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn sqlite_rebuild_readiness_allows_a_plain_table() {
     let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
