@@ -306,8 +306,16 @@ pub enum Change {
         id: String,
         sql: String,
     },
+    /// A machine-generated table rebuild (create temp / copy / drop / rename).
+    ///
+    /// `table` names the table being rebuilt so the change-application seam can
+    /// re-validate the live shape against the rebuild guard before the script's
+    /// first mutating statement runs. A rebuild that cannot name its table fails
+    /// closed instead of applying blind.
     RebuildTable {
         id: String,
+        #[serde(default)]
+        table: String,
         sql: String,
     },
 }
@@ -902,6 +910,7 @@ mod tests {
     fn change_rebuild_table_serializes_with_snake_case_tag() {
         let change = Change::RebuildTable {
             id: "chg-rb1".to_string(),
+            table: "users".to_string(),
             sql: "CREATE TABLE _t ...".to_string(),
         };
         let json = serde_json::to_string(&change).unwrap();
@@ -909,17 +918,35 @@ mod tests {
             json.contains(r#""type":"rebuild_table""#),
             "RebuildTable should serialize with tag 'rebuild_table'; got: {json}"
         );
+        assert!(
+            json.contains(r#""table":"users""#),
+            "the table being rebuilt travels with the change; got: {json}"
+        );
         assert_eq!(change.id(), "chg-rb1");
     }
 
     #[test]
     fn change_rebuild_table_roundtrip() {
         let json = serde_json::json!({
-            "type": "rebuild_table", "id": "rb", "sql": "SELECT 1"
+            "type": "rebuild_table", "id": "rb", "table": "users", "sql": "SELECT 1"
         });
         let c: Change = serde_json::from_value(json).unwrap();
         match c {
-            Change::RebuildTable { sql, .. } => assert_eq!(sql, "SELECT 1"),
+            Change::RebuildTable { table, sql, .. } => {
+                assert_eq!(table, "users");
+                assert_eq!(sql, "SELECT 1");
+            }
+            _ => panic!("expected RebuildTable"),
+        }
+    }
+
+    #[test]
+    fn change_rebuild_table_without_a_table_name_still_deserializes() {
+        // A payload that names no table must reach the handler, which refuses it
+        // explicitly, instead of failing as an opaque deserialization error.
+        let json = serde_json::json!({"type": "rebuild_table", "id": "rb", "sql": "SELECT 1"});
+        match serde_json::from_value::<Change>(json).unwrap() {
+            Change::RebuildTable { table, .. } => assert!(table.is_empty()),
             _ => panic!("expected RebuildTable"),
         }
     }

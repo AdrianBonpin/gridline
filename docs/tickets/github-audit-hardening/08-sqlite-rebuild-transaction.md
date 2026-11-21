@@ -7,10 +7,10 @@
 **Seams:** Change-application seam: catches atomicity and refusal ordering; built-product seam: catches the refusal being reachable and legible from the editor.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/94
-**Status:** ready
+**Status:** done
 
-- [ ] A rebuild succeeds as one transaction.
-- [ ] A failure injected mid-rebuild leaves the original table intact, with no temporary table and no dropped data.
-- [ ] An unsupported shape is refused before the first mutating statement with a reason naming the blocker.
-- [ ] The refusal is surfaced in the table editor rather than only in a queue error.
-- [ ] An E2E flow in the harness proves a rebuild either completes or changes nothing.
+- [x] A rebuild succeeds as one transaction.
+- [x] A failure injected mid-rebuild leaves the original table intact, with no temporary table and no dropped data.
+- [x] An unsupported shape is refused before the first mutating statement with a reason naming the blocker.
+- [x] The refusal is surfaced in the table editor rather than only in a queue error.
+- [x] An E2E flow in the harness proves a rebuild either completes or changes nothing.

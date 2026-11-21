@@ -2,7 +2,6 @@ use crate::commands::ssh_trust::{
     enroll_host_trust, establish_trusted_session, host_key_from_blob, probe_host_trust,
     reenroll_host_trust, HostTrustProvider, SshTransport, SshTunnelError,
 };
-use crate::db::tls::TlsDecision;
 use crate::models::ssh_trust::{HostKey, HostKeyFingerprint, SshHostTrustState};
 use crate::models::SshConfig;
 use std::collections::HashMap;
@@ -11,18 +10,6 @@ use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-
-/// Through a tunnel the TLS peer is loopback (`127.0.0.1`), so certificate
-/// verification is meaningless: `verify-ca`/`verify-full` degrade to
-/// encrypt-only `require`. A direct (non-tunneled) connection honors the
-/// user's mode unchanged.
-pub fn effective_tls_decision(d: TlsDecision, via_tunnel: bool) -> TlsDecision {
-    if via_tunnel && matches!(d, TlsDecision::Verify) {
-        TlsDecision::Require
-    } else {
-        d
-    }
-}
 
 /// A live tunnel handle. `closer` drops the listener + ssh session when called.
 pub struct Tunnel {
@@ -1320,22 +1307,24 @@ mod tests {
     }
 
     #[test]
-    fn tunneled_tls_is_downgraded_to_require() {
-        // verify-full through a tunnel degrades to encrypt-only `require`
-        assert_eq!(
-            effective_tls_decision(crate::db::tls::tls_decision(Some("verify-full")), true),
-            crate::db::tls::TlsDecision::Require
-        );
-        // direct (non-tunneled) connection keeps the user's mode
-        assert_eq!(
-            effective_tls_decision(crate::db::tls::tls_decision(Some("verify-full")), false),
-            crate::db::tls::TlsDecision::Verify
-        );
+    fn tunnel_endpoint_does_not_change_tls_verification() {
+        // A tunnel used to degrade verify-ca/verify-full to encrypt-only
+        // `require`, because the TLS peer is loopback. The connection plan now
+        // keeps the user's mode and verifies the real hostname instead; this
+        // asserts the tunnel manager's endpoint (loopback + local port) is the
+        // only thing a tunnel contributes.
+        use crate::db::tls::{pg_connect_plan, TlsDecision};
+
+        let plan = pg_connect_plan("db.internal", Some(5432), Some("verify-full"), Some(41234))
+            .expect("verify-full is a valid mode");
+        assert_eq!(plan.decision, TlsDecision::Verify);
+        assert_eq!(plan.host, "db.internal");
+        assert_eq!(plan.port, 41234);
+
         // disable stays disabled regardless of tunneling
-        assert_eq!(
-            effective_tls_decision(crate::db::tls::tls_decision(Some("disable")), true),
-            crate::db::tls::TlsDecision::Disable
-        );
+        let plan =
+            pg_connect_plan("db.internal", Some(5432), Some("disable"), Some(41234)).unwrap();
+        assert_eq!(plan.decision, TlsDecision::Disable);
     }
 
     #[test]

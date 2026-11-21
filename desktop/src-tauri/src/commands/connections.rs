@@ -28,6 +28,9 @@ fn validate(input: &ConnectionInput) -> Result<(), String> {
             return Err("username must be 100 chars or fewer".into());
         }
     }
+    // Fail closed on a TLS mode we cannot honor: an unrecognized value must
+    // never be stored and later resolved to plaintext.
+    crate::db::tls::validate_ssl_mode(input.ssl_mode.as_deref())?;
     Ok(())
 }
 

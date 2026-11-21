@@ -105,6 +105,14 @@ impl ConnectionAttempt {
         self.tunnel.is_some()
     }
 
+    /// The loopback port this attempt's tunnel listens on, if it has one.
+    ///
+    /// PostgreSQL dials this as `hostaddr` and keeps the real hostname for
+    /// certificate verification.
+    pub(crate) fn tunnel_port(&self) -> Option<u16> {
+        self.tunnel.as_ref().map(|tunnel| tunnel.local_port)
+    }
+
     /// Publish an established session, superseding the one it replaces.
     ///
     /// The pool handle goes live first so the new session answers queries

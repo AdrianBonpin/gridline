@@ -46,7 +46,7 @@ setup is needed on a headless Linux box. Useful flags (`bun run e2e:desktop --
 | Flag | Default | Purpose |
 | :--- | :--- | :--- |
 | `--binary <path>` | `src-tauri/target/release/gridline` | binary to launch (`GRIDLINE_E2E_BINARY` also works) |
-| `--flow <name>` | `demo-smoke` | which registered flow to run (`demo-smoke`, `destructive-rerun`, `composite-edit`) |
+| `--flow <name>` | `demo-smoke` | which registered flow to run (`demo-smoke`, `destructive-rerun`, `composite-edit`, `sqlite-rebuild`) |
 | `--artifacts <dir>` | `e2e-artifacts` | where logs/screenshots are written |
 | `--timeout-ms <ms>` | `30000` | per-step budget |
 | `--port` / `--native-port` | `4444` / `4445` | driver ports |
@@ -60,6 +60,31 @@ setup is needed on a headless Linux box. Useful flags (`bun run e2e:desktop --
 | `demo-smoke` (default) | `bun run e2e:desktop` | the built app opens the seeded demo database and paints real rows |
 | `destructive-rerun` | `bun run e2e:desktop -- --flow destructive-rerun` | a destructive script is confirmed from **both** the initial Run button and the toolbar re-run control, and the pending confirmation survives a run shortcut but is cancelled by Escape — the built-product proof that neither the entry point nor the keyboard can bypass or relocate the guard |
 | `composite-edit` | `bun run e2e:desktop -- --flow composite-edit` | editing one row of a composite-primary-key table changes exactly that row |
+| `sqlite-rebuild` | `bun run e2e:desktop -- --flow sqlite-rebuild` | a SQLite rebuild is refused before staging for a shape it cannot reproduce, and completes as one change (keeping every row) for a shape it can |
+
+### `sqlite-rebuild` — atomic rebuild or refusal
+
+A SQLite rebuild either completes as one change or changes nothing, and the flow
+proves both halves against the built product:
+
+1. **Refused before mutation.** The demo's `order_items` carries a composite
+   primary key, a CHECK, foreign keys, and an explicit index — every one of which
+   the current rebuild script would drop. Dropping a column (the editor's
+   `[aria-label="Remove column"]`) forces a rebuild, so the editor must show its
+   refusal banner (`[data-testid="rebuild-refusal"]`) naming a blocker, keep
+   `[data-testid="table-form-stage"]` **disabled**, and leave the changes queue
+   empty.
+2. **Completed atomically.** The flow creates its own rebuildable table through
+   the query workspace (`CREATE TABLE e2e_rebuild (id INTEGER PRIMARY KEY, label
+   TEXT NOT NULL, note TEXT)` plus two seeded rows; the `CREATE` goes through the
+   destructive confirmation like any other schema change), then drops its last
+   column in the editor and stages the rebuild. No refusal appears, **Commit
+   All** applies it, and the reopened table must still render both rows'
+   remaining values while the dropped column's values are gone.
+
+A table that renders fewer rows after the commit fails the `grid: the rebuilt
+table still shows every row` step — which is exactly what a rebuild that is not
+one transaction looks like from the outside.
 
 ### `composite-edit` — Row Identity
 

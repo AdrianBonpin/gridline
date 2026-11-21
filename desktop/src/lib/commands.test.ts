@@ -391,8 +391,18 @@ describe("v0.7.7 command wrappers", () => {
 
     const result = await getTableRebuildReadiness("c1", "public", "users");
 
-    expect(invoke).toHaveBeenCalledWith("get_table_rebuild_readiness", { connectionId: "c1", schema: "public", table: "users" });
+    expect(invoke).toHaveBeenCalledWith("get_table_rebuild_readiness", { connectionId: "c1", schema: "public", table: "users", columns: undefined });
     expect(result).toEqual(mockReadiness);
+  });
+
+  it("getTableRebuildReadiness forwards the columns about to be staged", async () => {
+    const mockReadiness = { ok: false, reasons: ["the table declares a CHECK constraint, which a rebuild would drop"] };
+    vi.mocked(invoke).mockResolvedValueOnce(mockReadiness);
+    const columns = [{ name: "id", type: "INTEGER", nullable: true, default: null, is_pk: true, auto_increment: false, unique: false }];
+
+    await getTableRebuildReadiness("c1", "main", "t", columns);
+
+    expect(invoke).toHaveBeenCalledWith("get_table_rebuild_readiness", { connectionId: "c1", schema: "main", table: "t", columns });
   });
 
   it("runMaintenance calls run_maintenance with action", async () => {

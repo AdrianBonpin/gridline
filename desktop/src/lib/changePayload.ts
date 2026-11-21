@@ -95,7 +95,9 @@ export function buildChangePayload(item: QueueItem): ChangePayload {
     case "ddl":
       return { id: item.id, type: "ddl", sql: item.sql };
     case "rebuild_table":
-      return { id: item.id, type: "rebuild_table", sql: item.sql };
+      // The table travels with the script: the backend re-validates the live
+      // shape against the rebuild guard before applying any of it.
+      return { id: item.id, type: "rebuild_table", table, sql: item.sql };
     default:
       return { id: item.id, type: item.type, sql: item.sql };
   }

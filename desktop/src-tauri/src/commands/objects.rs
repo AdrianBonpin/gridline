@@ -4,6 +4,7 @@ use crate::db::object_crud::{
 };
 use crate::db::object_ddl::*;
 use crate::db::pool::{ConnectionPoolManager, DbHandle};
+use crate::db::sqlite_rebuild::{live_columns as sqlite_live_columns, read_table_shape};
 use crate::models::db_viewer::{DependencyInfo, ExtensionInfo, ObjectSearchHit};
 use tauri::State;
 
@@ -294,85 +295,27 @@ pub async fn get_object_dependencies(
 }
 
 /// Introspect the live columns of a SQLite table (for the edit/rebuild diff).
-/// Mirrors the `PRAGMA table_info` + `PRAGMA index_list`/`index_info` reads used
-/// elsewhere in db_viewer; `auto_increment` requires an INTEGER PK whose stored
-/// DDL (sqlite_master) actually says AUTOINCREMENT, and `unique` means a
-/// single-column unique index (excluding the PK autoindex).
-fn sqlite_live_columns(
+///
+/// The one column snapshot the editor diff, the rebuild guard, and the rebuild
+/// script all share lives in `db::sqlite_rebuild`; keeping a second copy here
+/// would let the guard and the copy step disagree about the table.
+#[cfg(test)]
+fn sqlite_live_columns_for_test(
     conn: &rusqlite::Connection,
     table: &str,
 ) -> Result<Vec<SqliteColumn>, String> {
-    let pragma_query = crate::db::introspection::sqlite_columns_query(table);
-    let mut stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
-    let col_meta: Vec<(String, String, bool, bool, Option<String>)> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(1)?,         // name
-                row.get::<_, String>(2)?,         // type
-                row.get::<_, bool>(3)?,           // notnull
-                row.get::<_, bool>(5)?,           // pk
-                row.get::<_, Option<String>>(4)?, // dflt_value
-            ))
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    // AUTOINCREMENT only appears in the stored DDL of an INTEGER PK table.
-    let autoinc = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
-            [table],
-            |row| row.get::<_, String>(0),
-        )
-        .map(|sql| sql.to_uppercase().contains("AUTOINCREMENT"))
-        .unwrap_or(false);
-    // Columns covered by a single-column unique index (origin != 'pk').
-    let mut unique_cols: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if let Ok(mut idx_stmt) =
-        conn.prepare(&crate::db::introspection::sqlite_index_list_query(table))
-    {
-        let indexes: Vec<(String, bool, String)> = idx_stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(1)?, // name
-                    row.get::<_, bool>(2)?,   // unique
-                    row.get::<_, String>(3)?, // origin
-                ))
-            })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        for (idx_name, is_unique, origin) in indexes {
-            if !is_unique || origin == "pk" {
-                continue;
-            }
-            if let Ok(mut info_stmt) = conn.prepare(
-                &crate::db::introspection::sqlite_index_info_query(&idx_name),
-            ) {
-                let cols: Vec<String> = info_stmt
-                    .query_map([], |row| row.get::<_, String>(2))
-                    .map_err(|e| e.to_string())?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                if cols.len() == 1 {
-                    unique_cols.insert(cols[0].clone());
-                }
-            }
-        }
-    }
-    Ok(col_meta
-        .iter()
-        .map(|(name, dtype, notnull, is_pk, default)| SqliteColumn {
-            name: name.clone(),
-            type_: dtype.clone(),
-            nullable: !notnull,
-            default: default.clone(),
-            is_pk: *is_pk,
-            auto_increment: autoinc && *is_pk && dtype.trim().eq_ignore_ascii_case("INTEGER"),
-            unique: unique_cols.contains(name),
-            renamed_from: None,
-        })
-        .collect())
+    sqlite_live_columns(conn, table)
+}
+
+/// Refuse a rebuild of this table before any mutation, or `Ok(())` when the
+/// rebuild script can reproduce the live shape faithfully.
+///
+/// Ticket 08 refuses the shapes the current script would degrade (indexes,
+/// triggers, keys, checks, uniques, generated columns, collations, expression
+/// defaults, table options); ticket 10 adds preservation and lifts those
+/// refusals one by one. Until then the only honest answer is a named refusal.
+fn guard_sqlite_rebuild(conn: &rusqlite::Connection, table: &str) -> Result<(), String> {
+    read_table_shape(conn, table)?.refusal().map_or(Ok(()), Err)
 }
 
 /// Build SQL for an object CRUD operation. The pool is resolved only to enforce
@@ -409,9 +352,16 @@ pub(crate) async fn build_object_ddl_inner(
                 "create" => Ok(vec![sqlite_create_table_sql(&table, &cols, &[])?]),
                 "edit" => {
                     let old = sqlite_live_columns(conn, &table)?;
+                    // A submission that needs a rebuild goes through the rebuild
+                    // guard here, so the refusal reaches the editor as a reason
+                    // instead of surfacing later as a queue error.
+                    if sqlite_edit_requires_rebuild(&old, &cols)? {
+                        guard_sqlite_rebuild(conn, &table)?;
+                    }
                     sqlite_column_diff_sql(&table, &old, &cols)
                 }
                 "rebuild" => {
+                    guard_sqlite_rebuild(conn, &table)?;
                     let old = sqlite_live_columns(conn, &table)?;
                     sqlite_rebuild_script(&table, &old, &cols)
                 }
@@ -489,10 +439,8 @@ pub(crate) async fn build_rebuild_script_inner(
         Some(DbHandle::Sqlite(conn)) => {
             let new_cols: Vec<SqliteColumn> =
                 serde_json::from_value(new_columns).map_err(|e| e.to_string())?;
+            guard_sqlite_rebuild(conn, table)?;
             let live = sqlite_live_columns(conn, table)?;
-            if let Some(reason) = sqlite_rebuild_refusal(&live) {
-                return Err(reason);
-            }
             return Ok(sqlite_rebuild_script(table, &live, &new_cols)?.join(";\n"));
         }
         Some(DbHandle::Postgresql(client, _)) => {
@@ -857,20 +805,41 @@ pub async fn get_role_privileges(
 }
 
 /// Check whether a table can be rebuilt (no triggers, policies, inheritance, partitioning, generated columns).
+///
+/// For SQLite the caller may pass the columns it is about to stage: the answer
+/// is then "would *this* submission need a rebuild, and can that rebuild be
+/// faithful?". Without columns the guard answers for the live table as-is,
+/// which is what a reorder-only rebuild needs.
 pub(crate) async fn get_table_rebuild_readiness_inner(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     connection_id: &str,
     schema: &str,
     table: &str,
+    columns: Option<serde_json::Value>,
 ) -> Result<crate::models::RebuildReadiness, String> {
     let mut pm = pm.lock().await;
     match pm.get(connection_id) {
         Some(DbHandle::Sqlite(conn)) => {
-            let live = sqlite_live_columns(conn, table)?;
-            Ok(match sqlite_rebuild_refusal(&live) {
-                Some(reason) => crate::models::RebuildReadiness {
+            let needs_rebuild = match columns {
+                Some(value) => {
+                    let proposed: Vec<SqliteColumn> =
+                        serde_json::from_value(value).map_err(|e| e.to_string())?;
+                    let live = sqlite_live_columns(conn, table)?;
+                    sqlite_edit_requires_rebuild(&live, &proposed)?
+                }
+                None => true,
+            };
+            if !needs_rebuild {
+                return Ok(crate::models::RebuildReadiness {
+                    ok: true,
+                    reasons: vec![],
+                });
+            }
+            let shape = read_table_shape(conn, table)?;
+            Ok(match shape.refusal() {
+                Some(_) => crate::models::RebuildReadiness {
                     ok: false,
-                    reasons: vec![reason],
+                    reasons: shape.blockers(),
                 },
                 None => crate::models::RebuildReadiness {
                     ok: true,
@@ -917,9 +886,17 @@ pub async fn get_table_rebuild_readiness(
     connection_id: String,
     schema: String,
     table: String,
+    columns: Option<serde_json::Value>,
     state: State<'_, crate::AppState>,
 ) -> Result<crate::models::RebuildReadiness, String> {
-    get_table_rebuild_readiness_inner(&state.pool_manager, &connection_id, &schema, &table).await
+    get_table_rebuild_readiness_inner(
+        &state.pool_manager,
+        &connection_id,
+        &schema,
+        &table,
+        columns,
+    )
+    .await
 }
 
 /// List non-system tablespaces for the table-options picker.

@@ -80,15 +80,20 @@ describe("buildChangeSql", () => {
 
 function rebuildItem(sql: string): QueueItem {
   return {
-    id: "ch-rb1", type: "rebuild_table", sql, status: "pending",
+    id: "ch-rb1", type: "rebuild_table", schema: "main", table: "users", sql, status: "pending",
     createdAt: 0, origin: null,
   } as unknown as QueueItem;
 }
 
 describe("rebuild_table payload", () => {
-  it("builds a rebuild_table payload with the script", () => {
+  it("builds a rebuild_table payload with the script and the table it rebuilds", () => {
     const p = buildChangePayload(rebuildItem("CREATE TABLE _t();"));
-    expect(p).toEqual({ id: "ch-rb1", type: "rebuild_table", sql: "CREATE TABLE _t();" });
+    expect(p).toEqual({
+      id: "ch-rb1",
+      type: "rebuild_table",
+      table: "users",
+      sql: "CREATE TABLE _t();",
+    });
   });
   it("buildChangeSql returns the script verbatim", () => {
     expect(buildChangeSql(rebuildItem("SELECT 1;"))).toBe("SELECT 1;");
