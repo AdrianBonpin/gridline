@@ -883,6 +883,88 @@ describe("DbViewerScreen", () => {
         );
     });
 
+    it("keeps a view's columns read-only", async () => {
+        const viewResult = {
+            columns: [
+                {
+                    name: "id",
+                    data_type: "integer",
+                    is_nullable: false,
+                    is_pk: true,
+                    is_fk: false,
+                    fk_ref: null,
+                    default_value: null,
+                    editable: true,
+                    is_generated: false,
+                },
+                {
+                    name: "customer",
+                    data_type: "text",
+                    is_nullable: true,
+                    is_pk: false,
+                    is_fk: false,
+                    fk_ref: null,
+                    default_value: null,
+                    editable: true,
+                    is_generated: false,
+                },
+            ],
+            rows: [[1, "Alice"]],
+            total_rows: 1,
+            page: 1,
+            page_size: 50,
+        };
+        vi.spyOn(commands, "getTableData").mockResolvedValue(
+            viewResult as any,
+        );
+        useDbViewerStore.setState({
+            tables: [
+                {
+                    name: "order_summary",
+                    schema: "public",
+                    table_type: "VIEW",
+                },
+            ],
+            tabs: [
+                {
+                    id: "tab-view",
+                    schema: "public",
+                    table: "order_summary",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    data: viewResult,
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "table",
+                },
+            ],
+            activeTabId: "tab-view",
+        });
+
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+
+        // A view's rows cannot be grown…
+        await waitFor(() =>
+            expect(screen.queryByLabelText(/insert row/i)).toBeNull(),
+        );
+        // …nor edited: an editable-by-metadata column stays non-editable here.
+        const cell = await screen.findByText("Alice");
+        fireEvent.click(cell);
+        fireEvent.keyDown(cell, { key: "Enter" });
+        expect(screen.queryByTestId("cell-editor")).toBeNull();
+        expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+    });
+
     it("refetches the active tab after a successful Commit All", async () => {
         useUiStore.setState({ activeConnectionId: "c1" });
         vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
