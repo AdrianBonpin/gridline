@@ -193,4 +193,36 @@ describe("SshHostTrustPanel", () => {
       "SHA256:stale",
     );
   });
+
+  it("requires a new comparison when a later check finds another conflict", async () => {
+    const user = userEvent.setup();
+    let calls = 0;
+    mockCommands.sshHostTrustState.mockImplementation(async () => {
+      calls += 1;
+      // A second mismatch presents yet another key: the earlier confirmation
+      // must not still count.
+      return calls === 1
+        ? mismatch
+        : { ...mismatch, fingerprint: "SHA256:third" };
+    });
+    render(<SshHostTrustPanel host="db.example.com" port={2222} />);
+
+    await user.click(screen.getByRole("button", { name: /check host key/i }));
+    await user.click(await screen.findByLabelText(/compared the fingerprint/i));
+    expect(
+      screen.getByRole("button", { name: /re-enroll host key/i }),
+    ).toBeEnabled();
+
+    // The endpoint now presents a different key: trust it only after a fresh,
+    // explicit comparison, even though the previous one was still checked.
+    await user.click(screen.getByRole("button", { name: /re-check host key/i }));
+
+    expect(
+      await screen.findByTestId("ssh-host-trust-presented"),
+    ).toHaveTextContent("SHA256:third");
+    expect(
+      screen.getByRole("button", { name: /re-enroll host key/i }),
+    ).toBeDisabled();
+    expect(mockCommands.sshHostTrustReenroll).not.toHaveBeenCalled();
+  });
 });
