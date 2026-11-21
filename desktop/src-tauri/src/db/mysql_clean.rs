@@ -70,10 +70,14 @@ const MODIFIERS: &[&str] = &[
 
 /// Build the ordered `DROP … IF EXISTS` script for a clean restore.
 /// Returns an empty vector when no object can be identified (fail closed).
-pub fn plan_clean_drops(default_schema: &str, statements: &[String]) -> Vec<String> {
+///
+/// Generic over `AsRef<str>` so it reads both owned statement text and the
+/// borrowed [`crate::db::mysql_script::MySqlStatement`] slices the native
+/// restore uses (no per-statement copy of the dump).
+pub fn plan_clean_drops<S: AsRef<str>>(default_schema: &str, statements: &[S]) -> Vec<String> {
     let mut found: Vec<(ObjectKind, String)> = Vec::new();
     for stmt in statements {
-        if let Some((kind, name)) = parse_create_target(stmt) {
+        if let Some((kind, name)) = parse_create_target(stmt.as_ref()) {
             let qualified = qualify(default_schema, &name);
             if !found.iter().any(|(k, n)| *k == kind && *n == qualified) {
                 found.push((kind, qualified));
@@ -89,6 +93,12 @@ pub fn plan_clean_drops(default_schema: &str, statements: &[String]) -> Vec<Stri
 
 /// Extract `(kind, raw name)` from a `CREATE …` statement, or `None`.
 fn parse_create_target(stmt: &str) -> Option<(ObjectKind, String)> {
+    // A dump is mostly `INSERT`s. Rejecting them on a zero-allocation scan keeps
+    // clean planning bounded on a 100 MB script instead of copying every
+    // statement to look at it.
+    if !may_create(stmt) {
+        return None;
+    }
     let tokens = unwrap_version_comments(stmt);
     let tokens = tokenize(&tokens);
     let mut it = tokens.iter().peekable();
@@ -138,6 +148,47 @@ fn parse_create_target(stmt: &str) -> Option<(ObjectKind, String)> {
         }
     }
     None
+}
+
+/// True when the statement's first significant token is `CREATE`. Skipping
+/// whitespace and comments costs no allocation; an executable `/*! … */`
+/// comment (mysqldump's wrapper for routines and triggers) hides the keyword,
+/// so it opts into the full parse instead of guessing.
+fn may_create(stmt: &str) -> bool {
+    let bytes = stmt.as_bytes();
+    let mut i = 0usize;
+    loop {
+        while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return false;
+        }
+        if bytes[i] == b'#' || crate::db::mysql_script::is_dash_comment(&stmt[i..]) {
+            let end = crate::db::mysql_script::line_comment_end(stmt, i);
+            if end >= bytes.len() {
+                return false; // nothing but a comment
+            }
+            i = end;
+            continue;
+        }
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            if bytes.get(i + 2) == Some(&b'!') {
+                return true; // executable comment: let the full parse decide
+            }
+            match crate::db::mysql_script::skip_block_comment(stmt, i) {
+                Some(end) => i = end,
+                None => return false,
+            }
+            continue;
+        }
+        break;
+    }
+    let word: String = stmt[i..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    word.eq_ignore_ascii_case("CREATE")
 }
 
 /// Reject candidates that are clearly not object names. A `(`, `)`, `,` or `;`
@@ -252,7 +303,10 @@ fn split_qualified(name: &str) -> Vec<String> {
 /// quotes and collapse MySQL's doubled-backtick escape to a single backtick.
 /// Re-quoting with [`mysql_quote_ident`] then doubles it exactly once more.
 fn unquote_identifier(s: &str) -> String {
-    match s.strip_prefix('`').and_then(|inner| inner.strip_suffix('`')) {
+    match s
+        .strip_prefix('`')
+        .and_then(|inner| inner.strip_suffix('`'))
+    {
         Some(inner) => inner.replace("``", "`"),
         None => s.to_string(),
     }

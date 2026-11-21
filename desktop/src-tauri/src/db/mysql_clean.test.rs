@@ -124,3 +124,13 @@ fn drops_only_objects_the_dump_recreates() {
         ]
     );
 }
+
+#[test]
+fn recognises_a_comment_led_create() {
+    // mysqldump prefixes statements with comment headers; the cheap "is this a
+    // CREATE?" probe must skip them rather than reject the statement.
+    assert_eq!(
+        plan("-- setup\n/* note */ CREATE TABLE c (id int);"),
+        vec!["DROP TABLE IF EXISTS `shop`.`c`".to_string()]
+    );
+}
