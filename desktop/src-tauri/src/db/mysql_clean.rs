@@ -213,11 +213,12 @@ fn tokenize(s: &str) -> Vec<String> {
     tokens
 }
 
-/// `a` -> `schema`.`a`; `db`.`a` / `db.a` -> `db`.`a`.
+/// `a` -> `schema`.`a`; `db`.`a` / `db.a` -> `db`.`a`;
+/// `` `my.table` `` -> ``schema`.`my.table`` (one name, not schema plus table).
 fn qualify(default_schema: &str, name: &str) -> String {
-    let parts: Vec<String> = name
-        .split('.')
-        .map(|p| mysql_quote_ident(strip_backticks(p)))
+    let parts: Vec<String> = split_qualified(name)
+        .iter()
+        .map(|p| mysql_quote_ident(&unquote_identifier(p)))
         .collect();
     if parts.len() == 1 {
         format!("{}.{}", mysql_quote_ident(default_schema), parts[0])
@@ -226,8 +227,35 @@ fn qualify(default_schema: &str, name: &str) -> String {
     }
 }
 
-fn strip_backticks(s: &str) -> &str {
-    s.trim_matches('`')
+/// Split a possibly-qualified object name on `.` **outside** backtick quotes.
+/// A quoted name may legally contain a dot, so a naive `split('.')` invents a
+/// schema qualifier that does not exist and targets the wrong object.
+fn split_qualified(name: &str) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_backtick = false;
+    for ch in name.chars() {
+        match ch {
+            '`' => {
+                in_backtick = !in_backtick;
+                cur.push(ch);
+            }
+            '.' if !in_backtick => parts.push(std::mem::take(&mut cur)),
+            _ => cur.push(ch),
+        }
+    }
+    parts.push(cur);
+    parts
+}
+
+/// Decode one (optionally backtick-quoted) name component: drop the outer
+/// quotes and collapse MySQL's doubled-backtick escape to a single backtick.
+/// Re-quoting with [`mysql_quote_ident`] then doubles it exactly once more.
+fn unquote_identifier(s: &str) -> String {
+    match s.strip_prefix('`').and_then(|inner| inner.strip_suffix('`')) {
+        Some(inner) => inner.replace("``", "`"),
+        None => s.to_string(),
+    }
 }
 
 #[cfg(test)]

@@ -76,3 +76,51 @@ fn skips_a_create_whose_name_cannot_be_determined() {
     let got = plan("CREATE TABLE (id int);");
     assert!(got.is_empty(), "got {got:?}");
 }
+
+#[test]
+fn quoted_name_containing_a_dot_is_one_name() {
+    // `` `my.table` `` is a single table called `my.table`, not schema `my`
+    // plus table `table` — splitting on the dot would name a different object.
+    assert_eq!(
+        plan("CREATE TABLE `my.table` (id int);"),
+        vec!["DROP TABLE IF EXISTS `shop`.`my.table`".to_string()]
+    );
+}
+
+#[test]
+fn quoted_dotted_name_after_an_explicit_schema_is_preserved() {
+    assert_eq!(
+        plan("CREATE TABLE `other`.`my.table` (id int);"),
+        vec!["DROP TABLE IF EXISTS `other`.`my.table`".to_string()]
+    );
+}
+
+#[test]
+fn doubled_backtick_inside_a_name_is_emitted_once() {
+    // MySQL escapes an embedded backtick by doubling it inside the identifier
+    // quotes; re-quoting must not double it twice.
+    assert_eq!(
+        plan("CREATE TABLE `we``ird` (id int);"),
+        vec!["DROP TABLE IF EXISTS `shop`.`we``ird`".to_string()]
+    );
+}
+
+#[test]
+fn drops_only_objects_the_dump_recreates() {
+    // A clean restore drops what the dump creates and nothing else: data rows
+    // mentioning a table, or objects already in the target, must not appear.
+    let got = plan(
+        "CREATE TABLE `orders` (id int);\n\
+         INSERT INTO `orders` VALUES (1);\n\
+         INSERT INTO `audit` VALUES ('CREATE TABLE unrelated (id int)');\n\
+         DROP TABLE `legacy`;\n\
+         CREATE VIEW `shop`.`report` AS SELECT 1;",
+    );
+    assert_eq!(
+        got,
+        vec![
+            "DROP VIEW IF EXISTS `shop`.`report`".to_string(),
+            "DROP TABLE IF EXISTS `shop`.`orders`".to_string(),
+        ]
+    );
+}
