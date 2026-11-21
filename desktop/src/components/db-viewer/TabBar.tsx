@@ -18,6 +18,8 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { ListChecks, Play, Table2, Layers, Eye, Terminal, X, Plus, Pencil } from "lucide-react";
 import { useDbViewerStore, type ViewerTab } from "../../stores/dbViewerStore";
+import { useActiveChangeOrigin } from "../../hooks/useActiveChangeOrigin";
+import { itemsForChangeTarget } from "../../lib/changeOrigin";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
 import { OBJECT_ICONS } from "./objects/ObjectDetail";
 
@@ -92,6 +94,9 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
   const openQueryTab = useDbViewerStore((state) => state.openQueryTab);
   const reorderTab = useDbViewerStore((state) => state.reorderTab);
   const changesQueue = useDbViewerStore((state) => state.changesQueue);
+  // The badge (and the panel toggle) reflect only the active Change Origin, so
+  // another connection's or database's pending work is never counted here.
+  const activeOrigin = useActiveChangeOrigin();
   const changesPanelExpanded = useDbViewerStore(
     (state) => state.changesPanelExpanded,
   );
@@ -123,7 +128,8 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
     if (from >= 0 && to >= 0) reorderTab(from, to);
   };
 
-  const pendingCount = changesQueue.filter(
+  const originQueue = itemsForChangeTarget(changesQueue, activeOrigin);
+  const pendingCount = originQueue.filter(
     (c) => c.status === "pending",
   ).length;
 
@@ -262,7 +268,7 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
           <button
             type="button"
             onClick={() => {
-              if (changesQueue.length > 0) toggleChangesPanel();
+              if (originQueue.length > 0) toggleChangesPanel();
             }}
             aria-label="Changes queue"
             data-testid="changes-queue-toggle"

@@ -2,6 +2,9 @@ import { create } from "zustand";
 import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, HypertableInfo, IndexInfo, ConstraintInfo, ObjectType, RoleInfo, MultiQueryResult, DiffItem } from "../lib/types";
 import { getDatabases, getSchemas, getTables } from "../lib/commands";
 import type { ObjectKind, DdlParams } from "../lib/objectCrud";
+import { changeOriginFor, isSameChangeOrigin, isSameChangeTarget, type ChangeOrigin } from "../lib/changeOrigin";
+import { useUiStore } from "./uiStore";
+import { useConnectionStore } from "./connectionStore";
 
 // ─── Local types ────────────────────────────────────────────────
 
@@ -37,6 +40,12 @@ export interface QueueItem {
   error?: string | null;
   description?: string | null;
   createdAt: number;
+  /**
+   * The Change Origin this change was staged against (GLOSSARY.md). Immutable
+   * once staged: only the origin it belongs to may commit it. `null` means the
+   * change has no origin at all, so it is never committed anywhere.
+   */
+  origin: ChangeOrigin | null;
 }
 
 /** Payload carried by an "objectForm" tab — the kind + params for the
@@ -93,6 +102,26 @@ export interface ViewerTab {
 
 let tabCounter = 0;
 let changeCounter = 0;
+
+/**
+ * The Change Origin of whatever the viewer is currently showing: the active
+ * saved connection, the selected database, and that connection's target
+ * configuration right now. Derived from live state (never cached) so staging
+ * always belongs to the connection the user is actually looking at, and a
+ * saved connection retargeted mid-session is observed immediately.
+ *
+ * `null` when no saved connection is active or the record is unknown — staged
+ * work with no origin is never committed.
+ */
+export function currentChangeOrigin(): ChangeOrigin | null {
+  const connectionId = useUiStore.getState().activeConnectionId;
+  if (!connectionId) return null;
+  const connection = useConnectionStore
+    .getState()
+    .connections.find((c) => c.id === connectionId);
+  if (!connection) return null;
+  return changeOriginFor(connection, useDbViewerStore.getState().currentDatabase);
+}
 
 const initialTab = (schema: string, table: string, defaultPageSize?: number): ViewerTab => ({
   id: `tab-${++tabCounter}`,
@@ -219,12 +248,14 @@ interface DbViewerState {
     columns?: string[];
     rows?: unknown[][];
     description?: string | null;
+    origin?: ChangeOrigin | null;
   }) => void;
   addDiffItems: (items: DiffItem[]) => void;
   cancelChange: (changeId: string) => void;
   removeChange: (changeId: string) => void;
   updateChange: (changeId: string, patch: Partial<QueueItem>) => void;
   clearChanges: () => void;
+  clearChangesForTarget: (origin: ChangeOrigin | null) => void;
   markChangeCommitted: (changeId: string) => void;
   markChangeFailed: (changeId: string, error: string) => void;
   toggleChangesPanel: () => void;
@@ -736,6 +767,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       status: "pending",
       description: input.description ?? null,
       createdAt: Date.now(),
+      origin: input.origin ?? currentChangeOrigin(),
     };
     set((state) => ({ changesQueue: [...state.changesQueue, item] }));
   },
@@ -773,6 +805,16 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     })),
 
   clearChanges: () => set({ changesQueue: [] }),
+
+  /** Clear All: only the active origin's pending work, never another origin's. */
+  clearChangesForTarget: (origin) => {
+    if (!origin) return;
+    set((state) => ({
+      changesQueue: state.changesQueue.filter(
+        (c) => !isSameChangeTarget(c.origin, origin),
+      ),
+    }));
+  },
 
   markChangeCommitted: (changeId) =>
     set((state) => ({
@@ -813,7 +855,9 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   stageCellEdit: (input) => {
     // Re-staging the same cell replaces the existing pending entry (keeps the
     // original oldData so revert restores the DB value) instead of stacking
-    // a second queue item.
+    // a second queue item. Matching is scoped to the active Change Origin, so
+    // an edit can never replace another origin's staged value.
+    const origin = currentChangeOrigin();
     const colName = Object.keys(input.newData)[0];
     const existing = get().changesQueue.find(
       (c) =>
@@ -823,7 +867,8 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
         c.table === input.table &&
         c.primaryKey &&
         JSON.stringify(c.primaryKey) === JSON.stringify(input.primaryKey) &&
-        Object.keys(c.newData ?? {})[0] === colName,
+        Object.keys(c.newData ?? {})[0] === colName &&
+        (origin ? isSameChangeOrigin(c.origin, origin) : c.origin === null),
     );
     if (existing) {
       set((state) => ({
@@ -847,6 +892,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       oldData: input.oldData,
       newData: input.newData,
       description: input.description ?? `Edit ${input.table}`,
+      origin,
     });
   },
 

@@ -7,10 +7,10 @@
 **Seams:** Viewer interaction seam: catches queue scoping, commit targeting, and the partial-success message; misses the database write itself.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/93
-**Status:** ready
+**Status:** done
 
-- [ ] Pending changes staged on one connection are absent from Commit All while another connection is active.
-- [ ] Returning to the original connection restores its pending queue unchanged.
-- [ ] Commit All refuses work when the saved connection's target changed after staging.
-- [ ] Commit All applies changes in order, stops at the first failure, and states how many changes committed and which one failed.
-- [ ] The UI never claims an all-or-nothing queue rollback.
+- [x] Pending changes staged on one connection are absent from Commit All while another connection is active.
+- [x] Returning to the original connection restores its pending queue unchanged.
+- [x] Commit All refuses work when the saved connection's target changed after staging.
+- [x] Commit All applies changes in order, stops at the first failure, and states how many changes committed and which one failed.
+- [x] The UI never claims an all-or-nothing queue rollback.
