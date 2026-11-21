@@ -48,6 +48,11 @@ pub struct PgToolStatus {
     /// Whether a bundled file exists at the expected path (runnable or not).
     pub pg_dump_bundled_available: bool,
     pub pg_restore_bundled_available: bool,
+    /// Why the bounded `--version` probe failed when the tool was not found
+    /// (a hang that hit the deadline, or a binary that could not be started).
+    /// `None` when the tool resolved, or when nothing was found at all.
+    pub pg_dump_probe_error: Option<String>,
+    pub pg_restore_probe_error: Option<String>,
 }
 
 /// Resolved on-disk paths for the three client tools (system-first, bundled-fallback).
@@ -135,6 +140,9 @@ pub struct MySqlToolStatus {
     pub mysqldump_is_mariadb: bool,
     pub mysqldump_bundled_available: bool,
     pub mysql_bundled_available: bool,
+    /// See `PgToolStatus::pg_dump_probe_error`.
+    pub mysqldump_probe_error: Option<String>,
+    pub mysql_probe_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +229,8 @@ mod tests {
             pg_restore_resolved_name: None,
             pg_dump_bundled_available: true,
             pg_restore_bundled_available: false,
+            pg_dump_probe_error: None,
+            pg_restore_probe_error: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"pg_dump_source\":\"system\""));
@@ -269,6 +279,8 @@ mod tests {
             mysqldump_is_mariadb: true,
             mysqldump_bundled_available: true,
             mysql_bundled_available: true,
+            mysqldump_probe_error: None,
+            mysql_probe_error: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mysqldumpSource\":\"bundled\""));

@@ -380,6 +380,13 @@ export interface PgToolStatus {
   pg_restore_resolved_name?: string | null;
   pg_dump_bundled_available?: boolean;
   pg_restore_bundled_available?: boolean;
+  /**
+   * Why the bounded `--version` probe failed when the tool could not be used
+   * (it hung past its deadline, or would not start). `null` when the tool
+   * resolved, or when nothing was found at all.
+   */
+  pg_dump_probe_error?: string | null;
+  pg_restore_probe_error?: string | null;
 }
 
 // ─── Backup Types: MySQL / SQLite / Settings (v0.7.8) ───────────
@@ -398,6 +405,9 @@ export interface MySqlToolStatus {
   mysqldumpIsMariaDb?: boolean;
   mysqldumpBundledAvailable?: boolean;
   mysqlBundledAvailable?: boolean;
+  /** See `PgToolStatus.pg_dump_probe_error`. */
+  mysqldumpProbeError?: string | null;
+  mysqlProbeError?: string | null;
 }
 
 export interface MySqlBackupOptions {

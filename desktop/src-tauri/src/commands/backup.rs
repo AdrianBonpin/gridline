@@ -1,9 +1,10 @@
 use rusqlite::{types::ValueRef, Connection};
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::db::tool_resolver::{self, ToolRequest, ToolResolution};
+use crate::job::{self, JobControl, JobError};
 use crate::models::backup::*;
 
 // ---------------------------------------------------------------------------
@@ -45,13 +46,86 @@ fn sanitize_error(s: &str) -> String {
     crate::commands::test_connection::sanitize_error(s)
 }
 
+/// The message a cancelled job reports. Shared by the managed (child-process)
+/// and in-process engines so the command boundary can keep a cancellation
+/// distinct from a tool failure.
+pub const CANCEL_MESSAGE: &str = "Job cancelled";
+/// The in-process MySQL restore reports a `KILL QUERY` cancellation with this
+/// text (see `run_mysql_restore_on`).
+pub const QUERY_CANCEL_MESSAGE: &str = "Query cancelled";
+
+/// Why a tool job stopped, keeping cancellation distinguishable from a genuine
+/// tool failure. The UI shows a cancelled job as *cancelled* (with a retry),
+/// never as a failed restore.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobFailure {
+    pub message: String,
+    pub cancelled: bool,
+}
+
+impl JobFailure {
+    pub fn failed(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            cancelled: false,
+        }
+    }
+
+    /// Wrap an in-process engine error, recognising the cancellation sentinels
+    /// those engines return when their cancellation flag flips.
+    pub fn from_engine(message: String) -> Self {
+        Self {
+            cancelled: message == CANCEL_MESSAGE || message == QUERY_CANCEL_MESSAGE,
+            message,
+        }
+    }
+}
+
+impl From<JobError> for JobFailure {
+    fn from(e: JobError) -> Self {
+        Self {
+            cancelled: e.is_cancelled(),
+            message: e.message(),
+        }
+    }
+}
+
+impl std::fmt::Display for JobFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+/// A cancellation check handed to the in-process engines.
+pub type CancelCheck<'a> = &'a (dyn Fn() -> bool + Sync);
+
+/// Cancellation check that never fires, for headless/legacy callers.
+fn never_cancel() -> bool {
+    false
+}
+
 /// Tauri-facing one-shot resolution with the process-lifetime cache.
 /// `force` bypasses the cache for an explicit user re-check.
 fn resolve_request(app: &AppHandle, request: &ToolRequest, force: bool) -> ToolResolution {
+    resolve_request_detailed(app, request, force).0
+}
+
+/// One detection pass, plus — when nothing resolved — the reason the last
+/// candidate probe failed.
+///
+/// Every probe is bounded (`probe_outcome`), so a binary that hangs on
+/// `--version` cannot block detection. That failure is reported rather than
+/// silently looking like "not installed", so the UI can say the tool was found
+/// but did not answer.
+fn resolve_request_detailed(
+    app: &AppHandle,
+    request: &ToolRequest,
+    force: bool,
+) -> (ToolResolution, Option<String>) {
     let key = request.cache_key();
     if !force {
         if let Some(hit) = tool_resolver::cache_get(&key) {
-            return hit;
+            return (hit, None);
         }
     }
 
@@ -61,8 +135,20 @@ fn resolve_request(app: &AppHandle, request: &ToolRequest, force: bool) -> ToolR
         .map(|rd| tool_resolver::bundled_tool_path(rd, request.subdir, request.bundled_name()));
     let trusted = tool_resolver::trusted_dirs();
     let start = std::time::Instant::now();
+    let note: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
     let probe = |p: &std::path::Path| {
-        tool_resolver::probe_within(start, tool_resolver::AGGREGATE_DEADLINE, p)
+        if start.elapsed() >= tool_resolver::AGGREGATE_DEADLINE {
+            return false;
+        }
+        match tool_resolver::probe_outcome(p, tool_resolver::PROBE_TIMEOUT) {
+            Ok(ok) => ok,
+            Err(e) => {
+                if note.borrow().is_none() {
+                    *note.borrow_mut() = Some(format!("{} — {}", p.display(), e.message()));
+                }
+                false
+            }
+        }
     };
     let resolved = tool_resolver::resolve_with(
         request,
@@ -71,6 +157,7 @@ fn resolve_request(app: &AppHandle, request: &ToolRequest, force: bool) -> ToolR
         bundled.as_deref(),
         probe,
     );
+    let probe_error = note.into_inner();
     let version = resolved
         .as_ref()
         .and_then(|r| tool_resolver::version_of(&r.program));
@@ -85,8 +172,12 @@ fn resolve_request(app: &AppHandle, request: &ToolRequest, force: bool) -> ToolR
         bundled_available,
         version,
     };
-    tool_resolver::cache_put(&key, out.clone());
-    out
+    // Only a success is cached: a miss has to be re-probed so its reason is
+    // reported again instead of being frozen as a silent "not found".
+    if out.resolved.is_some() {
+        tool_resolver::cache_put(&key, out.clone());
+    }
+    (out, probe_error)
 }
 
 /// System-first, bundled-fallback resolver. Returns (command_to_invoke, source).
@@ -114,6 +205,15 @@ pub fn resolve_tool_paths(app: &AppHandle) -> PgToolPaths {
 /// Shapes both PG statuses from resolved tools. Headless so the Tauri command
 /// stays thin and the shaping logic stays unit-testable.
 fn build_pg_tool_status(dump: &ToolResolution, restore: &ToolResolution) -> PgToolStatus {
+    build_pg_tool_status_with(dump, restore, None, None)
+}
+
+fn build_pg_tool_status_with(
+    dump: &ToolResolution,
+    restore: &ToolResolution,
+    dump_probe_error: Option<String>,
+    restore_probe_error: Option<String>,
+) -> PgToolStatus {
     PgToolStatus {
         pg_dump_found: dump.resolved.is_some(),
         pg_restore_found: restore.resolved.is_some(),
@@ -131,6 +231,17 @@ fn build_pg_tool_status(dump: &ToolResolution, restore: &ToolResolution) -> PgTo
         pg_restore_resolved_name: restore.resolved.as_ref().map(|r| r.name.clone()),
         pg_dump_bundled_available: dump.bundled_available,
         pg_restore_bundled_available: restore.bundled_available,
+        // A probe failure is only worth reporting when it explains a miss.
+        pg_dump_probe_error: if dump.resolved.is_none() {
+            dump_probe_error
+        } else {
+            None
+        },
+        pg_restore_probe_error: if restore.resolved.is_none() {
+            restore_probe_error
+        } else {
+            None
+        },
     }
 }
 
@@ -139,9 +250,11 @@ fn build_pg_tool_status(dump: &ToolResolution, restore: &ToolResolution) -> PgTo
 pub async fn detect_pg_tools(force: Option<bool>, app_handle: AppHandle) -> PgToolStatus {
     let force = force.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
-        let dump = resolve_request(&app_handle, &tool_resolver::pg_dump_request(), force);
-        let restore = resolve_request(&app_handle, &tool_resolver::pg_restore_request(), force);
-        build_pg_tool_status(&dump, &restore)
+        let (dump, dump_note) =
+            resolve_request_detailed(&app_handle, &tool_resolver::pg_dump_request(), force);
+        let (restore, restore_note) =
+            resolve_request_detailed(&app_handle, &tool_resolver::pg_restore_request(), force);
+        build_pg_tool_status_with(&dump, &restore, dump_note, restore_note)
     })
     .await
     .unwrap_or_else(|_| build_pg_tool_status(&ToolResolution::none(), &ToolResolution::none()))
@@ -247,76 +360,109 @@ fn build_restore_args(conn: &PgConnParams, options: &RestoreOptions) -> Vec<Stri
     args
 }
 
-/// Runs `pg_dump` against `conn`, writing to `options.file_path`.
-/// Returns `Ok(())` on success or a sanitized error message.
+/// Runs `pg_dump` against `conn` under `job`, writing to `options.file_path`.
+///
+/// The dump's own output (file length, or the sum of a directory-format dump's
+/// entries) is the progress signal, so a large backup that keeps writing is
+/// never killed for taking a long time, while one that stops producing output
+/// for the idle window is treated as hung. Cancellation terminates the whole
+/// child tree.
+pub fn run_pg_dump_managed(
+    job: &JobControl,
+    conn: &PgConnParams,
+    options: &BackupOptions,
+    tools: &PgToolPaths,
+) -> Result<(), JobFailure> {
+    let mut args = build_dump_args(conn, options);
+    args.push(format!("--file={}", options.file_path));
+
+    let mut cmd = Command::new(&tools.pg_dump);
+    cmd.env("PGPASSWORD", &conn.password).args(&args);
+
+    let activity = job::path_size_probe(&options.file_path);
+    let out = job::run_managed(job, cmd, Some(activity)).map_err(JobFailure::from)?;
+
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(JobFailure::failed(sanitize_error(&out.stderr)))
+    }
+}
+
+/// Headless one-shot form of [`run_pg_dump_managed`] (no registry, never
+/// cancelled) — the entry point the live integration tests use.
 pub fn run_pg_dump(
     conn: &PgConnParams,
     options: &BackupOptions,
     tools: &PgToolPaths,
 ) -> Result<(), String> {
-    let mut args = build_dump_args(conn, options);
-    args.push(format!("--file={}", options.file_path));
-
-    let result = Command::new(&tools.pg_dump)
-        .env("PGPASSWORD", &conn.password)
-        .args(&args)
-        .output();
-
-    match result {
-        Ok(output) if output.status.success() => Ok(()),
-        Ok(output) => Err(sanitize_error(&String::from_utf8_lossy(&output.stderr))),
-        Err(e) => Err(e.to_string()),
-    }
+    run_pg_dump_managed(&JobControl::detached(), conn, options, tools)
+        .map_err(|e| e.message)
 }
 
-/// Runs `pg_restore` against `conn`, reading from `options.file_path`.
-/// Returns `Ok(())` on success or a sanitized error message.
+/// Runs `pg_restore` (or `psql`) against `conn` under `job`, reading from
+/// `options.file_path`.
 ///
 /// Plain-format dumps are SQL text and cannot be read by `pg_restore` — they
 /// are executed with `psql` instead. The `clean` option is only honored for
 /// archive formats (custom/tar/directory); the UI disables it for plain.
+///
+/// No idle bound applies here: a restore can sit in one large `COPY` without
+/// printing anything, and that is indistinguishable from a quiet-but-healthy
+/// run. The job stays cancellable and is terminated on app exit, but it is
+/// never killed merely for being slow.
+pub fn run_pg_restore_managed(
+    job: &JobControl,
+    conn: &PgConnParams,
+    options: &RestoreOptions,
+    tools: &PgToolPaths,
+) -> Result<(), JobFailure> {
+    let cmd = if options.format == "plain" {
+        let mut cmd = Command::new(&tools.psql);
+        cmd.env("PGPASSWORD", &conn.password)
+            .args(build_psql_restore_args(conn, &options.file_path));
+        cmd
+    } else {
+        let mut args = build_restore_args(conn, options);
+        args.push(options.file_path.clone());
+        let mut cmd = Command::new(&tools.pg_restore);
+        cmd.env("PGPASSWORD", &conn.password).args(&args);
+        cmd
+    };
+
+    let out = job::run_managed(job, cmd, None).map_err(JobFailure::from)?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(JobFailure::failed(sanitize_error(&out.stderr)))
+    }
+}
+
+/// Headless one-shot form of [`run_pg_restore_managed`].
 pub fn run_pg_restore(
     conn: &PgConnParams,
     options: &RestoreOptions,
     tools: &PgToolPaths,
 ) -> Result<(), String> {
-    if options.format == "plain" {
-        let result = Command::new(&tools.psql)
-            .env("PGPASSWORD", &conn.password)
-            .args(build_psql_restore_args(conn, &options.file_path))
-            .output();
-
-        return match result {
-            Ok(output) if output.status.success() => Ok(()),
-            Ok(output) => Err(sanitize_error(&String::from_utf8_lossy(&output.stderr))),
-            Err(e) => Err(e.to_string()),
-        };
-    }
-
-    let mut args = build_restore_args(conn, options);
-    args.push(options.file_path.clone());
-
-    let result = Command::new(&tools.pg_restore)
-        .env("PGPASSWORD", &conn.password)
-        .args(&args)
-        .output();
-
-    match result {
-        Ok(output) if output.status.success() => Ok(()),
-        Ok(output) => Err(sanitize_error(&String::from_utf8_lossy(&output.stderr))),
-        Err(e) => Err(e.to_string()),
-    }
+    run_pg_restore_managed(&JobControl::detached(), conn, options, tools)
+        .map_err(|e| e.message)
 }
 
-/// Runs a DB-to-DB sync: `pg_dump` on `source` piped into `pg_restore` on `target`.
-/// Returns `Ok(())` on success or a sanitized error message.
-pub fn run_db_sync(
+/// Runs a DB-to-DB sync under `job`: `pg_dump` on `source` piped into
+/// `pg_restore` on `target`.
+///
+/// Both processes are owned by the job, so cancelling (or quitting) terminates
+/// both trees instead of leaving a half-running pipe behind. Bytes crossing the
+/// pipe reset the idle clock: a sync that moves nothing and prints nothing is
+/// hung, while a slow one keeps running.
+pub fn run_db_sync_managed(
+    job: &JobControl,
     source: &PgConnParams,
     target: &PgConnParams,
     schema: Option<&str>,
     tables: Option<&[String]>,
     tools: &PgToolPaths,
-) -> Result<(), String> {
+) -> Result<(), JobFailure> {
     // --- Build pg_dump args ---
     let mut dump_args = base_conn_args(source);
     dump_args.push("--format=c".into()); // binary custom format for reliable piping
@@ -338,57 +484,50 @@ pub fn run_db_sync(
     // makes a partial sync report failure rather than success.
     let restore_args = build_pg_sync_restore_args(target);
 
-    // --- Spawn pg_dump with piped stdout ---
-    let mut dump_child = Command::new(&tools.pg_dump)
+    let mut dump_cmd = Command::new(&tools.pg_dump);
+    dump_cmd
         .env("PGPASSWORD", &source.password)
-        .args(&dump_args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to start pg_dump: {e}"))?;
+        .args(&dump_args);
 
-    let dump_stdout = dump_child.stdout.take().unwrap();
-    let dump_stderr_reader = dump_child.stderr.take().unwrap();
-
-    // Read pg_dump stderr in a separate thread so the pipe doesn't block
-    let dump_stderr_handle = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut buf = String::new();
-        let _ = dump_stderr_reader
-            .take(10 * 1024 * 1024) // cap at 10 MiB
-            .read_to_string(&mut buf);
-        buf
-    });
-
-    // --- Run pg_restore with pg_dump stdout as stdin ---
-    let restore_result = Command::new(&tools.pg_restore)
+    let mut restore_cmd = Command::new(&tools.pg_restore);
+    restore_cmd
         .env("PGPASSWORD", &target.password)
-        .args(&restore_args)
-        .stdin(dump_stdout)
-        .output();
+        .args(&restore_args);
 
-    // Wait for pg_dump to finish
-    let dump_status = dump_child.wait();
-    let dump_stderr = dump_stderr_handle.join().unwrap_or_default();
+    let out = job::run_managed_pipe(job, dump_cmd, restore_cmd).map_err(JobFailure::from)?;
 
-    // --- Check results ---
-    let dump_failed = match dump_status {
-        Ok(status) => !status.success(),
-        Err(_) => true,
-    };
-
-    if dump_failed {
-        return Err(format!("pg_dump failed: {}", sanitize_error(&dump_stderr)));
+    if !out.source_status.success() {
+        return Err(JobFailure::failed(format!(
+            "pg_dump failed: {}",
+            sanitize_error(&out.source_stderr)
+        )));
     }
-
-    match restore_result {
-        Ok(output) if output.status.success() => Ok(()),
-        Ok(output) => Err(format!(
+    if !out.sink_status.success() {
+        return Err(JobFailure::failed(format!(
             "pg_restore failed: {}",
-            sanitize_error(&String::from_utf8_lossy(&output.stderr))
-        )),
-        Err(e) => Err(format!("pg_restore failed: {e}")),
+            sanitize_error(&out.sink_stderr)
+        )));
     }
+    Ok(())
+}
+
+/// Headless one-shot form of [`run_db_sync_managed`].
+pub fn run_db_sync(
+    source: &PgConnParams,
+    target: &PgConnParams,
+    schema: Option<&str>,
+    tables: Option<&[String]>,
+    tools: &PgToolPaths,
+) -> Result<(), String> {
+    run_db_sync_managed(
+        &JobControl::detached(),
+        source,
+        target,
+        schema,
+        tables,
+        tools,
+    )
+    .map_err(|e| e.message)
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +560,18 @@ fn sqlite_literal(v: ValueRef) -> String {
 pub fn dump_sqlite_to<W: Write, F: FnMut(&str)>(
     conn: &Connection,
     out: &mut W,
+    on_progress: F,
+) -> Result<(), String> {
+    dump_sqlite_to_cancellable(conn, out, on_progress, &never_cancel)
+}
+
+/// [`dump_sqlite_to`] with a cancellation check between tables, so a large
+/// SQLite backup can be stopped from the UI instead of running to completion.
+pub fn dump_sqlite_to_cancellable<W: Write, F: FnMut(&str)>(
+    conn: &Connection,
+    out: &mut W,
     mut on_progress: F,
+    is_cancelled: CancelCheck<'_>,
 ) -> Result<(), String> {
     writeln!(out, "PRAGMA foreign_keys=OFF;").map_err(|e| e.to_string())?;
     writeln!(out, "BEGIN TRANSACTION;").map_err(|e| e.to_string())?;
@@ -436,6 +586,9 @@ pub fn dump_sqlite_to<W: Write, F: FnMut(&str)>(
         .collect();
 
     for name in &table_names {
+        if is_cancelled() {
+            return Err(CANCEL_MESSAGE.to_string());
+        }
         let create_sql: String = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
@@ -652,6 +805,18 @@ fn drop_sqlite_user_objects(conn: &Connection) -> Result<(), String> {
 /// malformed or truncated dump leaves the target exactly as it was. The
 /// target's `foreign_keys` setting is restored on every exit path.
 pub fn restore_sqlite(conn: &Connection, dump_text: &str, clean: bool) -> Result<(), String> {
+    restore_sqlite_cancellable(conn, dump_text, clean, &never_cancel)
+}
+
+/// [`restore_sqlite`] with a cancellation check between statements. Because the
+/// whole replay is one transaction, a cancelled restore rolls back instead of
+/// leaving a half-applied script behind.
+pub fn restore_sqlite_cancellable(
+    conn: &Connection,
+    dump_text: &str,
+    clean: bool,
+    is_cancelled: CancelCheck<'_>,
+) -> Result<(), String> {
     let original_foreign_keys: i64 = conn
         .pragma_query_value(None, "foreign_keys", |row| row.get(0))
         .unwrap_or(0);
@@ -691,6 +856,9 @@ pub fn restore_sqlite(conn: &Connection, dump_text: &str, clean: bool) -> Result
             drop_sqlite_user_objects(conn)?;
         }
         for (index, stmt) in replay.iter().enumerate() {
+            if is_cancelled() {
+                return Err(CANCEL_MESSAGE.to_string());
+            }
             if let Err(e) = conn.execute_batch(stmt) {
                 return Err(format_restore_statement_error(
                     index + 1,
@@ -713,12 +881,25 @@ pub fn restore_sqlite(conn: &Connection, dump_text: &str, clean: bool) -> Result
 
 /// Dump `source_path` and restore into `target_path` (one-shot).
 pub fn run_sqlite_sync(source_path: &str, target_path: &str) -> Result<(), String> {
+    run_sqlite_sync_cancellable(source_path, target_path, &never_cancel)
+}
+
+/// Cancellable SQLite dump → restore. Both halves check the flag, and a cancel
+/// during the restore rolls its transaction back.
+pub fn run_sqlite_sync_cancellable(
+    source_path: &str,
+    target_path: &str,
+    is_cancelled: CancelCheck<'_>,
+) -> Result<(), String> {
     let src = Connection::open(source_path).map_err(|e| format!("open source: {e}"))?;
     let mut buf: Vec<u8> = Vec::new();
-    dump_sqlite_to(&src, &mut std::io::Cursor::new(&mut buf), |_| {})?;
+    dump_sqlite_to_cancellable(&src, &mut std::io::Cursor::new(&mut buf), |_| {}, is_cancelled)?;
+    if is_cancelled() {
+        return Err(CANCEL_MESSAGE.to_string());
+    }
     let text = String::from_utf8(buf).map_err(|e| e.to_string())?;
     let dst = Connection::open(target_path).map_err(|e| format!("open target: {e}"))?;
-    restore_sqlite(&dst, &text, true)
+    restore_sqlite_cancellable(&dst, &text, true, is_cancelled)
 }
 
 // ---------------------------------------------------------------------------
@@ -750,14 +931,15 @@ fn client_is_mariadb(program: &str) -> bool {
         }
     }
 
-    let is_mariadb = Command::new(program)
-        .arg("--version")
-        .output()
+    let is_mariadb = crate::job::capture_bounded(program, &["--version"], tool_resolver::PROBE_TIMEOUT)
         .map(|o| {
-            let mut text = String::from_utf8_lossy(&o.stdout).to_string();
-            text.push_str(&String::from_utf8_lossy(&o.stderr));
+            let mut text = o.stdout;
+            text.push_str(&o.stderr);
             text.contains("MariaDB")
         })
+        // A client that will not answer `--version` is treated as MySQL's (the
+        // MySQL-only flags below are the conservative choice: a MariaDB client
+        // rejects them visibly instead of silently dumping less).
         .unwrap_or(false);
 
     if let Ok(mut map) = cache.lock() {
@@ -912,18 +1094,33 @@ pub fn run_mysql_dump(
     tools: &MySqlToolPaths,
     tls_mode: Option<&str>,
 ) -> Result<(), String> {
+    run_mysql_dump_managed(&JobControl::detached(), conn, options, tools, tls_mode)
+        .map_err(|e| e.message)
+}
+
+/// [`run_mysql_dump`] owned by `job`: the `--result-file` output is the progress
+/// signal, cancellation kills the dump's whole process tree, and a hung dump is
+/// stopped by the idle bound instead of waiting forever.
+pub fn run_mysql_dump_managed(
+    job: &JobControl,
+    conn: &MySqlConnParams,
+    options: &MySqlBackupOptions,
+    tools: &MySqlToolPaths,
+    tls_mode: Option<&str>,
+) -> Result<(), JobFailure> {
     let is_mariadb = client_is_mariadb(&tools.mysqldump);
     let mut args = build_mysql_dump_args(conn, options, is_mariadb);
     args.extend(mysql_tls_args(is_mariadb, tls_mode));
-    let out = Command::new(&tools.mysqldump)
-        .env("MYSQL_PWD", &conn.password)
-        .args(&args)
-        .output()
-        .map_err(|e| e.to_string())?;
+
+    let mut cmd = Command::new(&tools.mysqldump);
+    cmd.env("MYSQL_PWD", &conn.password).args(&args);
+
+    let activity = job::path_size_probe(&options.file_path);
+    let out = job::run_managed(job, cmd, Some(activity)).map_err(JobFailure::from)?;
     if out.status.success() {
         Ok(())
     } else {
-        Err(sanitize_error(&String::from_utf8_lossy(&out.stderr)))
+        Err(JobFailure::failed(sanitize_error(&out.stderr)))
     }
 }
 
@@ -947,54 +1144,61 @@ pub fn run_mysql_sync(
     src_tls: Option<&str>,
     tgt_tls: Option<&str>,
 ) -> Result<(), String> {
+    run_mysql_sync_managed(
+        &JobControl::detached(),
+        source,
+        target,
+        tools,
+        src_tls,
+        tgt_tls,
+    )
+    .map_err(|e| e.message)
+}
+
+/// [`run_mysql_sync`] owned by `job`. Both ends belong to the job (cancel and
+/// app exit terminate both trees), and bytes crossing the pipe keep a slow but
+/// productive sync alive.
+pub fn run_mysql_sync_managed(
+    job: &JobControl,
+    source: &MySqlConnParams,
+    target: &MySqlConnParams,
+    tools: &MySqlToolPaths,
+    src_tls: Option<&str>,
+    tgt_tls: Option<&str>,
+) -> Result<(), JobFailure> {
     let dump_is_mariadb = client_is_mariadb(&tools.mysqldump);
     let restore_is_mariadb = client_is_mariadb(&tools.mysql);
 
     let dump_args = build_mysql_sync_dump_args(source, dump_is_mariadb, src_tls);
     let restore_args = mysql_sync_restore_args(target, restore_is_mariadb, tgt_tls);
 
-    let mut dump = Command::new(&tools.mysqldump)
+    let mut dump_cmd = Command::new(&tools.mysqldump);
+    dump_cmd
         .env("MYSQL_PWD", &source.password)
-        .args(&dump_args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("dump failed: {e}"))?;
+        .args(&dump_args);
 
-    let dump_stdout = dump.stdout.take().unwrap();
-    let dump_stderr_reader = dump.stderr.take().unwrap();
-    let dump_stderr_handle = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut buf = String::new();
-        let _ = dump_stderr_reader
-            .take(10 * 1024 * 1024) // cap at 10 MiB
-            .read_to_string(&mut buf);
-        buf
-    });
-
-    let restore = Command::new(&tools.mysql)
+    let mut restore_cmd = Command::new(&tools.mysql);
+    restore_cmd
         .env("MYSQL_PWD", &target.password)
-        .args(&restore_args)
-        .stdin(dump_stdout)
-        .output();
+        .args(&restore_args);
 
-    let dump_status = dump.wait();
-    let dump_stderr = dump_stderr_handle.join().unwrap_or_default();
+    let out = job::run_managed_pipe(job, dump_cmd, restore_cmd).map_err(JobFailure::from)?;
 
     // The dump is evaluated FIRST: a restore that read an empty stream from a
     // failed dump exits 0, and that must not read as a successful sync.
-    if !matches!(&dump_status, Ok(status) if status.success()) {
-        return Err(format!("dump failed: {}", sanitize_error(&dump_stderr)));
+    if !out.source_status.success() {
+        return Err(JobFailure::failed(format!(
+            "dump failed: {}",
+            sanitize_error(&out.source_stderr)
+        )));
     }
-
-    match restore {
-        Ok(output) if output.status.success() => Ok(()),
-        Ok(output) => Err(format!(
+    if !out.sink_status.success() {
+        return Err(JobFailure::failed(format!(
             "restore: {}",
-            sanitize_error(&String::from_utf8_lossy(&output.stderr))
-        )),
-        Err(e) => Err(format!("restore: {e}")),
+            sanitize_error(&out.sink_stderr)
+        )));
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,7 +1347,13 @@ async fn exec_restore_statement(
 // ---------------------------------------------------------------------------
 
 fn emit_result(app_handle: &AppHandle, job_id: &str, result: Result<(), String>) {
-    let event = match result {
+    emit_job_result(app_handle, job_id, result.map_err(JobFailure::from_engine));
+}
+
+/// Build the terminal progress event for a finished job. Pure so the
+/// cancelled/failed/completed mapping is unit-testable without a Tauri handle.
+pub fn progress_event(job_id: &str, result: &Result<(), JobFailure>) -> BackupProgressEvent {
+    match result {
         Ok(()) => BackupProgressEvent {
             job_id: job_id.to_string(),
             status: "completed".into(),
@@ -1152,16 +1362,43 @@ fn emit_result(app_handle: &AppHandle, job_id: &str, result: Result<(), String>)
             error: None,
             warning: None,
         },
-        Err(e) => BackupProgressEvent {
+        Err(failure) if failure.cancelled => BackupProgressEvent {
+            job_id: job_id.to_string(),
+            status: "cancelled".into(),
+            progress: None,
+            output_line: None,
+            error: Some(failure.message.clone()),
+            warning: None,
+        },
+        Err(failure) => BackupProgressEvent {
             job_id: job_id.to_string(),
             status: "failed".into(),
             progress: None,
             output_line: None,
-            error: Some(e),
+            error: Some(failure.message.clone()),
             warning: None,
         },
-    };
-    let _ = app_handle.emit("backup-progress", event);
+    }
+}
+
+fn emit_job_result(app_handle: &AppHandle, job_id: &str, result: Result<(), JobFailure>) {
+    let _ = app_handle.emit("backup-progress", progress_event(job_id, &result));
+}
+
+/// Cancel a running tool job (backup / restore / sync).
+///
+/// Terminates the job's whole child process tree (a cancelled `pg_dump` leaves
+/// no helper behind) and flips the cancellation flag the in-process engines
+/// poll. Returns whether a job with that id was still running.
+#[tauri::command]
+pub async fn cancel_tool_job(
+    job_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<bool, String> {
+    if !state.jobs.cancel(&job_id) {
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1200,10 +1437,14 @@ pub async fn pg_dump(
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
     let tools = resolve_tool_paths(&app_handle);
+    let job = state.jobs.begin(&job_id);
+    job.set_connection_id(Some(connection_id.clone()));
+    let jobs = state.jobs.clone();
 
     tokio::task::spawn_blocking(move || {
-        let result = run_pg_dump(&params, &options, &tools);
-        emit_result(&app_handle_clone, &job_id_clone, result);
+        let result = run_pg_dump_managed(&job, &params, &options, &tools);
+        jobs.finish(&job_id_clone);
+        emit_job_result(&app_handle_clone, &job_id_clone, result);
     });
 
     Ok(job_id)
@@ -1243,10 +1484,14 @@ pub async fn pg_restore(
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
     let tools = resolve_tool_paths(&app_handle);
+    let job = state.jobs.begin(&job_id);
+    job.set_connection_id(Some(connection_id.clone()));
+    let jobs = state.jobs.clone();
 
     tokio::task::spawn_blocking(move || {
-        let result = run_pg_restore(&params, &options, &tools);
-        emit_result(&app_handle_clone, &job_id_clone, result);
+        let result = run_pg_restore_managed(&job, &params, &options, &tools);
+        jobs.finish(&job_id_clone);
+        emit_job_result(&app_handle_clone, &job_id_clone, result);
     });
 
     Ok(job_id)
@@ -1334,16 +1579,21 @@ pub async fn db_sync(
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
     let tools = resolve_tool_paths(&app_handle);
+    let job = state.jobs.begin(&job_id);
+    job.set_connection_id(Some(options.source_connection_id.clone()));
+    let jobs = state.jobs.clone();
 
     tokio::task::spawn_blocking(move || {
-        let result = run_db_sync(
+        let result = run_db_sync_managed(
+            &job,
             &source,
             &target,
             schema.as_deref(),
             tables.as_deref(),
             &tools,
         );
-        emit_result(&app_handle_clone, &job_id_clone, result);
+        jobs.finish(&job_id_clone);
+        emit_job_result(&app_handle_clone, &job_id_clone, result);
     });
 
     Ok(job_id)
@@ -1354,6 +1604,15 @@ pub async fn db_sync(
 // ---------------------------------------------------------------------------
 
 fn build_mysql_tool_status(dump: &ToolResolution, client: &ToolResolution) -> MySqlToolStatus {
+    build_mysql_tool_status_with(dump, client, None, None)
+}
+
+fn build_mysql_tool_status_with(
+    dump: &ToolResolution,
+    client: &ToolResolution,
+    dump_probe_error: Option<String>,
+    client_probe_error: Option<String>,
+) -> MySqlToolStatus {
     MySqlToolStatus {
         mysqldump_found: dump.resolved.is_some(),
         mysql_found: client.resolved.is_some(),
@@ -1376,6 +1635,16 @@ fn build_mysql_tool_status(dump: &ToolResolution, client: &ToolResolution) -> My
             .unwrap_or(false),
         mysqldump_bundled_available: dump.bundled_available,
         mysql_bundled_available: client.bundled_available,
+        mysqldump_probe_error: if dump.resolved.is_none() {
+            dump_probe_error
+        } else {
+            None
+        },
+        mysql_probe_error: if client.resolved.is_none() {
+            client_probe_error
+        } else {
+            None
+        },
     }
 }
 
@@ -1383,9 +1652,11 @@ fn build_mysql_tool_status(dump: &ToolResolution, client: &ToolResolution) -> My
 pub async fn detect_mysql_tools(force: Option<bool>, app_handle: AppHandle) -> MySqlToolStatus {
     let force = force.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
-        let dump = resolve_request(&app_handle, &tool_resolver::mysql_dump_request(), force);
-        let client = resolve_request(&app_handle, &tool_resolver::mysql_client_request(), force);
-        build_mysql_tool_status(&dump, &client)
+        let (dump, dump_note) =
+            resolve_request_detailed(&app_handle, &tool_resolver::mysql_dump_request(), force);
+        let (client, client_note) =
+            resolve_request_detailed(&app_handle, &tool_resolver::mysql_client_request(), force);
+        build_mysql_tool_status_with(&dump, &client, dump_note, client_note)
     })
     .await
     .unwrap_or_else(|_| build_mysql_tool_status(&ToolResolution::none(), &ToolResolution::none()))
@@ -1538,9 +1809,13 @@ pub async fn mysql_dump(
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
+    let job = state.jobs.begin(&job_id);
+    job.set_connection_id(Some(connection_id.clone()));
+    let jobs = state.jobs.clone();
     tokio::task::spawn_blocking(move || {
-        let result = run_mysql_dump(&params, &options, &tools, tls.as_deref());
-        emit_result(&app_handle_clone, &job_id_clone, result);
+        let result = run_mysql_dump_managed(&job, &params, &options, &tools, tls.as_deref());
+        jobs.finish(&job_id_clone);
+        emit_job_result(&app_handle_clone, &job_id_clone, result);
     });
 
     Ok(job_id)
@@ -1618,6 +1893,12 @@ pub async fn mysql_restore(
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
     let connection_id_for_cancel = connection_id.clone();
+    // The restore has no child processes, but it is still an owned job: the
+    // generic `cancel_tool_job` request, app exit, and the connection-scoped
+    // `cancel_query` all stop it through the same flag.
+    let restore_job = state.jobs.begin(&job_id);
+    restore_job.set_connection_id(Some(connection_id.clone()));
+    let jobs = state.jobs.clone();
 
     tokio::spawn(async move {
         let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
@@ -1642,7 +1923,8 @@ pub async fn mysql_restore(
 
         let is_cancelled = {
             let flag = cancel_flag.clone();
-            move || flag.load(std::sync::atomic::Ordering::SeqCst)
+            let job = restore_job.clone();
+            move || flag.load(std::sync::atomic::Ordering::SeqCst) || job.is_cancelled()
         };
 
         let result = async {
@@ -1698,7 +1980,12 @@ pub async fn mysql_restore(
         }
         .await;
 
-        emit_result(&app_handle_clone, &job_id_clone, result);
+        jobs.finish(&job_id_clone);
+        emit_job_result(
+            &app_handle_clone,
+            &job_id_clone,
+            result.map_err(JobFailure::from_engine),
+        );
     });
 
     Ok(job_id)
@@ -1816,15 +2103,20 @@ pub async fn mysql_sync(
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
+    let job = state.jobs.begin(&job_id);
+    job.set_connection_id(Some(options.source_connection_id.clone()));
+    let jobs = state.jobs.clone();
     tokio::task::spawn_blocking(move || {
-        let result = run_mysql_sync(
+        let result = run_mysql_sync_managed(
+            &job,
             &source,
             &target,
             &tools,
             src_tls.as_deref(),
             tgt_tls.as_deref(),
         );
-        emit_result(&app_handle_clone, &job_id_clone, result);
+        jobs.finish(&job_id_clone);
+        emit_job_result(&app_handle_clone, &job_id_clone, result);
     });
 
     Ok(job_id)
@@ -1858,13 +2150,21 @@ pub async fn sqlite_dump(
     let out_path = options.file_path.clone();
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
+    let job = state.jobs.begin(&job_id);
+    job.set_connection_id(Some(connection_id.clone()));
+    let jobs = state.jobs.clone();
     tokio::task::spawn_blocking(move || {
+        let is_cancelled = {
+            let job = job.clone();
+            move || job.is_cancelled()
+        };
         let result = (|| -> Result<(), String> {
             let src = Connection::open(&path).map_err(|e| format!("open source: {e}"))?;
             let mut out =
                 std::fs::File::create(&out_path).map_err(|e| format!("create dump file: {e}"))?;
-            dump_sqlite_to(&src, &mut out, |_| {})
+            dump_sqlite_to_cancellable(&src, &mut out, |_| {}, &is_cancelled)
         })();
+        jobs.finish(&job_id_clone);
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 
@@ -1894,12 +2194,20 @@ pub async fn sqlite_restore(
     let clean = options.clean;
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
+    let job = state.jobs.begin(&job_id);
+    job.set_connection_id(Some(connection_id.clone()));
+    let jobs = state.jobs.clone();
     tokio::task::spawn_blocking(move || {
+        let is_cancelled = {
+            let job = job.clone();
+            move || job.is_cancelled()
+        };
         let result = (|| -> Result<(), String> {
             let dst = Connection::open(&path).map_err(|e| format!("open target: {e}"))?;
             let text = std::fs::read_to_string(&in_path).map_err(|e| format!("read dump: {e}"))?;
-            restore_sqlite(&dst, &text, clean)
+            restore_sqlite_cancellable(&dst, &text, clean, &is_cancelled)
         })();
+        jobs.finish(&job_id_clone);
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 
@@ -1945,8 +2253,16 @@ pub async fn sqlite_sync(
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
+    let job = state.jobs.begin(&job_id);
+    job.set_connection_id(Some(options.source_connection_id.clone()));
+    let jobs = state.jobs.clone();
     tokio::task::spawn_blocking(move || {
-        let result = run_sqlite_sync(&source_path, &target_path);
+        let is_cancelled = {
+            let job = job.clone();
+            move || job.is_cancelled()
+        };
+        let result = run_sqlite_sync_cancellable(&source_path, &target_path, &is_cancelled);
+        jobs.finish(&job_id_clone);
         emit_result(&app_handle_clone, &job_id_clone, result);
     });
 

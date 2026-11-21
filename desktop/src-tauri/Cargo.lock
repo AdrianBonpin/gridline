@@ -1806,6 +1806,7 @@ dependencies = [
  "futures-util",
  "hmac 0.12.1",
  "indexmap 2.14.0",
+ "libc",
  "redis",
  "rusqlite",
  "rustls 0.23.43",
