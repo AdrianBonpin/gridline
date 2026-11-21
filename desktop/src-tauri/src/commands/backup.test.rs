@@ -1419,7 +1419,7 @@ fn psql_restore_args_stop_on_error_and_ignore_psqlrc() {
         "app".into(),
         "secret".into(),
     );
-    let args = build_psql_restore_args(&conn, "/tmp/dump.sql");
+    let args = build_psql_restore_args(&conn, "/tmp/dump.sql", PgRestoreTxn::OneTransaction);
     assert!(
         args.iter().any(|a| a == "--no-psqlrc"),
         "missing --no-psqlrc: {args:?}"
@@ -1457,7 +1457,7 @@ fn pg_restore_args_include_exit_on_error() {
         clean: true,
         schema: None,
     };
-    let args = build_restore_args(&conn, &options);
+    let args = build_restore_args(&conn, &options, PgRestoreTxn::OneTransaction);
     assert!(
         args.iter().any(|a| a == "--exit-on-error"),
         "missing --exit-on-error: {args:?}"
@@ -1465,6 +1465,365 @@ fn pg_restore_args_include_exit_on_error() {
     assert!(args.iter().any(|a| a == "--clean"));
     assert!(args.iter().any(|a| a == "--if-exists"));
     assert!(args.iter().any(|a| a == "--format=c"));
+}
+
+// ------------------------------------------------------------------
+// Transactional PostgreSQL restore (ticket 33)
+// ------------------------------------------------------------------
+
+fn pg_test_conn() -> PgConnParams {
+    PgConnParams::new(
+        "localhost".into(),
+        5432,
+        "postgres".into(),
+        "app".into(),
+        "secret".into(),
+    )
+}
+
+fn restore_options(format: &str, file_path: &str) -> RestoreOptions {
+    RestoreOptions {
+        format: format.into(),
+        file_path: file_path.into(),
+        clean: false,
+        schema: None,
+    }
+}
+
+/// #110 / ticket 33: an archive restore that fails partway must roll back, which
+/// only happens when pg_restore runs the whole archive in one transaction.
+#[test]
+fn pg_restore_args_run_an_archive_in_one_transaction() {
+    for format in ["custom", "tar"] {
+        let options = restore_options(format, "/tmp/dump.bak");
+        let args = build_restore_args(&pg_test_conn(), &options, PgRestoreTxn::OneTransaction);
+        assert!(
+            args.iter().any(|a| a == "--single-transaction"),
+            "{format} restore must be transactional: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--exit-on-error"),
+            "{format} restore must stop at the first error: {args:?}"
+        );
+    }
+}
+
+/// A plain script is executed by psql, so psql has to own the transaction.
+#[test]
+fn psql_restore_args_wrap_the_script_in_one_transaction() {
+    let args = build_psql_restore_args(
+        &pg_test_conn(),
+        "/tmp/dump.sql",
+        PgRestoreTxn::OneTransaction,
+    );
+    assert!(
+        args.iter().any(|a| a == "--single-transaction"),
+        "plain restore must be transactional: {args:?}"
+    );
+    assert!(args.iter().any(|a| a == "ON_ERROR_STOP=1"));
+}
+
+/// DB sync pipes our own pg_dump archive, which is always archive-shaped, so the
+/// target stays unchanged when any entry fails.
+#[test]
+fn pg_sync_restore_args_run_in_one_transaction() {
+    let args = build_pg_sync_restore_args(&pg_test_conn());
+    assert!(
+        args.iter().any(|a| a == "--single-transaction"),
+        "sync must be transactional: {args:?}"
+    );
+    assert!(args.iter().any(|a| a == "--clean"));
+    assert!(args.iter().any(|a| a == "--if-exists"));
+    assert!(args.iter().any(|a| a == "--exit-on-error"));
+}
+
+/// The explicitly accepted non-atomic run is the only path that omits the
+/// transaction, so the guarantee the UI states matches what runs.
+#[test]
+fn explicitly_non_atomic_restore_omits_the_single_transaction() {
+    let options = restore_options("custom", "/tmp/dump.bak");
+    let args = build_restore_args(&pg_test_conn(), &options, PgRestoreTxn::PerStatement);
+    assert!(
+        !args.iter().any(|a| a == "--single-transaction"),
+        "non-atomic restore must not claim a transaction: {args:?}"
+    );
+    let psql_args =
+        build_psql_restore_args(&pg_test_conn(), "/tmp/dump.sql", PgRestoreTxn::PerStatement);
+    assert!(!psql_args.iter().any(|a| a == "--single-transaction"));
+}
+
+/// Write a throwaway plain-format dump and return its path.
+fn temp_plain_dump(name: &str, body: &str) -> String {
+    let path = std::env::temp_dir().join(format!("gridline-33-{name}.sql"));
+    std::fs::write(&path, body).unwrap();
+    path.to_string_lossy().to_string()
+}
+
+/// A real `pg_dump` plain script (comments, SET, CREATE, COPY, ALTER) is
+/// transaction-compatible, so the restore must be transactional without asking.
+#[test]
+fn a_pg_dump_plain_script_is_atomic() {
+    let body = "--\n-- PostgreSQL database dump\n--\n\nSET statement_timeout = 0;\nSET client_encoding = 'UTF8';\n\nCREATE TABLE public.users (\n    id integer NOT NULL\n);\n\nCOPY public.users (id) FROM stdin;\n1\n2\n\\.\n\nALTER TABLE ONLY public.users\n    ADD CONSTRAINT users_pkey PRIMARY KEY (id);\n\nCREATE FUNCTION public.keep() RETURNS integer\n    LANGUAGE plpgsql\n    AS $$\nBEGIN\n    RETURN 1;\nEND;\n$$;\n";
+    let path = temp_plain_dump("compatible", body);
+    assert_eq!(
+        pg_restore_atomicity("plain", &path).unwrap(),
+        PgRestoreAtomicity::Atomic,
+        "a pg_dump plain script must stay transactional"
+    );
+    assert_eq!(
+        pg_restore_txn("plain", &path, false).unwrap(),
+        PgRestoreTxn::OneTransaction
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Copy data, comments, and function bodies are payload: a data row that happens
+/// to read `VACUUM`, a commented-out `VACUUM`, and a PL/pgSQL `BEGIN`/`END` must
+/// not be mistaken for a statement that breaks transactional restore.
+#[test]
+fn plain_dump_payload_is_not_mistaken_for_transaction_breaking_sql() {
+    let body = "-- VACUUM;\n/* VACUUM full; */\nCOPY public.keywords (word) FROM stdin;\nVACUUM\nCREATE DATABASE\n\\.\nCREATE FUNCTION public.f() RETURNS void\n    LANGUAGE plpgsql\n    AS $body$\nBEGIN\n    COMMIT;\nEND;\n$body$;\n";
+    let path = temp_plain_dump("payload", body);
+    assert_eq!(
+        pg_restore_atomicity("plain", &path).unwrap(),
+        PgRestoreAtomicity::Atomic,
+        "comments, COPY rows and dollar-quoted bodies are not statements"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Ticket 33: an incompatible plain dump is identified, with the offending
+/// statements and where they are.
+#[test]
+fn plain_dump_with_vacuum_is_identified_as_non_atomic() {
+    let path = temp_plain_dump(
+        "vacuum",
+        "CREATE TABLE public.t (id integer);\nVACUUM FULL public.t;\nCREATE INDEX i ON public.t (id);\n",
+    );
+    let atomicity = pg_restore_atomicity("plain", &path).unwrap();
+    let reason = atomicity.reason().expect("must be non-atomic");
+    assert!(reason.contains("VACUUM"), "reason must name it: {reason}");
+    assert!(reason.contains("line 2"), "reason must locate it: {reason}");
+    assert!(
+        reason.contains("partially applied"),
+        "reason must name the risk: {reason}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A script that opens its own transaction would commit the restore's wrapper
+/// early, so it cannot be restored as one transaction.
+#[test]
+fn plain_dump_that_manages_its_own_transactions_is_non_atomic() {
+    let path = temp_plain_dump(
+        "own-txn",
+        "BEGIN;\nCREATE TABLE public.t (id integer);\nCOMMIT;\n",
+    );
+    let reason = pg_restore_atomicity("plain", &path)
+        .unwrap()
+        .reason()
+        .expect("must be non-atomic")
+        .to_string();
+    assert!(reason.contains("BEGIN"), "got: {reason}");
+    assert!(reason.contains("COMMIT"), "got: {reason}");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// `pg_dump --create` output connects to another database mid-script, which a
+/// single-transaction psql run cannot do.
+#[test]
+fn plain_dump_with_a_connect_meta_command_is_non_atomic() {
+    let path = temp_plain_dump(
+        "connect",
+        "CREATE DATABASE app;\n\\connect app\nCREATE TABLE public.t (id integer);\n",
+    );
+    let reason = pg_restore_atomicity("plain", &path)
+        .unwrap()
+        .reason()
+        .expect("must be non-atomic")
+        .to_string();
+    assert!(reason.contains("CREATE DATABASE"), "got: {reason}");
+    assert!(reason.contains("\\connect"), "got: {reason}");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn directory_dump_is_identified_as_transactional() {
+    assert_eq!(
+        pg_restore_atomicity("directory", "/tmp/dumpdir").unwrap(),
+        PgRestoreAtomicity::Atomic
+    );
+}
+
+/// `pg_restore --single-transaction` accepts every archive format (it only
+/// refuses to run alongside `--jobs`), so a directory dump is transactional too.
+#[test]
+fn a_directory_dump_runs_in_one_transaction() {
+    let options = restore_options("directory", "/tmp/dumpdir");
+    let args = build_restore_args(&pg_test_conn(), &options, PgRestoreTxn::OneTransaction);
+    assert!(args.iter().any(|a| a == "--format=d"));
+    assert!(
+        args.iter().any(|a| a == "--single-transaction"),
+        "a directory dump is restored in one transaction: {args:?}"
+    );
+    assert_eq!(
+        pg_restore_txn("directory", "/tmp/dumpdir", false).unwrap(),
+        PgRestoreTxn::OneTransaction
+    );
+}
+
+/// Ticket 33: silent downgrade is the bug. Without explicit acceptance the
+/// restore is refused, and the refusal names the risk and carries a stable code
+/// the UI can turn into a confirmation.
+#[test]
+fn non_atomic_dump_is_refused_without_explicit_confirmation() {
+    let path = temp_plain_dump(
+        "refused",
+        "CREATE TABLE public.t (id integer);\nVACUUM FULL public.t;\n",
+    );
+    let err = pg_restore_txn("plain", &path, false).unwrap_err();
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        err.starts_with(PG_RESTORE_NON_ATOMIC_CODE),
+        "must carry the UI code: {err}"
+    );
+    assert!(err.contains("partially"), "must name the risk: {err}");
+}
+
+#[test]
+fn non_atomic_dump_runs_per_statement_once_the_risk_is_accepted() {
+    let path = temp_plain_dump(
+        "accepted",
+        "CREATE TABLE public.t (id integer);\nVACUUM FULL public.t;\n",
+    );
+    let txn = pg_restore_txn("plain", &path, true).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(txn, PgRestoreTxn::PerStatement);
+}
+
+/// Acceptance is not a blanket opt-out: a compatible dump still runs as one
+/// transaction even when the caller allows non-atomic restores.
+#[test]
+fn a_compatible_dump_stays_transactional_even_when_acceptance_is_allowed() {
+    assert_eq!(
+        pg_restore_txn("custom", "/tmp/dump.bak", true).unwrap(),
+        PgRestoreTxn::OneTransaction
+    );
+}
+
+/// An unreadable dump is a real error, not a silent downgrade to a non-atomic
+/// run that also could not happen.
+#[test]
+fn an_unreadable_plain_dump_is_an_error_not_a_downgrade() {
+    let err = pg_restore_txn("plain", "/tmp/gridline-33-does-not-exist.sql", true).unwrap_err();
+    assert!(err.contains("Could not read"), "got: {err}");
+    assert!(!err.starts_with(PG_RESTORE_NON_ATOMIC_CODE), "got: {err}");
+}
+
+// ------------------------------------------------------------------
+// Failed restore / sync reporting (ticket 33)
+// ------------------------------------------------------------------
+
+#[test]
+fn a_failed_transactional_restore_says_the_target_is_unchanged() {
+    let msg = pg_restore_failure_message(
+        PgRestoreTxn::OneTransaction,
+        "pg_restore: error: could not execute query: ERROR:  relation \"users\" already exists",
+    );
+    assert!(
+        msg.contains("relation \"users\" already exists"),
+        "the tool's diagnostic must survive: {msg}"
+    );
+    assert!(
+        msg.contains("single transaction") && msg.contains("left unchanged"),
+        "must state the guarantee: {msg}"
+    );
+}
+
+/// A dump whose incompatibility only shows up at execution time must not be
+/// reported as a plain SQL error: the run rolled back, and running it at all
+/// needs the non-atomic risk accepted.
+#[test]
+fn a_runtime_transaction_incompatibility_explains_the_next_step() {
+    let msg = pg_restore_failure_message(
+        PgRestoreTxn::OneTransaction,
+        "psql:/tmp/dump.sql:12: ERROR:  VACUUM cannot run inside a transaction block",
+    );
+    assert!(msg.contains("left unchanged"), "got: {msg}");
+    assert!(
+        msg.contains("cannot run inside a transaction"),
+        "must name the cause: {msg}"
+    );
+    assert!(
+        msg.contains("non-atomic") || msg.contains("partially applied"),
+        "must explain how to proceed: {msg}"
+    );
+}
+
+/// An accepted non-atomic failure must not claim a rollback that did not happen.
+#[test]
+fn a_failed_non_atomic_restore_does_not_claim_a_rollback() {
+    let msg = pg_restore_failure_message(
+        PgRestoreTxn::PerStatement,
+        "pg_restore: error: could not execute query: ERROR:  syntax error",
+    );
+    assert!(!msg.contains("left unchanged"), "got: {msg}");
+    assert!(
+        msg.contains("already applied") || msg.contains("partially applied"),
+        "must state what survived: {msg}"
+    );
+}
+
+/// Ticket 33: when the restore rejects its input the dump's pipe closes, so the
+/// target's error is the actionable one and the broken pipe is context.
+#[test]
+fn a_sync_reports_the_target_failure_first() {
+    let msg = db_sync_failure_message(
+        false,
+        "pg_dump: error: could not write to output file: Broken pipe",
+        false,
+        "pg_restore: error: could not execute query: ERROR:  permission denied for schema public",
+    )
+    .expect("a failed sync must report a failure");
+    let target = msg
+        .find("permission denied for schema public")
+        .expect("target error present");
+    let source = msg
+        .find("Broken pipe")
+        .expect("source diagnostic present as context");
+    assert!(
+        target < source,
+        "the target's failure must be reported first: {msg}"
+    );
+    assert!(
+        msg.starts_with("pg_restore failed"),
+        "the primary failure is the restore: {msg}"
+    );
+}
+
+#[test]
+fn a_sync_reports_a_source_failure_when_the_target_succeeded() {
+    let msg = db_sync_failure_message(true, "", false, "").expect("must report");
+    assert!(msg.starts_with("pg_restore failed"), "got: {msg}");
+    let msg = db_sync_failure_message(false, "pg_dump: error: connection lost", true, "")
+        .expect("must report");
+    assert!(msg.starts_with("pg_dump failed"), "got: {msg}");
+    assert!(msg.contains("connection lost"), "got: {msg}");
+}
+
+#[test]
+fn a_successful_sync_reports_nothing() {
+    assert!(db_sync_failure_message(true, "", true, "").is_none());
+}
+
+#[test]
+fn a_failed_sync_states_that_the_target_rolled_back() {
+    let msg = db_sync_failure_message(false, "", false, "pg_restore: error: out of memory")
+        .expect("must report");
+    assert!(
+        msg.contains("left unchanged"),
+        "a transactional sync failure must say the target rolled back: {msg}"
+    );
 }
 
 #[test]
@@ -1945,9 +2304,187 @@ fn live_pg_plain_restore_stops_at_the_first_error() {
         after, 0,
         "statements after the error must not run (issue #49)"
     );
+    // Ticket 33: the run is one transaction, so even the statement that succeeded
+    // before the failure was rolled back — the target is unchanged.
+    let before = psql_count(
+        &conn,
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'gl_before_error'",
+    );
+    assert_eq!(
+        before, 0,
+        "a failed transactional restore must leave the target unchanged"
+    );
 
     let _ = std::fs::remove_file(&path);
     psql_exec(&conn, "DROP TABLE IF EXISTS gl_before_error;");
+}
+
+/// Live ticket 33: a real `pg_dump` plain script must scan as transaction
+/// compatible. This is the guard against false positives in the scanner: data
+/// values that read like statements (`COPY` payload) and PL/pgSQL bodies
+/// (`BEGIN`/`END` inside dollar quotes) are not statements.
+///
+/// Opt in with GRIDLINE_TEST_SRC_*, GRIDLINE_TEST_PG_DUMP.
+#[test]
+#[ignore]
+fn live_pg_dump_plain_output_is_recognized_as_atomic() {
+    if std::env::var("GRIDLINE_TEST_SRC_HOST").is_err() {
+        eprintln!(
+            "SKIPPED live_pg_dump_plain_output_is_recognized_as_atomic: GRIDLINE_TEST_SRC_* unset"
+        );
+        return;
+    }
+    let _guard = INTEGRATION_LOCK.lock().unwrap();
+    let src = conn_from_env("GRIDLINE_TEST_SRC");
+    let pg_dump = std::env::var("GRIDLINE_TEST_PG_DUMP").unwrap_or_else(|_| "pg_dump".into());
+
+    psql_exec(
+        &src,
+        "DROP SCHEMA IF EXISTS gl_scan CASCADE; CREATE SCHEMA gl_scan;",
+    );
+    psql_exec(
+        &src,
+        "CREATE TABLE gl_scan.t (id integer PRIMARY KEY, note text);\
+         INSERT INTO gl_scan.t VALUES (1, 'VACUUM; CREATE DATABASE evil;');",
+    );
+    psql_exec(
+        &src,
+        "CREATE FUNCTION gl_scan.f() RETURNS integer LANGUAGE plpgsql AS $$\nBEGIN\n    RETURN 1;\nEND;\n$$;",
+    );
+    psql_exec(&src, "CREATE VIEW gl_scan.v AS SELECT id FROM gl_scan.t;");
+
+    let path = std::env::temp_dir().join(format!(
+        "gridline_live_scan_{}_{}.sql",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let out = Command::new(&pg_dump)
+        .env("PGPASSWORD", &src.password)
+        .args([
+            format!("--host={}", src.host),
+            format!("--port={}", src.port),
+            format!("--username={}", src.username),
+            format!("--dbname={}", src.database),
+            "--schema=gl_scan".into(),
+            "--no-owner".into(),
+            "--format=plain".into(),
+            format!("--file={}", path.display()),
+        ])
+        .output()
+        .expect("pg_dump should run");
+    assert!(
+        out.status.success(),
+        "pg_dump failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let atomicity = pg_restore_atomicity("plain", path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    psql_exec(&src, "DROP SCHEMA IF EXISTS gl_scan CASCADE;");
+
+    assert_eq!(
+        atomicity,
+        PgRestoreAtomicity::Atomic,
+        "a real pg_dump plain script must not be flagged as non-atomic"
+    );
+}
+
+/// Live ticket 33: a *compatible* archive that fails partway leaves the target
+/// unchanged, because the whole restore is one transaction. The archive holds
+/// `gl_atomic_early` then `gl_atomic_late`; the target already has
+/// `gl_atomic_late`, so the restore fails after it would otherwise have created
+/// `gl_atomic_early` — which must therefore not exist afterwards.
+///
+/// Opt in with GRIDLINE_TEST_SRC_*, GRIDLINE_TEST_TGT_*,
+/// GRIDLINE_TEST_PG_DUMP, GRIDLINE_TEST_PG_RESTORE, GRIDLINE_TEST_PSQL.
+#[test]
+#[ignore]
+fn live_pg_archive_restore_rolls_back_a_partial_restore() {
+    if std::env::var("GRIDLINE_TEST_SRC_HOST").is_err()
+        || std::env::var("GRIDLINE_TEST_TGT_HOST").is_err()
+    {
+        eprintln!(
+            "SKIPPED live_pg_archive_restore_rolls_back_a_partial_restore: GRIDLINE_TEST_* unset"
+        );
+        return;
+    }
+    let _guard = INTEGRATION_LOCK.lock().unwrap();
+    let src = conn_from_env("GRIDLINE_TEST_SRC");
+    let tgt = conn_from_env("GRIDLINE_TEST_TGT");
+    let tools = PgToolPaths {
+        pg_dump: std::env::var("GRIDLINE_TEST_PG_DUMP").unwrap_or_else(|_| "pg_dump".into()),
+        pg_restore: std::env::var("GRIDLINE_TEST_PG_RESTORE")
+            .unwrap_or_else(|_| "pg_restore".into()),
+        psql: std::env::var("GRIDLINE_TEST_PSQL").unwrap_or_else(|_| "psql".into()),
+    };
+
+    psql_exec(
+        &src,
+        "DROP TABLE IF EXISTS gl_atomic_late; DROP TABLE IF EXISTS gl_atomic_early;",
+    );
+    psql_exec(&src, "CREATE TABLE gl_atomic_early (id integer);");
+    psql_exec(&src, "INSERT INTO gl_atomic_early VALUES (1);");
+    psql_exec(&src, "CREATE TABLE gl_atomic_late (id integer);");
+
+    let dump_path = std::env::temp_dir().join(format!(
+        "gridline_live_atomic_{}_{}.bak",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let dump_opts = BackupOptions {
+        format: "custom".into(),
+        file_path: dump_path.to_string_lossy().to_string(),
+        schema: None,
+        tables: Some(vec!["gl_atomic_early".into(), "gl_atomic_late".into()]),
+        no_owner: true,
+    };
+    run_pg_dump(&src, &dump_opts, &tools).expect("pg_dump should succeed");
+
+    // The target is clean except for the object the archive recreates later, so
+    // the restore fails after the first table has been created.
+    psql_exec(
+        &tgt,
+        "DROP TABLE IF EXISTS gl_atomic_early; DROP TABLE IF EXISTS gl_atomic_late;",
+    );
+    psql_exec(&tgt, "CREATE TABLE gl_atomic_late (id integer);");
+
+    let options = RestoreOptions {
+        format: "custom".into(),
+        file_path: dump_path.to_string_lossy().to_string(),
+        clean: false,
+        schema: None,
+    };
+    let result = run_pg_restore(&tgt, &options, &tools);
+
+    let message = result.expect_err("the conflicting entry must fail the restore");
+    assert!(
+        message.contains("left unchanged"),
+        "a transactional failure must say the target rolled back: {message}"
+    );
+    let early = psql_count(
+        &tgt,
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'gl_atomic_early'",
+    );
+    assert_eq!(
+        early, 0,
+        "a failed transactional restore must leave the target unchanged (ticket 33)"
+    );
+
+    let _ = std::fs::remove_file(&dump_path);
+    psql_exec(
+        &src,
+        "DROP TABLE IF EXISTS gl_atomic_early; DROP TABLE IF EXISTS gl_atomic_late;",
+    );
+    psql_exec(
+        &tgt,
+        "DROP TABLE IF EXISTS gl_atomic_early; DROP TABLE IF EXISTS gl_atomic_late;",
+    );
 }
 
 /// Live: a real MySQL/MariaDB sync must write into the selected TARGET
@@ -2154,23 +2691,17 @@ fn write_executable_script(name: &str, body: &str) -> std::path::PathBuf {
 
 #[cfg(unix)]
 #[test]
-fn plain_postgres_restore_stops_on_script_errors() {
+fn plain_postgres_restore_runs_the_script_in_one_psql_transaction() {
+    let dir = job_temp_dir("pg_plain_txn");
+    let dump = dir.join("dump.sql");
+    std::fs::write(&dump, "CREATE TABLE public.t (id integer);\n").unwrap();
+    let argv_log = dir.join("argv.txt");
     let psql = write_executable_script(
-        "psql_restore",
-        r#"#!/bin/sh
-no_rc=0
-on_error_stop=0
-for arg in "$@"; do
-  [ "$arg" = "--no-psqlrc" ] && no_rc=1
-  case "$arg" in
-    "-v"|"--set=ON_ERROR_STOP=1") on_error_stop=1 ;;
-    "ON_ERROR_STOP=1") on_error_stop=1 ;;
-  esac
-done
-[ "$no_rc" -eq 1 ] && [ "$on_error_stop" -eq 1 ] && exit 3
-echo "missing --no-psqlrc and/or ON_ERROR_STOP=1" >&2
-exit 0
-"#,
+        "psql_txn",
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 0\n",
+            argv_log.display()
+        ),
     );
     let conn = PgConnParams::new(
         "localhost".into(),
@@ -2181,7 +2712,7 @@ exit 0
     );
     let options = RestoreOptions {
         format: "plain".into(),
-        file_path: "/tmp/synthetic.sql".into(),
+        file_path: dump.to_string_lossy().into_owned(),
         clean: false,
         schema: None,
     };
@@ -2192,20 +2723,141 @@ exit 0
     };
 
     let result = run_pg_restore(&conn, &options, &tools);
+    let argv = std::fs::read_to_string(&argv_log).unwrap_or_default();
     let _ = std::fs::remove_file(psql);
+    let _ = std::fs::remove_dir_all(&dir);
 
-    assert!(result.is_err(), "got {result:?}");
+    assert!(result.is_ok(), "got {result:?}");
+    assert!(
+        argv.lines().any(|a| a == "--single-transaction"),
+        "a compatible plain dump must run in one psql transaction: {argv}"
+    );
+    assert!(
+        argv.lines().any(|a| a == "ON_ERROR_STOP=1"),
+        "a failing statement must abort the script: {argv}"
+    );
+}
+
+/// A failed transactional restore must tell the user what the target looks like
+/// now, not only what the tool printed.
+#[cfg(unix)]
+#[test]
+fn a_failed_transactional_restore_reports_that_the_target_rolled_back() {
+    let pg_restore = write_executable_script(
+        "pg_restore_fail",
+        r#"#!/bin/sh
+cat >/dev/null
+echo 'pg_restore: error: could not execute query: ERROR:  relation "t" already exists' >&2
+exit 1
+"#,
+    );
+    let conn = PgConnParams::new(
+        "localhost".into(),
+        5432,
+        "test".into(),
+        "db".into(),
+        "".into(),
+    );
+    let options = RestoreOptions {
+        format: "custom".into(),
+        file_path: "/tmp/synthetic.dump".into(),
+        clean: false,
+        schema: None,
+    };
+    let tools = PgToolPaths {
+        pg_dump: String::new(),
+        pg_restore: pg_restore.to_string_lossy().into_owned(),
+        psql: String::new(),
+    };
+
+    let failure = run_pg_restore_managed(
+        &JobControl::detached(),
+        &conn,
+        &options,
+        PgRestoreTxn::OneTransaction,
+        &tools,
+    )
+    .expect_err("a failing restore must fail");
+    let _ = std::fs::remove_file(pg_restore);
+
+    assert!(!failure.cancelled, "a failure is not a cancellation");
+    assert!(
+        failure.message.contains("already exists"),
+        "the tool's diagnostic must survive: {}",
+        failure.message
+    );
+    assert!(
+        failure.message.contains("left unchanged"),
+        "must state the rollback: {}",
+        failure.message
+    );
+}
+
+/// Ticket 33: the target's rejection closes the dump's pipe, so the user must
+/// get the target error first and the broken pipe as context.
+#[cfg(unix)]
+#[test]
+fn a_failed_db_sync_reports_the_target_error_before_the_dump_pipe_error() {
+    let dump = write_executable_script(
+        "pg_dump_broken_pipe",
+        r#"#!/bin/sh
+printf 'partial archive bytes'
+echo 'pg_dump: error: could not write to output file: Broken pipe' >&2
+exit 1
+"#,
+    );
+    let restore = write_executable_script(
+        "pg_restore_rejects",
+        r#"#!/bin/sh
+cat >/dev/null
+echo 'pg_restore: error: could not execute query: ERROR:  permission denied for schema public' >&2
+exit 1
+"#,
+    );
+    let tools = PgToolPaths {
+        pg_dump: dump.to_string_lossy().into_owned(),
+        pg_restore: restore.to_string_lossy().into_owned(),
+        psql: String::new(),
+    };
+
+    let failure = run_db_sync(&pg_params(), &pg_params(), None, None, &tools)
+        .expect_err("a failed sync must fail");
+    let _ = std::fs::remove_file(dump);
+    let _ = std::fs::remove_file(restore);
+
+    let target = failure
+        .find("permission denied for schema public")
+        .unwrap_or_else(|| panic!("target error missing: {failure}"));
+    let source = failure
+        .find("Broken pipe")
+        .unwrap_or_else(|| panic!("source context missing: {failure}"));
+    assert!(
+        target < source,
+        "the target's failure must be reported first: {failure}"
+    );
+    assert!(
+        failure.starts_with("pg_restore failed"),
+        "the restore is the primary failure: {failure}"
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn archive_postgres_restore_stops_on_first_error() {
+    // Fails only when BOTH the stop-at-first-error flag and the one-transaction
+    // flag reach the real spawn, so this pins the process seam, not just the arg
+    // builder.
     let pg_restore = write_executable_script(
         "pg_restore",
         r#"#!/bin/sh
+exit_on_error=0
+single_txn=0
 for arg in "$@"; do
-  [ "$arg" = "--exit-on-error" ] && exit 1
+  [ "$arg" = "--exit-on-error" ] && exit_on_error=1
+  [ "$arg" = "--single-transaction" ] && single_txn=1
 done
+[ "$exit_on_error" -eq 1 ] && [ "$single_txn" -eq 1 ] && exit 1
+echo "missing --exit-on-error and/or --single-transaction" >&2
 exit 0
 "#,
     );
@@ -3008,6 +3660,23 @@ fn an_expired_restore_grant_reports_the_expired_state() {
     );
 }
 
+/// Ticket 33: the non-atomic acceptance is an explicit, per-request decision, and
+/// an absent one defaults to "refused" so a stale renderer cannot opt in by
+/// omission.
+#[test]
+fn a_restore_request_defaults_to_refusing_a_non_atomic_run() {
+    let silent: PgRestoreRequest =
+        serde_json::from_str(r#"{"format":"plain","clean":false}"#).unwrap();
+    assert!(
+        !silent.accept_non_atomic,
+        "an acceptance must be explicit, never implied"
+    );
+
+    let accepted: PgRestoreRequest =
+        serde_json::from_str(r#"{"format":"plain","clean":false,"acceptNonAtomic":true}"#).unwrap();
+    assert!(accepted.accept_non_atomic);
+}
+
 #[test]
 fn the_restore_request_types_carry_no_input_path() {
     // A renderer that still sends a path must fail loudly at the IPC boundary
@@ -3053,6 +3722,7 @@ fn a_restore_request_takes_its_input_path_from_the_granted_path() {
         format: "plain".into(),
         clean: true,
         schema: Some("public".into()),
+        accept_non_atomic: false,
     }
     .with_source_path("/tmp/granted.dump".to_string());
 

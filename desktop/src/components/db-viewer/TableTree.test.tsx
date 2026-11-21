@@ -194,3 +194,27 @@ describe("TableTree expanded columns are origin-scoped", () => {
     expect(calls).toHaveLength(2);
   });
 });
+
+describe("TableTree relation-kind actions", () => {
+  beforeEach(() => {
+    useDbViewerStore.getState().reset();
+    useUiStore.setState({ activeConnectionId: "c1" });
+    useDbViewerStore.setState({ currentDatabase: "appdb" });
+    vi.restoreAllMocks();
+  });
+
+  it("offers a view row's menu only the actions that apply to a view", async () => {
+    const user = userEvent.setup();
+    useDbViewerStore.setState({
+      schemas: ["main"],
+      currentSchema: "main",
+      tables: [{ name: "order_summary", schema: "main", table_type: "VIEW" }],
+    });
+    render(<TableTree dbType="postgresql" />);
+    await user.click(screen.getByLabelText("Table options"));
+    expect(screen.getByText("Open in new tab")).toBeInTheDocument();
+    expect(screen.queryByText("Edit Table…")).toBeNull();
+    expect(screen.queryByText("Empty Table")).toBeNull();
+    expect(screen.queryByText("Delete Table")).toBeNull();
+  });
+});

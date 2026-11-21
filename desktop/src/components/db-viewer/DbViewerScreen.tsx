@@ -6,7 +6,12 @@ import { DbViewerSidebar, NAV_CAPABILITY_KEY } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { isSchemaModifyingQuery } from "../../lib/utils";
 import { planExecution } from "../../lib/executionGuard";
-import type { ScriptAnalysis } from "../../lib/sqlScan";
+import {
+    confirmationStatus,
+    createPendingConfirmation,
+    type LiveConfirmationContext,
+    type PendingConfirmation,
+} from "../../lib/pendingConfirmation";
 import { executeQueryMulti, cancelQuery } from "../../lib/commands";
 import { getCapabilities, isMysqlFamily } from "../../lib/dbCapabilities";
 
@@ -47,6 +52,11 @@ import type { FkOption } from "../grid/CellEditor";
 import { fkRelation, fkTarget } from "../../lib/fkTarget";
 import type { QueueItem } from "../../stores/dbViewerStore";
 import { rowIdentityFor } from "../../lib/rowIdentity";
+import {
+    rowSelectionKey,
+    rowSelectionKeys,
+    selectedRowIndices,
+} from "../../lib/rowSelection";
 import {
     changeOriginFor,
     itemsForChangeTarget,
@@ -216,6 +226,9 @@ export function fkOptionsFrom(
     });
 }
 
+/** Stable empty selection, so a tab with nothing selected keeps a stable identity. */
+const NO_SELECTION: string[] = [];
+
 /**
  * Identity of a table data request: the whole intent (target + page + filter +
  * sort), not just "something is in flight". A request for a *different* intent
@@ -309,13 +322,15 @@ export function DbViewerScreen({
     const [tablePanelWidth, setTablePanelWidth] = useState(280);
     const [queriesPanelWidth, setQueriesPanelWidth] = useState(280);
     const [searchQuery, setSearchQuery] = useState("");
-    const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
     const [rowDetailIdx, setRowDetailIdx] = useState<number | null>(null);
     const [editModalOpen, setEditModalOpen] = useState(false);
-    const [pendingDestructive, setPendingDestructive] = useState<{
-        sql: string;
-        analysis: ScriptAnalysis;
-    } | null>(null);
+    // A destructive confirmation is bound to exactly one request (ticket 17):
+    // its tab, Change Origin, reviewed SQL revision, and intent all travel
+    // with it, so it cannot be confirmed from anywhere else. The ref mirrors
+    // the state so a second synchronous click cannot execute it twice.
+    const [pendingDestructive, setPendingDestructive] =
+        useState<PendingConfirmation | null>(null);
+    const pendingDestructiveRef = useRef<PendingConfirmation | null>(null);
     const [streamExport, setStreamExport] = useState<{ sql: string } | null>(null);
     const connections = useConnectionStore((s) => s.connections);
     const currentConnection =
@@ -428,6 +443,52 @@ export function DbViewerScreen({
                 : null,
         [currentConnection, currentDatabase],
     );
+
+    // The confirmation handlers run outside React's render (clicks, store
+    // updates), so they read the newest origin through a ref rather than a
+    // captured one.
+    const liveOriginRef = useRef<ChangeOrigin | null>(liveOrigin);
+    liveOriginRef.current = liveOrigin;
+
+    /** Live viewer state a pending confirmation is re-checked against. */
+    const liveConfirmationContext = useCallback((): LiveConfirmationContext => {
+        const state = useDbViewerStore.getState();
+        return {
+            activeTabId: state.activeTabId,
+            tabs: state.tabs,
+            origin: liveOriginRef.current,
+        };
+    }, []);
+
+    /** Drop the pending confirmation: the request it answered is gone. */
+    const cancelPendingDestructive = useCallback(() => {
+        pendingDestructiveRef.current = null;
+        setPendingDestructive(null);
+    }, []);
+
+    // A confirmation applies only to the exact request it was raised for.
+    // Switching tabs, editing the reviewed SQL, moving to another Change
+    // Origin, or closing the tab cancels it before a user can confirm it — the
+    // dialog never survives long enough to answer a different request.
+    useEffect(() => {
+        if (!pendingDestructive) return;
+        if (
+            confirmationStatus(
+                pendingDestructive,
+                liveConfirmationContext(),
+            ) !== "valid"
+        ) {
+            cancelPendingDestructive();
+        }
+    }, [
+        pendingDestructive,
+        activeTab?.id,
+        activeTab?.query,
+        activeTab?.origin,
+        liveOrigin,
+        liveConfirmationContext,
+        cancelPendingDestructive,
+    ]);
 
     // CellEditor options for the active table tab: PG enum labels (cached per
     // connection+schema) + FK reference rows (page 1, 50 per FK column).
@@ -637,12 +698,6 @@ export function DbViewerScreen({
         [fetchData],
     );
 
-    /** Paging intent carried by a guarded query run (page or page size). */
-    const pendingPageIntentRef = useRef<{
-        page?: number;
-        pageSize?: number;
-    } | null>(null);
-
     /**
      * Apply a paging intent to a query tab. Only called once the run the intent
      * implies is actually dispatched, so the controls never describe a page
@@ -691,13 +746,24 @@ export function DbViewerScreen({
                 );
                 return;
             }
+            // One confirmation answers one request. While it is pending no
+            // other Execution Entry Point may execute, and none may replace it
+            // with a newer request — a keyboard shortcut must not relocate a
+            // confirmation onto different text or another tab.
+            if (pendingDestructiveRef.current) return;
             const plan = planExecution(sql);
             if (!plan.hasText) return;
             if (plan.needsConfirmation) {
-                // The paging intent waits for the confirmation: a refused
-                // dialog leaves the page controls (and loading state) alone.
-                pendingPageIntentRef.current = intent;
-                setPendingDestructive({ sql: plan.sql, analysis: plan.analysis });
+                // Everything the confirmation answers for — tab, Change
+                // Origin, reviewed revision, paging intent — is captured with
+                // it, so the paging intent waits for *this* confirmation and a
+                // refused dialog leaves the page controls alone.
+                const pending = createPendingConfirmation(
+                    { tabId, origin: liveOrigin, sql: plan.sql, intent },
+                    plan.analysis,
+                );
+                pendingDestructiveRef.current = pending;
+                setPendingDestructive(pending);
             } else {
                 applyPageIntent(tabId, intent);
                 void executeQueryForTab(tabId, plan.sql);
@@ -710,6 +776,29 @@ export function DbViewerScreen({
             markTabOutOfOrigin,
         ],
     );
+
+    /**
+     * Confirm the pending destructive request.
+     *
+     * Re-checked against live state first: if the tab, Change Origin, or
+     * reviewed revision moved after the dialog opened, the confirmation is
+     * stale and nothing executes. Otherwise the reviewed text is sent exactly
+     * once — the ref is cleared synchronously before the dispatch, so a
+     * double-click (or a second Enter) cannot run it twice.
+     */
+    const confirmPendingDestructive = useCallback(() => {
+        const pending = pendingDestructiveRef.current;
+        pendingDestructiveRef.current = null;
+        setPendingDestructive(null);
+        if (!pending) return;
+        if (
+            confirmationStatus(pending, liveConfirmationContext()) !== "valid"
+        ) {
+            return;
+        }
+        applyPageIntent(pending.tabId, pending.intent);
+        void executeQueryForTab(pending.tabId, pending.sql);
+    }, [applyPageIntent, executeQueryForTab, liveConfirmationContext]);
 
     /**
      * Run the text a query tab holds *right now*.
@@ -1256,6 +1345,73 @@ export function DbViewerScreen({
     const columns = activeTab?.data?.columns ?? [];
     // Data is already filtered and sorted server-side; no client-side transform needed.
     const processedRows = rawRows;
+    const dbType = currentConnection?.db_type ?? "postgresql";
+    const toggleRowSelection = useDbViewerStore((s) => s.toggleRowSelection);
+    const setRowSelection = useDbViewerStore((s) => s.setRowSelection);
+    const clearRowSelection = useDbViewerStore((s) => s.clearRowSelection);
+
+    /**
+     * The selection, resolved against the rows on screen.
+     *
+     * Selection is stored as Row Identity keys (`lib/rowSelection.ts`), never as
+     * positions, and is only ever turned into positions here — from the rows
+     * currently displayed. A key whose row is no longer on screen therefore
+     * counts as nothing: no checkbox, no count, no bulk action. The store clears
+     * the selection on every page, page-size, filter, sort, tab, origin, and
+     * dataset change, so this is the second line of defence, not the first.
+     */
+    const selectionKeys = activeTab?.selection ?? NO_SELECTION;
+    const selectedIndices = useMemo(
+        () => selectedRowIndices(columns, processedRows, dbType, selectionKeys),
+        [columns, processedRows, dbType, selectionKeys],
+    );
+    const selectedIndexSet = useMemo(
+        () => new Set(selectedIndices),
+        [selectedIndices],
+    );
+    // The exact rows a bulk action receives: the ones the user has selected in
+    // this result set, never a stale index into another page's rows.
+    const selectedRowData = useMemo(
+        () => selectedIndices.map((index) => processedRows[index]!),
+        [selectedIndices, processedRows],
+    );
+
+    /** Toggle one row's selection by its identity, not by its position. */
+    const handleToggleRow = useCallback(
+        (rowIndex: number) => {
+            const tabId = useDbViewerStore.getState().activeTabId;
+            const row = processedRows[rowIndex];
+            if (!tabId || !row) return;
+            const key = rowSelectionKey(columns, row, dbType);
+            if (!key) return;
+            toggleRowSelection(tabId, key);
+        },
+        [columns, processedRows, dbType, toggleRowSelection],
+    );
+
+    const handleToggleAll = useCallback(() => {
+        const tabId = useDbViewerStore.getState().activeTabId;
+        if (!tabId) return;
+        const all = rowSelectionKeys(columns, processedRows, dbType);
+        const everythingSelected =
+            all.length > 0 &&
+            selectedIndices.length > 0 &&
+            selectedIndices.length === all.length;
+        if (everythingSelected) clearRowSelection(tabId);
+        else setRowSelection(tabId, all);
+    }, [
+        columns,
+        processedRows,
+        dbType,
+        selectedIndices.length,
+        clearRowSelection,
+        setRowSelection,
+    ]);
+
+    const handleClearSelection = useCallback(() => {
+        const tabId = useDbViewerStore.getState().activeTabId;
+        if (tabId) clearRowSelection(tabId);
+    }, [clearRowSelection]);
 
     // Pending insert rows (from the changes queue) are prepended to the grid as
     // editable rows. Only pending inserts for the active table tab count.
@@ -1429,8 +1585,8 @@ const onQueriesPanelResizeStart = useCallback(
             rows: displayRows,
             columns,
             hiddenColumns,
-            selectedRows,
-            dbType: currentConnection?.db_type ?? "postgresql",
+            selectedRows: selectedIndexSet,
+            dbType,
             tabType: activeTab?.tabType ?? "table",
             getLocator,
             onStageEdit: readOnlyTable ? undefined : handleStageEdit,
@@ -1444,22 +1600,8 @@ const onQueriesPanelResizeStart = useCallback(
             stagedValues,
             pendingKeys,
             pendingInsertChangeIds,
-            onToggleRow: (rowIndex: number) => {
-                setSelectedRows((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(rowIndex)) next.delete(rowIndex);
-                    else next.add(rowIndex);
-                    return next;
-                });
-            },
-            onToggleAll: () => {
-                setSelectedRows((prev) => {
-                    if (prev.size === processedRows.length && processedRows.length > 0) {
-                        return new Set();
-                    }
-                    return new Set(processedRows.map((_, i) => i));
-                });
-            },
+            onToggleRow: handleToggleRow,
+            onToggleAll: handleToggleAll,
         };
 
         return (
@@ -1650,18 +1792,13 @@ const onQueriesPanelResizeStart = useCallback(
                                                                     handleQueryPageSizeChange
                                                                 }
                                                                 selectedCount={
-                                                                    selectedRows.size
+                                                                    selectedIndices.length
                                                                 }
-                                                                selectedRows={processedRows.filter(
-                                                                    (_, i) =>
-                                                                        selectedRows.has(
-                                                                            i,
-                                                                        ),
-                                                                )}
-                                                                onClearSelection={() =>
-                                                                    setSelectedRows(
-                                                                        new Set(),
-                                                                    )
+                                                                selectedRows={
+                                                                    selectedRowData
+                                                                }
+                                                                onClearSelection={
+                                                                    handleClearSelection
                                                                 }
                                                                 variant="query"
                                                                 dbType={
@@ -1716,51 +1853,6 @@ const onQueriesPanelResizeStart = useCallback(
                                                     </div>
                                                 </>
                                             )}
-                                            <DestructiveQueryDialog
-                                                open={pendingDestructive !== null}
-                                                query={pendingDestructive?.sql ?? ""}
-                                                statementIndex={
-                                                    pendingDestructive?.analysis
-                                                        .firstDestructiveIndex ?? null
-                                                }
-                                                statementCount={
-                                                    pendingDestructive?.analysis
-                                                        .totalStatements ?? null
-                                                }
-                                                reason={
-                                                    pendingDestructive?.analysis.reason ?? null
-                                                }
-                                                onConfirm={() => {
-                                                    const intent =
-                                                        pendingPageIntentRef.current ??
-                                                        {};
-                                                    pendingPageIntentRef.current =
-                                                        null;
-                                                    if (
-                                                        pendingDestructive &&
-                                                        activeTab
-                                                    ) {
-                                                        // A confirmed paging
-                                                        // request applies its
-                                                        // page now that the run
-                                                        // is really dispatched.
-                                                        applyPageIntent(
-                                                            activeTab.id,
-                                                            intent,
-                                                        );
-                                                        executeQueryForTab(
-                                                            activeTab.id,
-                                                            pendingDestructive.sql,
-                                                        );
-                                                    }
-                                                    setPendingDestructive(null);
-                                                }}
-                                                onCancel={() => {
-                                                    pendingPageIntentRef.current =
-                                                        null;
-                                                    setPendingDestructive(null);
-                                                }}
-                                            />
                                         </div>
                                     </Suspense>
                                 ) : (
@@ -1809,13 +1901,12 @@ const onQueriesPanelResizeStart = useCallback(
                                                     settings?.table_refresh_rate ??
                                                     0
                                                 }
-                                                selectedCount={selectedRows.size}
-                                                selectedRows={processedRows.filter(
-                                                    (_, i) =>
-                                                        selectedRows.has(i),
-                                                )}
-                                                onClearSelection={() =>
-                                                    setSelectedRows(new Set())
+                                                selectedCount={
+                                                    selectedIndices.length
+                                                }
+                                                selectedRows={selectedRowData}
+                                                onClearSelection={
+                                                    handleClearSelection
                                                 }
                                                 dbType={
                                                     currentConnection?.db_type ??
@@ -1844,7 +1935,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 rows={displayRows}
                                                 columns={columns}
                                                 hiddenColumns={hiddenColumns}
-                                                selectedRows={selectedRows}
+                                                selectedRows={selectedIndexSet}
                                                 dbType={currentConnection?.db_type ?? "postgresql"}
                                                 tabType={activeTab?.tabType ?? "table"}
                                                 getLocator={getLocator}
@@ -1859,36 +1950,8 @@ const onQueriesPanelResizeStart = useCallback(
                                                 stagedValues={stagedValues}
                                                 pendingKeys={pendingKeys}
                                                 pendingInsertChangeIds={pendingInsertChangeIds}
-                                                onToggleRow={(rowIndex) => {
-                                                    setSelectedRows((prev) => {
-                                                        const next = new Set(
-                                                            prev,
-                                                        );
-                                                        if (next.has(rowIndex))
-                                                            next.delete(
-                                                                rowIndex,
-                                                            );
-                                                        else next.add(rowIndex);
-                                                        return next;
-                                                    });
-                                                }}
-                                                onToggleAll={() => {
-                                                    setSelectedRows((prev) => {
-                                                        if (
-                                                            prev.size ===
-                                                                processedRows.length &&
-                                                            processedRows.length >
-                                                                0
-                                                        ) {
-                                                            return new Set();
-                                                        }
-                                                        return new Set(
-                                                            processedRows.map(
-                                                                (_, i) => i,
-                                                            ),
-                                                        );
-                                                    });
-                                                }}
+                                                onToggleRow={handleToggleRow}
+                                                onToggleAll={handleToggleAll}
                                             />
                                         </div>
                                     </>
@@ -1909,7 +1972,14 @@ const onQueriesPanelResizeStart = useCallback(
 
     return (
         <TooltipProvider>
-            <div className="h-full bg-canvas flex border-t border-border">
+            {/* While a destructive confirmation is pending the viewer behind it
+                is inert, so nothing underneath can take focus or receive
+                typing. The dialog itself is portalled to `document.body`, so
+                it is outside this subtree and stays interactive. */}
+            <div
+                className="h-full bg-canvas flex border-t border-border"
+                inert={pendingDestructive !== null}
+            >
                 <DbViewerSidebar
                     currentView={currentView}
                     onNavigate={handleNavigate}
@@ -2010,6 +2080,20 @@ const onQueriesPanelResizeStart = useCallback(
                         />
                     ) : null}
                 </div>
+                {/* The dialog is lazy-loaded, so the root needs its own boundary:
+                    a suspended lazy component here would blank the whole viewer. */}
+                <Suspense fallback={null}>
+                    <DestructiveQueryDialog
+                        open={pendingDestructive !== null}
+                        query={pendingDestructive?.sql ?? ""}
+                        statement={pendingDestructive?.statement ?? null}
+                        statementIndex={pendingDestructive?.statementIndex ?? null}
+                        statementCount={pendingDestructive?.statementCount ?? null}
+                        reason={pendingDestructive?.analysis.reason ?? null}
+                        onConfirm={confirmPendingDestructive}
+                        onCancel={cancelPendingDestructive}
+                    />
+                </Suspense>
                 {currentConnection && (
                     <EditConnectionModal
                         connection={currentConnection}

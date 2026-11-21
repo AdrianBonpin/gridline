@@ -12,6 +12,11 @@ import * as cmd from "../../lib/commands";
 import { getCapabilities } from "../../lib/dbCapabilities";
 import { DependencyDialog } from "./DependencyDialog";
 import { initialCrudParams } from "../../lib/objectCrud";
+import {
+  relationKindOf,
+  relationSupportsAction,
+  type TableActionId,
+} from "../../lib/relationKind";
 import type { ColumnInfo, DependencyInfo, MaintenanceResult } from "../../lib/types";
 
 interface TableOverflowMenuProps {
@@ -22,6 +27,8 @@ interface TableOverflowMenuProps {
   columns?: ColumnInfo[];
   rows?: unknown[][];
   dbType?: string;
+  /** `TableInfo.table_type` of the row that opened this menu. */
+  tableType?: string;
 }
 
 interface MenuItem {
@@ -32,6 +39,25 @@ interface MenuItem {
 }
 
 type MaintenanceAction = "vacuum" | "analyze" | "reindex";
+
+/**
+ * Menu items whose action only applies to some relation kinds. A view is
+ * browsable but its rows and shape are not editable, so `Empty Table`,
+ * `Delete Table`, `Edit Table…`, import, index/constraint creation and
+ * maintenance are never offered for it — an action that exists only to fail is
+ * worse than no action.
+ */
+const MENU_ACTION_KIND: Partial<Record<string, TableActionId>> = {
+  import: "import",
+  create_index: "create_index",
+  create_constraint: "create_constraint",
+  edit_table: "edit_table",
+  vacuum: "maintenance",
+  analyze: "maintenance",
+  reindex: "maintenance",
+  empty: "empty",
+  delete: "drop",
+};
 
 const maintenanceLockCopy: Record<MaintenanceAction, string> = {
   vacuum: "VACUUM blocks concurrent DDL only on this table.",
@@ -51,12 +77,15 @@ export function TableOverflowMenu({
   columns,
   rows,
   dbType,
+  tableType,
 }: TableOverflowMenuProps) {
   const storeConnectionId = useUiStore((s) => s.activeConnectionId);
   const connectionId = connectionIdProp ?? storeConnectionId;
   const addChange = useDbViewerStore((s) => s.addChange);
   const notify = useNotificationStore((s) => s.notify);
   const caps = getCapabilities(dbType ?? "postgresql");
+  const kind = relationKindOf(tableType);
+  const applies = (action: TableActionId) => relationSupportsAction(action, kind);
 
   const [open, setOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"empty" | "delete" | null>(null);
@@ -111,7 +140,31 @@ export function TableOverflowMenu({
     }
   };
 
+  /** The single staged change a confirmed table drop produces. */
+  const stageDropTable = () => {
+    addChange({
+      type: "drop_table",
+      schema,
+      table,
+      description: `Drop Table: ${schema}.${table}`,
+    });
+    cancelDropTable();
+  };
+
+  /** Cancelling the drop acknowledgement stages nothing. */
+  const cancelDropTable = () => {
+    setDropDeps([]);
+    setConfirmAction(null);
+  };
+
   const handleAction = async (id: string) => {
+    // Second line of defence: an action that does not apply to this relation
+    // kind is not offered, and cannot do anything if it is somehow invoked.
+    const gatedAction = MENU_ACTION_KIND[id];
+    if (gatedAction && !applies(gatedAction)) {
+      setOpen(false);
+      return;
+    }
     switch (id) {
       case "open":
         onOpenTab(schema, table, true);
@@ -306,11 +359,19 @@ export function TableOverflowMenu({
     { id: "export-sql", label: "Export data (SQL)" },
     { id: "export-md", label: "Export data (Markdown)" },
     { id: "export-xlsx", label: "Export data (Excel)" },
-    { id: "import", label: "Import data (CSV/JSON)" },
-    { id: "create_index", label: "Create Index…" },
-    { id: "create_constraint", label: "Create Constraint…" },
-    ...(caps.tableManagement ? [{ id: "edit_table", label: "Edit Table…" }] : []),
-    ...(caps.maintenance
+    ...(caps.import && applies("import")
+      ? [{ id: "import", label: "Import data (CSV/JSON)" }]
+      : []),
+    ...(applies("create_index")
+      ? [{ id: "create_index", label: "Create Index…" }]
+      : []),
+    ...(applies("create_constraint")
+      ? [{ id: "create_constraint", label: "Create Constraint…" }]
+      : []),
+    ...(caps.tableManagement && applies("edit_table")
+      ? [{ id: "edit_table", label: "Edit Table…" }]
+      : []),
+    ...(caps.maintenance && applies("maintenance")
       ? [
           { id: "maintenance-divider", divider: true },
           { id: "vacuum", label: "VACUUM" },
@@ -318,8 +379,12 @@ export function TableOverflowMenu({
           { id: "reindex", label: "REINDEX", danger: true },
         ]
       : []),
-    { id: "empty", label: "Empty Table", danger: true },
-    { id: "delete", label: "Delete Table", danger: true },
+    ...(applies("empty")
+      ? [{ id: "empty", label: "Empty Table", danger: true }]
+      : []),
+    ...(applies("drop")
+      ? [{ id: "delete", label: "Delete Table", danger: true }]
+      : []),
   ];
 
   return (
@@ -396,15 +461,6 @@ export function TableOverflowMenu({
         </AnimatedModal>
       )}
 
-      {confirmAction === "delete" && dropDeps.length > 0 && (
-        <DependencyDialog
-          open
-          deps={dropDeps}
-          onProceed={() => setConfirmAction(null)}
-          onCancel={() => setConfirmAction(null)}
-        />
-      )}
-
       {confirmAction === "empty" && (
         <ConfirmDialog
           open
@@ -423,24 +479,36 @@ export function TableOverflowMenu({
           onCancel={() => setConfirmAction(null)}
         />
       )}
-      {confirmAction === "delete" && (
-        <ConfirmDialog
-          open
-          title={`Delete Table: ${table}`}
-          message={`Are you sure you want to permanently delete "${schema}"."${table}"? All data will be lost.`}
-          confirmLabel="Delete Table"
-          onConfirm={() => {
-            addChange({
-              type: "drop_table",
-              schema,
-              table,
-              description: `Drop Table: ${schema}.${table}`,
-            });
-            setConfirmAction(null);
-          }}
-          onCancel={() => setConfirmAction(null)}
-        />
-      )}
+      {/*
+       * A drop reaches the changes queue through exactly ONE confirmation.
+       * A dependent drop used to raise a dependency dialog *and* a confirm
+       * dialog; Proceed dismissed both and staged nothing. Now the single
+       * dialog is the whole acknowledgement: it names the dependencies, takes
+       * one deliberate tick, and its confirm button stages the one change.
+       */}
+      {confirmAction === "delete" &&
+        (dropDeps.length > 0 ? (
+          <DependencyDialog
+            open
+            title={`Delete Table: ${table}`}
+            dependencyNotice={`These objects depend on "${schema}"."${table}" — review them before dropping it:`}
+            message={`Deleting "${schema}"."${table}" permanently loses all of its data. The staged change is a plain DROP TABLE without CASCADE.`}
+            acknowledgementLabel="I understand these depend on it and may block or outlive the drop."
+            confirmLabel="Delete Table"
+            deps={dropDeps}
+            onProceed={stageDropTable}
+            onCancel={cancelDropTable}
+          />
+        ) : (
+          <ConfirmDialog
+            open
+            title={`Delete Table: ${table}`}
+            message={`Are you sure you want to permanently delete "${schema}"."${table}"? All data will be lost.`}
+            confirmLabel="Delete Table"
+            onConfirm={stageDropTable}
+            onCancel={cancelDropTable}
+          />
+        ))}
 
       <ImportDialog
         open={importOpen}

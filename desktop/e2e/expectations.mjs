@@ -88,6 +88,21 @@ export function destructiveDialogConfirmSelector() {
   return '[data-testid="destructive-query-confirm"]';
 }
 
+/**
+ * Keys the destructive flow sends to the confirmation dialog itself.
+ *
+ * `\uE00C` is the WebDriver Escape key and must cancel the pending request.
+ * `\uE009\uE007` is Control+Enter — the editor's own run shortcut — which must
+ * never execute or relocate the pending confirmation.
+ */
+export function destructiveDialogEscapeKey() {
+  return "\uE00C";
+}
+
+export function destructiveDialogRunShortcut() {
+  return "\uE009\uE007";
+}
+
 export function destructiveDialogCancelSelector() {
   return '[data-testid="destructive-query-cancel"]';
 }
