@@ -968,7 +968,9 @@ fn store_backed_re_enrollment_replaces_the_row_with_public_metadata_only() {
     // or passphrase column exists, so none can be stored.
     let inspect = rusqlite::Connection::open(&db_path).unwrap();
     let columns: Vec<String> = {
-        let mut stmt = inspect.prepare("PRAGMA table_info(ssh_host_trust)").unwrap();
+        let mut stmt = inspect
+            .prepare("PRAGMA table_info(ssh_host_trust)")
+            .unwrap();
         stmt.query_map([], |row| row.get::<_, String>(1))
             .unwrap()
             .map(|c| c.unwrap())
