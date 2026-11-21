@@ -492,12 +492,39 @@ pub enum FunctionAction {
     },
 }
 
+/// `mode name type` for one argument. The argument *name* is an identifier and
+/// is quoted through `db::ident` (an empty name is legal — PG allows unnamed
+/// arguments); the type is SQL the user authored, so it is passed through as is.
 fn arg_sql(a: &FunctionArg) -> String {
     let mode = match a.mode.trim().to_lowercase().as_str() {
         "in" | "" => String::new(),
         m => format!("{} ", m.to_uppercase()),
     };
-    format!("{}{} {}", mode, a.name, a.type_)
+    let name = if a.name.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{} ",
+            crate::db::ident::quote(crate::db::ident::Engine::PostgreSql, a.name.trim())
+        )
+    };
+    format!("{mode}{name}{}", a.type_)
+}
+
+/// A routine language is a plain identifier (`plpgsql`, `sql`, `c`, …). It is
+/// interpolated into DDL, so anything else — a statement separator, a comment,
+/// whitespace — is rejected with a reason instead of being pasted in.
+fn validate_language(language: &str) -> Result<&str, String> {
+    let l = language.trim();
+    let mut chars = l.chars();
+    let looks_like_identifier = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !looks_like_identifier {
+        return Err(format!(
+            "Function language {language:?} must be a plain identifier (letters, digits, underscore)"
+        ));
+    }
+    Ok(l)
 }
 
 pub fn function_ddl(p: &FunctionParams) -> Result<Vec<String>, String> {
@@ -528,8 +555,15 @@ pub fn function_ddl(p: &FunctionParams) -> Result<Vec<String>, String> {
                 _ => "",
             };
             let strict = if *strict { " STRICT" } else { "" };
+            let language = validate_language(language)?;
+            // The body is arbitrary text — quotes, semicolons, and even `$$`
+            // are all legal inside it. `pg_dollar_quote` picks a delimiter the
+            // body does not contain (and rejects unrepresentable bodies), so the
+            // stored definition is byte-for-byte what the user wrote instead of
+            // being cut short at an inner `$$`.
+            let quoted_body = crate::db::ident::pg_dollar_quote(body)?;
             format!(
-                "CREATE OR REPLACE {} {}({}){} LANGUAGE {}{}{} AS $${}$$",
+                "CREATE OR REPLACE {} {}({}){} LANGUAGE {}{}{} AS {}",
                 kind,
                 q,
                 arglist.join(", "),
@@ -537,7 +571,7 @@ pub fn function_ddl(p: &FunctionParams) -> Result<Vec<String>, String> {
                 language,
                 vol,
                 strict,
-                body
+                quoted_body
             )
         }
         FunctionAction::Drop { arg_types } => {
@@ -1737,7 +1771,7 @@ mod tests {
                 "volatility": "IMMUTABLE", "strict": true }
         });
         assert_eq!(build_ddl("function", p).unwrap(), vec![
-            "CREATE OR REPLACE FUNCTION \"public\".\"add\"(a int, b int) RETURNS int LANGUAGE plpgsql IMMUTABLE STRICT AS $$BEGIN RETURN a+b; END$$"
+            "CREATE OR REPLACE FUNCTION \"public\".\"add\"(\"a\" int, \"b\" int) RETURNS int LANGUAGE plpgsql IMMUTABLE STRICT AS $$BEGIN RETURN a+b; END$$"
         ]);
     }
 
@@ -1751,7 +1785,7 @@ mod tests {
                 "volatility": null, "strict": false }
         });
         assert_eq!(build_ddl("procedure", p).unwrap(), vec![
-            "CREATE OR REPLACE PROCEDURE \"public\".\"do_thing\"(x int) LANGUAGE plpgsql AS $$BEGIN PERFORM x; END$$"
+            "CREATE OR REPLACE PROCEDURE \"public\".\"do_thing\"(\"x\" int) LANGUAGE plpgsql AS $$BEGIN PERFORM x; END$$"
         ]);
     }
 
@@ -2175,3 +2209,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "object_crud_definitions.test.rs"]
+mod definition_round_trip_tests;
