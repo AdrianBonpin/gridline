@@ -381,7 +381,10 @@ fn the_registry_tracks_begin_finish_and_unknown_jobs() {
     let job = registry.begin("job-1");
     assert!(registry.get("job-1").is_some());
     assert!(Arc::ptr_eq(&registry.get("job-1").unwrap(), &job));
-    assert!(!registry.cancel("missing"), "unknown jobs cannot be cancelled");
+    assert!(
+        !registry.cancel("missing"),
+        "unknown jobs cannot be cancelled"
+    );
 
     registry.finish("job-1");
     assert!(registry.get("job-1").is_none());
