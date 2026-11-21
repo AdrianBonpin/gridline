@@ -3,9 +3,24 @@ name: Release
 # Builds Gridline installers for macOS (Apple Silicon + Intel), Windows, and
 # Linux, then uploads them to a draft GitHub Release.
 #
+# This is the ONLY release pipeline. The Gitea instance is a code mirror with
+# no release workflow (`scripts/mirror-gitea.sh` + `scripts/hooks/*` mirror the
+# branch and tags only), so the release controls below only have to hold here.
+#
 # Trigger: push a version tag from the `prod` branch (production), e.g.
 #   git checkout prod && git pull
-#   git tag v0.5.0 && git push origin v0.5.0
+#   git tag v0.5.0 && git push github v0.5.0
+#
+# TRUST MODEL (do not loosen without reading
+# docs/superpowers/specs/2026-11-21-github-audit-hardening.md):
+#   * every third-party action is pinned to a full commit SHA,
+#   * the workflow token is default-deny and each job grants only what it uses,
+#   * ref/tag metadata reaches shell steps through environment variables and is
+#     compared as data — never interpolated into a `run:` body, a jq program or
+#     a rendered template body,
+#   * `scripts/check-workflows.sh` asserts all of the above (run it in CI).
+# Release refs (tag + `prod`) protection, immutability and required checks are
+# repository settings, not files: see AGENTS.md "Release ref protection".
 #
 # SIGNING STATUS: this is the ACTIVE release path. macOS is Developer-ID
 # signed + notarized in CI when the Apple secrets below are configured (see
@@ -48,8 +63,9 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write
+# Default-deny. Jobs grant the scopes they actually use below; a new job that
+# forgets to declare permissions gets none instead of a write token.
+permissions: {}
 
 env:
   # workflow_dispatch passes the tag as an input; push/release events derive it
@@ -79,9 +95,13 @@ jobs:
           - platform: windows-latest    # Windows x86_64 (NSIS .exe + .msi)
             args: ''
     runs-on: ${{ matrix.platform }}
+    # Creates/updates the draft release and replaces the uploaded DMG assets.
+    # Nothing else — no issues, packages or actions scope.
+    permissions:
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -89,8 +109,11 @@ jobs:
       - name: Detect Apple signing secrets
         id: apple
         shell: bash
+        # Secret via env, never through `${{ }}` inside the script body.
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
         run: |
-          if [ -n "${{ secrets.APPLE_CERTIFICATE }}" ]; then
+          if [ -n "${APPLE_CERTIFICATE:-}" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -153,15 +176,16 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: './desktop/src-tauri -> target'
 
@@ -170,12 +194,16 @@ jobs:
 
       - name: Build PostgreSQL client tools (bundled)
         shell: bash
+        # Runner label via env: no `${{ }}` expression is interpolated into the
+        # shell body (same rule that applies to tag metadata).
+        env:
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           PG_VER="16.4"
           OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/pg_tools"
           mkdir -p "$OUT"
-          case "${{ matrix.platform }}" in
+          case "$PLATFORM" in
             ubuntu-22.04)
               sudo apt-get update -y
               sudo apt-get install -y build-essential libreadline-dev zlib1g-dev flex bison patchelf
@@ -267,7 +295,7 @@ jobs:
           # Resolve the per-platform binary suffix WITHOUT a command
           # substitution: `$( [ ... ] && echo .exe )` returns exit 1 when the
           # test is false, and under `set -e` that aborts the whole step.
-          if [ "${{ matrix.platform }}" = windows-latest ]; then
+          if [ "$PLATFORM" = windows-latest ]; then
             BIN_EXT=".exe"
           else
             BIN_EXT=""
@@ -284,12 +312,14 @@ jobs:
 
       - name: Build MariaDB client tools (bundled)
         shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           MARIADB_VER="11.4.5"
           OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/mysql_tools"
           mkdir -p "$OUT"
-          case "${{ matrix.platform }}" in
+          case "$PLATFORM" in
             ubuntu-22.04)
               sudo apt-get update -y
               sudo apt-get install -y cmake build-essential libssl-dev libzstd-dev pkg-config libgnutls28-dev patchelf
@@ -412,7 +442,7 @@ jobs:
           (cd "$OUT" && sha256sum * | tee checksums.txt)
           # Resolve the per-platform binary suffix WITHOUT a command
           # substitution (see the pg_tools step for why).
-          if [ "${{ matrix.platform }}" = windows-latest ]; then
+          if [ "$PLATFORM" = windows-latest ]; then
             BIN_EXT=".exe"
           else
             BIN_EXT=""
@@ -428,7 +458,7 @@ jobs:
           done
 
       - name: Build and upload to GitHub Release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -463,8 +493,16 @@ jobs:
             echo "no DMG produced" >&2
             exit 1
           fi
-          REL_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"${RELEASE_TAG}\") | .id" | head -1)
+          # The tag is matched in the shell, not inside the jq program: release
+          # metadata is data and must never become query text.
+          REL_ID=""
+          while IFS=$'\t' read -r rel_tag rel_id; do
+            if [ "$rel_tag" = "$RELEASE_TAG" ]; then
+              REL_ID="$rel_id"
+              break
+            fi
+          done < <(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | "\(.tag_name)\t\(.id)"')
           if [ -z "$REL_ID" ]; then
             echo "could not resolve a release id for ${RELEASE_TAG}" >&2
             exit 1
@@ -496,8 +534,16 @@ jobs:
               exit 1
             fi
             # Replace the copy tauri-action uploaded, which carries no DMG ticket.
-            old=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets" \
-              --jq ".[] | select(.name == \"${name}\") | .id" | head -1)
+            # Same rule: the asset name is compared as data, never spliced into
+            # the jq program (the name contains the release version).
+            old=""
+            while IFS=$'\t' read -r asset_name asset_id; do
+              if [ "$asset_name" = "$name" ]; then
+                old="$asset_id"
+                break
+              fi
+            done < <(gh api "repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets?per_page=100" \
+              --jq '.[] | "\(.name)\t\(.id)"')
             if [ -n "$old" ]; then
               gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${old}"
             fi
@@ -535,8 +581,11 @@ jobs:
       - name: Check for tap deploy key
         id: tap
         shell: bash
+        # Secret via env, never through `${{ }}` inside the script body.
+        env:
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
-          if [ -n "${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}" ]; then
+          if [ -n "${HOMEBREW_TAP_DEPLOY_KEY:-}" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -545,7 +594,7 @@ jobs:
 
       - name: Checkout
         if: steps.tap.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Resolve version and DMG checksums
         id: meta
@@ -562,7 +611,7 @@ jobs:
 
       - name: Checkout tap repo
         if: steps.tap.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: AdrianBonpin/homebrew-gridline
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}

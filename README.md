@@ -379,7 +379,9 @@ The version bump itself lands through a pull request first — `desktop/package.
 
 GitHub Actions (`.github/workflows/release.yml`) builds the **macOS (Apple Silicon + Intel), Windows, and Linux** installers in parallel and opens a **draft release** on the [Releases](https://github.com/AdrianBonpin/gridline/releases) page. Paste the new version's entry from [`www/src/data/changelog.ts`](./www/src/data/changelog.ts) into the draft's description (`gh release edit v0.8.4 --notes-file notes.md`), review the draft, then hit **Publish release** — publishing triggers a follow-up job that bumps the Homebrew cask in [`AdrianBonpin/homebrew-gridline`](https://github.com/AdrianBonpin/homebrew-gridline) (pushed via a write-enabled deploy key on the tap, `HOMEBREW_TAP_DEPLOY_KEY`; skipped when unset).
 
-The self-hosted Gitea mirror (`.gitea/workflows/release.yml`) still builds Linux and Windows for the Gitea release, and `scripts/release-mac.sh` can build macOS locally — both are kept as a fallback if GitHub is unavailable.
+GitHub Actions is the **only** release pipeline: the self-hosted Gitea mirror is a code-only copy that receives `prod` and the release tags for redundancy and runs no release build. `scripts/release-mac.sh` can still build, sign, notarize and upload the macOS DMGs from a local machine if Actions is unavailable.
+
+Release tags are protected and immutable, and a release can only be built from a tag reachable through reviewed `prod` history — see [AGENTS.md](./AGENTS.md#release-ref-protection-owner-applied-repository-settings) for the exact repository settings (an owner applies those; they are not files in this repo).
 
 Before tagging, make sure the version number is in sync across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, and `desktop/src-tauri/tauri.conf.json`, and update the **README download tables** (Download + Which file should I download?) to the new version's asset names.
 
