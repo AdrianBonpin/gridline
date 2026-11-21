@@ -503,3 +503,101 @@ describe("ChangesQueuePanel", () => {
     expect(remaining[0].description).toBe("Elsewhere");
   });
 });
+
+describe("ChangesQueuePanel commit contract", () => {
+  beforeEach(() => {
+    useDbViewerStore.getState().reset();
+    useNotificationStore.setState({ notifications: [] });
+    activateTarget();
+    vi.resetAllMocks();
+  });
+
+  it("hands the viewer exactly the committed changes and their origin", async () => {
+    vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    const onCommitted = vi.fn();
+    useDbViewerStore.getState().addChange({
+      type: "update",
+      schema: "public",
+      table: "users",
+      primaryKey: { id: 1 },
+      oldData: { name: "Alice" },
+      newData: { name: "Alicia" },
+      description: "Edit users",
+    });
+    useDbViewerStore.getState().addChange({
+      type: "update",
+      schema: "public",
+      table: "posts",
+      primaryKey: { id: 2 },
+      oldData: { title: "a" },
+      newData: { title: "b" },
+      description: "Edit posts",
+    });
+
+    render(<ChangesQueuePanel onCommitted={onCommitted} />);
+    fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
+
+    await waitFor(() => expect(onCommitted).toHaveBeenCalledTimes(1));
+    const [committed, origin] = onCommitted.mock.calls[0];
+    // Every affected table is reported, so the viewer can refresh every tab.
+    expect(committed.map((c: { table: string }) => c.table)).toEqual([
+      "users",
+      "posts",
+    ]);
+    expect(origin.connectionId).toBe("c1");
+    expect(origin.database).toBe("appdb");
+  });
+
+  it("reports only the changes that actually committed before a failure", async () => {
+    vi.spyOn(commands, "executeChange")
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("boom"));
+    const onCommitted = vi.fn();
+    useDbViewerStore.getState().addChange({
+      type: "update",
+      schema: "public",
+      table: "users",
+      primaryKey: { id: 1 },
+      oldData: { name: "Alice" },
+      newData: { name: "Alicia" },
+    });
+    useDbViewerStore.getState().addChange({
+      type: "update",
+      schema: "public",
+      table: "posts",
+      primaryKey: { id: 2 },
+      oldData: { title: "a" },
+      newData: { title: "b" },
+    });
+
+    render(<ChangesQueuePanel onCommitted={onCommitted} />);
+    fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
+
+    await waitFor(() => expect(onCommitted).toHaveBeenCalledTimes(1));
+    const [committed] = onCommitted.mock.calls[0];
+    // The failed table is not refreshed as if it committed.
+    expect(committed.map((c: { table: string }) => c.table)).toEqual(["users"]);
+  });
+
+  it("invalidates metadata caches after a schema-modifying commit", async () => {
+    vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    vi.spyOn(commands, "getDatabases").mockResolvedValue(["appdb"]);
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    vi.spyOn(commands, "getTables").mockResolvedValue([] as any);
+    useDbViewerStore.getState().addChange({
+      type: "ddl",
+      sql: "CREATE TABLE audit (id integer)",
+      schema: "public",
+      table: "audit",
+      description: "Create table audit",
+    });
+    const before = useDbViewerStore.getState().metadataRev;
+
+    render(<ChangesQueuePanel />);
+    fireEvent.click(screen.getByRole("button", { name: /commit all/i }));
+
+    await waitFor(() =>
+      expect(useDbViewerStore.getState().metadataRev).toBeGreaterThan(before),
+    );
+  });
+});

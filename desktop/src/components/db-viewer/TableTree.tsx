@@ -1,9 +1,14 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, ChevronDown, Table2, Layers, Eye, Key, Type } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { TableOverflowMenu } from "./TableOverflowMenu";
 import { abbreviateType } from "../../lib/utils";
+import {
+    columnCacheKey,
+    metadataScopeKey,
+    type MetadataScope,
+} from "../../lib/tabIdentity";
 import type { ColumnInfo } from "../../lib/types";
 import * as cmd from "../../lib/commands";
 import { fkLabel, fkTarget } from "../../lib/fkTarget";
@@ -14,10 +19,64 @@ export function TableTree({ searchQuery, dbType }: { searchQuery?: string; dbTyp
     const schemaTreeLoading = useDbViewerStore((s) => s.schemaTreeLoading);
     const openTab = useDbViewerStore((s) => s.openTab);
     const connectionId = useUiStore((s) => s.activeConnectionId);
+    const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
+    const metadataRev = useDbViewerStore((s) => s.metadataRev);
+    // Expanded-row columns belong to the connection + database they were read
+    // from. The cache key carries that scope, so the same table name in another
+    // database can never be answered with this one's columns.
+    const scope: MetadataScope = useMemo(
+        () => ({ connectionId, database: currentDatabase }),
+        [connectionId, currentDatabase],
+    );
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
     const [columnCache, setColumnCache] = useState<
         Record<string, ColumnInfo[]>
     >({});
+    const scopeRef = useRef(scope);
+    scopeRef.current = scope;
+    // Scope + metadata revision the cached columns were read under. A late
+    // response from a superseded generation is dropped instead of cached.
+    const scopeKey = metadataScopeKey(scope);
+    const metadataGenerationRef = useRef(`${scopeKey}\u0000${metadataRev}`);
+    const lastScopeRef = useRef(metadataGenerationRef.current);
+
+    const loadColumns = useCallback(
+        async (schema: string, tableName: string) => {
+            const { connectionId: conn } = scopeRef.current;
+            if (!conn) return;
+            const key = columnCacheKey(scopeRef.current, schema, tableName);
+            // A response that was requested before a database switch or a
+            // metadata invalidation describes a superseded environment, so it
+            // must never be written into the cache after the fact.
+            const requestedIn = metadataGenerationRef.current;
+            try {
+                const result = await cmd.getTableData(conn, schema, tableName, 1, 0);
+                if (metadataGenerationRef.current !== requestedIn) return;
+                // Merge into the cache: a second expanded row keeps its own entry.
+                setColumnCache((prev) => ({ ...prev, [key]: result.columns }));
+            } catch {
+                /* ignore, columns will remain unknowns */
+            }
+        },
+        [],
+    );
+
+    // A database switch or a metadata invalidation (relevant DDL, rebuild,
+    // reconnect) makes every cached column list unreachable: drop it and
+    // re-introspect whatever is expanded right now.
+    useEffect(() => {
+        const current = `${scopeKey}\u0000${metadataRev}`;
+        if (lastScopeRef.current === current) return;
+        lastScopeRef.current = current;
+        metadataGenerationRef.current = current;
+        setColumnCache({});
+        for (const rowKey of expanded) {
+            const sep = rowKey.indexOf("\u0000");
+            const schema = rowKey.slice(0, sep);
+            const tableName = rowKey.slice(sep + 1);
+            void loadColumns(schema, tableName);
+        }
+    }, [scopeKey, metadataRev, expanded, loadColumns]);
 
     const q = (searchQuery ?? "").toLowerCase().trim();
 
@@ -27,28 +86,21 @@ export function TableTree({ searchQuery, dbType }: { searchQuery?: string; dbTyp
             : tables
     ).filter((t) => !q || t.name.toLowerCase().includes(q));
 
-    const toggle = async (key: string, schema: string, tableName: string) => {
-        const isExpanded = expanded.has(key);
+    const rowKeyFor = (schema: string, table: string) => `${schema}\u0000${table}`;
+
+    const toggle = async (schema: string, tableName: string) => {
+        const rowKey = rowKeyFor(schema, tableName);
+        const isExpanded = expanded.has(rowKey);
         setExpanded((prev) => {
             const next = new Set(prev);
-            if (isExpanded) next.delete(key);
-            else next.add(key);
+            if (isExpanded) next.delete(rowKey);
+            else next.add(rowKey);
             return next;
         });
-        // Fetch columns if not cached
-        if (!isExpanded && !columnCache[key] && connectionId) {
-            try {
-                const result = await cmd.getTableData(
-                    connectionId,
-                    schema,
-                    tableName,
-                    1,
-                    0,
-                );
-                setColumnCache((prev) => ({ ...prev, [key]: result.columns }));
-            } catch {
-                /* ignore, columns will remain unknowns */
-            }
+        // Fetch columns if this origin has not introspected them yet
+        const cacheKey = columnCacheKey(scope, schema, tableName);
+        if (!isExpanded && !columnCache[cacheKey]) {
+            void loadColumns(schema, tableName);
         }
     };
 
@@ -69,9 +121,12 @@ export function TableTree({ searchQuery, dbType }: { searchQuery?: string; dbTyp
                 </div>
             )}
             {filteredTables.map((table) => {
-                const key = `${table.schema}.${table.name}`;
-                const isExpanded = expanded.has(key);
-                const cols = columnCache[key] ?? table.columns ?? [];
+                const rowKey = rowKeyFor(table.schema, table.name);
+                const isExpanded = expanded.has(rowKey);
+                const cols =
+                    columnCache[columnCacheKey(scope, table.schema, table.name)] ??
+                    table.columns ??
+                    [];
                 const isMatView = table.table_type === "MATERIALIZED VIEW";
                 const isView = table.table_type === "VIEW";
                 const TypeIcon = isMatView ? Layers : isView ? Eye : Table2;
@@ -81,7 +136,7 @@ export function TableTree({ searchQuery, dbType }: { searchQuery?: string; dbTyp
                       ? "View"
                       : null;
                 return (
-                    <div key={key}>
+                    <div key={rowKey}>
                         <div
                             className="group flex items-center gap-1 px-3 py-1 hover:bg-surface-raised cursor-pointer"
                             onClick={() => openTab(table.schema, table.name)}
@@ -92,7 +147,7 @@ export function TableTree({ searchQuery, dbType }: { searchQuery?: string; dbTyp
                                 aria-label={isExpanded ? "Collapse" : "Expand"}
                                 onClick={(e) => {
                                     e.stopPropagation();
-                                    toggle(key, table.schema, table.name);
+                                    toggle(table.schema, table.name);
                                 }}
                                 className="w-5 h-5 flex items-center justify-center text-text-muted hover:text-text cursor-pointer"
                             >

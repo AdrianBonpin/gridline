@@ -11,6 +11,7 @@ import {
   describeRetargeting,
   isSameChangeOrigin,
   itemsForChangeTarget,
+  type ChangeOrigin,
 } from "../../lib/changeOrigin";
 import type { QueueItem, QueueStatus } from "../../stores/dbViewerStore";
 
@@ -81,7 +82,18 @@ function tableRef(change: QueueItem): string {
   return change.table ?? "-";
 }
 
-export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } = {}) {
+export function ChangesQueuePanel({
+  onCommitted,
+}: {
+  /**
+   * Called with exactly the changes this commit cycle applied and the origin
+   * they belong to, so the viewer can refresh every affected tab.
+   */
+  onCommitted?: (
+    committed: QueueItem[],
+    origin: ChangeOrigin,
+  ) => void | Promise<void>;
+} = {}) {
   const changesQueue = useDbViewerStore((state) => state.changesQueue);
   const removeChange = useDbViewerStore((state) => state.removeChange);
   const clearChangesForTarget = useDbViewerStore((state) => state.clearChangesForTarget);
@@ -141,6 +153,7 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
     setRefusal(null);
 
     const total = pending.length;
+    const committedItems: QueueItem[] = [];
     let committedCount = 0;
     let failedChange: QueueItem | null = null;
     let failedMessage = "";
@@ -153,11 +166,14 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
         const payload = buildChangePayload(change);
         await cmd.executeChange(origin.connectionId, payload);
         markChangeCommitted(change.id);
+        committedItems.push(change);
         committedCount++;
         if (change.type === "drop_table") {
           treeDirty = true;
           const st = useDbViewerStore.getState();
-          st.closeTabsForTable(change.schema ?? "", change.table ?? "");
+          // Only the committing origin's tabs close: another database's tab for
+          // the same table name is a different object.
+          st.closeTabsForTable(change.schema ?? "", change.table ?? "", origin);
         } else if (
           change.type === "rebuild_table" ||
           (change.type === "ddl" && change.sql && isSchemaModifyingQuery(change.sql))
@@ -173,8 +189,9 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
       }
     }
 
-    if (committedCount > 0) {
-      onCommitted?.();
+    if (treeDirty) {
+      // Columns may be gone/renamed; caches must re-introspect.
+      useDbViewerStore.getState().invalidateMetadata();
     }
 
     if (failedChange) {
@@ -196,6 +213,12 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
       );
     } else if (committedCount > 0) {
       notify(`${committedCount} change(s) committed`, "success");
+    }
+
+    // Refresh every affected tab *after* reporting the commit outcome, so a slow
+    // refresh can never delay (or hide) the result of the commit itself.
+    if (committedCount > 0) {
+      await onCommitted?.(committedItems, origin);
     }
 
     if (treeDirty) {

@@ -164,11 +164,76 @@ describe("TableOverflowMenu", () => {
     expect(commands.runMaintenance).toHaveBeenCalledWith("c1", "public", "users", "vacuum");
   });
 
-  it("Edit Table opens a table form tab", () => {
+  it("Edit Table opens a table form tab with the live columns", async () => {
+    const getTableData = vi.spyOn(commands, "getTableData").mockResolvedValue({
+      columns: [
+        { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+        { name: "email", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      ],
+      rows: [],
+      total_rows: 0,
+      page: 1,
+      page_size: 0,
+    } as any);
     const openFormTab = vi.spyOn(useDbViewerStore.getState(), "openFormTab");
     render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => ""} connectionId="c1" columns={[{ name: "id", data_type: "int", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false }]} />);
     fireEvent.click(screen.getByLabelText("Table options"));
     fireEvent.click(screen.getByText("Edit Table…"));
-    expect(openFormTab).toHaveBeenCalledWith(expect.objectContaining({ kind: "table", mode: "edit" }));
+
+    await waitFor(() =>
+      expect(openFormTab).toHaveBeenCalledWith(expect.objectContaining({ kind: "table", mode: "edit" })),
+    );
+    // The form is built from a metadata-only live read, never from whatever the
+    // tree happened to have cached (or not cached) for this table.
+    expect(getTableData).toHaveBeenCalledWith("c1", "public", "users", 1, 0);
+    const params = openFormTab.mock.calls[0][0].params as any;
+    expect(params.action.columns.map((c: any) => c.name)).toEqual(["id", "email"]);
+    expect(params.action.old_columns.map((c: any) => c.name)).toEqual(["id", "email"]);
+  });
+
+  it("Edit Table from an unexpanded tree item shows the live columns, not an empty form", async () => {
+    // An unexpanded tree row passes no columns at all.
+    vi.spyOn(commands, "getTableData").mockResolvedValue({
+      columns: [
+        { name: "order_id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+        { name: "product_id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+        { name: "quantity", data_type: "integer", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      ],
+      rows: [],
+      total_rows: 0,
+      page: 1,
+      page_size: 0,
+    } as any);
+    render(<TableOverflowMenu schema="main" table="order_items" onOpenTab={() => ""} connectionId="c1" dbType="sqlite" />);
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Edit Table…"));
+
+    await waitFor(() => expect(useDbViewerStore.getState().tabs).toHaveLength(1));
+    const params = useDbViewerStore.getState().tabs[0].form?.params as any;
+    expect(params.action.columns.map((c: any) => c.name)).toEqual([
+      "order_id",
+      "product_id",
+      "quantity",
+    ]);
+  });
+
+  it("Edit Table does not open an empty form when the live columns cannot be read", async () => {
+    vi.spyOn(commands, "getTableData").mockRejectedValue(new Error("connection reset"));
+    const openFormTab = vi.spyOn(useDbViewerStore.getState(), "openFormTab");
+    const { useNotificationStore } = await import("../../stores/notificationStore");
+    useNotificationStore.getState().notifications.length = 0;
+    render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => ""} connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Edit Table…"));
+
+    await waitFor(() => {
+      expect(
+        useNotificationStore
+          .getState()
+          .notifications.some((n) => /live columns/i.test(n.message)),
+      ).toBe(true);
+    });
+    expect(openFormTab).not.toHaveBeenCalled();
+    expect(useDbViewerStore.getState().tabs).toHaveLength(0);
   });
 });
