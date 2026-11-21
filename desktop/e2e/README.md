@@ -58,7 +58,7 @@ setup is needed on a headless Linux box. Useful flags (`bun run e2e:desktop --
 | Flow | Command | What it proves |
 | :--- | :--- | :--- |
 | `demo-smoke` (default) | `bun run e2e:desktop` | the built app opens the seeded demo database and paints real rows |
-| `destructive-rerun` | `bun run e2e:desktop -- --flow destructive-rerun` | a destructive script is confirmed from **both** the initial Run button and the toolbar re-run control — the built-product proof that the entry point cannot bypass the guard |
+| `destructive-rerun` | `bun run e2e:desktop -- --flow destructive-rerun` | a destructive script is confirmed from **both** the initial Run button and the toolbar re-run control, and the pending confirmation survives a run shortcut but is cancelled by Escape — the built-product proof that neither the entry point nor the keyboard can bypass or relocate the guard |
 | `composite-edit` | `bun run e2e:desktop -- --flow composite-edit` | editing one row of a composite-primary-key table changes exactly that row |
 
 ### `composite-edit` — Row Identity
@@ -120,13 +120,23 @@ e2e: PASS the built app rendered the seeded demo rows
 6. `rerun: toolbar re-run requires confirmation again` — the toolbar's re-run
    control (`button[aria-label="Re-run query"]`) must raise the *same* dialog.
    This is the assertion the flow exists for.
-7. `rerun: cancel leaves the script unexecuted`.
+7. `keyboard: the run shortcut cannot execute the pending confirmation` —
+   Control+Enter (`\uE009\uE007`) is sent to the **dialog**, and the dialog must
+   still be there afterwards. Focus trapped inside the modal is what makes this
+   a real-window assertion: the keystroke reached the confirmation, not the
+   editor behind it, and it neither executed the script nor replaced the
+   pending request with a different one.
+8. `keyboard: Escape cancels the pending confirmation` — Escape (`\uE00C`) sent
+   to the dialog must close it, leaving the script unexecuted.
 
 Every confirmation is cancelled, so the script never executes; each run also
 gets a pristine app-data directory. If any entry point executes without the
 dialog, the flow fails naming that entry point (`initial Run executed a
-destructive script without confirmation` / `toolbar re-run executed …`), so a
-regression cannot be mistaken for a pass.
+destructive script without confirmation` / `toolbar re-run executed …`); if a
+shortcut consumes the pending dialog it fails with `a keyboard shortcut
+consumed the pending confirmation`; and if Escape does nothing it fails with
+`Escape should cancel the … pending confirmation`. A regression therefore names
+the behavior that broke instead of being mistaken for a pass.
 
 ### Why the grid assertion reads attributes, not text
 

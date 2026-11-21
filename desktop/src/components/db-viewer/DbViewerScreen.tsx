@@ -6,7 +6,12 @@ import { DbViewerSidebar, NAV_CAPABILITY_KEY } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { isSchemaModifyingQuery } from "../../lib/utils";
 import { planExecution } from "../../lib/executionGuard";
-import type { ScriptAnalysis } from "../../lib/sqlScan";
+import {
+    confirmationStatus,
+    createPendingConfirmation,
+    type LiveConfirmationContext,
+    type PendingConfirmation,
+} from "../../lib/pendingConfirmation";
 import { executeQueryMulti, cancelQuery } from "../../lib/commands";
 import { getCapabilities, isMysqlFamily } from "../../lib/dbCapabilities";
 
@@ -319,10 +324,13 @@ export function DbViewerScreen({
     const [searchQuery, setSearchQuery] = useState("");
     const [rowDetailIdx, setRowDetailIdx] = useState<number | null>(null);
     const [editModalOpen, setEditModalOpen] = useState(false);
-    const [pendingDestructive, setPendingDestructive] = useState<{
-        sql: string;
-        analysis: ScriptAnalysis;
-    } | null>(null);
+    // A destructive confirmation is bound to exactly one request (ticket 17):
+    // its tab, Change Origin, reviewed SQL revision, and intent all travel
+    // with it, so it cannot be confirmed from anywhere else. The ref mirrors
+    // the state so a second synchronous click cannot execute it twice.
+    const [pendingDestructive, setPendingDestructive] =
+        useState<PendingConfirmation | null>(null);
+    const pendingDestructiveRef = useRef<PendingConfirmation | null>(null);
     const [streamExport, setStreamExport] = useState<{ sql: string } | null>(null);
     const connections = useConnectionStore((s) => s.connections);
     const currentConnection =
@@ -435,6 +443,52 @@ export function DbViewerScreen({
                 : null,
         [currentConnection, currentDatabase],
     );
+
+    // The confirmation handlers run outside React's render (clicks, store
+    // updates), so they read the newest origin through a ref rather than a
+    // captured one.
+    const liveOriginRef = useRef<ChangeOrigin | null>(liveOrigin);
+    liveOriginRef.current = liveOrigin;
+
+    /** Live viewer state a pending confirmation is re-checked against. */
+    const liveConfirmationContext = useCallback((): LiveConfirmationContext => {
+        const state = useDbViewerStore.getState();
+        return {
+            activeTabId: state.activeTabId,
+            tabs: state.tabs,
+            origin: liveOriginRef.current,
+        };
+    }, []);
+
+    /** Drop the pending confirmation: the request it answered is gone. */
+    const cancelPendingDestructive = useCallback(() => {
+        pendingDestructiveRef.current = null;
+        setPendingDestructive(null);
+    }, []);
+
+    // A confirmation applies only to the exact request it was raised for.
+    // Switching tabs, editing the reviewed SQL, moving to another Change
+    // Origin, or closing the tab cancels it before a user can confirm it — the
+    // dialog never survives long enough to answer a different request.
+    useEffect(() => {
+        if (!pendingDestructive) return;
+        if (
+            confirmationStatus(
+                pendingDestructive,
+                liveConfirmationContext(),
+            ) !== "valid"
+        ) {
+            cancelPendingDestructive();
+        }
+    }, [
+        pendingDestructive,
+        activeTab?.id,
+        activeTab?.query,
+        activeTab?.origin,
+        liveOrigin,
+        liveConfirmationContext,
+        cancelPendingDestructive,
+    ]);
 
     // CellEditor options for the active table tab: PG enum labels (cached per
     // connection+schema) + FK reference rows (page 1, 50 per FK column).
@@ -644,12 +698,6 @@ export function DbViewerScreen({
         [fetchData],
     );
 
-    /** Paging intent carried by a guarded query run (page or page size). */
-    const pendingPageIntentRef = useRef<{
-        page?: number;
-        pageSize?: number;
-    } | null>(null);
-
     /**
      * Apply a paging intent to a query tab. Only called once the run the intent
      * implies is actually dispatched, so the controls never describe a page
@@ -698,13 +746,24 @@ export function DbViewerScreen({
                 );
                 return;
             }
+            // One confirmation answers one request. While it is pending no
+            // other Execution Entry Point may execute, and none may replace it
+            // with a newer request — a keyboard shortcut must not relocate a
+            // confirmation onto different text or another tab.
+            if (pendingDestructiveRef.current) return;
             const plan = planExecution(sql);
             if (!plan.hasText) return;
             if (plan.needsConfirmation) {
-                // The paging intent waits for the confirmation: a refused
-                // dialog leaves the page controls (and loading state) alone.
-                pendingPageIntentRef.current = intent;
-                setPendingDestructive({ sql: plan.sql, analysis: plan.analysis });
+                // Everything the confirmation answers for — tab, Change
+                // Origin, reviewed revision, paging intent — is captured with
+                // it, so the paging intent waits for *this* confirmation and a
+                // refused dialog leaves the page controls alone.
+                const pending = createPendingConfirmation(
+                    { tabId, origin: liveOrigin, sql: plan.sql, intent },
+                    plan.analysis,
+                );
+                pendingDestructiveRef.current = pending;
+                setPendingDestructive(pending);
             } else {
                 applyPageIntent(tabId, intent);
                 void executeQueryForTab(tabId, plan.sql);
@@ -717,6 +776,29 @@ export function DbViewerScreen({
             markTabOutOfOrigin,
         ],
     );
+
+    /**
+     * Confirm the pending destructive request.
+     *
+     * Re-checked against live state first: if the tab, Change Origin, or
+     * reviewed revision moved after the dialog opened, the confirmation is
+     * stale and nothing executes. Otherwise the reviewed text is sent exactly
+     * once — the ref is cleared synchronously before the dispatch, so a
+     * double-click (or a second Enter) cannot run it twice.
+     */
+    const confirmPendingDestructive = useCallback(() => {
+        const pending = pendingDestructiveRef.current;
+        pendingDestructiveRef.current = null;
+        setPendingDestructive(null);
+        if (!pending) return;
+        if (
+            confirmationStatus(pending, liveConfirmationContext()) !== "valid"
+        ) {
+            return;
+        }
+        applyPageIntent(pending.tabId, pending.intent);
+        void executeQueryForTab(pending.tabId, pending.sql);
+    }, [applyPageIntent, executeQueryForTab, liveConfirmationContext]);
 
     /**
      * Run the text a query tab holds *right now*.
@@ -1771,51 +1853,6 @@ const onQueriesPanelResizeStart = useCallback(
                                                     </div>
                                                 </>
                                             )}
-                                            <DestructiveQueryDialog
-                                                open={pendingDestructive !== null}
-                                                query={pendingDestructive?.sql ?? ""}
-                                                statementIndex={
-                                                    pendingDestructive?.analysis
-                                                        .firstDestructiveIndex ?? null
-                                                }
-                                                statementCount={
-                                                    pendingDestructive?.analysis
-                                                        .totalStatements ?? null
-                                                }
-                                                reason={
-                                                    pendingDestructive?.analysis.reason ?? null
-                                                }
-                                                onConfirm={() => {
-                                                    const intent =
-                                                        pendingPageIntentRef.current ??
-                                                        {};
-                                                    pendingPageIntentRef.current =
-                                                        null;
-                                                    if (
-                                                        pendingDestructive &&
-                                                        activeTab
-                                                    ) {
-                                                        // A confirmed paging
-                                                        // request applies its
-                                                        // page now that the run
-                                                        // is really dispatched.
-                                                        applyPageIntent(
-                                                            activeTab.id,
-                                                            intent,
-                                                        );
-                                                        executeQueryForTab(
-                                                            activeTab.id,
-                                                            pendingDestructive.sql,
-                                                        );
-                                                    }
-                                                    setPendingDestructive(null);
-                                                }}
-                                                onCancel={() => {
-                                                    pendingPageIntentRef.current =
-                                                        null;
-                                                    setPendingDestructive(null);
-                                                }}
-                                            />
                                         </div>
                                     </Suspense>
                                 ) : (
@@ -1935,7 +1972,14 @@ const onQueriesPanelResizeStart = useCallback(
 
     return (
         <TooltipProvider>
-            <div className="h-full bg-canvas flex border-t border-border">
+            {/* While a destructive confirmation is pending the viewer behind it
+                is inert, so nothing underneath can take focus or receive
+                typing. The dialog itself is portalled to `document.body`, so
+                it is outside this subtree and stays interactive. */}
+            <div
+                className="h-full bg-canvas flex border-t border-border"
+                inert={pendingDestructive !== null}
+            >
                 <DbViewerSidebar
                     currentView={currentView}
                     onNavigate={handleNavigate}
@@ -2036,6 +2080,20 @@ const onQueriesPanelResizeStart = useCallback(
                         />
                     ) : null}
                 </div>
+                {/* The dialog is lazy-loaded, so the root needs its own boundary:
+                    a suspended lazy component here would blank the whole viewer. */}
+                <Suspense fallback={null}>
+                    <DestructiveQueryDialog
+                        open={pendingDestructive !== null}
+                        query={pendingDestructive?.sql ?? ""}
+                        statement={pendingDestructive?.statement ?? null}
+                        statementIndex={pendingDestructive?.statementIndex ?? null}
+                        statementCount={pendingDestructive?.statementCount ?? null}
+                        reason={pendingDestructive?.analysis.reason ?? null}
+                        onConfirm={confirmPendingDestructive}
+                        onCancel={cancelPendingDestructive}
+                    />
+                </Suspense>
                 {currentConnection && (
                     <EditConnectionModal
                         connection={currentConnection}

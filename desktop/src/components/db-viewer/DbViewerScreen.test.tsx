@@ -2363,3 +2363,288 @@ describe("selection follows Row Identity", () => {
         expect(reordered).not.toContain("(1, 1, 2)");
     });
 });
+
+/**
+ * Ticket 17: a destructive confirmation answers exactly one request.
+ *
+ * Every test below raises a real confirmation through an Execution Entry Point
+ * and then changes one part of the request identity — the tab, the reviewed SQL,
+ * the Change Origin, or the tab's existence. The dialog must disappear and
+ * nothing may execute, because the request it was raised for is gone.
+ */
+describe("request-bound confirmation", () => {
+    const emptyResult = {
+        result_sets: [{ columns: [], rows: [], total_rows: 0, page: 1, page_size: 50 }],
+        notices: [],
+        execution_time_ms: 42,
+    } as any;
+
+    beforeEach(() => {
+        cleanup();
+        vi.resetAllMocks();
+        useDbViewerStore.getState().reset();
+        useConnectionStore.setState({
+            connections: [
+                { id: "c1", name: "local", db_type: "postgresql", host: "localhost", port: 5432, username: "dev", database: "mydb", folder_id: null, keychain_ref: null, tag_ids: [], favorite: false, created_at: "", updated_at: "" },
+            ] as Connection[],
+        });
+        useUiStore.setState({ activeConnectionId: "c1" });
+        useDbViewerStore.setState({
+            databases: ["mydb", "analytics"],
+            schemas: ["public"],
+            tables: [{ name: "users", schema: "public", table_type: "TABLE" }],
+            currentDatabase: "mydb",
+            currentSchema: "public",
+        });
+    });
+
+    function renderScreen() {
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+    }
+
+    function queryTab(id: string, query: string, overrides: Record<string, unknown> = {}) {
+        return {
+            id,
+            schema: "public",
+            table: id === "q1" ? "Query" : "Query 2",
+            page: 1,
+            pageSize: 50,
+            loading: false,
+            error: null,
+            data: { columns: [], rows: [], total_rows: 0, page: 1, page_size: 50 },
+            filterRules: [],
+            sortRules: [],
+            hiddenColumns: [],
+            smartSortApplied: true,
+            tabType: "query",
+            query,
+            origin: currentChangeOrigin(),
+            ...overrides,
+        } as any;
+    }
+
+    function seedTabs(tabs: any[], activeTabId = tabs[0]?.id ?? null) {
+        useDbViewerStore.setState({ tabs, activeTabId });
+    }
+
+    function mountEditor() {
+        return waitFor(() => screen.getByTestId("monaco-editor"));
+    }
+
+    /** Raise a confirmation for the active query tab via the toolbar re-run. */
+    async function raiseConfirmation() {
+        renderScreen();
+        await mountEditor();
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+        await waitFor(() =>
+            expect(screen.getByText("Destructive Query")).toBeInTheDocument(),
+        );
+    }
+
+    it("cancels the pending confirmation when another tab becomes active", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedTabs([
+            queryTab("q1", "DELETE FROM users"),
+            queryTab("q2", "DELETE FROM posts"),
+        ]);
+        await raiseConfirmation();
+
+        act(() => useDbViewerStore.getState().setActiveTab("q2"));
+
+        await waitFor(() =>
+            expect(screen.queryByText("Destructive Query")).toBeNull(),
+        );
+        expect(executeQuery).not.toHaveBeenCalled();
+        expect(screen.queryByTestId("destructive-query-confirm")).toBeNull();
+    });
+
+    it("cancels the pending confirmation when the reviewed SQL is edited", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedTabs([queryTab("q1", "DELETE FROM users")]);
+        await raiseConfirmation();
+
+        fireEvent.change(screen.getByTestId("monaco-textarea"), {
+            target: { value: "DELETE FROM users WHERE id = 1" },
+        });
+
+        await waitFor(() =>
+            expect(screen.queryByText("Destructive Query")).toBeNull(),
+        );
+        // The reviewed text was never sent; the new text was never confirmed.
+        expect(executeQuery).not.toHaveBeenCalled();
+    });
+
+    it("cancels the pending confirmation when the tab is closed", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedTabs([queryTab("q1", "DELETE FROM users")]);
+        await raiseConfirmation();
+
+        act(() => useDbViewerStore.getState().closeTab("q1"));
+
+        await waitFor(() =>
+            expect(screen.queryByText("Destructive Query")).toBeNull(),
+        );
+        expect(executeQuery).not.toHaveBeenCalled();
+    });
+
+    it("cancels the pending confirmation when the Change Origin changes", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedTabs([queryTab("q1", "DELETE FROM users")]);
+        await raiseConfirmation();
+
+        act(() =>
+            useDbViewerStore.setState({ currentDatabase: "analytics" }),
+        );
+
+        await waitFor(() =>
+            expect(screen.queryByText("Destructive Query")).toBeNull(),
+        );
+        expect(executeQuery).not.toHaveBeenCalled();
+    });
+
+    it("cancels when the saved connection is retargeted while a confirmation is pending", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedTabs([queryTab("q1", "DELETE FROM users")]);
+        await raiseConfirmation();
+
+        act(() => {
+            useConnectionStore.setState((state) => ({
+                connections: state.connections.map((c) =>
+                    c.id === "c1" ? { ...c, host: "other-host" } : c,
+                ),
+            }));
+        });
+
+        await waitFor(() =>
+            expect(screen.queryByText("Destructive Query")).toBeNull(),
+        );
+        expect(executeQuery).not.toHaveBeenCalled();
+    });
+
+    it("does not execute or move a pending confirmation from a keyboard shortcut", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedTabs([queryTab("q1", "DELETE FROM users")]);
+        registeredActions.length = 0;
+        renderScreen();
+        await mountEditor();
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+        await waitFor(() =>
+            expect(screen.getByText("Destructive Query")).toBeInTheDocument(),
+        );
+        expect(registeredActions).toHaveLength(1);
+
+        // Cmd/Ctrl+Enter (the editor's own run action) while the confirmation is
+        // pending must not execute it, and must not replace it either.
+        act(() => registeredActions[0].run());
+        act(() => registeredActions[0].run());
+        // …and neither does a page key or the paging control's request path.
+        fireEvent.keyDown(document.body, { key: "Enter", metaKey: true });
+
+        await waitFor(() =>
+            expect(screen.getByText("Destructive Query")).toBeInTheDocument(),
+        );
+        expect(executeQuery).not.toHaveBeenCalled();
+        // Still the originally reviewed request.
+        expect(screen.getByTestId("destructive-offending-statement")).toHaveTextContent(
+            "DELETE FROM users",
+        );
+
+        // Confirming now executes exactly the reviewed text, once.
+        fireEvent.click(screen.getByTestId("destructive-query-confirm"));
+        await waitFor(() =>
+            expect(executeQuery).toHaveBeenCalledWith(
+                "c1",
+                "DELETE FROM users",
+                1,
+                50,
+            ),
+        );
+        expect(executeQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it("executes exactly the reviewed text once when the confirmation is confirmed", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        const reviewed = "SELECT 1;\nDROP TABLE demo;";
+        seedTabs([queryTab("q1", reviewed)]);
+        await raiseConfirmation();
+
+        // Hold the button, then click twice: the confirmation is consumed by
+        // the first click, so the impatient second one has nothing to confirm.
+        const confirmButton = screen.getByTestId("destructive-query-confirm");
+        fireEvent.click(confirmButton);
+        fireEvent.click(confirmButton);
+
+        await waitFor(() =>
+            expect(executeQuery).toHaveBeenCalledWith(
+                "c1",
+                reviewed,
+                1,
+                50,
+            ),
+        );
+        expect(executeQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it("names the offending statement and its position in the script", async () => {
+        vi.spyOn(commands, "executeQueryMulti").mockResolvedValue(emptyResult);
+        seedTabs([queryTab("q1", "SELECT 1;\nDROP TABLE demo;\nSELECT 2;")]);
+        await raiseConfirmation();
+
+        const offending = screen.getByTestId("destructive-offending-statement");
+        expect(offending).toHaveTextContent("DROP TABLE demo");
+        expect(offending).toHaveTextContent("Statement 2 of 3");
+        expect(screen.getByTestId("destructive-statement-detail")).toHaveTextContent(
+            "Statement 2 of 3",
+        );
+    });
+
+    it("behaves as a modal: the editor behind cannot receive typing", async () => {
+        vi.spyOn(commands, "executeQueryMulti").mockResolvedValue(emptyResult);
+        seedTabs([queryTab("q1", "DELETE FROM users")]);
+        await raiseConfirmation();
+
+        const dialog = screen.getByTestId("destructive-query-dialog");
+        expect(dialog).toHaveAttribute("aria-modal", "true");
+        // Focus left the editor for the dialog…
+        expect(dialog.contains(document.activeElement)).toBe(true);
+        expect(screen.getByTestId("monaco-textarea")).not.toBe(document.activeElement);
+        // …and the workspace behind the modal is inert, so it cannot be focused
+        // or typed into at all while the confirmation is pending.
+        expect(screen.getByTestId("query-workspace").closest("[inert]")).not.toBeNull();
+
+        // Typing now goes to the dialog, not to the editor.
+        const before = (screen.getByTestId("monaco-textarea") as HTMLTextAreaElement)
+            .value;
+        fireEvent.keyDown(document.activeElement!, { key: "X" });
+        expect(
+            (screen.getByTestId("monaco-textarea") as HTMLTextAreaElement).value,
+        ).toBe(before);
+
+        // Escape cancels, and the workspace becomes interactive again.
+        fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+        await waitFor(() =>
+            expect(screen.queryByText("Destructive Query")).toBeNull(),
+        );
+        expect(screen.getByTestId("query-workspace").closest("[inert]")).toBeNull();
+    });
+});
