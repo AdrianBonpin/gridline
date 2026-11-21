@@ -7,10 +7,10 @@
 **Seams:** SQL safety seam and change-application seam: catch repeat executions and total reporting; live cases catch engine-specific wrapping behavior.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/70
-**Status:** ready
+**Status:** done
 
-- [ ] A side-effecting SELECT runs once per request, not once for counting and again for data.
-- [ ] An empty result set does not trigger a second execution to discover columns.
-- [ ] A wrapping failure does not trigger an additional execution of a side-effecting statement.
-- [ ] When an exact total is unavailable, the UI reports it as unknown rather than recomputing.
-- [ ] Cancellation does not cause a raw fallback execution.
+- [x] A side-effecting SELECT runs once per request, not once for counting and again for data.
+- [x] An empty result set does not trigger a second execution to discover columns.
+- [x] A wrapping failure does not trigger an additional execution of a side-effecting statement.
+- [x] When an exact total is unavailable, the UI reports it as unknown rather than recomputing.
+- [x] Cancellation does not cause a raw fallback execution.

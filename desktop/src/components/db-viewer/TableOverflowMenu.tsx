@@ -157,8 +157,10 @@ export function TableOverflowMenu({
               notify("Nothing to export", "info");
             } else {
               exportData(result.rows, result.columns, format, `${schema}.${table}`);
+              // The table path always reports an exact total; treat an absent
+              // one as "no truncation claim" rather than inventing a number.
               const truncated =
-                result.total_rows > result.rows.length
+                (result.total_rows ?? 0) > result.rows.length
                   ? ` (first ${result.rows.length} of ${result.total_rows})`
                   : "";
               notify(

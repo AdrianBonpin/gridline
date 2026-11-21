@@ -196,7 +196,15 @@ export interface RecentConnection {
 export interface QueryResult {
   columns: ColumnInfo[];
   rows: unknown[][];
-  total_rows: number;
+  /**
+   * Exact total row count, or `null` when it is unavailable. A backend that
+   * executes a statement once per request cannot always know the total without
+   * running the statement again, so it reports `null` (unknown) rather than
+   * recomputing — recomputing would repeat any side effects.
+   */
+  total_rows: number | null;
+  /** True when at least one row exists after this page (always exact). */
+  has_more?: boolean;
   page: number;
   page_size: number;
   execution_time_ms?: number | null;

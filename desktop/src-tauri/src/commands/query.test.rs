@@ -58,7 +58,14 @@ fn sqlite_walker_yields_set_for_select() {
         StatementOutcome::Set(qr) => {
             assert_eq!(qr.columns.len(), 1);
             assert_eq!(qr.rows.len(), 2, "page size caps rows");
-            assert_eq!(qr.total_rows, 3, "total counts all rows");
+            assert_eq!(
+                qr.total_rows, None,
+                "a paged SELECT reports the total as unknown instead of counting again"
+            );
+            assert!(
+                qr.has_more,
+                "one row past the page proves a next page exists"
+            );
         }
         _ => panic!("expected Set, got Notice"),
     }
@@ -472,5 +479,426 @@ fn bulk_over_budget_error_states_the_limit_without_the_tool_hint() {
     assert!(
         err.contains(&MAX_RESTORE_STATEMENTS.to_string()),
         "got {err:?}"
+    );
+}
+
+// ── Ticket 19: one execution per request ───────────────────────────
+//
+// A SELECT can have side effects (volatile functions, sequences, `nextval`), so
+// "how many times did the backend run my statement?" is a user-visible safety
+// property, not an implementation detail. These tests register a real
+// in-database side effect — `bump()` — and count it, so a request that runs the
+// statement once for a count and again for data is caught even when the returned
+// rows look identical.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+/// An in-memory SQLite connection whose `bump()` function counts its own
+/// evaluations, plus the counter itself.
+///
+/// `bump()` sits in the statement's WHERE clause (never in a column that a
+/// wrapping `COUNT(*)` could prune away), so its count equals the number of
+/// times the statement body actually ran.
+fn counting_conn() -> (rusqlite::Connection, Arc<AtomicUsize>) {
+    let conn = rusqlite::Connection::open_in_memory().expect("open in-memory");
+    let hits = Arc::new(AtomicUsize::new(0));
+    let sink = Arc::clone(&hits);
+    conn.create_scalar_function(
+        "bump",
+        0,
+        rusqlite::functions::FunctionFlags::default(),
+        move |_ctx| {
+            sink.fetch_add(1, Ordering::SeqCst);
+            Ok(1i64)
+        },
+    )
+    .expect("register bump()");
+    conn.execute_batch("CREATE TABLE t (a INTEGER); INSERT INTO t VALUES (1), (2), (3);")
+        .expect("seed");
+    (conn, hits)
+}
+
+/// A statement that fails *at execution time* on its first row, right after
+/// `bump()` ran. One execution therefore evaluates `bump()` exactly once; a
+/// probe query followed by a replay evaluates it twice, which is what makes the
+/// failure visible in the counter.
+const FAILING_AFTER_SIDE_EFFECT: &str = "SELECT 1 AS n FROM t \
+     WHERE bump() = 1 AND json(CASE WHEN a = 1 THEN 'not json' ELSE '[]' END) IS NOT NULL";
+
+#[test]
+fn side_effecting_select_executes_once_per_request() {
+    let (conn, hits) = counting_conn();
+
+    let result =
+        execute_sqlite_query(&conn, "SELECT 1 AS n WHERE bump() = 1", 1, 50).expect("query runs");
+
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "one request must execute the statement once, not once for counting and again for data"
+    );
+    assert_eq!(result.rows.len(), 1, "the page still carries the row");
+}
+
+#[test]
+fn empty_result_keeps_columns_without_a_second_execution() {
+    let (conn, hits) = counting_conn();
+
+    let result =
+        execute_sqlite_query(&conn, "SELECT 1 AS n WHERE bump() = 2", 1, 50).expect("query runs");
+
+    assert!(result.rows.is_empty(), "the filter matches nothing");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "an empty page must not re-execute the statement to discover columns"
+    );
+    assert_eq!(
+        result
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["n"],
+        "columns come from the statement description of the single execution"
+    );
+}
+
+#[test]
+fn failed_page_request_is_not_replayed() {
+    let (conn, hits) = counting_conn();
+
+    let err = execute_sqlite_query(&conn, FAILING_AFTER_SIDE_EFFECT, 1, 50)
+        .expect_err("the statement fails at execution");
+
+    assert!(
+        err.to_lowercase().contains("malformed json"),
+        "the real failure is reported; got {err:?}"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "a failed execution must be reported, never replayed as a fallback"
+    );
+}
+
+#[test]
+fn walker_side_effecting_select_executes_once() {
+    let (conn, hits) = counting_conn();
+
+    let out = execute_sqlite_statement(&conn, "SELECT 1 AS n WHERE bump() = 1", 1, 50)
+        .expect("statement runs");
+
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "a script's SELECT must not be stepped once to see whether it returns rows and again to fetch them"
+    );
+    match out {
+        StatementOutcome::Set(qr) => {
+            assert_eq!(qr.rows.len(), 1);
+            assert_eq!(qr.total_rows, None, "paged statement: total unknown");
+        }
+        _ => panic!("expected a result set"),
+    }
+}
+
+#[test]
+fn walker_failed_statement_is_not_replayed() {
+    let (conn, hits) = counting_conn();
+
+    let err = match execute_sqlite_statement(&conn, FAILING_AFTER_SIDE_EFFECT, 1, 50) {
+        Err(e) => e,
+        Ok(_) => panic!("the statement fails at execution"),
+    };
+
+    assert!(
+        err.to_lowercase().contains("malformed json"),
+        "the real failure is reported; got {err:?}"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "a failed statement in a script is reported, never re-executed"
+    );
+}
+
+#[test]
+fn walker_reports_row_errors_instead_of_truncating_the_result() {
+    // A row error used to be dropped (`filter_map(|r| r.ok())`), so a failing
+    // statement looked like a short successful result set.
+    let conn = mem_conn();
+    let err = match execute_sqlite_statement(
+        &conn,
+        "SELECT a, json(CASE WHEN a = 2 THEN 'not json' ELSE '[]' END) AS j FROM t ORDER BY a",
+        1,
+        50,
+    ) {
+        Err(e) => e,
+        Ok(_) => panic!("the malformed json must fail the statement"),
+    };
+    assert!(err.to_lowercase().contains("malformed json"), "got {err:?}");
+}
+
+// ── the plan is decided by shape, before anything runs ─────────────
+
+#[test]
+fn plan_wraps_paging_safe_single_statements_per_engine() {
+    use crate::db::read_only::ReadOnlyEngine as E;
+
+    for engine in [E::PostgreSql, E::MySql, E::Sqlite] {
+        assert_eq!(
+            plan_page(engine, "SELECT 1"),
+            PagePlan::Paged {
+                statement: "SELECT 1".to_string()
+            },
+            "{engine:?} can wrap a plain SELECT"
+        );
+        // A leading comment or a trailing terminator does not change the shape.
+        assert_eq!(
+            plan_page(engine, "-- note\nSELECT 1;"),
+            PagePlan::Paged {
+                statement: "-- note\nSELECT 1".to_string()
+            },
+            "{engine:?} classifies by the leading verb, not the raw text"
+        );
+    }
+
+    // A CTE is a derived table on PostgreSQL and SQLite; MySQL only accepts one
+    // there from 8.0.19, so it runs verbatim (one execution, exact total).
+    let cte = "WITH c AS (SELECT 1) SELECT * FROM c";
+    assert_eq!(
+        plan_page(E::PostgreSql, cte),
+        PagePlan::Paged {
+            statement: cte.to_string()
+        }
+    );
+    assert_eq!(
+        plan_page(E::Sqlite, cte),
+        PagePlan::Verbatim {
+            sql: cte.to_string()
+        }
+    );
+    assert_eq!(
+        plan_page(E::MySql, cte),
+        PagePlan::Verbatim {
+            sql: cte.to_string()
+        }
+    );
+}
+
+#[test]
+fn plan_runs_everything_else_verbatim_once() {
+    use crate::db::read_only::ReadOnlyEngine as E;
+
+    // Unwrappable verbs never get a trial wrap (which would run the statement
+    // and then retry it): their shape already says "verbatim".
+    for sql in [
+        "EXPLAIN SELECT 1",
+        "SHOW TABLES",
+        "PRAGMA table_info(t)",
+        "INSERT INTO t VALUES (1) RETURNING a",
+        "UPDATE t SET a = 1",
+        "SELECT 1; DROP TABLE t",
+        "/* only a comment */",
+    ] {
+        assert!(
+            matches!(plan_page(E::PostgreSql, sql), PagePlan::Verbatim { .. }),
+            "PostgreSQL must run {sql:?} verbatim"
+        );
+        assert!(
+            matches!(plan_page(E::Sqlite, sql), PagePlan::Verbatim { .. }),
+            "SQLite must run {sql:?} verbatim"
+        );
+    }
+}
+
+// ── pagination stays usable while the total is unknown ─────────────
+
+#[test]
+fn paged_pagination_is_exact_without_a_count() {
+    let (conn, hits) = counting_conn();
+
+    // Page 2 of page_size 2 over 3 rows: one row, nothing after it.
+    let second = execute_sqlite_query(&conn, "SELECT 1 AS n FROM t WHERE bump() = 1", 2, 2)
+        .expect("query runs");
+    assert_eq!(second.rows.len(), 1);
+    assert_eq!(second.total_rows, None, "total stays unknown");
+    assert!(
+        !second.has_more,
+        "the probe row shows this is the last page"
+    );
+
+    // A page past the end is empty and final, still from one execution.
+    let past_end = execute_sqlite_query(&conn, "SELECT 1 AS n FROM t WHERE bump() = 1", 9, 2)
+        .expect("query runs");
+    assert!(past_end.rows.is_empty());
+    assert!(!past_end.has_more);
+
+    // Three requests, three executions — never a count query on top.
+    assert_eq!(hits.load(Ordering::SeqCst), 6, "one bump per row evaluated");
+}
+
+// ── cancellation is final ──────────────────────────────────────────
+
+#[test]
+fn cancelled_request_is_not_replayed() {
+    use std::sync::mpsc;
+
+    let conn = rusqlite::Connection::open_in_memory().expect("open in-memory");
+    let hits = Arc::new(AtomicUsize::new(0));
+    let sink = Arc::clone(&hits);
+    conn.create_scalar_function(
+        "bump",
+        0,
+        rusqlite::functions::FunctionFlags::default(),
+        move |_ctx| {
+            sink.fetch_add(1, Ordering::SeqCst);
+            Ok(1i64)
+        },
+    )
+    .expect("register bump()");
+    let handle = conn.get_interrupt_handle();
+    // The anchor term runs once per execution, so the counter counts executions
+    // rather than rows.
+    let slow =
+        "WITH RECURSIVE c(x) AS (SELECT bump() UNION ALL SELECT x + 1 FROM c LIMIT 50000000) \
+                SELECT count(*) AS n FROM c";
+
+    let (tx, rx) = mpsc::channel();
+    let sent = Arc::clone(&hits);
+    std::thread::spawn(move || {
+        let res = execute_sqlite_query(&conn, slow, 1, 50);
+        let _ = tx.send((res.map(|r| r.rows.len()), sent.load(Ordering::SeqCst)));
+    });
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    handle.interrupt();
+
+    let (res, executions) = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the query thread must finish");
+    match res {
+        Err(e) => assert!(
+            e.contains("Query cancelled"),
+            "a cancelled request reports cancellation; got {e:?}"
+        ),
+        Ok(rows) => panic!("the request must not succeed after a cancel; got {rows} rows"),
+    }
+    assert_eq!(
+        executions, 1,
+        "cancellation must not fall back to a second execution"
+    );
+}
+
+// ── live engines: the same one-execution contract ──────────────────
+//
+// Ignored by default (they need a server); run in the approved live matrix.
+// Each asserts an engine-side side effect, not returned rows: `nextval` advances
+// a sequence, `@cnt` increments per evaluation.
+
+#[tokio::test]
+#[ignore]
+async fn pg_side_effecting_select_advances_a_sequence_once() {
+    let h = std::env::var("GRIDLINE_TEST_PG_HOST").expect("set GRIDLINE_TEST_PG_HOST");
+    let p: u16 = std::env::var("GRIDLINE_TEST_PG_PORT")
+        .unwrap_or_else(|_| "5432".into())
+        .parse()
+        .unwrap();
+    let u = std::env::var("GRIDLINE_TEST_PG_USER").expect("set GRIDLINE_TEST_PG_USER");
+    let d = std::env::var("GRIDLINE_TEST_PG_DB").expect("set GRIDLINE_TEST_PG_DB");
+    let pw = std::env::var("GRIDLINE_TEST_PG_PASSWORD").unwrap_or_default();
+    let (client, conn) = tokio_postgres::connect(
+        &format!("host={h} port={p} user={u} dbname={d} password={pw}"),
+        tokio_postgres::NoTls,
+    )
+    .await
+    .expect("connect to test PG");
+    let handle = tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    // Per-run sequence so a reused test database cannot hide the assertion.
+    let seq = format!("gridline_t19_{}", std::process::id());
+    client
+        .batch_execute(&format!(
+            "DROP SEQUENCE IF EXISTS {seq}; CREATE SEQUENCE {seq} START 100"
+        ))
+        .await
+        .expect("create sequence");
+
+    let before: i64 = client
+        .query_one(&format!("SELECT last_value FROM {seq}"), &[])
+        .await
+        .expect("read sequence")
+        .get(0);
+    let result = execute_pg_query(&client, &format!("SELECT nextval('{seq}') AS n"), 1, 50)
+        .await
+        .expect("query runs");
+    let after: i64 = client
+        .query_one(&format!("SELECT last_value FROM {seq}"), &[])
+        .await
+        .expect("read sequence")
+        .get(0);
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        after - before,
+        1,
+        "one request must advance the sequence once, not twice (count + data)"
+    );
+    let _ = client
+        .batch_execute(&format!("DROP SEQUENCE IF EXISTS {seq}"))
+        .await;
+    let _ = handle;
+}
+
+#[tokio::test]
+#[ignore]
+async fn mysql_side_effecting_select_executes_once() {
+    let h = std::env::var("GRIDLINE_TEST_MYSQL_HOST").expect("set GRIDLINE_TEST_MYSQL_HOST");
+    let p: u16 = std::env::var("GRIDLINE_TEST_MYSQL_PORT")
+        .unwrap_or_else(|_| "3306".into())
+        .parse()
+        .unwrap();
+    let u = std::env::var("GRIDLINE_TEST_MYSQL_USER").expect("set GRIDLINE_TEST_MYSQL_USER");
+    let pw = std::env::var("GRIDLINE_TEST_MYSQL_PASS").unwrap_or_default();
+    let db = std::env::var("GRIDLINE_TEST_MYSQL_DB").unwrap_or_default();
+    let opts = sqlx::mysql::MySqlConnectOptions::new()
+        .host(&h)
+        .port(p)
+        .username(&u)
+        .password(&pw)
+        .database(&db);
+    let pool = sqlx::mysql::MySqlPoolOptions::new()
+        .connect_with(opts.clone())
+        .await
+        .expect("connect to test MySQL");
+    let mut conn = pool.acquire().await.expect("acquire");
+
+    // The counter lives in the WHERE clause, which no derived-table
+    // optimisation can prune away.
+    sqlx::query("SET @gridline_t19 = 0")
+        .execute(&mut *conn)
+        .await
+        .expect("seed counter");
+    let result = execute_mysql_query_on(
+        &mut conn,
+        "SELECT 1 AS n WHERE (@gridline_t19 := @gridline_t19 + 1) > 0",
+        1,
+        50,
+    )
+    .await
+    .expect("query runs");
+    let evaluations: i64 = sqlx::query_scalar("SELECT @gridline_t19")
+        .fetch_one(&mut *conn)
+        .await
+        .expect("read counter");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        evaluations, 1,
+        "one request must evaluate the statement once, not twice (count + data)"
     );
 }

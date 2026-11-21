@@ -209,7 +209,11 @@ async fn sqlite_fk_option_search_finds_a_match_beyond_the_first_page() {
     .await
     .expect("search must succeed");
 
-    assert_eq!(result.total_rows, 1, "exactly one row matches 'grace'");
+    assert_eq!(
+        result.total_rows,
+        Some(1),
+        "exactly one row matches 'grace'"
+    );
     assert_eq!(result.rows.len(), 1);
     let id = column_index(&result, "id");
     let name = column_index(&result, "name");
@@ -237,7 +241,7 @@ async fn sqlite_fk_option_search_pages_past_the_initial_page() {
     .expect("page 1");
     // Every "person" row except the deliberately different last one.
     let expected_matches = (USERS - 1) as i64;
-    assert_eq!(page_one.total_rows, expected_matches);
+    assert_eq!(page_one.total_rows, Some(expected_matches));
     assert_eq!(page_one.rows.len(), 25);
 
     let page_three = crate::commands::db_viewer::search_fk_options_inner(
@@ -252,7 +256,7 @@ async fn sqlite_fk_option_search_pages_past_the_initial_page() {
     )
     .await
     .expect("page 3");
-    assert_eq!(page_three.total_rows, expected_matches);
+    assert_eq!(page_three.total_rows, Some(expected_matches));
     assert_eq!(page_three.rows.len(), 25);
 
     let id = column_index(&page_three, "id");
@@ -281,7 +285,7 @@ async fn sqlite_fk_option_search_without_a_term_returns_the_first_page() {
     )
     .await
     .expect("empty search");
-    assert_eq!(result.total_rows, USERS as i64);
+    assert_eq!(result.total_rows, Some(USERS as i64));
     assert_eq!(result.rows.len(), 25);
 }
 
@@ -417,7 +421,7 @@ async fn pg_cross_schema_fk_preview_and_search_use_the_referenced_schema() {
     )
     .await
     .expect("search");
-    assert_eq!(found.total_rows, 1);
+    assert_eq!(found.total_rows, Some(1));
     assert_eq!(text_at(&found.rows[0], name), "reporting-alice");
 
     let decoy = crate::commands::db_viewer::search_fk_options_inner(
@@ -433,7 +437,8 @@ async fn pg_cross_schema_fk_preview_and_search_use_the_referenced_schema() {
     .await
     .expect("search for the decoy");
     assert_eq!(
-        decoy.total_rows, 0,
+        decoy.total_rows,
+        Some(0),
         "a same-named local table's row must never answer for the referenced one"
     );
 

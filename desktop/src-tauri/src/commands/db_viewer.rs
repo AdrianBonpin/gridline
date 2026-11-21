@@ -1815,9 +1815,12 @@ pub(crate) async fn get_table_data_inner(
                 .collect();
 
             Ok(QueryResult {
+                // A table page count is a COUNT over the table, not a replay of
+                // the user's statement, so the total is exact here.
+                has_more: (off + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page: p,
                 page_size: ps,
                 execution_time_ms: None,
@@ -1942,9 +1945,12 @@ pub(crate) async fn get_table_data_inner(
             };
 
             Ok(QueryResult {
+                // A table page count is a COUNT over the table, not a replay of
+                // the user's statement, so the total is exact here.
+                has_more: (off + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page: p,
                 page_size: ps,
                 execution_time_ms: None,
@@ -2000,9 +2006,12 @@ pub(crate) async fn get_table_data_inner(
                 .collect();
 
             Ok(QueryResult {
+                // A table page count is a COUNT over the table, not a replay of
+                // the user's statement, so the total is exact here.
+                has_more: (off + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page: p,
                 page_size: ps,
                 execution_time_ms: None,
@@ -2291,7 +2300,8 @@ pub(crate) async fn get_fk_preview_inner(
             Ok(QueryResult {
                 columns,
                 rows,
-                total_rows: 1,
+                total_rows: Some(1),
+                has_more: false,
                 page: 1,
                 page_size: 1,
                 execution_time_ms: None,
@@ -2318,7 +2328,8 @@ pub(crate) async fn get_fk_preview_inner(
             Ok(QueryResult {
                 columns,
                 rows,
-                total_rows: 1,
+                total_rows: Some(1),
+                has_more: false,
                 page: 1,
                 page_size: 1,
                 execution_time_ms: None,
@@ -2346,7 +2357,8 @@ pub(crate) async fn get_fk_preview_inner(
             Ok(QueryResult {
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
+                has_more: false,
                 page: 1,
                 page_size: 1,
                 execution_time_ms: None,
@@ -2485,6 +2497,8 @@ pub(crate) async fn search_fk_options_inner(
                 .iter()
                 .map(|row| (0..row.len()).map(|i| pg_value_to_json(row, i)).collect())
                 .collect();
+            // The FK search count counts the referenced table, it does not
+            // replay the user's statement, so this total is exact.
             let total_rows: i64 = client
                 .query_one(&sql.count, &[&search])
                 .await
@@ -2492,9 +2506,10 @@ pub(crate) async fn search_fk_options_inner(
                 .get(0);
 
             Ok(QueryResult {
+                has_more: (offset + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page,
                 page_size,
                 execution_time_ms: None,
@@ -2530,14 +2545,17 @@ pub(crate) async fn search_fk_options_inner(
                 .filter_map(|r| r.ok())
                 .collect();
             drop(stmt);
+            // The FK search count counts the referenced table, it does not
+            // replay the user's statement, so this total is exact.
             let total_rows: i64 = conn
                 .query_row(&sql.count, [search], |r| r.get(0))
                 .map_err(|e| e.to_string())?;
 
             Ok(QueryResult {
+                has_more: (offset + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page,
                 page_size,
                 execution_time_ms: None,
@@ -2581,15 +2599,18 @@ pub(crate) async fn search_fk_options_inner(
             for _ in 0..sql.binds {
                 count_query = count_query.bind(search);
             }
+            // The FK search count counts the referenced table, it does not
+            // replay the user's statement, so this total is exact.
             let total_rows: i64 = count_query
                 .fetch_one(pool)
                 .await
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
 
             Ok(QueryResult {
+                has_more: (offset + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page,
                 page_size,
                 execution_time_ms: None,

@@ -562,13 +562,29 @@ export function TableControls({
   }, [autoRefresh, onRefresh, isRefreshing, activeTabId, isQuery]);
 
   // pagination
-  const totalRows = activeTab?.data?.total_rows ?? rows.length;
+  //
+  // `total_rows` may be unknown (`null`): a paged query executes its statement
+  // once, so counting would run it a second time and repeat its side effects.
+  // In that case the toolbar reports the total as unknown and pages through the
+  // exact `has_more` flag instead of inventing a last page.
+  const exactTotal = activeTab?.data?.total_rows ?? null;
   const pageSize = activeTab?.pageSize ?? 50;
   const currentPage = activeTab?.page ?? 1;
-  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
-  const clampedPage = Math.max(1, Math.min(currentPage, totalPages));
-  const startRow = (clampedPage - 1) * pageSize + 1;
-  const endRow = Math.min(clampedPage * pageSize, totalRows);
+  const totalPages =
+    exactTotal === null ? null : Math.max(1, Math.ceil(exactTotal / pageSize));
+  const clampedPage =
+    totalPages === null
+      ? Math.max(1, currentPage)
+      : Math.max(1, Math.min(currentPage, totalPages));
+  const startRow = rows.length === 0 ? 0 : (clampedPage - 1) * pageSize + 1;
+  const endRow =
+    rows.length === 0
+      ? 0
+      : exactTotal === null
+        ? startRow + rows.length - 1
+        : Math.min(clampedPage * pageSize, exactTotal);
+  const hasMore = activeTab?.data?.has_more ?? rows.length >= pageSize;
+  const canGoNext = totalPages === null ? hasMore : clampedPage < totalPages;
 
   const handlePrev = () => {
     if (clampedPage > 1 && activeTabId) {
@@ -577,7 +593,7 @@ export function TableControls({
     }
   };
   const handleNext = () => {
-    if (clampedPage < totalPages && activeTabId) {
+    if (canGoNext && activeTabId) {
       if (onRequestPage) onRequestPage(clampedPage + 1);
       else setPage(activeTabId, clampedPage + 1);
     }
@@ -932,7 +948,7 @@ export function TableControls({
 
         {/* Row count */}
         <span className="tabular-nums">
-          {startRow}-{endRow} of {totalRows}
+          {startRow}-{endRow} of {exactTotal === null ? "total unknown" : exactTotal}
         </span>
 
         {/* Page size */}
@@ -960,12 +976,13 @@ export function TableControls({
             <ChevronLeft size={14} />
           </button>
           <span className="tabular-nums min-w-[3rem] text-center">
-            {clampedPage}/{totalPages}
+            {clampedPage}
+            {totalPages === null ? "" : `/${totalPages}`}
           </span>
           <button
             type="button"
             onClick={handleNext}
-            disabled={clampedPage >= totalPages}
+            disabled={!canGoNext}
             className="rounded p-0.5 hover:bg-surface-raised disabled:opacity-30 disabled:pointer-events-none transition-colors"
             aria-label="Next page"
           >
