@@ -134,6 +134,20 @@ ORDER BY c.ordinal_position"#
         .to_string()
 }
 
+/// Whether a PostgreSQL relation is read-only for the viewer: a view or a
+/// materialized view.
+///
+/// Binds `$1` = schema, `$2` = relation name. Materialized views are absent
+/// from `information_schema.tables`, so they need their own catalog lookup —
+/// checking `table_type` alone reports them as ordinary (editable) tables.
+pub fn pg_relation_read_only_query() -> String {
+    "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
+     WHERE table_schema = $1 AND table_name = $2 AND table_type = 'VIEW') \
+     OR EXISTS(SELECT 1 FROM pg_matviews \
+     WHERE schemaname = $1 AND matviewname = $2)"
+        .to_string()
+}
+
 // ---------------------------------------------------------------------------
 // MySQL
 // ---------------------------------------------------------------------------
@@ -155,6 +169,18 @@ pub fn mysql_tables_query(schema: Option<&str>) -> String {
                 .to_string()
         }
     }
+}
+
+/// The relation's `information_schema.tables.table_type` (`BASE TABLE`,
+/// `VIEW`, or a system-view kind).
+///
+/// Binds `?` = schema, `?` = relation, in that order. Used to keep views
+/// read-only in the viewer: an edit offered on a view is an edit the engine
+/// will refuse.
+pub fn mysql_relation_type_query() -> String {
+    "SELECT table_type FROM information_schema.tables \
+     WHERE table_schema = ? AND table_name = ?"
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -724,9 +750,40 @@ mod tests {
         );
     }
 
+    /// Ticket 09: a read-only relation must be detected from the catalog for
+    /// both view kinds. `information_schema.tables` covers plain views;
+    /// materialized views live only in `pg_matviews`.
+    #[test]
+    fn pg_read_only_relation_query_covers_views_and_matviews() {
+        let sql = pg_relation_read_only_query();
+        assert!(
+            sql.contains("information_schema.tables") && sql.contains("table_type = 'VIEW'"),
+            "plain views must be detected; got: {sql}"
+        );
+        assert!(
+            sql.contains("pg_matviews"),
+            "materialized views are absent from information_schema.tables; got: {sql}"
+        );
+        assert!(
+            sql.contains("table_schema = $1") && sql.contains("table_name = $2"),
+            "names must be bound; got: {sql}"
+        );
+    }
+
     // ---------------------------------------------------------------
     // MySQL
     // ---------------------------------------------------------------
+
+    #[test]
+    fn mysql_relation_type_query_binds_names() {
+        let sql = mysql_relation_type_query();
+        assert!(sql.contains("table_type"), "got: {sql}");
+        assert!(
+            sql.contains("table_schema = ? AND table_name = ?"),
+            "both names must be bound; got: {sql}"
+        );
+        assert!(!sql.contains('\''), "no name may be a literal: {sql}");
+    }
 
     #[test]
     fn mysql_table_list_query_is_valid() {

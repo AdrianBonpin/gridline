@@ -150,9 +150,10 @@ export function TableOverflowMenu({
               "success",
             );
           } else if (connectionId) {
-            // Tree kebab: no rows are loaded here — fetch the table data
-            // first, then export (capped at 1000 rows per fetch).
-            const result = await cmd.getTableData(connectionId, schema, table, 1, 1000);
+            // Tree kebab: no rows are loaded here — fetch one bounded page
+            // first, then export. 500 is the largest page the backend accepts;
+            // asking for more is rejected rather than silently clamped.
+            const result = await cmd.getTableData(connectionId, schema, table, 1, 500);
             if (!result.rows.length) {
               notify("Nothing to export", "info");
             } else {
@@ -197,15 +198,9 @@ export function TableOverflowMenu({
         setOpen(false);
         let liveColumns: ColumnInfo[];
         try {
-          // page size 0 = metadata only (no rows are fetched)
-          const result = await cmd.getTableData(
-            connectionId,
-            schema,
-            table,
-            1,
-            0,
-          );
-          liveColumns = result.columns;
+          // Metadata read, not a row page: introspection never paginates or
+          // consumes the table's rows.
+          liveColumns = await cmd.getTableColumns(connectionId, schema, table);
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);
           notify(

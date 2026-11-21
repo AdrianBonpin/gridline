@@ -50,10 +50,13 @@ export function TableTree({ searchQuery, dbType }: { searchQuery?: string; dbTyp
             // must never be written into the cache after the fact.
             const requestedIn = metadataGenerationRef.current;
             try {
-                const result = await cmd.getTableData(conn, schema, tableName, 1, 0);
+                // Column metadata is a catalog read, not a row page: asking the
+                // paginated table read for it would either truncate rows (a
+                // tiny page) or be rejected as an out-of-range page size.
+                const columns = await cmd.getTableColumns(conn, schema, tableName);
                 if (metadataGenerationRef.current !== requestedIn) return;
                 // Merge into the cache: a second expanded row keeps its own entry.
-                setColumnCache((prev) => ({ ...prev, [key]: result.columns }));
+                setColumnCache((prev) => ({ ...prev, [key]: columns }));
             } catch {
                 /* ignore, columns will remain unknowns */
             }

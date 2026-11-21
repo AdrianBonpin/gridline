@@ -20,10 +20,6 @@ function column(name: string, type = "text") {
   };
 }
 
-function tableData(columns: ReturnType<typeof column>[]) {
-  return { columns, rows: [], total_rows: 0, page: 1, page_size: 0 } as any;
-}
-
 describe("TableTree", () => {
   beforeEach(() => {
     useDbViewerStore.getState().reset();
@@ -126,11 +122,11 @@ describe("TableTree expanded columns are origin-scoped", () => {
   /** Spy on the column introspection, recording each (connection, db) request. */
   function spyOnColumns(next: (args: unknown[]) => ReturnType<typeof column>[]) {
     const calls: unknown[][] = [];
-    const spy = vi.spyOn(commands, "getTableData").mockImplementation(((
+    const spy = vi.spyOn(commands, "getTableColumns").mockImplementation(((
       ...args: unknown[]
     ) => {
       calls.push(args);
-      return Promise.resolve(tableData(next(args)));
+      return Promise.resolve(next(args));
     }) as never);
     return { spy, calls };
   }
@@ -154,6 +150,35 @@ describe("TableTree expanded columns are origin-scoped", () => {
     render(<TableTree />);
     await expandFirstRow(user);
     expect(await screen.findByText("email")).toBeInTheDocument();
+  });
+
+  it("reads column metadata without asking for a page of row data", async () => {
+    // Ticket 09: metadata is a catalog read. Expanding a tree row must not go
+    // through the paginated row path (which would truncate the rows under the
+    // grid, or be rejected as an out-of-range page size).
+    const user = userEvent.setup();
+    const columnsSpy = vi
+      .spyOn(commands, "getTableColumns")
+      .mockResolvedValue([column("id", "integer")]);
+    const dataSpy = vi.spyOn(commands, "getTableData");
+    showTree();
+    render(<TableTree />);
+    await expandFirstRow(user);
+    expect(await screen.findByText("id")).toBeInTheDocument();
+    expect(columnsSpy).toHaveBeenCalledWith("c1", "public", "users");
+    expect(dataSpy).not.toHaveBeenCalled();
+  });
+
+  it("resolves the expanded row when the metadata read fails", async () => {
+    // A failed metadata read leaves the row expanded with no columns; it must
+    // not leave a loading state behind or throw out of the tree.
+    const user = userEvent.setup();
+    vi.spyOn(commands, "getTableColumns").mockRejectedValue(new Error("connection reset"));
+    showTree();
+    render(<TableTree />);
+    await expandFirstRow(user);
+    expect(await screen.findByText("No columns")).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).toBeNull();
   });
 
   it("never reuses one database's columns for the same table name in another", async () => {

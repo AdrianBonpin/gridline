@@ -139,15 +139,17 @@ describe("TableOverflowMenu", () => {
       rows: [[42]],
       total_rows: 1,
       page: 1,
-      page_size: 1000,
+      page_size: 500,
     });
     const { useNotificationStore } = await import("../../stores/notificationStore");
     useNotificationStore.getState().notifications.length = 0;
     render(<TableOverflowMenu schema="public" table="t" onOpenTab={() => "tab-1"} connectionId="c1" />);
     fireEvent.click(screen.getByLabelText(/table options/i));
     fireEvent.click(screen.getByText(/export data \(excel\)/i));
+    // One bounded page — 500 is the backend's largest accepted page size, so a
+    // larger request would be rejected rather than clamped.
     await waitFor(() =>
-      expect(getSpy).toHaveBeenCalledWith("c1", "public", "t", 1, 1000),
+      expect(getSpy).toHaveBeenCalledWith("c1", "public", "t", 1, 500),
     );
     await waitFor(() => expect(spy).toHaveBeenCalled());
     const st = useNotificationStore.getState();
@@ -165,16 +167,10 @@ describe("TableOverflowMenu", () => {
   });
 
   it("Edit Table opens a table form tab with the live columns", async () => {
-    const getTableData = vi.spyOn(commands, "getTableData").mockResolvedValue({
-      columns: [
-        { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
-        { name: "email", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
-      ],
-      rows: [],
-      total_rows: 0,
-      page: 1,
-      page_size: 0,
-    } as any);
+    const getTableColumns = vi.spyOn(commands, "getTableColumns").mockResolvedValue([
+      { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      { name: "email", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    ] as any);
     const openFormTab = vi.spyOn(useDbViewerStore.getState(), "openFormTab");
     render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => ""} connectionId="c1" columns={[{ name: "id", data_type: "int", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false }]} />);
     fireEvent.click(screen.getByLabelText("Table options"));
@@ -183,9 +179,9 @@ describe("TableOverflowMenu", () => {
     await waitFor(() =>
       expect(openFormTab).toHaveBeenCalledWith(expect.objectContaining({ kind: "table", mode: "edit" })),
     );
-    // The form is built from a metadata-only live read, never from whatever the
-    // tree happened to have cached (or not cached) for this table.
-    expect(getTableData).toHaveBeenCalledWith("c1", "public", "users", 1, 0);
+    // The form is built from a live catalog read, never from whatever the tree
+    // happened to have cached (or not cached) for this table.
+    expect(getTableColumns).toHaveBeenCalledWith("c1", "public", "users");
     const params = openFormTab.mock.calls[0][0].params as any;
     expect(params.action.columns.map((c: any) => c.name)).toEqual(["id", "email"]);
     expect(params.action.old_columns.map((c: any) => c.name)).toEqual(["id", "email"]);
@@ -193,17 +189,11 @@ describe("TableOverflowMenu", () => {
 
   it("Edit Table from an unexpanded tree item shows the live columns, not an empty form", async () => {
     // An unexpanded tree row passes no columns at all.
-    vi.spyOn(commands, "getTableData").mockResolvedValue({
-      columns: [
-        { name: "order_id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
-        { name: "product_id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
-        { name: "quantity", data_type: "integer", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
-      ],
-      rows: [],
-      total_rows: 0,
-      page: 1,
-      page_size: 0,
-    } as any);
+    vi.spyOn(commands, "getTableColumns").mockResolvedValue([
+      { name: "order_id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      { name: "product_id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      { name: "quantity", data_type: "integer", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    ] as any);
     render(<TableOverflowMenu schema="main" table="order_items" onOpenTab={() => ""} connectionId="c1" dbType="sqlite" />);
     fireEvent.click(screen.getByLabelText("Table options"));
     fireEvent.click(screen.getByText("Edit Table…"));
@@ -218,7 +208,7 @@ describe("TableOverflowMenu", () => {
   });
 
   it("Edit Table does not open an empty form when the live columns cannot be read", async () => {
-    vi.spyOn(commands, "getTableData").mockRejectedValue(new Error("connection reset"));
+    vi.spyOn(commands, "getTableColumns").mockRejectedValue(new Error("connection reset"));
     const openFormTab = vi.spyOn(useDbViewerStore.getState(), "openFormTab");
     const { useNotificationStore } = await import("../../stores/notificationStore");
     useNotificationStore.getState().notifications.length = 0;

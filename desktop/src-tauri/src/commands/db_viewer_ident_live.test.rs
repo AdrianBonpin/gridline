@@ -693,7 +693,7 @@ async fn mysql_legal_names_browse_filter_sort_edit_and_introspect() {
     assert_eq!(order, vec![30, 20, 10]);
 
     // Introspection.
-    let columns = crate::commands::db_viewer::mysql_load_columns(&pool, &schema, table)
+    let columns = crate::commands::db_viewer::mysql_load_columns(&pool, &schema, table, false)
         .await
         .expect("column introspection must succeed");
     let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();

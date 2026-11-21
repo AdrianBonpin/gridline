@@ -74,34 +74,7 @@ pub fn mysql_select_data_query(
     ident::validate(table)
         .map_err(|e| format!("MySQL: table {table:?} cannot be represented: {e}"))?;
 
-    let mut where_parts: Vec<String> = Vec::new();
-    for f in filters {
-        let col = ident::quote_checked(Engine::MySql, &f.column)
-            .map_err(|e| format!("cannot apply filter on column {:?}: {e}", f.column))?;
-        let op = match f.operator.as_str() {
-            "eq" => format!("{col} = ?"),
-            "neq" => format!("{col} <> ?"),
-            "contains" => format!("{col} LIKE CONCAT('%', ?, '%')"),
-            "starts" => format!("{col} LIKE CONCAT(?, '%')"),
-            "ends" => format!("{col} LIKE CONCAT('%', ?)"),
-            "gt" => format!("{col} > ?"),
-            "lt" => format!("{col} < ?"),
-            "null" => format!("{col} IS NULL"),
-            "notnull" => format!("{col} IS NOT NULL"),
-            other => {
-                return Err(format!(
-                    "cannot apply filter on column {:?}: unsupported operator {other:?}",
-                    f.column
-                ))
-            }
-        };
-        where_parts.push(op);
-    }
-    let where_clause = if where_parts.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", where_parts.join(" AND "))
-    };
+    let where_clause = mysql_filter_clause(filters)?;
 
     let mut order_cols: Vec<String> = Vec::new();
     for s in sorts {
@@ -142,6 +115,76 @@ pub fn mysql_select_data_query(
 
 pub fn mysql_count_query(schema: &str, table: &str) -> String {
     format!("SELECT COUNT(*) FROM {}", qualified(schema, table))
+}
+
+/// The ` WHERE ...` clause a filter list contributes, or an empty string when
+/// nothing is filtered.
+///
+/// One builder feeds every statement that has to agree about the filter — the
+/// data page and its total count — so the two can never drift apart. Fails
+/// closed on a rule the builder cannot represent (see
+/// [`mysql_select_data_query`]).
+pub fn mysql_filter_clause(filters: &[FilterRule]) -> Result<String, String> {
+    let mut where_parts: Vec<String> = Vec::new();
+    for f in filters {
+        let col = ident::quote_checked(Engine::MySql, &f.column)
+            .map_err(|e| format!("cannot apply filter on column {:?}: {e}", f.column))?;
+        let op = match f.operator.as_str() {
+            "eq" => format!("{col} = ?"),
+            "neq" => format!("{col} <> ?"),
+            "contains" => format!("{col} LIKE CONCAT('%', ?, '%')"),
+            "starts" => format!("{col} LIKE CONCAT(?, '%')"),
+            "ends" => format!("{col} LIKE CONCAT('%', ?)"),
+            "gt" => format!("{col} > ?"),
+            "lt" => format!("{col} < ?"),
+            "null" => format!("{col} IS NULL"),
+            "notnull" => format!("{col} IS NOT NULL"),
+            other => {
+                return Err(format!(
+                    "cannot apply filter on column {:?}: unsupported operator {other:?}",
+                    f.column
+                ))
+            }
+        };
+        where_parts.push(op);
+    }
+    Ok(if where_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", where_parts.join(" AND "))
+    })
+}
+
+/// The values to bind for [`mysql_filter_clause`], in placeholder order.
+///
+/// `IS NULL` / `IS NOT NULL` carry no value, so they contribute no parameter.
+pub fn mysql_filter_values(filters: &[FilterRule]) -> Vec<String> {
+    filters
+        .iter()
+        .filter(|f| f.operator != "null" && f.operator != "notnull")
+        .map(|f| f.value.clone())
+        .collect()
+}
+
+/// `COUNT(*)` over exactly the rows a filtered data page selects.
+///
+/// A browse that reports the whole-table count under an active filter describes
+/// rows the user cannot see (and paginates past the real end), so the count
+/// carries the same [`mysql_filter_clause`] as the data query.
+pub fn mysql_count_query_filtered(
+    schema: &str,
+    table: &str,
+    filters: &[FilterRule],
+) -> Result<String, String> {
+    ident::validate(schema)
+        .map_err(|e| format!("MySQL: schema {schema:?} cannot be represented: {e}"))?;
+    ident::validate(table)
+        .map_err(|e| format!("MySQL: table {table:?} cannot be represented: {e}"))?;
+    Ok(format!(
+        "SELECT COUNT(*) FROM {}{}",
+        qualified(schema, table),
+        mysql_filter_clause(filters)?
+    ))
 }
 
 pub fn mysql_ddl_query(schema: &str, table: &str) -> String {
@@ -416,6 +459,77 @@ mod tests {
     fn count_query_uses_quoted_table() {
         let q = mysql_count_query("shop", "orders");
         assert_eq!(q, "SELECT COUNT(*) FROM `shop`.`orders`");
+    }
+
+    /// Ticket 09: the total a filtered browse reports must describe the
+    /// *filtered* result. The count query has to carry the exact same WHERE
+    /// clause (and therefore the same bound values, in the same order) as the
+    /// data query it accompanies — otherwise the toolbar says "1-50 of 9000"
+    /// while the grid holds three matching rows.
+    #[test]
+    fn filtered_count_query_matches_the_data_query_filters() {
+        let filters = vec![
+            FilterRule {
+                id: "f1".into(),
+                column: "status".into(),
+                operator: "eq".into(),
+                value: "paid".into(),
+            },
+            FilterRule {
+                id: "f2".into(),
+                column: "note".into(),
+                operator: "contains".into(),
+                value: "gift".into(),
+            },
+            FilterRule {
+                id: "f3".into(),
+                column: "shipped_at".into(),
+                operator: "notnull".into(),
+                value: String::new(),
+            },
+        ];
+        let data = mysql_select_data_query("shop", "orders", &filters, &[], "id").unwrap();
+        let count = mysql_count_query_filtered("shop", "orders", &filters).unwrap();
+
+        let data_where = data
+            .split(" WHERE ")
+            .nth(1)
+            .and_then(|s| s.split(" ORDER BY ").next())
+            .expect("data query has a WHERE clause");
+        assert!(
+            count.contains(data_where),
+            "count query must apply the data query's filters\n data: {data}\ncount: {count}"
+        );
+        assert!(
+            count.starts_with("SELECT COUNT(*) FROM `shop`.`orders` WHERE "),
+            "got: {count}"
+        );
+        // Only filters that bind a value contribute a parameter — `IS [NOT]
+        // NULL` has no value to bind, in either query.
+        assert_eq!(
+            mysql_filter_values(&filters),
+            vec!["paid".to_string(), "gift".to_string()],
+            "bound values must follow the placeholder order"
+        );
+    }
+
+    #[test]
+    fn unfiltered_count_query_has_no_where_clause() {
+        let q = mysql_count_query_filtered("shop", "orders", &[]).unwrap();
+        assert_eq!(q, "SELECT COUNT(*) FROM `shop`.`orders`");
+    }
+
+    #[test]
+    fn filtered_count_query_fails_closed_on_an_unrepresentable_filter() {
+        let filters = vec![FilterRule {
+            id: "f1".into(),
+            column: String::new(),
+            operator: "eq".into(),
+            value: "x".into(),
+        }];
+        let err = mysql_count_query_filtered("shop", "orders", &filters)
+            .expect_err("an unrepresentable filter must not silently count everything");
+        assert!(err.contains("empty"), "got: {err}");
     }
 
     #[test]
