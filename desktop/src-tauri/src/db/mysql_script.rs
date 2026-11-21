@@ -75,11 +75,6 @@ impl<'a> MySqlScript<'a> {
         }
     }
 
-    /// Number of statements yielded so far (the 1-based index of the last one).
-    pub fn count(self) -> usize {
-        self.map(|s| s.index).last().unwrap_or(0)
-    }
-
     /// Move to `target`, keeping the line counter accurate.
     fn advance_to(&mut self, target: usize) {
         let target = target.min(self.src.len());
