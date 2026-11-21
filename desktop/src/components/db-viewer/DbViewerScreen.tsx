@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
-import { ChevronDown, ChevronUp, Table2, Terminal, AlertCircle, Database } from "lucide-react";
+import { ChevronDown, ChevronUp, Table2, Terminal, AlertCircle, AlertTriangle, Database } from "lucide-react";
 import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar, NAV_CAPABILITY_KEY } from "./DbViewerSidebar";
@@ -164,6 +164,68 @@ export function pickDisplayColumn(
     return textish ? textish.name : refCol;
 }
 
+/**
+ * Identity of a table data request: the whole intent (target + page + filter +
+ * sort), not just "something is in flight". A request for a *different* intent
+ * supersedes the in-flight one instead of being dropped on the floor.
+ */
+function tableRequestKey(tab: {
+    schema: string;
+    table: string;
+    page: number;
+    pageSize: number;
+    filterRules: unknown;
+    sortRules: unknown;
+}): string {
+    return JSON.stringify([
+        tab.schema,
+        tab.table,
+        tab.page,
+        tab.pageSize,
+        tab.filterRules,
+        tab.sortRules,
+    ]);
+}
+
+/**
+ * The tab's own account of what happened to its last request: the failure in
+ * the workspace (never only a toast) and an explicit stale marker whenever the
+ * rows on screen did not come from that request.
+ */
+function TabStatusBanners({
+    error,
+    stale,
+}: {
+    error: string | null;
+    stale: boolean;
+}) {
+    return (
+        <>
+            {error && (
+                <div
+                    role="alert"
+                    data-testid="tab-error"
+                    className="flex items-center gap-2 px-3 py-2 text-xs text-red-400 border-b border-border bg-surface-raised"
+                >
+                    <AlertCircle size={14} className="shrink-0" />
+                    <span className="truncate">{error}</span>
+                </div>
+            )}
+            {stale && (
+                <div
+                    data-testid="stale-results"
+                    className="flex items-center gap-2 px-3 py-1.5 text-xs text-amber-400 border-b border-border bg-amber-500/10"
+                >
+                    <AlertTriangle size={14} className="shrink-0" />
+                    <span>
+                        These results are stale — the last run did not complete.
+                    </span>
+                </div>
+            )}
+        </>
+    );
+}
+
 export interface DbViewerScreenProps {
     connectionId: string;
     onHome: () => void;
@@ -281,17 +343,19 @@ export function DbViewerScreen({
             : false;
     const readOnlyTable = isMatview || isView;
 
-    const setTabData = useDbViewerStore((s) => s.setTabData);
-    const setTabError = useDbViewerStore((s) => s.setTabError);
     const setTabMulti = useDbViewerStore((s) => s.setTabMulti);
-    const setTabLoading = useDbViewerStore((s) => s.setTabLoading);
+    const beginTabRequest = useDbViewerStore((s) => s.beginTabRequest);
+    const applyTabResult = useDbViewerStore((s) => s.applyTabResult);
+    const applyTabError = useDbViewerStore((s) => s.applyTabError);
+    const cancelTabRequest = useDbViewerStore((s) => s.cancelTabRequest);
+    const reportTabError = useDbViewerStore((s) => s.reportTabError);
     const databases = useDbViewerStore((s) => s.databases);
     const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
     const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
     const schemas = useDbViewerStore((s) => s.schemas);
     const currentSchema = useDbViewerStore((s) => s.currentSchema);
     const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
-    const fetchingRef = useRef<Set<string>>(new Set());
+    const fetchingRef = useRef<Map<string, string>>(new Map());
 
     // CellEditor options for the active table tab: PG enum labels (cached per
     // connection+schema) + FK reference rows (page 1, 50 per FK column).
@@ -307,8 +371,13 @@ export function DbViewerScreen({
 
     const fetchData = useCallback(
         async (tab: NonNullable<typeof activeTab>) => {
-            if (fetchingRef.current.has(tab.id)) return;
-            fetchingRef.current.add(tab.id);
+            // De-duplicate only the *same* intent: a request for a new page,
+            // filter or sort supersedes the one in flight instead of being
+            // discarded (which would leave the grid on the old rows forever).
+            const intent = tableRequestKey(tab);
+            if (fetchingRef.current.get(tab.id) === intent) return;
+            fetchingRef.current.set(tab.id, intent);
+            const token = beginTabRequest(tab.id);
             try {
                 const result = await cmd.getTableData(
                     connectionId,
@@ -319,50 +388,85 @@ export function DbViewerScreen({
                     tab.filterRules,
                     tab.sortRules,
                 );
-                setTabData(tab.id, result);
+                // Only the newest request may write: a slow response for a
+                // superseded page never replaces newer controls' rows.
+                applyTabResult(tab.id, token, result);
             } catch (e) {
                 const msg = e instanceof Error ? e.message : String(e);
-                setTabError(tab.id, msg);
+                applyTabError(tab.id, token, msg);
             } finally {
-                fetchingRef.current.delete(tab.id);
+                if (fetchingRef.current.get(tab.id) === intent) {
+                    fetchingRef.current.delete(tab.id);
+                }
             }
         },
-        [connectionId, setTabData, setTabError],
+        [connectionId, applyTabError, applyTabResult, beginTabRequest],
     );
 
-    async function executeQueryForTab(tabId: string, sql: string) {
-        const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId);
-        if (!tab) return;
-        setTabLoading(tabId, true);
-        try {
-            const multi = await executeQueryMulti(connectionId, sql, tab.page, tab.pageSize);
-            const first = multi.result_sets[0] ?? null;
-            // Stamp the run's execution time onto the first set so the toolbar
-            // (TableControls reads activeTab.data.execution_time_ms) still shows it.
-            if (first) {
-                setTabData(tabId, { ...first, execution_time_ms: multi.execution_time_ms });
-            } else {
-                // Lone DML/DDL run with no result set — keep the empty-state behavior.
-                setTabData(tabId, {
-                    columns: [],
-                    rows: [],
-                    total_rows: 0,
-                    page: tab.page,
-                    page_size: tab.pageSize,
-                    execution_time_ms: multi.execution_time_ms,
-                });
+    /**
+     * Execute `sql` for a query tab as its newest request.
+     *
+     * The returned token decides whether the outcome may be shown: a newer run,
+     * a newer page/filter/sort intent, or a cancellation takes a newer token and
+     * the older response is dropped. Every outcome — rows or failure — resolves
+     * the tab's loading state.
+     */
+    const executeQueryForTab = useCallback(
+        async (tabId: string, sql: string) => {
+            const tab = useDbViewerStore
+                .getState()
+                .tabs.find((t) => t.id === tabId);
+            if (!tab) return;
+            const page = tab.page;
+            const pageSize = tab.pageSize;
+            const token = beginTabRequest(tabId);
+            try {
+                const multi = await executeQueryMulti(
+                    connectionId,
+                    sql,
+                    page,
+                    pageSize,
+                );
+                const first = multi.result_sets[0] ?? null;
+                // Stamp the run's execution time onto the first set so the
+                // toolbar (TableControls reads activeTab.data.execution_time_ms)
+                // still shows it.
+                const result = first
+                    ? { ...first, execution_time_ms: multi.execution_time_ms }
+                    : {
+                          // Lone DML/DDL run with no result set — keep the
+                          // empty-state behavior.
+                          columns: [],
+                          rows: [],
+                          total_rows: 0,
+                          page,
+                          page_size: pageSize,
+                          execution_time_ms: multi.execution_time_ms,
+                      };
+                if (!applyTabResult(tabId, token, result)) return;
+                setTabMulti(tabId, multi);
+                useQueryStore.getState().invalidateHistory(connectionId);
+                if (isSchemaModifyingQuery(sql)) {
+                    const st = useDbViewerStore.getState();
+                    void st.refreshTree(connectionId, st.currentSchema ?? undefined);
+                }
+            } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                // A stale failure (superseded or cancelled) is not this tab's
+                // current outcome, so it is never shown.
+                if (applyTabError(tabId, token, msg)) {
+                    useQueryStore.getState().invalidateHistory(connectionId);
+                }
             }
-            setTabMulti(tabId, multi);
-            useQueryStore.getState().invalidateHistory(connectionId);
-            if (isSchemaModifyingQuery(sql)) {
-                const st = useDbViewerStore.getState();
-                void st.refreshTree(connectionId, st.currentSchema ?? undefined);
-            }
-        } catch (e) {
-            setTabError(tabId, e instanceof Error ? e.message : String(e));
-            useQueryStore.getState().invalidateHistory(connectionId);
-        }
-    }
+        },
+        [
+            connectionId,
+            applyTabError,
+            applyTabResult,
+            beginTabRequest,
+            setTabMulti,
+        ],
+    );
 
     const handleStageEdit = useCallback(
         (payload: {
@@ -402,18 +506,60 @@ export function DbViewerScreen({
         fetchData(activeTab);
     }, [activeTab, fetchData]);
 
+    /** Paging intent carried by a guarded query run (page or page size). */
+    const pendingPageIntentRef = useRef<{
+        page?: number;
+        pageSize?: number;
+    } | null>(null);
+
+    /**
+     * Apply a paging intent to a query tab. Only called once the run the intent
+     * implies is actually dispatched, so the controls never describe a page
+     * that was never (or not yet) fetched.
+     */
+    const applyPageIntent = useCallback(
+        (tabId: string, intent: { page?: number; pageSize?: number }) => {
+            if (intent.page === undefined && intent.pageSize === undefined) {
+                return;
+            }
+            useDbViewerStore.setState((s) => ({
+                tabs: s.tabs.map((t) =>
+                    t.id === tabId
+                        ? {
+                              ...t,
+                              page:
+                                  intent.pageSize !== undefined
+                                      ? 1
+                                      : (intent.page ?? t.page),
+                              pageSize: intent.pageSize ?? t.pageSize,
+                          }
+                        : t,
+                ),
+            }));
+        },
+        [],
+    );
+
     /** Route a script through the destructive-statement guard, or run it. */
     const runWithGuard = useCallback(
-        (tabId: string, sql: string) => {
+        (
+            tabId: string,
+            sql: string,
+            intent: { page?: number; pageSize?: number } = {},
+        ) => {
             const plan = planExecution(sql);
             if (!plan.hasText) return;
             if (plan.needsConfirmation) {
+                // The paging intent waits for the confirmation: a refused
+                // dialog leaves the page controls (and loading state) alone.
+                pendingPageIntentRef.current = intent;
                 setPendingDestructive({ sql: plan.sql, analysis: plan.analysis });
             } else {
+                applyPageIntent(tabId, intent);
                 void executeQueryForTab(tabId, plan.sql);
             }
         },
-        [executeQueryForTab],
+        [applyPageIntent, executeQueryForTab],
     );
 
     /**
@@ -425,12 +571,37 @@ export function DbViewerScreen({
      * cached from a previous run.
      */
     const runCurrentQueryText = useCallback(
-        (tabId: string) => {
+        (tabId: string, intent: { page?: number; pageSize?: number } = {}) => {
             const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId);
             if (!tab || tab.tabType !== "query") return;
-            runWithGuard(tabId, tab.query ?? "");
+            runWithGuard(tabId, tab.query ?? "", intent);
         },
         [runWithGuard],
+    );
+
+    /**
+     * Cancel the active query.
+     *
+     * Cancellation is final: it takes a new request token (so the cancelled
+     * execution can never land afterwards) and never triggers a fallback or a
+     * re-run. The outcome — cancellation, or a failed cancellation — is shown
+     * in the query workspace itself.
+     */
+    const handleCancelQuery = useCallback(
+        async (tabId: string) => {
+            try {
+                await cancelQuery(connectionId);
+                cancelTabRequest(tabId, "Query cancelled");
+                notify("Query cancelled", "info");
+            } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                // Cancellation failed, so the execution is still running: keep
+                // its loading state but make the failure visible in the tab.
+                reportTabError(tabId, msg);
+                notify(msg, "error");
+            }
+        },
+        [cancelTabRequest, connectionId, notify, reportTabError],
     );
 
     // Read the active tab from the store directly so the Monaco keybinding action
@@ -904,30 +1075,17 @@ export function DbViewerScreen({
     }, [runCurrentQueryText]);
 
     /**
-     * Page/page-size changes on a query tab: record the requested page, then
-     * re-run the tab's current text through the guard. The page is set without
-     * flipping the loading flag, so cancelling the confirmation cannot leave
-     * the tab spinning on work that never started.
+     * Page/page-size changes on a query tab are paging Execution Entry Points:
+     * they re-run the tab's current text through the guard. The paging intent is
+     * applied only when that run is dispatched, so cancelling the confirmation
+     * cannot leave the controls promising a page that was never fetched — and
+     * the tab is never left loading work that never started.
      */
     const handleQueryPageRequest = useCallback(
         (next: { page?: number; pageSize?: number }) => {
             const tabId = useDbViewerStore.getState().activeTabId;
             if (!tabId) return;
-            useDbViewerStore.setState((s) => ({
-                tabs: s.tabs.map((t) =>
-                    t.id === tabId
-                        ? {
-                              ...t,
-                              page:
-                                  next.pageSize !== undefined
-                                      ? 1
-                                      : (next.page ?? t.page),
-                              pageSize: next.pageSize ?? t.pageSize,
-                          }
-                        : t,
-                ),
-            }));
-            runCurrentQueryText(tabId);
+            runCurrentQueryText(tabId, next);
         },
         [runCurrentQueryText],
     );
@@ -1190,7 +1348,7 @@ const onQueriesPanelResizeStart = useCallback(
                                             </div>
                                         }
                                     >
-                                        <div ref={queryColumnRef} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+                                        <div ref={queryColumnRef} data-testid="query-workspace" className="flex flex-col flex-1 min-h-0 overflow-hidden">
                                             <QueryToolbar
                                                 onRun={handleRunQuery}
                                                 onFormat={handleFormatQuery}
@@ -1199,17 +1357,16 @@ const onQueriesPanelResizeStart = useCallback(
                                                 onRunFromHistory={handleRunFromHistory}
                                                 dbType={currentConnection?.db_type}
                                                 isRunning={isRunning}
-                                                onCancel={async () => {
-                                                    try {
-                                                        await cancelQuery(connectionId);
-                                                        notify("Query cancelled", "info");
-                                                    } catch (e) {
-                                                        notify(
-                                                            e instanceof Error ? e.message : String(e),
-                                                            "error",
-                                                        );
-                                                    }
+                                                onCancel={() => {
+                                                    void handleCancelQuery(activeTab.id);
                                                 }}
+                                            />
+                                            <TabStatusBanners
+                                                error={activeTab.error}
+                                                stale={
+                                                    !!activeTab.stale &&
+                                                    !!activeTab.data
+                                                }
                                             />
                                             <div className="flex-1 min-h-0 overflow-hidden">
                                                 <QueryEditor
@@ -1416,10 +1573,23 @@ const onQueriesPanelResizeStart = useCallback(
                                                     pendingDestructive?.analysis.reason ?? null
                                                 }
                                                 onConfirm={() => {
+                                                    const intent =
+                                                        pendingPageIntentRef.current ??
+                                                        {};
+                                                    pendingPageIntentRef.current =
+                                                        null;
                                                     if (
                                                         pendingDestructive &&
                                                         activeTab
                                                     ) {
+                                                        // A confirmed paging
+                                                        // request applies its
+                                                        // page now that the run
+                                                        // is really dispatched.
+                                                        applyPageIntent(
+                                                            activeTab.id,
+                                                            intent,
+                                                        );
                                                         executeQueryForTab(
                                                             activeTab.id,
                                                             pendingDestructive.sql,
@@ -1427,25 +1597,23 @@ const onQueriesPanelResizeStart = useCallback(
                                                     }
                                                     setPendingDestructive(null);
                                                 }}
-                                                onCancel={() =>
-                                                    setPendingDestructive(null)
-                                                }
+                                                onCancel={() => {
+                                                    pendingPageIntentRef.current =
+                                                        null;
+                                                    setPendingDestructive(null);
+                                                }}
                                             />
                                         </div>
                                     </Suspense>
                                 ) : (
                                     <>
-                                        {activeTab?.error && (
-                                            <div
-                                                role="alert"
-                                                className="flex items-center gap-2 px-3 py-2 text-xs text-red-400 border-b border-border bg-surface-raised"
-                                            >
-                                                <AlertCircle size={14} className="shrink-0" />
-                                                <span className="truncate">
-                                                    {activeTab.error}
-                                                </span>
-                                            </div>
-                                        )}
+                                        <TabStatusBanners
+                                            error={activeTab?.error ?? null}
+                                            stale={
+                                                !!activeTab?.stale &&
+                                                !!activeTab?.data
+                                            }
+                                        />
                                         {activeTab && (
                                             <TableControls
                                                 connectionId={connectionId}

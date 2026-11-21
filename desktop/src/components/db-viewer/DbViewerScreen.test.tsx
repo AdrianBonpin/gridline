@@ -1443,3 +1443,432 @@ describe("execution entry points", () => {
         }
     });
 });
+
+describe("query workspace truth", () => {
+    const idColumn = {
+        name: "id",
+        data_type: "integer",
+        is_pk: true,
+        is_fk: false,
+        is_nullable: false,
+        default_value: null,
+        fk_ref: null,
+        editable: false,
+        is_generated: false,
+    };
+
+    beforeEach(() => {
+        cleanup();
+        vi.resetAllMocks();
+        useDbViewerStore.getState().reset();
+    });
+
+    function renderScreen() {
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+    }
+
+    function mountEditor() {
+        return waitFor(() => screen.getByTestId("monaco-editor"));
+    }
+
+    function seedQueryTab(
+        query: string,
+        overrides: Record<string, unknown> = {},
+    ) {
+        useDbViewerStore.setState({
+            tabs: [
+                {
+                    id: "q1",
+                    schema: "public",
+                    table: "Query",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    requestSeq: 0,
+                    stale: false,
+                    data: null,
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "query",
+                    query,
+                    ...overrides,
+                } as any,
+            ],
+            activeTabId: "q1",
+        });
+    }
+
+    const pageResult = (page: number, value: number) =>
+        ({
+            result_sets: [
+                {
+                    columns: [idColumn],
+                    rows: [[value]],
+                    total_rows: 200,
+                    page,
+                    page_size: 50,
+                },
+            ],
+            notices: [],
+            execution_time_ms: 5,
+        }) as any;
+
+    it("surfaces a thrown execution error inside the query workspace", async () => {
+        vi.spyOn(commands, "executeQueryMulti").mockRejectedValue(
+            new Error("statement budget exceeded"),
+        );
+        seedQueryTab("SELECT * FROM users", {
+            data: {
+                columns: [idColumn],
+                rows: [[1]],
+                total_rows: 1,
+                page: 1,
+                page_size: 50,
+            },
+        });
+        renderScreen();
+        await mountEditor();
+
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+
+        const workspace = screen.getByTestId("query-workspace");
+        const alert = await waitFor(() => {
+            const node = screen.getByTestId("tab-error");
+            expect(node).toHaveTextContent("statement budget exceeded");
+            return node;
+        });
+        // The failure is rendered by the tab itself, not only a toast that
+        // disappears: it stays put for as long as the tab shows the failure.
+        expect(workspace.contains(alert)).toBe(true);
+        // ...and the run is over, so no spinner is left behind.
+        await waitFor(() =>
+            expect(screen.queryByLabelText(/cancel query/i)).toBeNull(),
+        );
+    });
+
+    it("marks the previous results stale after a failed run and clears it on success", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockRejectedValueOnce(new Error("connection reset"));
+        seedQueryTab("SELECT * FROM users", {
+            data: {
+                columns: [idColumn],
+                rows: [[7]],
+                total_rows: 1,
+                page: 1,
+                page_size: 50,
+            },
+        });
+        renderScreen();
+        await mountEditor();
+
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+
+        await waitFor(() =>
+            expect(screen.getByTestId("stale-results")).toBeInTheDocument(),
+        );
+        // The old rows are still visible, but explicitly not current.
+        expect(screen.getByText("7")).toBeInTheDocument();
+
+        executeQuery.mockResolvedValueOnce(pageResult(1, 8));
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+
+        await waitFor(() =>
+            expect(screen.queryByTestId("stale-results")).toBeNull(),
+        );
+        expect(screen.queryByTestId("tab-error")).toBeNull();
+        await waitFor(() => expect(screen.getByText("8")).toBeInTheDocument());
+    });
+
+    it("shows the newest page when a superseded response lands last", async () => {
+        const pending: Array<{
+            resolve: (v: unknown) => void;
+            reject: (e: unknown) => void;
+        }> = [];
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockImplementation(
+                () =>
+                    new Promise((resolve, reject) => {
+                        pending.push({ resolve, reject });
+                    }) as any,
+            );
+        // Distinct row sentinels per page so a page-size <option> cannot be
+        // mistaken for a rendered row.
+        const rowsResult = (page: number, value: string) =>
+            ({
+                result_sets: [
+                    {
+                        columns: [idColumn],
+                        rows: [[value]],
+                        total_rows: 200,
+                        page,
+                        page_size: 50,
+                    },
+                ],
+                notices: [],
+                execution_time_ms: 5,
+            }) as any;
+        seedQueryTab("SELECT * FROM users", {
+            data: {
+                columns: [idColumn],
+                rows: [["page-1-rows"]],
+                total_rows: 200,
+                page: 1,
+                page_size: 50,
+            },
+        });
+        renderScreen();
+        await mountEditor();
+
+        // Page 2 is requested, then page 3 before page 2 has returned.
+        fireEvent.click(screen.getByLabelText(/next page/i));
+        await waitFor(() => expect(pending).toHaveLength(1));
+        fireEvent.click(screen.getByLabelText(/next page/i));
+        await waitFor(() => expect(pending).toHaveLength(2));
+        expect(executeQuery).toHaveBeenNthCalledWith(1, "c1", "SELECT * FROM users", 2, 50);
+        expect(executeQuery).toHaveBeenNthCalledWith(2, "c1", "SELECT * FROM users", 3, 50);
+
+        // The newer response arrives first, then the older one: the older one
+        // must never be rendered under the newer page controls.
+        await act(async () => {
+            pending[1].resolve(rowsResult(3, "page-3-rows"));
+        });
+        await waitFor(() =>
+            expect(screen.getByText("page-3-rows")).toBeInTheDocument(),
+        );
+        await act(async () => {
+            pending[0].resolve(rowsResult(2, "page-2-rows"));
+        });
+        await act(async () => {});
+
+        expect(screen.getByText("page-3-rows")).toBeInTheDocument();
+        expect(screen.queryByText("page-2-rows")).toBeNull();
+        const tab = useDbViewerStore
+            .getState()
+            .tabs.find((t) => t.id === "q1")!;
+        expect(tab.page).toBe(3);
+        expect(tab.loading).toBe(false);
+    });
+
+    it("applies the newest table page intent even when an older fetch lands last", async () => {
+        const pending: Array<(v: unknown) => void> = [];
+        const getTableData = vi
+            .spyOn(commands, "getTableData")
+            .mockImplementation(
+                () =>
+                    new Promise((resolve) => {
+                        pending.push(resolve);
+                    }) as any,
+            );
+        useDbViewerStore.setState({
+            tabs: [
+                {
+                    id: "t1",
+                    schema: "public",
+                    table: "users",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    requestSeq: 0,
+                    stale: false,
+                    data: {
+                        columns: [idColumn],
+                        rows: [["page-1-rows"]],
+                        total_rows: 200,
+                        page: 1,
+                        page_size: 50,
+                    },
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "table",
+                } as any,
+            ],
+            activeTabId: "t1",
+        });
+        renderScreen();
+
+        // A refresh for page 1 is in flight when the user pages to page 2.
+        fireEvent.click(screen.getByLabelText(/refresh table/i));
+        await waitFor(() => expect(pending).toHaveLength(1));
+
+        fireEvent.click(screen.getByLabelText(/next page/i));
+        await waitFor(() => expect(pending).toHaveLength(2));
+        expect(getTableData).toHaveBeenNthCalledWith(
+            2,
+            "c1",
+            "public",
+            "users",
+            2,
+            50,
+            [],
+            [],
+        );
+
+        // The page-2 response lands first, then the superseded page-1 response.
+        await act(async () => {
+            pending[1]({
+                columns: [idColumn],
+                rows: [["page-2-rows"]],
+                total_rows: 200,
+                page: 2,
+                page_size: 50,
+            });
+        });
+        await waitFor(() =>
+            expect(screen.getByText("page-2-rows")).toBeInTheDocument(),
+        );
+        await act(async () => {
+            pending[0]({
+                columns: [idColumn],
+                rows: [["page-1-rows"]],
+                total_rows: 200,
+                page: 1,
+                page_size: 50,
+            });
+        });
+        await act(async () => {});
+
+        expect(screen.getByText("page-2-rows")).toBeInTheDocument();
+        expect(screen.queryByText("page-1-rows")).toBeNull();
+        const tab = useDbViewerStore.getState().tabs.find((t) => t.id === "t1")!;
+        expect(tab.page).toBe(2);
+        expect(tab.loading).toBe(false);
+        expect(screen.queryByTestId("refresh-pulse")).toBeNull();
+    });
+
+    it("leaves the page controls describing the shown rows when a guarded page change is cancelled", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(pageResult(1, 1));
+        seedQueryTab("DELETE FROM users", {
+            data: {
+                columns: [idColumn],
+                rows: [[1]],
+                total_rows: 200,
+                page: 1,
+                page_size: 50,
+            },
+        });
+        renderScreen();
+        await mountEditor();
+
+        fireEvent.click(screen.getByLabelText(/next page/i));
+        await waitFor(() =>
+            expect(screen.getByText("Destructive Query")).toBeInTheDocument(),
+        );
+        fireEvent.click(screen.getByText("Cancel"));
+        await waitFor(() =>
+            expect(screen.queryByText("Destructive Query")).toBeNull(),
+        );
+
+        // Nothing ran, nothing is loading, and the controls still describe the
+        // rows on screen (page 1) instead of promising page 2.
+        expect(executeQuery).not.toHaveBeenCalled();
+        const tab = useDbViewerStore
+            .getState()
+            .tabs.find((t) => t.id === "q1")!;
+        expect(tab.page).toBe(1);
+        expect(tab.loading).toBe(false);
+        expect(screen.queryByLabelText(/cancel query/i)).toBeNull();
+        expect(screen.getByText(/^1\/4$/)).toBeInTheDocument();
+    });
+
+    it("treats cancellation as final: no fallback re-run and no wedged spinner", async () => {
+        let rejectRun!: (e: unknown) => void;
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockImplementation(
+                () =>
+                    new Promise((_resolve, reject) => {
+                        rejectRun = reject;
+                    }) as any,
+            );
+        const cancelQuery = vi
+            .spyOn(commands, "cancelQuery")
+            .mockResolvedValue(undefined as any);
+        seedQueryTab("SELECT pg_sleep(60)", {
+            data: {
+                columns: [idColumn],
+                rows: [[1]],
+                total_rows: 1,
+                page: 1,
+                page_size: 50,
+            },
+        });
+        renderScreen();
+        await mountEditor();
+
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+        await waitFor(() =>
+            expect(screen.getByLabelText(/cancel query/i)).toBeInTheDocument(),
+        );
+
+        fireEvent.click(screen.getByLabelText(/cancel query/i));
+
+        await waitFor(() => expect(cancelQuery).toHaveBeenCalledWith("c1"));
+        await waitFor(() =>
+            expect(screen.getByTestId("tab-error")).toHaveTextContent(
+                /cancelled/i,
+            ),
+        );
+        expect(screen.getByTestId("stale-results")).toBeInTheDocument();
+        await waitFor(() =>
+            expect(screen.queryByLabelText(/cancel query/i)).toBeNull(),
+        );
+
+        // The cancelled execution settling afterwards must not restart it or
+        // overwrite the cancellation the user can see.
+        await act(async () => {
+            rejectRun(new Error("Query cancelled"));
+        });
+        await act(async () => {});
+
+        expect(executeQuery).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId("tab-error")).toHaveTextContent(/cancelled/i);
+    });
+
+    it("surfaces a failed cancellation in the query workspace", async () => {
+        vi.spyOn(commands, "executeQueryMulti").mockImplementation(
+            () => new Promise(() => {}) as any,
+        );
+        vi.spyOn(commands, "cancelQuery").mockRejectedValue(
+            new Error("no active cancel handle for this connection"),
+        );
+        seedQueryTab("SELECT pg_sleep(60)", {
+            data: {
+                columns: [idColumn],
+                rows: [[1]],
+                total_rows: 1,
+                page: 1,
+                page_size: 50,
+            },
+        });
+        renderScreen();
+        await mountEditor();
+
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+        await waitFor(() =>
+            expect(screen.getByLabelText(/cancel query/i)).toBeInTheDocument(),
+        );
+        fireEvent.click(screen.getByLabelText(/cancel query/i));
+
+        await waitFor(() =>
+            expect(screen.getByTestId("tab-error")).toHaveTextContent(
+                /cancel handle/i,
+            ),
+        );
+    });
+});

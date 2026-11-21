@@ -681,3 +681,158 @@ describe("openQueryTab with an initial script", () => {
     expect(tab.filePath).toBeUndefined();
   });
 });
+
+describe("tab request generations", () => {
+  const result = (page: number, rows: unknown[][] = [[page]]): QueryResult => ({
+    columns: [
+      {
+        name: "id",
+        data_type: "integer",
+        is_pk: true,
+        is_fk: false,
+        is_nullable: false,
+        default_value: null,
+        fk_ref: null,
+        editable: false,
+        is_generated: false,
+      },
+    ],
+    rows,
+    total_rows: 200,
+    page,
+    page_size: 50,
+  });
+
+  function openQuery() {
+    useDbViewerStore.getState().openQueryTab();
+    return useDbViewerStore.getState().activeTabId!;
+  }
+
+  const tab = (id: string) =>
+    useDbViewerStore.getState().tabs.find((t) => t.id === id)!;
+
+  it("only the newest request token may write data", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+
+    const older = store.beginTabRequest(tabId);
+    const newer = store.beginTabRequest(tabId);
+    expect(tab(tabId).loading).toBe(true);
+
+    // The older response arrives last: it must not win.
+    expect(
+      useDbViewerStore.getState().applyTabResult(tabId, older, result(1)),
+    ).toBe(false);
+    expect(tab(tabId).data).toBeNull();
+    expect(tab(tabId).loading).toBe(true);
+
+    expect(
+      useDbViewerStore.getState().applyTabResult(tabId, newer, result(2)),
+    ).toBe(true);
+    expect(tab(tabId).data?.page).toBe(2);
+    expect(tab(tabId).loading).toBe(false);
+  });
+
+  it("bumps the token on a page change so an in-flight response cannot apply", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const token = store.beginTabRequest(tabId);
+
+    // The user pages while that request is still in flight.
+    store.setPage(tabId, 2);
+
+    expect(
+      useDbViewerStore.getState().applyTabResult(tabId, token, result(1)),
+    ).toBe(false);
+    expect(tab(tabId).data).toBeNull();
+  });
+
+  it("resolves loading and marks prior results stale when a request fails", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const first = store.beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabResult(tabId, first, result(1));
+
+    const failing = useDbViewerStore.getState().beginTabRequest(tabId);
+    const applied = useDbViewerStore
+      .getState()
+      .applyTabError(tabId, failing, "connection reset");
+
+    expect(applied).toBe(true);
+    expect(tab(tabId).loading).toBe(false);
+    expect(tab(tabId).error).toBe("connection reset");
+    // The old rows stay on screen, but never as if they were current.
+    expect(tab(tabId).data?.page).toBe(1);
+    expect(tab(tabId).stale).toBe(true);
+  });
+
+  it("drops a stale error from a superseded request", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const older = store.beginTabRequest(tabId);
+    const newer = useDbViewerStore.getState().beginTabRequest(tabId);
+
+    expect(
+      useDbViewerStore.getState().applyTabError(tabId, older, "boom"),
+    ).toBe(false);
+    expect(tab(tabId).error).toBeNull();
+    expect(tab(tabId).loading).toBe(true);
+
+    useDbViewerStore.getState().applyTabResult(tabId, newer, result(1));
+    expect(tab(tabId).loading).toBe(false);
+  });
+
+  it("clears the stale flag when a fresh run succeeds", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const first = store.beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabResult(tabId, first, result(1));
+    const failing = useDbViewerStore.getState().beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabError(tabId, failing, "boom");
+    expect(tab(tabId).stale).toBe(true);
+
+    const retry = useDbViewerStore.getState().beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabResult(tabId, retry, result(3));
+
+    expect(tab(tabId).stale).toBe(false);
+    expect(tab(tabId).error).toBeNull();
+    expect(tab(tabId).data?.page).toBe(3);
+  });
+
+  it("cancelling a tab request is final and marks the previous rows stale", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const first = store.beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabResult(tabId, first, result(1));
+
+    const cancelled = useDbViewerStore.getState().beginTabRequest(tabId);
+    useDbViewerStore.getState().cancelTabRequest(tabId, "Query cancelled");
+
+    const after = tab(tabId);
+    expect(after.loading).toBe(false);
+    expect(after.error).toBe("Query cancelled");
+    expect(after.stale).toBe(true);
+
+    // The cancelled run eventually settles: it must not reopen or overwrite.
+    expect(
+      useDbViewerStore
+        .getState()
+        .applyTabResult(tabId, cancelled, result(9)),
+    ).toBe(false);
+    expect(tab(tabId).error).toBe("Query cancelled");
+    expect(tab(tabId).data?.page).toBe(1);
+  });
+
+  it("setTabError keeps the data and marks it stale", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const first = store.beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabResult(tabId, first, result(1));
+
+    useDbViewerStore.getState().setTabError(tabId, "budget exceeded");
+
+    expect(tab(tabId).stale).toBe(true);
+    expect(tab(tabId).loading).toBe(false);
+    expect(tab(tabId).data?.page).toBe(1);
+  });
+});

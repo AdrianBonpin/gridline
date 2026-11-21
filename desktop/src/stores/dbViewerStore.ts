@@ -57,6 +57,22 @@ export interface ViewerTab {
   pageSize: number;
   loading: boolean;
   error: string | null;
+  /**
+   * Monotonic token for this tab's outstanding data request. Every new intent
+   * (a run, a page/filter/sort change, a refresh) takes the next token, and
+   * only the holder of the current token may write `data`/`error`. A slower
+   * response for an older intent is dropped instead of being rendered under
+   * newer controls.
+   *
+   * Optional so hand-built tabs (fixtures/tests) stay valid; every tab the
+   * store creates starts at 0.
+   */
+  requestSeq?: number;
+  /**
+   * True when `data` predates the last failed/cancelled request: the rows stay
+   * on screen (so the user keeps context) but are never presented as current.
+   */
+  stale?: boolean;
   data: QueryResult | null;
   multi?: MultiQueryResult | null;
   columnFilter?: { column: string; value: string };
@@ -86,6 +102,8 @@ const initialTab = (schema: string, table: string, defaultPageSize?: number): Vi
   pageSize: defaultPageSize ?? 50,
   loading: true,
   error: null,
+  requestSeq: 0,
+  stale: false,
   data: null,
   filterRules: [],
   sortRules: [],
@@ -152,6 +170,37 @@ interface DbViewerState {
   setTabMulti: (tabId: string, multi: MultiQueryResult | null) => void;
   setTabLoading: (tabId: string, loading: boolean) => void;
   setTabError: (tabId: string, error: string) => void;
+  /**
+   * Claim the newest request token for `tabId` and mark it loading. Callers
+   * keep the returned token and hand it back to `applyTabResult` /
+   * `applyTabError`; a result whose token is no longer current is ignored.
+   */
+  beginTabRequest: (tabId: string) => number;
+  /**
+   * Publish a result only if `token` is still the tab's newest request.
+   * Returns whether it was applied, so callers can skip follow-up state.
+   */
+  applyTabResult: (
+    tabId: string,
+    token: number,
+    data: QueryResult,
+  ) => boolean;
+  /**
+   * Publish a failure only if `token` is still the tab's newest request,
+   * resolving loading and marking any earlier rows stale.
+   */
+  applyTabError: (tabId: string, token: number, error: string) => boolean;
+  /**
+   * Finalise a cancelled request: take a new token so the cancelled response
+   * can never land, resolve loading, and report the cancellation.
+   */
+  cancelTabRequest: (tabId: string, message: string) => void;
+  /**
+   * Report an error about the tab's current request *without* resolving its
+   * loading state (e.g. a cancellation attempt that failed while the query is
+   * still running).
+   */
+  reportTabError: (tabId: string, error: string) => void;
   setColumnFilter: (tabId: string, column: string, value: string) => void;
   clearColumnFilter: (tabId: string) => void;
   setFilterRules: (tabId: string, rules: FilterRule[]) => void;
@@ -286,6 +335,8 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       pageSize: get().defaultPageSize,
       loading: false,
       error: null,
+      requestSeq: 0,
+      stale: false,
       data: null,
       filterRules: [],
       sortRules: [],
@@ -323,6 +374,8 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       pageSize: get().defaultPageSize,
       loading: false,
       error: null,
+      requestSeq: 0,
+      stale: false,
       data: null,
       filterRules: [],
       sortRules: [],
@@ -374,6 +427,8 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       pageSize: get().defaultPageSize,
       loading: false,
       error: null,
+      requestSeq: 0,
+      stale: false,
       data: null,
       filterRules: [],
       sortRules: [],
@@ -449,7 +504,15 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? { ...t, page, loading: true, error: null }
+          ? {
+                ...t,
+                page,
+                loading: true,
+                error: null,
+                // A page change is a new intent: any response still in flight
+                // for the previous page is no longer allowed to land.
+                requestSeq: (t.requestSeq ?? 0) + 1,
+            }
           : t,
       ),
     })),
@@ -458,7 +521,14 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? { ...t, pageSize, page: 1, loading: true, error: null }
+          ? {
+                ...t,
+                pageSize,
+                page: 1,
+                loading: true,
+                error: null,
+                requestSeq: (t.requestSeq ?? 0) + 1,
+            }
           : t,
       ),
     })),
@@ -466,7 +536,16 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setTabData: (tabId, data) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, data, multi: null, loading: false, error: null } : t,
+        t.id === tabId
+          ? {
+                ...t,
+                data,
+                multi: null,
+                loading: false,
+                error: null,
+                stale: false,
+            }
+          : t,
       ),
     })),
 
@@ -485,7 +564,86 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setTabError: (tabId, error) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, error, loading: false } : t,
+        t.id === tabId
+          ? {
+                ...t,
+                error,
+                loading: false,
+                // Rows that are still displayed did not come from the run that
+                // just failed, so they are stale, not current.
+                stale: t.data !== null,
+            }
+          : t,
+      ),
+    })),
+
+  beginTabRequest: (tabId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    const token = (tab?.requestSeq ?? 0) + 1;
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? { ...t, requestSeq: token, loading: true, error: null }
+          : t,
+      ),
+    }));
+    return token;
+  },
+
+  applyTabResult: (tabId, token, data) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab || (tab.requestSeq ?? 0) !== token) return false;
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? {
+                ...t,
+                data,
+                multi: null,
+                loading: false,
+                error: null,
+                stale: false,
+            }
+          : t,
+      ),
+    }));
+    return true;
+  },
+
+  applyTabError: (tabId, token, error) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab || (tab.requestSeq ?? 0) !== token) return false;
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? { ...t, error, loading: false, stale: t.data !== null }
+          : t,
+      ),
+    }));
+    return true;
+  },
+
+  cancelTabRequest: (tabId, message) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? {
+                ...t,
+                // A new token seals the cancelled request: whatever it does
+                // next, it can no longer write this tab.
+                requestSeq: (t.requestSeq ?? 0) + 1,
+                loading: false,
+                error: message,
+                stale: t.data !== null,
+            }
+          : t,
+      ),
+    })),
+
+  reportTabError: (tabId, error) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, error } : t,
       ),
     })),
 
@@ -506,14 +664,32 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setFilterRules: (tabId, rules) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, filterRules: rules, page: 1, loading: true, error: null } : t,
+        t.id === tabId
+          ? {
+                ...t,
+                filterRules: rules,
+                page: 1,
+                loading: true,
+                error: null,
+                requestSeq: (t.requestSeq ?? 0) + 1,
+            }
+          : t,
       ),
     })),
 
   setSortRules: (tabId, rules) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, sortRules: rules, page: 1, loading: true, error: null } : t,
+        t.id === tabId
+          ? {
+                ...t,
+                sortRules: rules,
+                page: 1,
+                loading: true,
+                error: null,
+                requestSeq: (t.requestSeq ?? 0) + 1,
+            }
+          : t,
       ),
     })),
 
