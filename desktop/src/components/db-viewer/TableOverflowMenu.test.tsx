@@ -189,6 +189,8 @@ describe("TableOverflowMenu", () => {
     const params = openFormTab.mock.calls[0][0].params as any;
     expect(params.action.columns.map((c: any) => c.name)).toEqual(["id", "email"]);
     expect(params.action.old_columns.map((c: any) => c.name)).toEqual(["id", "email"]);
+    // Column Identity travels with each editable row.
+    expect(params.action.columns.map((c: any) => c.original_name)).toEqual(["id", "email"]);
   });
 
   it("Edit Table from an unexpanded tree item shows the live columns, not an empty form", async () => {

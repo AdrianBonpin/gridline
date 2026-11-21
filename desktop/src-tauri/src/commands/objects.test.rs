@@ -148,6 +148,131 @@ async fn build_object_ddl_sqlite_create_yields_sqlite_sql() {
     assert!(sqls.iter().all(|s| !s.contains("serial")), "{sqls:?}");
 }
 
+/// Run a batch of staged statements on the in-memory SQLite handle.
+async fn sqlite_exec(pm: &tokio::sync::Mutex<ConnectionPoolManager>, sqls: &[String]) {
+    let mut g = pm.lock().await;
+    match g.get("c").unwrap() {
+        DbHandle::Sqlite(conn) => {
+            for s in sqls {
+                conn.execute_batch(s).unwrap_or_else(|e| panic!("{s}: {e}"));
+            }
+        }
+        _ => panic!("expected a sqlite handle"),
+    }
+}
+
+/// Read one table's column names in physical order, plus every row.
+async fn sqlite_columns_and_rows(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    table: &str,
+) -> (Vec<String>, Vec<String>) {
+    let mut g = pm.lock().await;
+    match g.get("c").unwrap() {
+        DbHandle::Sqlite(conn) => {
+            let cols: Vec<String> = {
+                let mut stmt = conn
+                    .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+                    .unwrap();
+                stmt.query_map([], |r| r.get::<_, String>(1))
+                    .unwrap()
+                    .filter_map(|r| r.ok())
+                    .collect()
+            };
+            let expr: Vec<String> = cols
+                .iter()
+                .map(|c| format!("ifnull(CAST(\"{c}\" AS TEXT), '<null>')"))
+                .collect();
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {} FROM \"{table}\"",
+                    expr.join(" || '|' || ")
+                ))
+                .unwrap();
+            let rows: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+            (cols, rows)
+        }
+        _ => panic!("expected a sqlite handle"),
+    }
+}
+
+#[tokio::test]
+async fn sqlite_edit_add_in_middle_stages_only_add_and_keeps_rows() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(
+        &pm,
+        &[
+            "CREATE TABLE \"main\".\"users\" (\"id\" INTEGER PRIMARY KEY, \"name\" TEXT, \"age\" INTEGER)".into(),
+            "INSERT INTO \"main\".\"users\" VALUES (1, 'ada', 36)".into(),
+        ],
+    )
+    .await;
+
+    // `email` is inserted between `id` and `name`: it occupies the ordinal that
+    // `name` used to hold.
+    let params = serde_json::json!({
+        // The form is seeded from the live snapshot, which is what a real edit
+        // sends back (SQLite reports an INTEGER PRIMARY KEY as nullable).
+        "schema": "main", "name": "users",
+        "action": { "op": "edit", "columns": [
+            { "name": "id", "type": "INTEGER", "nullable": true, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+            { "name": "email", "type": "TEXT", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false },
+            { "name": "name", "type": "TEXT", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false },
+            { "name": "age", "type": "INTEGER", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
+        ] }
+    });
+    let sqls = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqls,
+        vec!["ALTER TABLE \"main\".\"users\" ADD COLUMN \"email\" TEXT"],
+        "only the add is staged"
+    );
+    sqlite_exec(&pm, &sqls).await;
+    // SQLite appends an added column physically; the point is that `name` and
+    // `age` kept their own values instead of shifting into another column.
+    let (cols, rows) = sqlite_columns_and_rows(&pm, "users").await;
+    assert_eq!(cols, vec!["id", "name", "age", "email"]);
+    assert_eq!(rows, vec!["1|ada|36|<null>"], "no value moved");
+}
+
+#[tokio::test]
+async fn sqlite_edit_explicit_rename_keeps_values_under_the_new_name() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(
+        &pm,
+        &[
+            "CREATE TABLE \"main\".\"users\" (\"id\" INTEGER PRIMARY KEY, \"name\" TEXT)".into(),
+            "INSERT INTO \"main\".\"users\" VALUES (1, 'ada')".into(),
+        ],
+    )
+    .await;
+
+    let params = serde_json::json!({
+        "schema": "main", "name": "users",
+        "action": { "op": "edit", "columns": [
+            { "name": "id", "type": "INTEGER", "nullable": true, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+            { "name": "label", "type": "TEXT", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false, "renamed_from": "name" }
+        ] }
+    });
+    let sqls = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqls,
+        vec!["ALTER TABLE \"main\".\"users\" RENAME COLUMN \"name\" TO \"label\""],
+        "an explicit rename stages only a rename"
+    );
+    sqlite_exec(&pm, &sqls).await;
+    let (cols, rows) = sqlite_columns_and_rows(&pm, "users").await;
+    assert_eq!(cols, vec!["id", "label"]);
+    assert_eq!(rows, vec!["1|ada"], "the value followed the column");
+}
+
 #[tokio::test]
 async fn execute_change_sqlite_ddl_runs_create() {
     let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());

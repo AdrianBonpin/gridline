@@ -198,6 +198,135 @@ describe("TableForm", () => {
     expect(q[0].type).toBe("ddl");
   });
 
+  // --- Column Identity: rename is explicit intent (ticket 07) ---
+
+  const liveId = {
+    name: "id",
+    data_type: "integer",
+    is_nullable: false,
+    is_pk: true,
+    is_fk: false,
+    fk_ref: null,
+    default_value: null,
+    editable: true,
+    is_generated: false,
+  };
+  const liveName = {
+    name: "name",
+    data_type: "text",
+    is_nullable: true,
+    is_pk: false,
+    is_fk: false,
+    fk_ref: null,
+    default_value: null,
+    editable: true,
+    is_generated: false,
+  };
+  const snapshot = [
+    { name: "id", type: "integer", nullable: false, default: null, is_pk: true },
+    { name: "name", type: "text", nullable: true, default: null, is_pk: false },
+  ];
+
+  function renderEdit(columns: any[]) {
+    const tab = {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "public",
+          name: "users",
+          action: { op: "edit", columns, old_columns: snapshot },
+        },
+        title: "Edit Table",
+        description: "Edit users",
+        mode: "edit",
+      },
+      title: "Edit Table",
+    } as any;
+    seedFormTab(tab);
+    render(<TableForm connectionId="c1" tab={tab} />);
+  }
+
+  function editPayloads() {
+    return (cmd.buildObjectDdl as any).mock.calls
+      .map((call: any) => call[2])
+      .filter(
+        (p: any) =>
+          p.action?.op === "edit" && Array.isArray(p.action.columns),
+      );
+  }
+
+  it("changing a live column's name sends explicit rename intent", async () => {
+    (cmd.getTableColumns as any).mockResolvedValue([liveId, liveName]);
+    renderEdit([
+      { ...snapshot[0], original_name: "id" },
+      { ...snapshot[1], original_name: "name" },
+    ]);
+    fireEvent.change(screen.getAllByPlaceholderText("name")[1], {
+      target: { value: "label" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+
+    await waitFor(() => {
+      const withIntent = editPayloads().filter((p: any) =>
+        p.action.columns.some((c: any) => c.renamed_from !== undefined),
+      );
+      expect(withIntent.length).toBeGreaterThan(0);
+      const cols = withIntent[withIntent.length - 1].action.columns;
+      expect(cols[1]).toMatchObject({ name: "label", renamed_from: "name" });
+      expect(cols[0].renamed_from).toBeUndefined();
+    });
+  });
+
+  it("a newly added row carries no rename intent", async () => {
+    (cmd.getTableColumns as any).mockResolvedValue([liveId, liveName]);
+    renderEdit([
+      { ...snapshot[0], original_name: "id" },
+      { ...snapshot[1], original_name: "name" },
+    ]);
+    fireEvent.click(screen.getByLabelText("Add column"));
+    fireEvent.change(screen.getAllByPlaceholderText("name")[2], {
+      target: { value: "email" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+
+    await waitFor(() => {
+      const payloads = editPayloads();
+      expect(payloads.length).toBeGreaterThan(0);
+      const cols = payloads[payloads.length - 1].action.columns;
+      expect(cols.map((c: any) => c.name)).toEqual(["id", "name", "email"]);
+      expect(cols.every((c: any) => c.renamed_from === undefined)).toBe(true);
+    });
+  });
+
+  it("a combined rename + add stages every generated statement", async () => {
+    (cmd.getTableColumns as any).mockResolvedValue([liveId, liveName]);
+    (cmd.buildObjectDdl as any).mockResolvedValue([
+      'ALTER TABLE "public"."users" RENAME COLUMN "name" TO "label"',
+      'ALTER TABLE "public"."users" ADD COLUMN "email" text',
+    ]);
+    renderEdit([
+      { ...snapshot[0], original_name: "id" },
+      { ...snapshot[1], original_name: "name" },
+    ]);
+    fireEvent.change(screen.getAllByPlaceholderText("name")[1], {
+      target: { value: "label" },
+    });
+    fireEvent.click(screen.getByLabelText("Add column"));
+    fireEvent.change(screen.getAllByPlaceholderText("name")[2], {
+      target: { value: "email" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+
+    await waitFor(() => {
+      const q = useDbViewerStore.getState().changesQueue;
+      expect(q.map((c: any) => c.sql)).toEqual([
+        'ALTER TABLE "public"."users" RENAME COLUMN "name" TO "label"',
+        'ALTER TABLE "public"."users" ADD COLUMN "email" text',
+      ]);
+    });
+  });
+
   it("stale guard blocks staging when live columns differ", async () => {
     (cmd.getTableColumns as any).mockResolvedValue([
       {
