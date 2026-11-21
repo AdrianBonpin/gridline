@@ -7,9 +7,9 @@
 **Seams:** Built-product seam: catches startup and open-with behavior; unit-level validation covers the race and encoding rules.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/81
-**Status:** ready
+**Status:** done
 
-- [ ] Validation and reading refer to the same already-opened file, with no re-resolution window.
-- [ ] A non-Unicode process argument does not panic startup.
-- [ ] The existing size limit, extension rule, and no-auto-execution behavior remain.
-- [ ] An invalid open request is ignored without crashing or reading an unintended file.
+- [x] Validation and reading refer to the same already-opened file, with no re-resolution window.
+- [x] A non-Unicode process argument does not panic startup.
+- [x] The existing size limit, extension rule, and no-auto-execution behavior remain.
+- [x] An invalid open request is ignored without crashing or reading an unintended file.
