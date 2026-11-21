@@ -2555,3 +2555,136 @@ fn a_bounded_probe_failure_is_surfaced_in_the_tool_status() {
     assert!(status.pg_dump_found);
     assert!(status.pg_dump_probe_error.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Backup output is authorized by a File Grant, never by a renderer path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_raw_renderer_path_authorizes_no_backup_output() {
+    let grants = crate::file_grant::FileGrantStore::new();
+
+    // The exact string a pre-fix renderer would have sent as `options.filePath`.
+    let err = resolve_backup_output(&grants, "/tmp/renderer-chosen.dump").unwrap_err();
+
+    assert!(
+        err.starts_with(crate::file_grant::CODE_INVALID),
+        "a bare path must be rejected as an invalid grant, got: {err}"
+    );
+}
+
+#[test]
+fn a_backup_grant_resolves_its_path_exactly_once() {
+    let grants = crate::file_grant::FileGrantStore::new();
+    let grant = grants.mint(
+        std::path::PathBuf::from("/tmp/gridline-granted.dump"),
+        crate::file_grant::FileIntent::Write,
+    );
+
+    assert_eq!(
+        resolve_backup_output(&grants, &grant.id).unwrap(),
+        "/tmp/gridline-granted.dump"
+    );
+
+    // Same grant, second job: consumed on first use.
+    let replay = resolve_backup_output(&grants, &grant.id).unwrap_err();
+    assert!(
+        replay.starts_with(crate::file_grant::CODE_CONSUMED),
+        "a replayed grant must report the consumed state, got: {replay}"
+    );
+}
+
+#[test]
+fn a_read_grant_cannot_authorize_a_backup_write() {
+    let grants = crate::file_grant::FileGrantStore::new();
+    let grant = grants.mint(
+        std::path::PathBuf::from("/tmp/restore-input.sql"),
+        crate::file_grant::FileIntent::Read,
+    );
+
+    let err = resolve_backup_output(&grants, &grant.id).unwrap_err();
+    assert!(
+        err.starts_with(crate::file_grant::CODE_WRONG_INTENT),
+        "a read grant must not authorize a write, got: {err}"
+    );
+}
+
+#[test]
+fn an_expired_backup_grant_reports_the_expired_state() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    let base = std::time::Instant::now();
+    let elapsed = Arc::new(AtomicU64::new(0));
+    let clock: crate::file_grant::Clock = {
+        let elapsed = elapsed.clone();
+        Box::new(move || base + std::time::Duration::from_millis(elapsed.load(Ordering::SeqCst)))
+    };
+    let grants = crate::file_grant::FileGrantStore::with_clock(crate::file_grant::GRANT_TTL, clock);
+    let grant = grants.mint(
+        std::path::PathBuf::from("/tmp/stale.dump"),
+        crate::file_grant::FileIntent::Write,
+    );
+
+    elapsed.store(5 * 60 * 1000 + 1, Ordering::SeqCst);
+
+    let err = resolve_backup_output(&grants, &grant.id).unwrap_err();
+    assert!(
+        err.starts_with(crate::file_grant::CODE_EXPIRED),
+        "an expired grant must report the expired state, got: {err}"
+    );
+}
+
+#[test]
+fn the_dump_request_types_carry_no_output_path() {
+    // A renderer that still sends a path must fail loudly at the IPC boundary
+    // rather than have it silently ignored (or, worse, used).
+    let pg = serde_json::from_str::<PgDumpOptions>(
+        r#"{"format":"plain","tables":null,"noOwner":true,"filePath":"/tmp/evil.dump"}"#,
+    );
+    assert!(
+        pg.is_err(),
+        "PgDumpOptions must reject a renderer-supplied output path"
+    );
+
+    let mysql = serde_json::from_str::<MySqlDumpOptions>(
+        r#"{"database":"shop","singleTransaction":true,"noData":false,"routines":true,"triggers":true,"events":false,"filePath":"/tmp/evil.sql"}"#,
+    );
+    assert!(
+        mysql.is_err(),
+        "MySqlDumpOptions must reject a renderer-supplied output path"
+    );
+
+    // The same payload without a path is accepted.
+    let ok =
+        serde_json::from_str::<PgDumpOptions>(r#"{"format":"plain","tables":null,"noOwner":true}"#);
+    assert!(ok.is_ok(), "a path-free dump request must be accepted");
+}
+
+#[test]
+fn a_dump_request_takes_its_output_path_from_the_granted_path() {
+    let request = PgDumpOptions {
+        format: "custom".into(),
+        schema: Some("public".into()),
+        tables: None,
+        no_owner: true,
+    };
+    let options = request.with_output_path("/tmp/granted.dump".to_string());
+
+    assert_eq!(options.file_path, "/tmp/granted.dump");
+    assert_eq!(options.format, "custom");
+    assert_eq!(options.schema.as_deref(), Some("public"));
+    assert!(options.no_owner);
+
+    let mysql = MySqlDumpOptions {
+        database: "shop".into(),
+        single_transaction: true,
+        no_data: false,
+        routines: true,
+        triggers: true,
+        events: false,
+    }
+    .with_output_path("/tmp/granted.sql".to_string());
+    assert_eq!(mysql.file_path, "/tmp/granted.sql");
+    assert_eq!(mysql.database, "shop");
+}

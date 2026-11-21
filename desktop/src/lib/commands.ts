@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreOptions, SqliteBackupOptions, SqliteRestoreOptions, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult, PendingSqlFile, HostKeyFingerprint, SshHostTrustState } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreOptions, SqliteRestoreOptions, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult, PendingSqlFile, HostKeyFingerprint, SshHostTrustState } from "./types";
+import type { FileGrant, FileGrantRequest } from "./fileGrant";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 import type { ChangePayload } from "./changePayload";
 import type { DiffReport } from "./types";
@@ -194,8 +195,28 @@ export async function detectPgTools(force = false): Promise<PgToolStatus> {
   return invoke<PgToolStatus>("detect_pg_tools", { force });
 }
 
-export async function pgDump(connectionId: string, options: BackupOptions): Promise<string> {
-  return invoke<string>("pg_dump", { connectionId, options });
+// ─── File Grants ──────────────────────────────────────────────
+//
+// The native dialog is brokered by Rust so the chosen path never originates in
+// the renderer. The returned grant id is the only thing that authorizes a
+// file-touching command; `path` is display metadata.
+
+export async function selectFileForGrant(request: FileGrantRequest): Promise<FileGrant | null> {
+  return invoke<FileGrant | null>("select_file_for_grant", { request });
+}
+
+/**
+ * Start a PostgreSQL backup.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant}; it is consumed by this
+ * call, so the next backup needs its own selection.
+ */
+export async function pgDump(
+  connectionId: string,
+  options: BackupOptions,
+  fileGrant: string,
+): Promise<string> {
+  return invoke<string>("pg_dump", { connectionId, options, fileGrant });
 }
 
 export async function pgRestore(connectionId: string, options: RestoreOptions): Promise<string> {
@@ -227,8 +248,13 @@ export async function detectMysqlTools(force = false): Promise<MySqlToolStatus> 
   return invoke<MySqlToolStatus>("detect_mysql_tools", { force });
 }
 
-export async function mysqlDump(connectionId: string, options: MySqlBackupOptions): Promise<string> {
-  return invoke<string>("mysql_dump", { connectionId, options });
+/** Start a MySQL backup. `fileGrant` is consumed by this call. */
+export async function mysqlDump(
+  connectionId: string,
+  options: MySqlBackupOptions,
+  fileGrant: string,
+): Promise<string> {
+  return invoke<string>("mysql_dump", { connectionId, options, fileGrant });
 }
 
 export async function mysqlRestore(connectionId: string, options: MySqlRestoreOptions): Promise<string> {
@@ -239,8 +265,9 @@ export async function mysqlSync(options: SyncOptions): Promise<string> {
   return invoke<string>("mysql_sync", { options });
 }
 
-export async function sqliteDump(connectionId: string, options: SqliteBackupOptions): Promise<string> {
-  return invoke<string>("sqlite_dump", { connectionId, options });
+/** Start a SQLite backup. `fileGrant` is consumed by this call. */
+export async function sqliteDump(connectionId: string, fileGrant: string): Promise<string> {
+  return invoke<string>("sqlite_dump", { connectionId, fileGrant });
 }
 
 export async function sqliteRestore(connectionId: string, options: SqliteRestoreOptions): Promise<string> {

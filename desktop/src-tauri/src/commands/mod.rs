@@ -2,6 +2,7 @@ pub mod backup;
 pub mod connections;
 pub mod db_viewer;
 pub mod demo;
+pub mod file_grant;
 pub mod folders;
 pub mod import_export;
 pub mod keychain;

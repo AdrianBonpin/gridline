@@ -346,9 +346,16 @@ export type SshHostTrustState =
 
 // ─── Backup Types ────────────────────────────────────────────────
 
+/**
+ * A PostgreSQL backup request.
+ *
+ * Deliberately carries **no** output path: the path is authorized by a File
+ * Grant (`lib/fileGrant.ts`) whose id is sent alongside these options, so a
+ * renderer-supplied string can never choose where a dump is written. The Rust
+ * side rejects an unknown `filePath` field outright.
+ */
 export interface BackupOptions {
   format: "plain" | "custom" | "tar" | "directory";
-  filePath: string;
   schema?: string;
   tables?: string[];
   noOwner: boolean;
@@ -410,9 +417,9 @@ export interface MySqlToolStatus {
   mysqlProbeError?: string | null;
 }
 
+/** A MySQL backup request; no output path — see {@link BackupOptions}. */
 export interface MySqlBackupOptions {
   database: string;
-  filePath: string;
   singleTransaction: boolean;
   noData: boolean;
   routines: boolean;
@@ -424,10 +431,6 @@ export interface MySqlRestoreOptions {
   database: string;
   filePath: string;
   clean: boolean;
-}
-
-export interface SqliteBackupOptions {
-  filePath: string;
 }
 
 export interface SqliteRestoreOptions {

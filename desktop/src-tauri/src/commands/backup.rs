@@ -99,6 +99,31 @@ impl std::fmt::Display for JobFailure {
 /// A cancellation check handed to the in-process engines.
 pub type CancelCheck<'a> = &'a (dyn Fn() -> bool + Sync);
 
+/// Consume the File Grant that authorizes a backup write and return the output
+/// path.
+///
+/// This is the only way a path reaches a dump engine. A path the renderer
+/// supplied is not a grant (see `GLOSSARY.md` → File Grant), so handing one in
+/// here fails closed with the `file-grant-invalid` state instead of naming a
+/// file for `pg_dump`/`mysqldump`/the SQLite dumper to write.
+///
+/// The grant is consumed on success, before any job is created: an invalid,
+/// expired, replayed or wrong-intent grant starts nothing.
+pub fn resolve_backup_output(
+    grants: &crate::file_grant::FileGrantStore,
+    grant_id: &str,
+) -> Result<String, String> {
+    let path = grants
+        .consume(grant_id, crate::file_grant::FileIntent::Write)
+        .map_err(|e| e.to_ipc())?;
+    path.to_str().map(|s| s.to_string()).ok_or_else(|| {
+        format!(
+            "{}: The selected path cannot be represented as text. Choose the file again.",
+            crate::file_grant::CODE_INVALID
+        )
+    })
+}
+
 /// Cancellation check that never fires, for headless/legacy callers.
 fn never_cancel() -> bool {
     false
@@ -1407,7 +1432,8 @@ pub async fn cancel_tool_job(
 #[tauri::command]
 pub async fn pg_dump(
     connection_id: String,
-    options: BackupOptions,
+    options: PgDumpOptions,
+    file_grant: String,
     state: State<'_, crate::AppState>,
     app_handle: AppHandle,
 ) -> Result<String, String> {
@@ -1436,6 +1462,11 @@ pub async fn pg_dump(
         conn.database.unwrap_or_else(|| "postgres".into()),
         password,
     );
+
+    // Authorize the write last: the granted path is the only output path this
+    // command can be made to use, and a grant is not spent on a request that
+    // fails before the job starts.
+    let options = options.with_output_path(resolve_backup_output(&state.file_grants, &file_grant)?);
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
@@ -1769,7 +1800,8 @@ async fn maybe_emit_version_warning(
 #[tauri::command]
 pub async fn mysql_dump(
     connection_id: String,
-    options: MySqlBackupOptions,
+    options: MySqlDumpOptions,
+    file_grant: String,
     state: State<'_, crate::AppState>,
     app_handle: AppHandle,
 ) -> Result<String, String> {
@@ -1809,6 +1841,11 @@ pub async fn mysql_dump(
     let tools = resolve_mysql_tool_paths(&app_handle);
     // Honour the connection's own ssl_mode; a tunnel degrades to `require`.
     let tls = mysql_cli_tls_mode(&conn.host, conn.ssl_mode.as_deref(), via_tunnel);
+
+    // Authorize the write last: the granted path is the only destination this
+    // command can be made to use, and a grant is not spent on a request that
+    // fails before the job starts.
+    let options = options.with_output_path(resolve_backup_output(&state.file_grants, &file_grant)?);
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
@@ -2134,7 +2171,7 @@ pub async fn mysql_sync(
 #[tauri::command]
 pub async fn sqlite_dump(
     connection_id: String,
-    options: SqliteBackupOptions,
+    file_grant: String,
     state: State<'_, crate::AppState>,
     app_handle: AppHandle,
 ) -> Result<String, String> {
@@ -2150,7 +2187,8 @@ pub async fn sqlite_dump(
     };
 
     let path = conn.host.clone();
-    let out_path = options.file_path.clone();
+    // The dump destination is the granted path, never a renderer string.
+    let out_path = resolve_backup_output(&state.file_grants, &file_grant)?;
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
     let job = state.jobs.begin(&job_id);

@@ -7,10 +7,10 @@
 **Seams:** File Grant seam with an injectable picker: catches intent, expiry, replay, and cross-job use; misses the native dialog's visuals, which a platform smoke covers.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/79
-**Status:** ready
+**Status:** done
 
-- [ ] A native selection yields a grant that the backup write consumes successfully.
-- [ ] A raw renderer-supplied path is rejected for the same operation.
-- [ ] A grant cannot be reused for a second job or a different intent.
-- [ ] A grant older than five minutes is rejected with an expired-grant state.
-- [ ] The prior user-visible file-selection flow is unchanged.
+- [x] A native selection yields a grant that the backup write consumes successfully.
+- [x] A raw renderer-supplied path is rejected for the same operation.
+- [x] A grant cannot be reused for a second job or a different intent.
+- [x] A grant older than five minutes is rejected with an expired-grant state.
+- [x] The prior user-visible file-selection flow is unchanged.

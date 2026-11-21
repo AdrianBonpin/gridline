@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { BackupPage } from "./BackupPage";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -264,5 +264,151 @@ describe("BackupPage job cancellation", () => {
     expect(screen.getByTestId("tool-probe-error").textContent).toContain(
       "did not respond",
     );
+  });
+});
+
+describe("BackupPage File Grant output authorization", () => {
+  const grant = {
+    id: "grant-1",
+    path: "/tmp/granted-backup.dump",
+    displayName: "granted-backup.dump",
+    intent: "write" as const,
+    expiresInSeconds: 300,
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockConnections.length = 0;
+    mockConnections.push({ id: "c1", db_type: "postgresql", name: "p" });
+    useBackupStore.setState({ jobs: [], activeJobId: null, progress: 0 });
+    useNotificationStore.setState({ notifications: [] });
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    vi.spyOn(commands, "detectPgTools").mockResolvedValue({
+      pg_dump_found: true,
+      pg_restore_found: true,
+      pg_dump_version: "16",
+      pg_restore_version: "16",
+      pg_dump_source: "system",
+      pg_restore_source: "system",
+    });
+  });
+
+  it("asks the backend for a File Grant and sends its id instead of a path", async () => {
+    const select = vi
+      .spyOn(commands, "selectFileForGrant")
+      .mockResolvedValue(grant);
+    const dump = vi.spyOn(commands, "pgDump").mockResolvedValue("job-1");
+
+    render(<BackupPage connectionId="c1" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_dump/i)).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Browse for file"));
+
+    await waitFor(() => expect(select).toHaveBeenCalledTimes(1));
+    expect(select).toHaveBeenCalledWith({
+      intent: "write",
+      title: "Save backup as",
+      defaultName: "backup.dump",
+      filters: [{ name: "Backup", extensions: ["dump", "custom"] }],
+    });
+
+    // The picked path is shown (display metadata) but Start sends only the id.
+    const output = screen.getByTestId("backup-output-path") as HTMLInputElement;
+    expect(output.value).toBe("/tmp/granted-backup.dump");
+    expect(output.readOnly).toBe(true);
+
+    fireEvent.click(screen.getByText("Start Backup"));
+    await waitFor(() => expect(dump).toHaveBeenCalledTimes(1));
+
+    const [connectionId, options, grantId] = dump.mock.calls[0];
+    expect(connectionId).toBe("c1");
+    expect(grantId).toBe("grant-1");
+    expect(options).toEqual({
+      format: "custom",
+      schema: undefined,
+      tables: undefined,
+      noOwner: true,
+    });
+    expect(options).not.toHaveProperty("filePath");
+  });
+
+  it("offers no way to authorize a backup from a typed path", async () => {
+    render(<BackupPage connectionId="c1" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_dump/i)).not.toBeInTheDocument());
+
+    const output = screen.getByTestId("backup-output-path") as HTMLInputElement;
+    expect(output.readOnly).toBe(true);
+    expect(output.value).toBe("");
+
+    // Without a grant there is nothing to authorize, so Start cannot fire.
+    const start = screen.getByText("Start Backup").closest("button")!;
+    expect(start.disabled).toBe(true);
+  });
+
+  it("shows a visible expired-grant state with a recovery action", async () => {
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(grant);
+    vi.spyOn(commands, "pgDump").mockRejectedValue(
+      "file-grant-expired: The file selection expired five minutes after it was made. Choose the file again.",
+    );
+
+    render(<BackupPage connectionId="c1" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_dump/i)).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Browse for file"));
+    await waitFor(() => expect(screen.getByTestId("backup-output-path")).toBeTruthy());
+    fireEvent.click(screen.getByText("Start Backup"));
+
+    const expired = await screen.findByTestId("file-grant-expired");
+    expect(expired.textContent).toContain("File selection expired");
+    // Recovery is a fresh selection, not a silent retry with the same id.
+    expect(within(expired).getByText("Choose file")).toBeTruthy();
+
+    // The spent selection is gone, so Start is disabled until a new one.
+    const start = screen.getByText("Start Backup").closest("button")!;
+    expect(start.disabled).toBe(true);
+  });
+
+  it("requires a fresh selection for the next job (each grant is single-use)", async () => {
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(grant);
+    vi.spyOn(commands, "pgDump").mockResolvedValue("job-1");
+
+    render(<BackupPage connectionId="c1" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_dump/i)).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Browse for file"));
+    await waitFor(() => expect(screen.getByTestId("backup-output-path")).toBeTruthy());
+    fireEvent.click(screen.getByText("Start Backup"));
+
+    await waitFor(() => expect(commands.pgDump).toHaveBeenCalledTimes(1));
+
+    // The spent grant is not offered again: the next job must pick a file.
+    const start = screen.getByRole("button", { name: /backing up|start backup/i });
+    expect((start as HTMLButtonElement).disabled).toBe(true);
+    // The path is still displayed as metadata; it is not authorization.
+    expect(
+      (screen.getByTestId("backup-output-path") as HTMLInputElement).value,
+    ).toBe("/tmp/granted-backup.dump");
+  });
+
+  it("sends the grant id for MySQL and SQLite backups too", async () => {
+    mockConnections.length = 0;
+    mockConnections.push({ id: "s1", db_type: "sqlite", name: "s" });
+    const select = vi
+      .spyOn(commands, "selectFileForGrant")
+      .mockResolvedValue({ ...grant, path: "/tmp/demo.db.sql" });
+    const dump = vi.spyOn(commands, "sqliteDump").mockResolvedValue("job-sqlite");
+
+    render(<BackupPage connectionId="s1" />);
+    fireEvent.click(screen.getByLabelText("Browse for file"));
+    await waitFor(() => expect(select).toHaveBeenCalledTimes(1));
+    expect(select).toHaveBeenCalledWith({
+      intent: "write",
+      title: "Save backup as",
+      defaultName: "backup.db",
+      filters: [{ name: "Backup", extensions: ["db", "sqlite", "sql"] }],
+    });
+
+    fireEvent.click(screen.getByText("Start Backup"));
+    await waitFor(() => expect(dump).toHaveBeenCalledWith("s1", "grant-1"));
   });
 });
