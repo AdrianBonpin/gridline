@@ -4,6 +4,7 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { AnimatedModal } from "../ui/AnimatedModal";
 import { Button } from "../ui/Button";
 import { ImportDialog } from "./ImportDialog";
+import type { ImportTargetColumn } from "../../lib/importConvert";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -91,6 +92,8 @@ export function TableOverflowMenu({
   const [confirmAction, setConfirmAction] = useState<"empty" | "delete" | null>(null);
   const [dropDeps, setDropDeps] = useState<DependencyInfo[]>([]);
   const [importOpen, setImportOpen] = useState(false);
+  /** Target columns (name + declared type) read when the import menu item ran. */
+  const [importColumns, setImportColumns] = useState<ImportTargetColumn[]>([]);
   const [maintenance, setMaintenance] = useState<{ action: MaintenanceAction; lockCopy: string } | null>(null);
   const [maintenanceRunning, setMaintenanceRunning] = useState(false);
   const [maintenanceResult, setMaintenanceResult] = useState<
@@ -234,10 +237,35 @@ export function TableOverflowMenu({
         setOpen(false);
         break;
       }
-      case "import":
-        setImportOpen(true);
+      case "import": {
+        // Conversion is driven by each target column's DECLARED type, so import
+        // needs the live column snapshot: the tree row that opened this menu may
+        // be unexpanded (no columns at all), and a cached list can predate DDL.
+        if (!connectionId) {
+          notify("Cannot import: no active connection", "error");
+          setOpen(false);
+          break;
+        }
         setOpen(false);
+        let liveColumns: ColumnInfo[];
+        try {
+          liveColumns = await cmd.getTableColumns(connectionId, schema, table);
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          notify(
+            `Could not load the columns of ${schema}.${table}: ${message}`,
+            "error",
+          );
+          break;
+        }
+        if (liveColumns.length === 0) {
+          notify(`${schema}.${table} has no columns to import into`, "error");
+          break;
+        }
+        setImportColumns(liveColumns.map((c) => ({ name: c.name, dataType: c.data_type })));
+        setImportOpen(true);
         break;
+      }
       case "edit_table": {
         // Always read the live column snapshot: the tree row that opened this
         // menu may be unexpanded (no columns), and even an expanded row's
@@ -510,7 +538,9 @@ export function TableOverflowMenu({
         open={importOpen}
         schema={schema}
         table={table}
-        columns={columns?.map((c) => c.name) ?? []}
+        // Conversion is driven by the declared column type, so the target list
+        // carries each column's introspected type (not just its name).
+        columns={importColumns}
         onStage={(change) => {
           addChange({
             type: "bulk_insert",
