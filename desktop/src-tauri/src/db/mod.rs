@@ -5,6 +5,7 @@ pub mod object_crud;
 pub mod object_ddl;
 pub mod pool;
 pub mod schema_diff;
+pub mod sql_classify;
 pub mod sql_split;
 pub mod tls;
 pub mod tool_resolver;

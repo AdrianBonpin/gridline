@@ -1,0 +1,331 @@
+{
+  "version": 1,
+  "description": "Cross-language SQL safety corpus. Read by desktop/src/lib/sqlScanCorpus.test.ts (TypeScript scanner) and desktop/src-tauri/src/db/sql_classify.rs (Rust classifier, asserted in sql_classify.test.rs). Both languages assert EVERY field of EVERY vector, so a behavioral divergence between the two implementations fails a test instead of surviving as a copy of a duplicate table. `reason` is the classification that made the script destructive: write | schema | unknown | null.",
+  "fields": {
+    "sql": "the script as a user would run it",
+    "statements": "splitStatements/split_statements(sql) — ordered, comment-only fragments dropped",
+    "kinds": "classifyStatement/classify_statement of each entry in statements",
+    "analysis": "analyzeScript/analyze_script(sql): destructive, 1-based firstDestructiveIndex (null when safe), totalStatements, reason"
+  },
+  "vectors": [
+    {
+      "id": "read-select",
+      "sql": "SELECT 1; SELECT 2",
+      "statements": ["SELECT 1", "SELECT 2"],
+      "kinds": ["read", "read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 2, "reason": null }
+    },
+    {
+      "id": "string-semicolon",
+      "sql": "SELECT 'a;b'; SELECT 2",
+      "statements": ["SELECT 'a;b'", "SELECT 2"],
+      "kinds": ["read", "read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 2, "reason": null }
+    },
+    {
+      "id": "string-doubled-quote",
+      "sql": "SELECT 'it''s'; SELECT 2",
+      "statements": ["SELECT 'it''s'", "SELECT 2"],
+      "kinds": ["read", "read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 2, "reason": null }
+    },
+    {
+      "id": "quoted-identifiers-with-semicolon",
+      "sql": "SELECT \"a;b\"; SELECT `x;y`",
+      "statements": ["SELECT \"a;b\"", "SELECT `x;y`"],
+      "kinds": ["read", "read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 2, "reason": null }
+    },
+    {
+      "id": "line-comment-with-semicolon",
+      "sql": "SELECT 1 -- ; not a boundary\n; SELECT 2",
+      "statements": ["SELECT 1 -- ; not a boundary", "SELECT 2"],
+      "kinds": ["read", "read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 2, "reason": null }
+    },
+    {
+      "id": "block-comment-with-semicolon",
+      "sql": "SELECT /* ; */ 1",
+      "statements": ["SELECT /* ; */ 1"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "dollar-quoted-body",
+      "sql": "SELECT $$a;b$$; SELECT 2",
+      "statements": ["SELECT $$a;b$$", "SELECT 2"],
+      "kinds": ["read", "read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 2, "reason": null }
+    },
+    {
+      "id": "tagged-dollar-quoted-body",
+      "sql": "SELECT $fn$x;y$fn$; SELECT 2",
+      "statements": ["SELECT $fn$x;y$fn$", "SELECT 2"],
+      "kinds": ["read", "read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 2, "reason": null }
+    },
+    {
+      "id": "bare-dollar-in-identifier",
+      "sql": "SELECT a$b",
+      "statements": ["SELECT a$b"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "trailing-lone-dollar",
+      "sql": "SELECT 1$",
+      "statements": ["SELECT 1$"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "comment-only-fragment-dropped",
+      "sql": "-- nothing\n; SELECT 1",
+      "statements": ["SELECT 1"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "block-comment-only-script",
+      "sql": "/* c */",
+      "statements": [],
+      "kinds": [],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 0, "reason": null }
+    },
+    {
+      "id": "empty-script",
+      "sql": "",
+      "statements": [],
+      "kinds": [],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 0, "reason": null }
+    },
+    {
+      "id": "empty-statements",
+      "sql": "  ;  ; ",
+      "statements": [],
+      "kinds": [],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 0, "reason": null }
+    },
+    {
+      "id": "delimiter-custom-terminator",
+      "sql": "DELIMITER //\nSELECT 1; SELECT 2//\nDELIMITER ;\nSELECT 3;",
+      "statements": ["SELECT 1; SELECT 2", "SELECT 3"],
+      "kinds": ["read", "read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 2, "reason": null }
+    },
+    {
+      "id": "leading-line-comment-before-write",
+      "note": "The leading comment must not hide the verb that follows it.",
+      "sql": "-- refresh the audit trail\nUPDATE audit SET seen = true",
+      "statements": ["-- refresh the audit trail\nUPDATE audit SET seen = true"],
+      "kinds": ["write"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "write" }
+    },
+    {
+      "id": "leading-block-comment-before-write",
+      "sql": "/* nightly job */\nDELETE FROM sessions",
+      "statements": ["/* nightly job */\nDELETE FROM sessions"],
+      "kinds": ["write"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "write" }
+    },
+    {
+      "id": "leading-comment-before-read",
+      "sql": "-- just looking\nSELECT 1",
+      "statements": ["-- just looking\nSELECT 1"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "executable-comment-write",
+      "note": "MySQL runs `/*! ... */` bodies, so the write is real even though the whole statement is a comment.",
+      "sql": "/*!40000 UPDATE users SET admin = 1 */",
+      "statements": ["/*!40000 UPDATE users SET admin = 1 */"],
+      "kinds": ["write"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "write" }
+    },
+    {
+      "id": "executable-comment-schema-with-semicolon",
+      "note": "mysqldump wraps routine/trigger bodies in executable comments; the inner `;` is not a statement boundary.",
+      "sql": "/*!50003 CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW BEGIN SET @x = 1; END */",
+      "statements": ["/*!50003 CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW BEGIN SET @x = 1; END */"],
+      "kinds": ["schema"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "schema" }
+    },
+    {
+      "id": "executable-comment-read",
+      "note": "A session-setting executable comment stays read-only.",
+      "sql": "/*!40101 SET NAMES utf8 */",
+      "statements": ["/*!40101 SET NAMES utf8 */"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "executable-comment-followed-by-statement",
+      "sql": "/*!40000 UPDATE users SET admin = 1 */;\nSELECT 1",
+      "statements": ["/*!40000 UPDATE users SET admin = 1 */", "SELECT 1"],
+      "kinds": ["write", "read"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 2, "reason": "write" }
+    },
+    {
+      "id": "explain-analyze-write",
+      "note": "EXPLAIN ANALYZE executes the statement it wraps on both PostgreSQL and MySQL.",
+      "sql": "EXPLAIN ANALYZE UPDATE users SET name = 'x'",
+      "statements": ["EXPLAIN ANALYZE UPDATE users SET name = 'x'"],
+      "kinds": ["write"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "write" }
+    },
+    {
+      "id": "explain-analyze-read",
+      "sql": "EXPLAIN ANALYZE SELECT * FROM users",
+      "statements": ["EXPLAIN ANALYZE SELECT * FROM users"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "explain-without-analyze-write",
+      "note": "Plain EXPLAIN does not run the statement in PostgreSQL, but the wrapped statement may be executed by other engines/versions — fail closed.",
+      "sql": "EXPLAIN DELETE FROM users",
+      "statements": ["EXPLAIN DELETE FROM users"],
+      "kinds": ["write"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "write" }
+    },
+    {
+      "id": "explain-options-read",
+      "sql": "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT * FROM users",
+      "statements": ["EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT * FROM users"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "explain-unknown-inner",
+      "note": "Nothing in the wrapped statement is a known read verb, so it is unprovable and must be confirmed.",
+      "sql": "EXPLAIN CALL p()",
+      "statements": ["EXPLAIN CALL p()"],
+      "kinds": ["unknown"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "unknown" }
+    },
+    {
+      "id": "read-only-cte",
+      "sql": "WITH recent AS (SELECT id FROM users WHERE created_at > now()) SELECT * FROM recent",
+      "statements": ["WITH recent AS (SELECT id FROM users WHERE created_at > now()) SELECT * FROM recent"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "data-modifying-cte",
+      "note": "The trailing verb is SELECT; the DELETE inside the CTE still writes.",
+      "sql": "WITH removed AS (DELETE FROM sessions WHERE expired RETURNING id) SELECT count(*) FROM removed",
+      "statements": ["WITH removed AS (DELETE FROM sessions WHERE expired RETURNING id) SELECT count(*) FROM removed"],
+      "kinds": ["write"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "write" }
+    },
+    {
+      "id": "cte-with-trailing-write",
+      "sql": "WITH active AS (SELECT 1) UPDATE users SET seen = true",
+      "statements": ["WITH active AS (SELECT 1) UPDATE users SET seen = true"],
+      "kinds": ["write"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "write" }
+    },
+    {
+      "id": "write-keyword-inside-string-literal",
+      "sql": "SELECT 'DROP TABLE users; DELETE FROM users'",
+      "statements": ["SELECT 'DROP TABLE users; DELETE FROM users'"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "write-keyword-inside-line-comment",
+      "sql": "-- DELETE FROM t\nSELECT 1",
+      "statements": ["-- DELETE FROM t\nSELECT 1"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "write-keyword-inside-dollar-quote",
+      "sql": "SELECT $tag$ DELETE FROM t $tag$",
+      "statements": ["SELECT $tag$ DELETE FROM t $tag$"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "quoted-identifiers-around-write",
+      "sql": "UPDATE \"order items\" SET \"delete\" = true WHERE id = 1",
+      "statements": ["UPDATE \"order items\" SET \"delete\" = true WHERE id = 1"],
+      "kinds": ["write"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "write" }
+    },
+    {
+      "id": "quoted-identifier-named-like-a-verb",
+      "sql": "SELECT * FROM \"delete\"",
+      "statements": ["SELECT * FROM \"delete\""],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "backtick-identifiers-named-like-verbs",
+      "sql": "SELECT `update`, `delete` FROM `t`",
+      "statements": ["SELECT `update`, `delete` FROM `t`"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "unknown-verb",
+      "sql": "CALL refresh_materialized_stats()",
+      "statements": ["CALL refresh_materialized_stats()"],
+      "kinds": ["unknown"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "unknown" }
+    },
+    {
+      "id": "unknown-verb-after-read",
+      "sql": "SELECT 1;\nCALL p()",
+      "statements": ["SELECT 1", "CALL p()"],
+      "kinds": ["read", "unknown"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 2, "totalStatements": 2, "reason": "unknown" }
+    },
+    {
+      "id": "unlisted-write-verb",
+      "note": "COPY writes but is not in the write-verb allowlist, so it is unprovable rather than safe.",
+      "sql": "COPY users FROM '/tmp/users.csv'",
+      "statements": ["COPY users FROM '/tmp/users.csv'"],
+      "kinds": ["unknown"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "unknown" }
+    },
+    {
+      "id": "schema-change-not-first",
+      "sql": "SELECT 1; DROP TABLE demo;",
+      "statements": ["SELECT 1", "DROP TABLE demo"],
+      "kinds": ["read", "schema"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 2, "totalStatements": 2, "reason": "schema" }
+    },
+    {
+      "id": "delimiter-routine-body-write",
+      "note": "The `;` inside the routine body is not a boundary; the CREATE makes the script schema-destructive.",
+      "sql": "DELIMITER //\nCREATE PROCEDURE touch_audit()\nBEGIN\n  INSERT INTO audit (msg) VALUES ('x');\nEND//\nDELIMITER ;\nSELECT 1;",
+      "statements": ["CREATE PROCEDURE touch_audit()\nBEGIN\n  INSERT INTO audit (msg) VALUES ('x');\nEND", "SELECT 1"],
+      "kinds": ["schema", "read"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 2, "reason": "schema" }
+    },
+    {
+      "id": "delimiter-read-only",
+      "sql": "DELIMITER //\nSELECT 1//\nDELIMITER ;\n",
+      "statements": ["SELECT 1"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    },
+    {
+      "id": "truncate-is-schema",
+      "note": "TRUNCATE stays in the schema set so the object tree refreshes after a run; it is destructive either way.",
+      "sql": "TRUNCATE TABLE audit_log",
+      "statements": ["TRUNCATE TABLE audit_log"],
+      "kinds": ["schema"],
+      "analysis": { "destructive": true, "firstDestructiveIndex": 1, "totalStatements": 1, "reason": "schema" }
+    },
+    {
+      "id": "session-setting-read",
+      "sql": "SET search_path = public",
+      "statements": ["SET search_path = public"],
+      "kinds": ["read"],
+      "analysis": { "destructive": false, "firstDestructiveIndex": null, "totalStatements": 1, "reason": null }
+    }
+  ]
+}
