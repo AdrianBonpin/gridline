@@ -5,6 +5,7 @@ pub mod folder;
 pub mod recent;
 pub mod settings;
 pub mod ssh;
+pub mod ssh_trust;
 pub mod tag;
 
 pub use connection::{Connection, ConnectionInput};
@@ -17,4 +18,6 @@ pub use folder::{Folder, FolderInput};
 pub use recent::RecentConnection;
 pub use settings::Settings;
 pub use ssh::SshConfig;
+#[allow(unused_imports)]
+pub use ssh_trust::{HostKey, HostKeyFingerprint, HostTrustRecord, SshHostTrustState, TrustSource};
 pub use tag::{Tag, TagInput};

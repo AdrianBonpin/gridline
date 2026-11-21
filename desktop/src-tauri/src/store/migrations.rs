@@ -303,6 +303,26 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
             .map_err(|e| format!("local store cleanup failed: {e}"))?;
     }
 
+    // v10: SSH host trust enrollments (ADR 0001). Non-secret metadata only:
+    // endpoint, key identity and when the user accepted it.
+    if current_ver < 10 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ssh_host_trust (
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                key_type TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                key_blob TEXT NOT NULL,
+                enrolled_at TEXT NOT NULL,
+                PRIMARY KEY (host, port)
+            );",
+        )
+        .map_err(|e| e.to_string())?;
+
+        conn.execute("INSERT INTO schema_version (version) VALUES (10)", [])
+            .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -324,8 +344,10 @@ mod tests {
         let conn = fresh_db();
         // Stop at the pre-fix schema and turn enforcement off, which is how a
         // store written by a build without per-connection enforcement looks.
+        // Both the v9 cleanup and the v10 trust enrollment are later than that
+        // build, so neither is recorded.
         conn.execute_batch(
-            "DELETE FROM schema_version WHERE version = 9;
+            "DELETE FROM schema_version WHERE version >= 9;
              PRAGMA foreign_keys = OFF;",
         )
         .unwrap();
@@ -541,7 +563,10 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 8, "versions 2..=9 are recorded exactly once each");
+        assert_eq!(
+            count, 9,
+            "versions 2..=10 are recorded exactly once each"
+        );
     }
 
     #[test]
@@ -853,6 +878,63 @@ mod tests {
         let ver: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(ver, 9);
+        assert_eq!(ver, 10);
+    }
+
+    #[test]
+    fn migration_v10_creates_the_ssh_host_trust_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let ver: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ver, 10);
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(ssh_host_trust)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(
+            columns,
+            vec![
+                "host".to_string(),
+                "port".to_string(),
+                "key_type".to_string(),
+                "fingerprint".to_string(),
+                "key_blob".to_string(),
+                "enrolled_at".to_string(),
+            ],
+            "trust metadata only, keyed by endpoint"
+        );
+    }
+
+    #[test]
+    fn v10_host_trust_applies_on_top_of_a_v9_store() {
+        // A store written by the v9 (orphan-cleanup) code must gain the trust
+        // table without losing the earlier migration.
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute("DELETE FROM schema_version WHERE version = 10", [])
+            .unwrap();
+        conn.execute("DROP TABLE ssh_host_trust", []).unwrap();
+        run_migrations(&conn).unwrap();
+        let v9: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_version WHERE version = 9",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v9, 1, "the v9 cleanup stays recorded");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        let trust: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ssh_host_trust", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 9);
+        assert_eq!(trust, 0);
     }
 }

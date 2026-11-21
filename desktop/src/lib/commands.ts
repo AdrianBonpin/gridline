@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreOptions, SqliteBackupOptions, SqliteRestoreOptions, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult, PendingSqlFile } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreOptions, SqliteBackupOptions, SqliteRestoreOptions, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult, PendingSqlFile, HostKeyFingerprint, SshHostTrustState } from "./types";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 import type { ChangePayload } from "./changePayload";
 import type { DiffReport } from "./types";
@@ -87,6 +87,28 @@ export async function recreateDemoDb(): Promise<string> {
 
 export async function regenerateDemoDb(): Promise<string> {
   return invoke<string>("regenerate_demo_db");
+}
+
+// ─── SSH Host Trust ────────────────────────────────────────────
+// The probe handshakes only — no password, key or passphrase is sent — so the
+// UI can show a fingerprint and ask for acceptance before a connection attempt
+// carries credentials.
+
+export async function sshHostTrustState(host: string, port: number): Promise<SshHostTrustState> {
+  return invoke<SshHostTrustState>("ssh_host_trust_state", { host, port });
+}
+
+export async function sshHostTrustEnroll(
+  host: string,
+  port: number,
+  accepted: HostKeyFingerprint,
+): Promise<SshHostTrustState> {
+  return invoke<SshHostTrustState>("ssh_host_trust_enroll", {
+    host,
+    port,
+    keyType: accepted.key_type,
+    fingerprint: accepted.fingerprint,
+  });
 }
 
 // ─── DB Viewer Lifecycle ────────────────────────────────────────

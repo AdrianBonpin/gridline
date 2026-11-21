@@ -1798,11 +1798,13 @@ dependencies = [
 name = "gridline"
 version = "0.8.4"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "core-foundation 0.10.1",
  "deadpool-postgres",
  "futures-util",
+ "hmac 0.12.1",
  "indexmap 2.14.0",
  "redis",
  "rusqlite",
@@ -1814,6 +1816,8 @@ dependencies = [
  "security-framework-sys",
  "serde",
  "serde_json",
+ "sha1",
+ "sha2 0.10.9",
  "sqlx",
  "ssh2",
  "tauri",

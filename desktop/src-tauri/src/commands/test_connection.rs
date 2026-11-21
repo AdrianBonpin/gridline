@@ -175,7 +175,8 @@ async fn resolve_connect_target(
                 )
             })
             .await
-            .map_err(|e| e.to_string())??;
+            .map_err(|e| e.to_string())?
+            .map_err(|e: crate::commands::ssh_trust::SshTunnelError| e.message())?;
             let lp = tunnel.local_port;
             ssh.lock().unwrap().insert_tunnel(key.clone(), tunnel);
             Ok(ConnectTarget {
