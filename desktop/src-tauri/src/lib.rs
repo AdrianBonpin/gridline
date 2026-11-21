@@ -135,12 +135,18 @@ pub fn run() {
                 .blocking_lock()
                 .set_on_evict(Box::new(move |id: &str| {
                     if let Some(s) = handle.try_state::<AppState>() {
-                        if let Ok(mut mgr) = s.ssh_manager.lock() {
-                            mgr.close_tunnel(id);
-                        }
+                        // Take the tunnel out first and close it after the
+                        // manager lock is released: a close waits for the
+                        // forwarding worker to release its loopback listener.
+                        let tunnel = match s.ssh_manager.lock() {
+                            Ok(mut mgr) => mgr.take_tunnel(id),
+                            // A panic elsewhere must not leak the listener.
+                            Err(poisoned) => poisoned.into_inner().take_tunnel(id),
+                        };
+                        drop(tunnel);
                         // Drop the cancel handles for the evicted connection
                         // (tokens/interrupts outlive the pool otherwise).
-                        s.cancel_registry.remove(id);
+                        s.cancel_registry.forget(id);
                     }
                 }));
 
@@ -278,9 +284,14 @@ pub fn run() {
             // after it has. A cancelled job's whole child tree is terminated,
             // so quitting cannot leave a pg_dump/pg_restore/mysqldump behind.
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-                if let Ok(mut mgr) = app_handle.state::<AppState>().ssh_manager.lock() {
-                    mgr.close_all();
-                }
+                // Take the tunnels out before closing them: each close waits
+                // for its forwarding worker to release the loopback listener,
+                // and that wait must not happen while the manager lock is held.
+                let tunnels = match app_handle.state::<AppState>().ssh_manager.lock() {
+                    Ok(mut mgr) => mgr.take_all(),
+                    Err(poisoned) => poisoned.into_inner().take_all(),
+                };
+                drop(tunnels);
                 app_handle.state::<AppState>().jobs.cancel_all();
             }
             _ => {}

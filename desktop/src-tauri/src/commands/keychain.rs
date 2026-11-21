@@ -196,6 +196,43 @@ pub fn delete_connection_password_internal(
         .map_err(|e| e.to_string())
 }
 
+/// Every keyring account a saved connection may own: the database password
+/// (account = connection id) plus the SSH password and private-key passphrase,
+/// which live under namespaced accounts.
+pub fn connection_secret_accounts(connection_id: &str) -> Vec<String> {
+    vec![
+        connection_id.to_string(),
+        ssh_account("password", connection_id),
+        ssh_account("passphrase", connection_id),
+    ]
+}
+
+/// Delete one keyring account (internal helper).
+/// Errors are ignored by callers (deleting an absent key is a no-op).
+pub fn delete_account_internal(app: &tauri::AppHandle, account: &str) -> Result<(), String> {
+    app.keyring()
+        .store
+        .delete(account)
+        .map_err(|e| e.to_string())
+}
+
+/// Delete every secret a saved connection owns, returning the accounts it
+/// asked the keychain to remove.
+///
+/// `delete` is the keychain write, injected so the set of purged accounts is
+/// testable without an OS keyring. A failure for one account does not stop the
+/// others: a deleted connection must not keep any of its secrets.
+pub fn purge_connection_secrets<F>(connection_id: &str, mut delete: F) -> Vec<String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    let accounts = connection_secret_accounts(connection_id);
+    for account in &accounts {
+        let _ = delete(account);
+    }
+    accounts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +241,39 @@ mod tests {
     fn ssh_account_namespaces_password() {
         assert_eq!(ssh_account("password", "c1"), "ssh_password:c1");
         assert_eq!(ssh_account("passphrase", "c1"), "ssh_passphrase:c1");
+    }
+
+    #[test]
+    fn deleting_a_connection_purges_every_secret_account() {
+        let mut deleted: Vec<String> = Vec::new();
+        let accounts = purge_connection_secrets("conn-9", |account| {
+            deleted.push(account.to_string());
+            Ok(())
+        });
+
+        assert_eq!(
+            accounts,
+            vec![
+                "conn-9".to_string(),
+                "ssh_password:conn-9".to_string(),
+                "ssh_passphrase:conn-9".to_string()
+            ],
+            "the database password and both SSH secrets are connection-owned"
+        );
+        assert_eq!(deleted, accounts, "every account is actually deleted");
+    }
+
+    #[test]
+    fn a_failing_secret_delete_does_not_stop_the_others() {
+        let mut attempted: Vec<String> = Vec::new();
+        purge_connection_secrets("conn-10", |account| {
+            attempted.push(account.to_string());
+            Err("keychain locked".to_string())
+        });
+        assert_eq!(
+            attempted.len(),
+            3,
+            "a locked keychain still attempted every secret"
+        );
     }
 }

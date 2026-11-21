@@ -377,3 +377,101 @@ fn demo_file_is_recreated_when_stale() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------------------
+// Regeneration clears per-connection state
+// ---------------------------------------------------------------------------
+
+/// Build a crate-level AppState around an in-memory local store, so the demo
+/// teardown can be exercised without a running Tauri app.
+fn app_state(store: std::sync::Arc<std::sync::Mutex<Store>>) -> crate::AppState {
+    crate::AppState {
+        db_store: store,
+        pool_manager: tokio::sync::Mutex::new(crate::db::pool::ConnectionPoolManager::new()),
+        ssh_manager: std::sync::Mutex::new(crate::commands::ssh::SshTunnelManager::new(
+            std::sync::Arc::new(crate::commands::ssh::fake::NoSshBackend),
+        )),
+        cancel_registry: crate::cancel::CancelRegistry::new(),
+        jobs: std::sync::Arc::new(crate::job::JobRegistry::new()),
+        file_grants: std::sync::Arc::new(crate::file_grant::FileGrantStore::new()),
+    }
+}
+
+/// Criterion: regenerating the demo database leaves no stale pool or
+/// cancellation state (and no tunnel, since the demo session owns one too).
+#[tokio::test]
+async fn demo_regeneration_leaves_no_stale_pool_or_cancel_state() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::store::migrations::run_migrations(&conn).unwrap();
+    let store = std::sync::Arc::new(std::sync::Mutex::new(Store::from_connection(conn)));
+
+    // The demo connection is registered exactly as startup registers it.
+    ensure_demo_connection(&store, std::path::Path::new("/tmp/gridline-demo-test.db")).unwrap();
+    let demo_id = {
+        let s = store.lock().unwrap();
+        s.get_connections()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.name == DEMO_CONNECTION_NAME)
+            .expect("demo connection")
+            .id
+    };
+
+    let state = app_state(store);
+    // A live session for the demo connection: pool handle + cancellation handle
+    // + tunnel, as if the user were browsing the demo database.
+    let demo_conn = rusqlite::Connection::open_in_memory().unwrap();
+    let interrupt = demo_conn.get_interrupt_handle();
+    state
+        .pool_manager
+        .lock()
+        .await
+        .register(&demo_id, crate::db::pool::DbHandle::Sqlite(demo_conn));
+    state
+        .cancel_registry
+        .set_sqlite(&demo_id, crate::cancel::SqliteCancel::new(interrupt));
+    state.cancel_registry.mark_cancelled(&demo_id);
+    let tunnel_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = tunnel_closed.clone();
+    state.ssh_manager.lock().unwrap().insert_tunnel(
+        demo_id.clone(),
+        crate::commands::ssh::Tunnel::with_closer(
+            1,
+            Box::new(move || flag.store(true, std::sync::atomic::Ordering::SeqCst)),
+        ),
+    );
+
+    disconnect_demo_connection(&state).await.unwrap();
+
+    assert!(
+        state.pool_manager.lock().await.get(&demo_id).is_none(),
+        "no stale pool handle survives demo regeneration"
+    );
+    assert!(
+        state.cancel_registry.get(&demo_id).is_none(),
+        "no stale cancellation handle survives demo regeneration"
+    );
+    assert!(
+        !state.cancel_registry.is_cancelled(&demo_id),
+        "no stale cancel-requested flag survives demo regeneration"
+    );
+    assert_eq!(
+        state.ssh_manager.lock().unwrap().active_count(),
+        0,
+        "no tunnel survives demo regeneration"
+    );
+    assert!(
+        tunnel_closed.load(std::sync::atomic::Ordering::SeqCst),
+        "the tunnel was actually closed, not just forgotten"
+    );
+
+    // Regeneration keeps the connection itself: only its live resources go.
+    let still_registered = {
+        let s = state.db_store.lock().unwrap();
+        s.get_connections().unwrap().iter().any(|c| c.id == demo_id)
+    };
+    assert!(
+        still_registered,
+        "regenerating keeps the demo connection row"
+    );
+}
