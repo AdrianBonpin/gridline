@@ -12,8 +12,8 @@ on:
     branches: [prod]
   workflow_dispatch:
 
-permissions:
-  contents: read
+# Default-deny: the single job below grants the one scope it uses.
+permissions: {}
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -27,11 +27,14 @@ jobs:
   changes:
     name: detect desktop changes
     runs-on: ubuntu-22.04
+    # Read-only: the job only reads git history to diff the pull request.
+    permissions:
+      contents: read
     outputs:
       desktop: ${{ steps.detect.outputs.desktop }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
@@ -65,9 +68,18 @@ jobs:
     runs-on: ubuntu-22.04
     # Bounded runtime: a hung `cargo test` cannot burn a runner for hours.
     timeout-minutes: 30
+    # Read-only: this job only checks out and tests.
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Asserts the release pipeline's trust rules (one pipeline, pinned
+      # actions, job-scoped tokens, tag metadata as data) before anything is
+      # built. See scripts/check-workflows.sh.
+      - name: Check release pipeline hygiene
+        run: ./scripts/check-workflows.sh
 
       # Tauri v2 needs these to compile the crate on Linux. Same list as
       # release.yml, so a missing system dependency surfaces on the PR
@@ -79,17 +91,18 @@ jobs:
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
         with:
+          toolchain: stable
           components: rustfmt
 
       - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: './desktop/src-tauri -> target'
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -119,9 +132,12 @@ jobs:
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # Read-only: it builds the app locally and uploads artifacts from it.
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       # WebKitGTK runtime + `WebKitWebDriver` (the native driver tauri-driver
       # drives) + Xvfb for a headless display. ubuntu-24.04 ships the
@@ -134,16 +150,18 @@ jobs:
             webkit2gtk-driver xvfb
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
+        with:
+          toolchain: stable
 
       - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: './desktop/src-tauri -> target'
           key: desktop-e2e
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -159,7 +177,7 @@ jobs:
 
       - name: Upload E2E failure artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: desktop-e2e-artifacts
           path: desktop/e2e-artifacts

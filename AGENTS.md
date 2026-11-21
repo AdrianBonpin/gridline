@@ -101,10 +101,10 @@ gridline/
 │   ├── astro.config.mjs
 │   ├── tsconfig.json
 │   └── src/                      # Astro pages/components/styles
-├── .github/workflows/            # release.yml (monorepo paths) + auto-assign.yml
+├── .github/workflows/            # release.yml (GitHub-only release pipeline) + ci.yml + auto-assign.yml
 ├── docs/                         # Project docs
 ├── screenshots/                  # README marketing images
-├── scripts/                      # Release tooling (render-cask.sh, release-mac.sh) + Gitea mirror (mirror-gitea.sh, hooks/, install-git-hooks.sh)
+├── scripts/                      # Release tooling (render-cask.sh, release-mac.sh, check-workflows.sh) + Gitea mirror (mirror-gitea.sh, hooks/, install-git-hooks.sh)
 ├── SECURITY.md                   # Vulnerability disclosure policy (private reports only)
 └── AGENTS.md                     # This file
 ```
@@ -187,9 +187,30 @@ Direct pushes to `prod` will be bypassed only in emergencies; prefer the PR path
 
 `scripts/mirror-gitea.sh` does the same by hand (`--branches` also pushes feature branches); it refuses to push to a GitHub remote and exits non-zero if the mirror could not be updated. The hooks downgrade that to a warning — **a Gitea outage never blocks a push to GitHub**.
 
+**The mirror is code-only.** `.gitea/workflows/` is intentionally empty: Gitea receives `prod` and the release tags but runs **no** release build, so there is exactly one release pipeline (GitHub Actions) and one set of release controls to maintain. Do not add a Gitea workflow that builds, signs, or publishes anything.
+
 ### Releases
 
-**Releases are GitHub-only.** Tag `prod` and push the tag to the `github` remote — `git tag vN.M.N && git push github vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub). The Gitea tag arrives automatically via the `pre-push` hook (or `scripts/mirror-gitea.sh`) — never `git push origin vN.M.N` expecting a build, and never publish a release on Gitea.
+**Releases are GitHub-only.** Tag `prod` and push the tag to the `github` remote — `git tag vN.M.N && git push github vN.M.N`. GitHub Actions (`release.yml`) builds installers for macOS (Apple Silicon + Intel), Windows, and Linux and opens a **draft** release (review + publish on GitHub). The Gitea tag arrives automatically via the `pre-push` hook (or `scripts/mirror-gitea.sh`) but triggers no build — never `git push origin vN.M.N` expecting one, and never publish a release on Gitea.
+
+**Release workflow trust rules** (asserted by `scripts/check-workflows.sh`, which `ci.yml` runs on every pull request):
+
+- Every third-party action is pinned to a full 40-character commit SHA with the human-readable version in a trailing comment. Bump the SHA and the comment together.
+- `permissions: {}` at workflow level; each job grants only the scope it uses (`publish` → `contents: write`; `bump-cask` → `contents: read`; CI → `contents: read`; auto-assign → `issues: write`). A new job gets no token until it declares one.
+- Ref/tag metadata and secrets reach shell steps through `env:`, never through `${{ }}` inside a `run:` body. Tag values are compared as data (shell/`awk`), never spliced into a `jq` program or a rendered template body.
+- `pull_request_target` is not used anywhere.
+
+### Release ref protection (owner-applied repository settings)
+
+These are **repository settings, not files** — they cannot be committed, so the repo cannot prove them and `scripts/check-workflows.sh` cannot assert them. An owner with admin rights must apply and periodically re-verify them:
+
+1. **Ruleset on `prod`** (Settings → Rules → Rulesets → new branch ruleset, target `prod`): require a pull request before merging (no bypass except an explicit admin emergency), require the `checks` status check from `ci.yml` (`fmt + tests + build`), block force pushes, block deletions. This is what makes a release tag reachable from reviewed default-branch history.
+2. **Tag ruleset for `v*`** (Settings → Rules → Rulesets → new tag ruleset, target tag pattern `v*`): restrict creations/updates/deletions to the maintainer role only, block force pushes and deletions. A release tag must therefore be cut from reviewed `prod`, never moved afterwards.
+3. **Immutable releases** (Settings → General → Releases → *Enable release immutability*): once a release is published its tag and assets are locked; an artifact cannot be swapped under a version users already downloaded.
+4. **Actions token policy** (Settings → Actions → General → Workflow permissions): default `GITHUB_TOKEN` permissions = **read-only** (the workflows grant write scopes explicitly), and *Allow GitHub Actions to create and approve pull requests* = off.
+5. **Tag creation is not delegated to workflows**: no workflow may create or move a `v*` tag. Releases are built from an existing tag only.
+
+If a new release ref is ever needed, repeat steps 1–3 for it — an unprotected `v*` tag that can be moved is enough to publish a signed artifact over reviewed history.
 
 **Before tagging**, keep everything in sync:
 - Version number across `desktop/package.json`, `desktop/src-tauri/Cargo.toml` (+ the `gridline` entry in `desktop/src-tauri/Cargo.lock` — run any `cargo metadata`/`cargo build` to sync it; do NOT blanket-replace `0.8.x` in the lock, the sqlx family shares that version), `desktop/src-tauri/tauri.conf.json`
