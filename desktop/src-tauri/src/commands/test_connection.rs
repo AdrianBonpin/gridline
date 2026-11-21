@@ -22,77 +22,14 @@ pub struct TestConnectionResult {
 /// Strip credentials and sensitive information from error messages while
 /// preserving the useful diagnostic detail (severity, message, SQLSTATE).
 ///
-/// Redacts `password=...`, `user=...`, `postgresql://user:pwd@host` URLs,
-/// and `@host` credential fragments rather than discarding the whole
-/// message — so the user can still see e.g. "password authentication
-/// failed for user 'foo'" without leaking the password itself.
+/// Redacts `password=...`, `user=...`, `secret…`, and any `scheme://user:pwd@host`
+/// URL rather than discarding the whole message — so the user can still see
+/// e.g. "password authentication failed for user 'foo'" without the password
+/// itself. The work is one bounded, linear, Unicode-safe pass
+/// ([`crate::diagnostics::redact`]): a megabyte of subprocess stderr cannot
+/// stall the command, and a cut inside a multi-byte character cannot panic.
 pub fn sanitize_error(msg: &str) -> String {
-    let mut out = String::with_capacity(msg.len());
-    let bytes = msg.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let lower = msg[i..].to_lowercase();
-        if let Some(scheme_end) = url_scheme_end(msg, i) {
-            out.push_str("[redacted-url://");
-            let rest = &msg[scheme_end..];
-            let end = match rest.find(['/', '?']) {
-                Some(pos) => scheme_end + pos,
-                None => msg.len(),
-            };
-            i = end;
-        } else if lower.starts_with("password=") {
-            out.push_str("[redacted]");
-            let rest = &msg[i + "password=".len()..];
-            let skip = rest.find(char::is_whitespace).unwrap_or(rest.len());
-            i += "password=".len() + skip;
-        } else if lower.starts_with("user=") {
-            out.push_str("[redacted]");
-            let rest = &msg[i + "user=".len()..];
-            let skip = rest.find(char::is_whitespace).unwrap_or(rest.len());
-            i += "user=".len() + skip;
-        } else if lower.starts_with("secret") {
-            out.push_str("secret=[redacted]");
-            let rest = &msg[i + "secret".len()..];
-            let skip = rest.find(char::is_whitespace).unwrap_or(rest.len());
-            i += "secret".len() + skip;
-        } else {
-            let ch = msg[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
-        }
-    }
-    // Truncate at 300 characters for safety.
-    if out.len() > 300 {
-        format!("{}...", &out[..297])
-    } else {
-        out
-    }
-}
-
-/// If `msg[i..]` begins a `scheme://authority` URL — a 1-16 char scheme of
-/// alphanumerics/`+`/`-`/`.` preceded by a non-word boundary — return the byte
-/// index just past the `://`. This redacts embedded credentials for any scheme
-/// (`postgres://`, `redis://`, `mysql://`, ...) without matching non-URL text.
-fn url_scheme_end(msg: &str, i: usize) -> Option<usize> {
-    let rest = &msg[i..];
-    let colon = rest.find("://")?;
-    if colon == 0 || colon > 16 {
-        return None;
-    }
-    let scheme = &rest[..colon];
-    if !scheme
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
-    {
-        return None;
-    }
-    // Require a boundary before the scheme so mid-word text is not a URL.
-    if let Some(c) = msg[..i].chars().next_back() {
-        if c.is_ascii_alphanumeric() || c == '_' {
-            return None;
-        }
-    }
-    Some(i + colon + 3)
+    crate::diagnostics::redact(msg, crate::diagnostics::MAX_CONNECTION_ERROR_BYTES)
 }
 
 /// Validate `DbConfig` before attempting a connection test.
