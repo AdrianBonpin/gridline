@@ -7,10 +7,11 @@
 //!   They are built at the command boundary from a consumed File Grant (see
 //!   `crate::file_grant`) and are never deserialized straight from renderer
 //!   input.
-//! * **Renderer requests** ([`PgDumpOptions`], [`MySqlDumpOptions`]) carry no
-//!   path at all — only a grant id travels alongside them — and reject unknown
-//!   fields, so a stale renderer that still sends `filePath` fails loudly
-//!   instead of having its path silently ignored.
+//! * **Renderer requests** ([`PgDumpOptions`], [`MySqlDumpOptions`],
+//!   [`PgRestoreRequest`], [`MySqlRestoreRequest`], [`SqliteRestoreRequest`])
+//!   carry no path at all — only a grant id travels alongside them — and reject
+//!   unknown fields, so a stale renderer that still sends `filePath` fails
+//!   loudly instead of having its path silently ignored.
 
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +58,28 @@ pub struct RestoreOptions {
     pub file_path: String,
     pub clean: bool,
     pub schema: Option<String>,
+}
+
+/// What the renderer may ask for when it starts a PostgreSQL restore. No input
+/// path: the file comes from the File Grant named by `file_grant`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PgRestoreRequest {
+    pub format: String,
+    pub clean: bool,
+    pub schema: Option<String>,
+}
+
+impl PgRestoreRequest {
+    /// Combine this request with the path a File Grant authorized.
+    pub fn with_source_path(self, file_path: String) -> RestoreOptions {
+        RestoreOptions {
+            format: self.format,
+            file_path,
+            clean: self.clean,
+            schema: self.schema,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,11 +203,49 @@ pub struct MySqlRestoreOptions {
     pub clean: bool,
 }
 
+/// What the renderer may ask for when it starts a MySQL restore. No input path
+/// — see [`PgRestoreRequest`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MySqlRestoreRequest {
+    pub database: String,
+    pub clean: bool,
+}
+
+impl MySqlRestoreRequest {
+    /// Combine this request with the path a File Grant authorized.
+    pub fn with_source_path(self, file_path: String) -> MySqlRestoreOptions {
+        MySqlRestoreOptions {
+            database: self.database,
+            file_path,
+            clean: self.clean,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SqliteRestoreOptions {
     pub file_path: String,
     pub clean: bool,
+}
+
+/// What the renderer may ask for when it starts a SQLite restore. No input path
+/// — see [`PgRestoreRequest`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqliteRestoreRequest {
+    pub clean: bool,
+}
+
+impl SqliteRestoreRequest {
+    /// Combine this request with the path a File Grant authorized.
+    pub fn with_source_path(self, file_path: String) -> SqliteRestoreOptions {
+        SqliteRestoreOptions {
+            file_path,
+            clean: self.clean,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

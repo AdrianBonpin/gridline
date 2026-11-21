@@ -1,12 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { RestorePage } from "./RestorePage";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import * as commands from "../../lib/commands";
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockReturnValue(Promise.resolve(() => {})) }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn().mockResolvedValue("/tmp/backup.dump") }));
+
+/** The grant the backend would issue for a native read selection. */
+function readGrant(id = "grant-1", path = "/tmp/backup.dump") {
+  return {
+    id,
+    path,
+    displayName: path.split("/").pop() ?? path,
+    intent: "read" as const,
+    expiresInSeconds: 300,
+  };
+}
 
 const mockConnections: any[] = [];
 vi.mock("../../stores/connectionStore", () => ({
@@ -119,13 +129,101 @@ describe("RestorePage DB-aware", () => {
     expect(screen.getByText(/no MySQL client installation required/i)).toBeTruthy();
     expect(screen.getByText(/only the objects this file defines/i)).toBeTruthy();
 
-    fireEvent.change(screen.getByPlaceholderText("/path/to/backup.dump"), {
-      target: { value: "/tmp/backup.sql" },
-    });
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(
+      readGrant("grant-mariadb", "/tmp/backup.sql"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /browse for file/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId("restore-input-path")).toHaveProperty("value", "/tmp/backup.sql"),
+    );
     fireEvent.click(screen.getByTestId("restore-confirm-checkbox"));
     fireEvent.click(screen.getByRole("button", { name: /start restore/i }));
 
     await waitFor(() => expect(mysqlRestore).toHaveBeenCalled());
     expect(sqliteRestore).not.toHaveBeenCalled();
+  });
+});
+
+describe("RestorePage File Grants", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockConnections.length = 0;
+    useBackupStore.setState({ jobs: [], activeJobId: null, progress: 0 });
+    useNotificationStore.setState({ notifications: [] });
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    vi.spyOn(commands, "detectPgTools").mockResolvedValue(pgToolsOk);
+  });
+
+  it("cannot start from a typed path: the field is display-only and a selection is required", async () => {
+    mockConnections.push({ id: "g1", db_type: "postgresql", name: "p" });
+    const restore = vi.spyOn(commands, "pgRestore").mockResolvedValue("job-1");
+
+    render(<RestorePage connectionId="g1" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_restore/i)).not.toBeInTheDocument());
+
+    // A renderer-supplied path is not a File Grant, so the field cannot be typed into.
+    const input = screen.getByTestId("restore-input-path") as HTMLInputElement;
+    expect(input.readOnly).toBe(true);
+
+    fireEvent.change(input, { target: { value: "/tmp/renderer-chosen.dump" } });
+    fireEvent.click(screen.getByTestId("restore-confirm-checkbox"));
+
+    expect(input.value).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: /start restore/i }));
+    expect(restore).not.toHaveBeenCalled();
+  });
+
+  it("consumes the read grant for one restore and needs a fresh selection afterwards", async () => {
+    mockConnections.push({ id: "g2", db_type: "postgresql", name: "p" });
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(readGrant("grant-restore"));
+    const restore = vi.spyOn(commands, "pgRestore").mockResolvedValue("job-1");
+
+    render(<RestorePage connectionId="g2" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_restore/i)).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /browse for file/i }));
+    await waitFor(() => expect(commands.selectFileForGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ intent: "read" }),
+    ));
+
+    fireEvent.click(screen.getByTestId("restore-confirm-checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /start restore/i }));
+
+    await waitFor(() =>
+      expect(restore).toHaveBeenCalledWith(
+        "g2",
+        { format: "custom", clean: true, schema: undefined },
+        "grant-restore",
+      ),
+    );
+
+    // The selection is spent: once the job finishes, Start is disabled again
+    // until another file is chosen (the same grant cannot be replayed).
+    act(() => useBackupStore.getState().completeJob("job-1"));
+    const start = await screen.findByRole("button", { name: /start restore/i });
+    expect((start as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows the expired-grant state instead of falling back to a raw path", async () => {
+    mockConnections.push({ id: "g3", db_type: "postgresql", name: "p" });
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(readGrant("grant-stale"));
+    vi.spyOn(commands, "pgRestore").mockRejectedValue(
+      new Error("file-grant-expired: The file selection expired five minutes after it was made."),
+    );
+
+    render(<RestorePage connectionId="g3" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_restore/i)).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /browse for file/i }));
+    await waitFor(() => expect(screen.queryByTestId("restore-input-path")).not.toBeNull());
+    fireEvent.click(screen.getByTestId("restore-confirm-checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /start restore/i }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("restore-file-grant-expired")).toBeTruthy(),
+    );
+    // Recovery is a fresh selection, not reuse of the displayed path.
+    expect(screen.getByRole("button", { name: /choose file/i })).toBeTruthy();
+    expect(screen.getByTestId("restore-input-path")).toHaveProperty("value", "/tmp/backup.dump");
   });
 });

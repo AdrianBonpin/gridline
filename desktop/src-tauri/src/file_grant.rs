@@ -308,6 +308,27 @@ pub fn validate_grant_path(raw: &str) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
+/// Consume a grant for the operation that is about to touch the file and
+/// return the authorized path.
+///
+/// Every file-touching command resolves its path here and nowhere else. A raw
+/// renderer-supplied path, an empty string, a replayed id, a grant minted for
+/// the other intent, and an expired grant all fail closed with the specific
+/// `file-grant-*` state and authorize nothing (see `GLOSSARY.md` → File Grant).
+pub fn consume_granted_path(
+    grants: &FileGrantStore,
+    grant_id: &str,
+    intent: FileIntent,
+) -> Result<String, String> {
+    let path = grants.consume(grant_id, intent).map_err(|e| e.to_ipc())?;
+    path.to_str().map(|s| s.to_string()).ok_or_else(|| {
+        format!(
+            "{}: The selected path cannot be represented as text. Choose the file again.",
+            CODE_INVALID
+        )
+    })
+}
+
 /// The one path from a native selection to a File Grant.
 ///
 /// Returns `Ok(None)` when the user cancelled (nothing is minted, nothing is
