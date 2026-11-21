@@ -116,7 +116,7 @@ describe("TableOverflowMenu", () => {
     render(<TableOverflowMenu schema="public" table="t" onOpenTab={() => "tab-1"} columns={columns} rows={[[1]]} />);
     fireEvent.click(screen.getByLabelText(/table options/i));
     fireEvent.click(screen.getByText(/export data \(csv\)/i));
-    await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "csv", "public.t"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "csv", "t", { schema: "public", dbType: undefined }));
   });
 
   it("Excel export calls exportData and notifies", async () => {
@@ -127,7 +127,7 @@ describe("TableOverflowMenu", () => {
     render(<TableOverflowMenu schema="public" table="t" onOpenTab={() => "tab-1"} columns={columns} rows={[[1]]} />);
     fireEvent.click(screen.getByLabelText(/table options/i));
     fireEvent.click(screen.getByText(/export data \(excel\)/i));
-    await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "xlsx", "public.t"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "xlsx", "t", { schema: "public", dbType: undefined }));
     const st = useNotificationStore.getState();
     expect(st.notifications.some((n) => n.message.toLowerCase().includes("exported"))).toBe(true);
   });
@@ -189,6 +189,8 @@ describe("TableOverflowMenu", () => {
     const params = openFormTab.mock.calls[0][0].params as any;
     expect(params.action.columns.map((c: any) => c.name)).toEqual(["id", "email"]);
     expect(params.action.old_columns.map((c: any) => c.name)).toEqual(["id", "email"]);
+    // Column Identity travels with each editable row.
+    expect(params.action.columns.map((c: any) => c.original_name)).toEqual(["id", "email"]);
   });
 
   it("Edit Table from an unexpanded tree item shows the live columns, not an empty form", async () => {

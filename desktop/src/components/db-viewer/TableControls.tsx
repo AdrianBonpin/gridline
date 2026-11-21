@@ -7,8 +7,14 @@ import {
 import { useDbViewerStore, type FilterRule, type SortRule } from "../../stores/dbViewerStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { Tooltip } from "../ui/Tooltip";
-import { exportData } from "../../lib/exportData";
 import { projectDeclaredCells, rowIdentityFor } from "../../lib/rowIdentity";
+import {
+  csvCopyCell,
+  exportData,
+  qualifiedNameSql,
+  quoteIdentifier,
+  sqlLiteral,
+} from "../../lib/exportData";
 import type { ColumnInfo } from "../../lib/types";
 
 const AUTO_REFRESH_OPTIONS = [
@@ -341,39 +347,35 @@ function BulkActionsDropdown({
     setOpen(false);
   };
 
+  // Every copy shares the export writers, so a copied row is projected,
+  // quoted and NULL-marked exactly like an exported one. Only the declared
+  // columns are copied: a no-PK row's trailing row locator is never data.
   const handleCopyJSON = () => {
     const json = selectedRows.map((row) => {
       const obj: Record<string, unknown> = {};
-      columns.forEach((c, i) => { obj[c.name] = row[i] ?? null; });
+      projectDeclaredCells(row, columns).forEach((cell, i) => {
+        obj[columns[i].name] = cell ?? null;
+      });
       return obj;
     });
     copyToClipboard(JSON.stringify(json, null, 2));
   };
 
   const handleCopyCSV = () => {
-    const headers = columns.map((c) => c.name);
-    const csvRows = [headers.map((h) => `"${h.replace(/"/g, '""')}"`).join(",")];
+    const csvRows = [columns.map((c) => csvCopyCell(c.name)).join(",")];
     for (const row of selectedRows) {
-      csvRows.push(
-        projectDeclaredCells(row, columns).map((cell) => {
-          const s = cell === null || cell === undefined ? "" : String(cell);
-          return `"${s.replace(/"/g, '""')}"`;
-        }).join(","),
-      );
+      csvRows.push(projectDeclaredCells(row, columns).map(csvCopyCell).join(","));
     }
     copyToClipboard(csvRows.join("\n"));
   };
 
   const handleCopySQL = () => {
-    const headers = columns.map((c) => c.name);
+    const target = qualifiedNameSql(dbType, schema, table);
+    const columnList = columns.map((c) => quoteIdentifier(c.name, dbType)).join(", ");
     const lines: string[] = [];
     for (const row of selectedRows) {
-      const vals = projectDeclaredCells(row, columns).map((cell) =>
-        cell === null ? "NULL"
-        : typeof cell === "number" ? String(cell)
-        : `'${String(cell).replace(/'/g, "''")}'`,
-      );
-      lines.push(`INSERT INTO ${schema}.${table} (${headers.join(", ")}) VALUES (${vals.join(", ")});`);
+      const vals = projectDeclaredCells(row, columns).map((cell) => sqlLiteral(cell, dbType));
+      lines.push(`INSERT INTO ${target} (${columnList}) VALUES (${vals.join(", ")});`);
     }
     copyToClipboard(lines.join("\n"));
   };
@@ -630,7 +632,7 @@ export function TableControls({
     const label =
       EXPORT_FORMATS.find((f) => f.ext === format)?.label ?? format.toUpperCase();
     try {
-      exportData(rows, columns, format, table);
+      exportData(rows, columns, format, table, { schema, dbType });
       notify(
         `Exported ${rows.length} row${rows.length === 1 ? "" : "s"} as ${label}`,
         "success",

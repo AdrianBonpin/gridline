@@ -197,7 +197,7 @@ export function TableOverflowMenu({
               : format.toUpperCase();
         try {
           if (rows && rows.length > 0 && columns && columns.length > 0) {
-            exportData(rows, columns, format, `${schema}.${table}`);
+            exportData(rows, columns, format, table, { schema, dbType });
             notify(
               `Exported ${rows.length} row${rows.length === 1 ? "" : "s"} as ${label}`,
               "success",
@@ -209,7 +209,7 @@ export function TableOverflowMenu({
             if (!result.rows.length) {
               notify("Nothing to export", "info");
             } else {
-              exportData(result.rows, result.columns, format, `${schema}.${table}`);
+              exportData(result.rows, result.columns, format, table, { schema, dbType });
               // The table path always reports an exact total; treat an absent
               // one as "no truncation claim" rather than inventing a number.
               const truncated =
@@ -286,7 +286,12 @@ export function TableOverflowMenu({
             name: table,
             action: {
               op: "edit",
-              columns: columnMeta,
+              // Each row remembers its live column (Column Identity); a rename
+              // is a name the user edits on that row, never a positional match.
+              columns: columnMeta.map((c) => ({
+                ...c,
+                original_name: c.name,
+              })),
               old_columns: columnMeta,
             },
           },

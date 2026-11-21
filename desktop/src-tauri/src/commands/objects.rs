@@ -370,6 +370,7 @@ fn sqlite_live_columns(
             is_pk: *is_pk,
             auto_increment: autoinc && *is_pk && dtype.trim().eq_ignore_ascii_case("INTEGER"),
             unique: unique_cols.contains(name),
+            renamed_from: None,
         })
         .collect())
 }

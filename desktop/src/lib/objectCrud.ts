@@ -214,10 +214,14 @@ export function initialCrudParams(
         name: mode === "edit" ? item.name : "",
         action: {
           op: mode === "edit" ? "edit" : "create",
+          // Column Identity: each row remembers the live column it came from,
+          // so a name the user later edits is an explicit rename and a row they
+          // add is not.
           columns: mode === "edit"
             ? (item.columnMeta ?? []).map((c) => ({
                 name: c.name, type: c.type, nullable: c.nullable,
                 default: c.default ?? null, is_pk: c.is_pk,
+                original_name: c.name,
               }))
             : [],
           old_columns: mode === "edit" ? (item.columnMeta ?? []) : undefined,

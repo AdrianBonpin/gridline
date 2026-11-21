@@ -122,7 +122,8 @@ describe("exportData projects only declared columns", () => {
   it("sql replays with matching column and value counts", async () => {
     const text = await exportedText("sql");
     const values = text.split("\n")[1];
-    expect(values).toBe("INSERT INTO page_views (url, session_id) VALUES ('/products', 'sess-001');");
+    // Identifiers are quoted for replay; the count still matches the header.
+    expect(values).toBe('INSERT INTO "page_views" ("url", "session_id") VALUES (\'/products\', \'sess-001\');');
   });
 
   it("markdown keeps one cell per declared column", async () => {
