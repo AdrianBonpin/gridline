@@ -76,6 +76,11 @@ export function missingValues(cells, expected) {
   return expected.filter((needle) => !cells.some((cell) => cell.includes(needle)));
 }
 
+/** Fixture values a rendered-cell observation does prove are on screen. */
+export function matchedValues(cells, expected) {
+  return expected.filter((needle) => cells.some((cell) => cell.includes(needle)));
+}
+
 /**
  * Whether the DOM source mentions values that no rendered cell exposed. Only
  * used to explain a failure — never to make an assertion pass.
@@ -93,6 +98,30 @@ function sample(cells, limit = 6) {
   if (!cells.length) return "";
   const shown = cells.slice(0, limit).map((cell) => JSON.stringify(cell));
   return cells.length > limit ? `${shown.join(", ")}, …` : shown.join(", ");
+}
+
+/**
+ * One-line description of what a passing run actually saw on screen, so the job
+ * log carries the observation instead of only the word PASS.
+ *
+ * @param {string[] | undefined} cells
+ * @returns {string} e.g. `3 rendered cell(s), e.g. "GL-MSE-001", "Gridline Wireless Mouse"`
+ */
+export function describeRenderedCells(cells, limit = 4) {
+  if (!Array.isArray(cells) || cells.length === 0) return "";
+  return `${cells.length} rendered cell(s), e.g. ${sample(cells, limit)}`;
+}
+
+/**
+ * The fixture values a passing observation proved are on screen — the exact
+ * evidence the assertion rests on, printed so a log line can be quoted as proof.
+ *
+ * @param {string[] | undefined} matched
+ * @returns {string} e.g. `"GL-MSE-001", "Gridline Wireless Mouse"`
+ */
+export function describeMatchedValues(matched) {
+  if (!Array.isArray(matched) || matched.length === 0) return "";
+  return matched.map((value) => JSON.stringify(value)).join(", ");
 }
 
 async function failureReason(driver, { gridSelectorValue, timeoutMs, sawGrid, observation, missing }) {

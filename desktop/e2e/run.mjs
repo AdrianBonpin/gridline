@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { createRunArtifacts } from "./artifacts.mjs";
 import { errorMessage } from "./errors.mjs";
+import { describeMatchedValues, describeRenderedCells } from "./gridContent.mjs";
 import { FLOWS, planRun } from "./preflight.mjs";
 import { runDemoSmokeFlow } from "./smokeFlow.mjs";
 import { buildCapabilities, startTauriDriver } from "./tauriDriver.mjs";
@@ -71,8 +72,16 @@ export async function executeRun(plan, dependencies = {}) {
       intervalMs: plan.intervalMs,
     });
     for (const step of result.steps) log(`e2e: ok ${step.name} (${step.durationMs}ms)`);
+    // Record what was actually observed, not just that the flow returned: the
+    // job log has to show the rendered values that satisfied the assertion.
+    const observed = describeRenderedCells(result.renderedCells);
+    const matched = describeMatchedValues(result.matchedCells);
+    if (observed) log(`e2e: grid observed ${observed}`);
+    if (matched) log(`e2e: fixture values rendered in the grid: ${matched}`);
     artifacts.writeSummary([
       ...result.steps.map((step) => `${step.name} (${step.durationMs}ms)`),
+      ...(observed ? [`grid observed ${observed}`] : []),
+      ...(matched ? [`fixture values rendered in the grid: ${matched}`] : []),
       "PASS",
     ]);
     log("e2e: PASS the built app rendered the seeded demo rows");

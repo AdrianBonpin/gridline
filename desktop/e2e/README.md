@@ -64,7 +64,16 @@ setup is needed on a headless Linux box. Useful flags (`bun run e2e:desktop --
    WebDriver attribute endpoint.
 
 Step 5 is the point of the harness: a live process, a mapped window, and even a
-mounted grid are not proof. Only rendered seeded data is.
+mounted grid are not proof. Only rendered seeded data is. A passing run prints
+what it saw, so the job log is evidence on its own rather than just the word
+`PASS`:
+
+```
+e2e: ok grid: seeded products rows visible (260ms)
+e2e: grid observed 288 rendered cell(s), e.g. "3", "GL-HUB-001", "Gridline 7-in-1 USB-C Hub", …
+e2e: fixture values rendered in the grid: "GL-MSE-001", "Gridline Wireless Mouse"
+e2e: PASS the built app rendered the seeded demo rows
+```
 
 ### Why the grid assertion reads attributes, not text
 

@@ -6,7 +6,7 @@ import {
   gridSelector,
   tableTreeItemSelector,
 } from "./expectations.mjs";
-import { waitForRenderedCells } from "./gridContent.mjs";
+import { matchedValues, waitForRenderedCells } from "./gridContent.mjs";
 import { pollUntil } from "./poll.mjs";
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -93,7 +93,12 @@ export async function runDemoSmokeFlow(driver, options = {}) {
       }),
     );
 
-    return { steps, renderedCells: rendered.cells };
+    // The values the assertion actually matched, so the run can report them.
+    return {
+      steps,
+      renderedCells: rendered.cells,
+      matchedCells: matchedValues(rendered.cells, expectedCells),
+    };
   } catch (error) {
     // Attach completed steps so the failure report shows how far the app got.
     if (error && typeof error === "object") error.steps = steps;

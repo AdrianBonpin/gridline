@@ -123,6 +123,7 @@ describe("runDemoSmokeFlow", () => {
       `grid: seeded ${DEMO_TABLE} rows visible`,
     ]);
     expect(result.renderedCells).toContain("GL-MSE-001");
+    expect(result.matchedCells).toEqual([...DEMO_TABLE_CELLS]);
   });
 
   it("waits for the webview instead of failing on the first poll", async () => {
@@ -204,6 +205,8 @@ describe("runDemoSmokeFlow", () => {
     });
     expect(result.renderedCells).toContain("GL-MSE-001");
     expect(result.renderedCells).toContain("Gridline Wireless Mouse");
+    // What the assertion actually proved, reported back for the job log.
+    expect(result.matchedCells).toEqual(["GL-MSE-001", "Gridline Wireless Mouse"]);
   });
 
   it("reports the grid element itself when it never renders", async () => {

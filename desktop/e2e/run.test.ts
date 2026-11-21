@@ -72,7 +72,8 @@ describe("executeRun", () => {
         { name: "home: Gridline Demo (SQLite) card visible", durationMs: 5 },
         { name: "grid: seeded products rows visible", durationMs: 7 },
       ],
-      renderedCells: ["GL-MSE-001", "Gridline Wireless Mouse"],
+      renderedCells: ["GL-MSE-001", "Gridline Wireless Mouse", "GL-KBD-001"],
+      matchedCells: ["GL-MSE-001", "Gridline Wireless Mouse"],
     }));
     const log: string[] = [];
 
@@ -100,9 +101,15 @@ describe("executeRun", () => {
     expect(artifacts.summary).toEqual([
       "home: Gridline Demo (SQLite) card visible (5ms)",
       "grid: seeded products rows visible (7ms)",
+      'grid observed 3 rendered cell(s), e.g. "GL-MSE-001", "Gridline Wireless Mouse", "GL-KBD-001"',
+      'fixture values rendered in the grid: "GL-MSE-001", "Gridline Wireless Mouse"',
       "PASS",
     ]);
     expect(log.join("\n")).toContain("PASS");
+    // The pass line states what the grid showed, so a log is evidence on its own.
+    expect(log.join("\n")).toContain(
+      'fixture values rendered in the grid: "GL-MSE-001", "Gridline Wireless Mouse"',
+    );
     expect(artifacts.captureFailure).not.toHaveBeenCalled();
     expect(client.deleteSession).toHaveBeenCalled();
     expect(driver.stop).toHaveBeenCalled();

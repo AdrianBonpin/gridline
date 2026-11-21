@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { HarnessError } from "./errors.mjs";
 import {
+  describeMatchedValues,
+  describeRenderedCells,
   gridCellSelector,
+  matchedValues,
   missingValues,
   observeGridCells,
   waitForRenderedCells,
@@ -159,6 +162,30 @@ describe("grid rendered-cell assertions", () => {
       /the DOM source mentions "GL-MSE-001" but no rendered cell exposes it/,
     );
     await expect(failure).rejects.toThrow(/page source is not accepted as proof/);
+  });
+
+  it("describes what a passing run observed, and nothing when nothing was rendered", () => {
+    // The pass line in the job log must carry the observation; an empty grid
+    // must not produce a bogus "0 rendered cells" success line.
+    expect(describeRenderedCells(undefined)).toBe("");
+    expect(describeRenderedCells([])).toBe("");
+    expect(describeRenderedCells(DEMO_CELLS.map((cell) => cell.title))).toBe(
+      '2 rendered cell(s), e.g. "GL-MSE-001", "Gridline Wireless Mouse"',
+    );
+    expect(describeRenderedCells(["a", "b", "c", "d", "e"])).toBe(
+      '5 rendered cell(s), e.g. "a", "b", "c", "d", …',
+    );
+  });
+
+  it("separates the fixture values that were rendered from the ones that were not", () => {
+    const cells = ["GL-MSE-001", "Gridline Wireless Mouse", "34.99"];
+    expect(matchedValues(cells, ["GL-MSE-001", "GL-KBD-001"])).toEqual(["GL-MSE-001"]);
+    expect(missingValues(cells, ["GL-MSE-001", "GL-KBD-001"])).toEqual(["GL-KBD-001"]);
+    expect(describeMatchedValues(["GL-MSE-001", "Gridline Wireless Mouse"])).toBe(
+      '"GL-MSE-001", "Gridline Wireless Mouse"',
+    );
+    expect(describeMatchedValues([])).toBe("");
+    expect(describeMatchedValues(undefined)).toBe("");
   });
 
   it("keeps polling while only part of the row has rendered", async () => {

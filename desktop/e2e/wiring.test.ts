@@ -30,6 +30,37 @@ describe("desktop E2E wiring", () => {
     expect(ci).toContain("needs.changes.outputs.desktop");
   });
 
+  it("gates the job on every dependency that can change what the app renders", () => {
+    // The changed-file pattern is the whole gating contract: a path that fails
+    // to match means the built product is never exercised for that change, so
+    // the desktop frontend, the Tauri backend (viewer state + commands) and the
+    // dependency manifests/lockfiles all have to be covered.
+    const ci = read(".github/workflows/ci.yml");
+    const pattern = /grep -Eq '([^']+)' changed-files\.txt/.exec(ci);
+    expect(pattern, "ci.yml must diff changed files against a documented pattern").not.toBeNull();
+    const matches = new RegExp(pattern![1]);
+
+    for (const path of [
+      // desktop frontend + viewer state
+      "desktop/src/components/db-viewer/DataGrid.tsx",
+      "desktop/src/stores/viewerStore.ts",
+      // Tauri command behavior
+      "desktop/src-tauri/src/commands/query.rs",
+      // dependency changes
+      "desktop/package.json",
+      "bun.lock",
+      "package.json",
+      // the harness's own gate
+      ".github/workflows/ci.yml",
+    ]) {
+      expect(matches.test(path), `${path} must trigger the desktop e2e job`).toBe(true);
+    }
+
+    for (const path of ["docs/tickets/github-audit-hardening/01-desktop-e2e-harness.md", "www/src/pages/index.astro"]) {
+      expect(matches.test(path), `${path} must not trigger the desktop e2e job`).toBe(false);
+    }
+  });
+
   it("launches the built binary through tauri-driver on a headless display", () => {
     const ci = read(".github/workflows/ci.yml");
     expect(ci).toContain("webkit2gtk-driver");
@@ -41,7 +72,8 @@ describe("desktop E2E wiring", () => {
 
   it("retains launch logs and screenshots when the job fails", () => {
     const ci = read(".github/workflows/ci.yml");
-    expect(ci).toMatch(/uses: actions\/upload-artifact@v\d+/);
+    // Pinned to a commit SHA, like every other action (scripts/check-workflows.sh).
+    expect(ci).toMatch(/uses: actions\/upload-artifact@[0-9a-f]{40}\b/);
     expect(ci).toContain("desktop/e2e-artifacts");
     const uploadIndex = ci.indexOf("upload-artifact");
     const stepBeforeUpload = ci.slice(Math.max(0, uploadIndex - 400), uploadIndex);
