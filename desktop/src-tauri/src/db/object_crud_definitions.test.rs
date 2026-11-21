@@ -157,3 +157,27 @@ fn trigger_create_quotes_awkward_identifiers() {
         "CREATE TRIGGER \"tr weird\" BEFORE INSERT ON \"my schema\".\"orders 2024\" FOR EACH ROW EXECUTE FUNCTION \"select\".\"fn Audit\"()"
     );
 }
+
+/// Argument names are identifiers too: a name needing quotes is quoted, and an
+/// unnamed argument stays unnamed.
+#[test]
+fn function_argument_names_are_quoted() {
+    let p = serde_json::json!({
+        "schema": "public", "name": "f", "is_procedure": false,
+        "action": {
+            "op": "create_or_replace",
+            "args": [
+                { "mode": "in", "name": "we ird", "type": "int" },
+                { "mode": "out", "name": "a\"b", "type": "text" },
+                { "mode": "in", "name": "", "type": "numeric" }
+            ],
+            "return_type": null, "language": "sql", "body": "SELECT 1",
+            "volatility": null, "strict": false
+        }
+    });
+    let sql = create_sql("function", p).expect("DDL must build");
+    assert!(
+        sql.contains("(\"we ird\" int, OUT \"a\"\"b\" text, numeric)"),
+        "argument names must be quoted identifiers: {sql}"
+    );
+}

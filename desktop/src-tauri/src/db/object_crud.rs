@@ -492,12 +492,23 @@ pub enum FunctionAction {
     },
 }
 
+/// `mode name type` for one argument. The argument *name* is an identifier and
+/// is quoted through `db::ident` (an empty name is legal — PG allows unnamed
+/// arguments); the type is SQL the user authored, so it is passed through as is.
 fn arg_sql(a: &FunctionArg) -> String {
     let mode = match a.mode.trim().to_lowercase().as_str() {
         "in" | "" => String::new(),
         m => format!("{} ", m.to_uppercase()),
     };
-    format!("{}{} {}", mode, a.name, a.type_)
+    let name = if a.name.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{} ",
+            crate::db::ident::quote(crate::db::ident::Engine::PostgreSql, a.name.trim())
+        )
+    };
+    format!("{mode}{name}{}", a.type_)
 }
 
 /// A routine language is a plain identifier (`plpgsql`, `sql`, `c`, …). It is
@@ -1760,7 +1771,7 @@ mod tests {
                 "volatility": "IMMUTABLE", "strict": true }
         });
         assert_eq!(build_ddl("function", p).unwrap(), vec![
-            "CREATE OR REPLACE FUNCTION \"public\".\"add\"(a int, b int) RETURNS int LANGUAGE plpgsql IMMUTABLE STRICT AS $$BEGIN RETURN a+b; END$$"
+            "CREATE OR REPLACE FUNCTION \"public\".\"add\"(\"a\" int, \"b\" int) RETURNS int LANGUAGE plpgsql IMMUTABLE STRICT AS $$BEGIN RETURN a+b; END$$"
         ]);
     }
 
@@ -1774,7 +1785,7 @@ mod tests {
                 "volatility": null, "strict": false }
         });
         assert_eq!(build_ddl("procedure", p).unwrap(), vec![
-            "CREATE OR REPLACE PROCEDURE \"public\".\"do_thing\"(x int) LANGUAGE plpgsql AS $$BEGIN PERFORM x; END$$"
+            "CREATE OR REPLACE PROCEDURE \"public\".\"do_thing\"(\"x\" int) LANGUAGE plpgsql AS $$BEGIN PERFORM x; END$$"
         ]);
     }
 
