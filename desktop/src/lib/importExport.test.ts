@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { handleImport, handleExport, describeImportResult } from "./importExport";
+import { handleImport, handleExport, describeImportResult, importErrorMessage } from "./importExport";
 import * as commands from "./commands";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -46,11 +46,27 @@ describe("handleExport", () => {
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     (save as any).mockResolvedValue("/path/out.json");
     (writeTextFile as any).mockResolvedValue(undefined);
-    vi.spyOn(commands, "exportConnections").mockResolvedValue(
-      '{"version":1,"connections":[]}',
-    );
+    (writeTextFile as any).mockClear();
+    const exported = '{"version":1,"connections":[]}';
+    vi.spyOn(commands, "exportConnections").mockResolvedValue(exported);
     const result = await handleExport();
     expect(result).toBe("/path/out.json");
+    // The bytes the backend produced are what reach the file: nothing re-wraps
+    // or trims the versioned envelope on the way out.
+    expect(writeTextFile).toHaveBeenCalledWith("/path/out.json", exported);
+  });
+});
+
+describe("importErrorMessage", () => {
+  it("reads the backend's plain string rejection", () => {
+    expect(importErrorMessage("invalid connection file: expected value")).toBe(
+      "invalid connection file: expected value",
+    );
+  });
+
+  it("reads an Error and an unknown rejection", () => {
+    expect(importErrorMessage(new Error("permission denied"))).toBe("permission denied");
+    expect(importErrorMessage(undefined)).toBe("unknown error");
   });
 });
 

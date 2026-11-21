@@ -11,30 +11,16 @@ const VALID_DB_TYPES: [&str; 5] = ["postgresql", "mysql", "mariadb", "sqlite", "
 /// reader for version 1 stays a reader for every later version.
 const EXPORT_FORMAT_VERSION: u32 = 1;
 
-/// A connection file, in either shape Gridline has written.
-///
-/// The current shape is the versioned envelope `{ "version": 1,
-/// "connections": [...] }`; files written before the envelope existed are a
-/// bare array of the same records and must keep importing.
+/// The current connection-file shape: a versioned envelope. `version` is
+/// accepted and ignored rather than required, because the record shape only
+/// ever grows optional fields; the legacy bare-array shape is read separately
+/// in [`parse_connection_file`].
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum ConnectionFile {
-    Envelope {
-        #[serde(default)]
-        #[allow(dead_code)]
-        version: Option<u32>,
-        connections: Vec<ImportRecord>,
-    },
-    Legacy(Vec<ImportRecord>),
-}
-
-impl ConnectionFile {
-    fn into_records(self) -> Vec<ImportRecord> {
-        match self {
-            ConnectionFile::Envelope { connections, .. } => connections,
-            ConnectionFile::Legacy(records) => records,
-        }
-    }
+struct Envelope {
+    #[serde(default)]
+    #[allow(dead_code)]
+    version: Option<u32>,
+    connections: Vec<ImportRecord>,
 }
 
 /// One connection record from a transfer file.
@@ -42,6 +28,10 @@ impl ConnectionFile {
 /// Only non-secret settings are listed: a transfer file never carries a
 /// database password or an SSH secret, and a file that does contain such keys
 /// has them ignored rather than copied into the local store.
+///
+/// Optional fields stay `Option`: the pre-envelope importer typed them that
+/// way, so a file that spelled an absent value as `null` imported then and
+/// still imports now.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ImportRecord {
     #[serde(default)]
@@ -61,9 +51,9 @@ pub(crate) struct ImportRecord {
     #[serde(default)]
     folder_id: Option<String>,
     #[serde(default)]
-    tag_ids: Vec<String>,
+    tag_ids: Option<Vec<String>>,
     #[serde(default)]
-    favorite: bool,
+    favorite: Option<bool>,
     #[serde(default)]
     ssh_host: Option<String>,
     #[serde(default)]
@@ -82,12 +72,8 @@ pub(crate) struct ImportRecord {
     ssl_cert_path: Option<String>,
     #[serde(default)]
     ssl_key_path: Option<String>,
-    #[serde(default = "default_true")]
-    use_keychain: bool,
-}
-
-fn default_true() -> bool {
-    true
+    #[serde(default)]
+    use_keychain: Option<bool>,
 }
 
 /// A record that was imported but lost something: an organization link that
@@ -117,10 +103,27 @@ pub struct ImportResult {
 }
 
 /// Read either connection-file shape into its records.
+///
+/// Today's files are the versioned envelope `{ "version": 1, "connections":
+/// [...] }`; files written before the envelope existed, and files written by
+/// hand for the old importer, are a bare array of the same records and must
+/// keep importing. The file's shape decides how it is read, so a malformed
+/// file produces an error about the file the user actually has instead of
+/// serde's "data did not match any variant" message.
 pub fn parse_connection_file(json: &str) -> Result<Vec<ImportRecord>, String> {
-    let file: ConnectionFile =
-        serde_json::from_str(json).map_err(|e| format!("invalid connection file: {}", e))?;
-    Ok(file.into_records())
+    let shape: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("invalid connection file: {e}"))?;
+    match shape {
+        serde_json::Value::Object(_) => serde_json::from_str::<Envelope>(json)
+            .map(|envelope| envelope.connections)
+            .map_err(|e| format!("invalid connection file: {e}")),
+        serde_json::Value::Array(_) => serde_json::from_str::<Vec<ImportRecord>>(json)
+            .map_err(|e| format!("invalid connection file: {e}")),
+        _ => Err(
+            "invalid connection file: expected a versioned export or a list of connections"
+                .to_string(),
+        ),
+    }
 }
 
 /// Keep the organization links that resolve in this store, and report the ones
@@ -156,7 +159,11 @@ fn resolve_links(
     };
 
     let mut resolved_tags: Vec<String> = Vec::new();
-    for tag_id in tag_ids.iter().map(|id| id.trim()).filter(|id| !id.is_empty()) {
+    for tag_id in tag_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+    {
         if !known_tags.contains(tag_id) {
             warn(format!(
                 "tag \"{tag_id}\" does not exist here; connection imported without that tag"
@@ -220,7 +227,7 @@ pub fn import_connections_inner(
             i,
             &name,
             rec.folder_id.as_deref(),
-            &rec.tag_ids,
+            rec.tag_ids.as_deref().unwrap_or_default(),
             &known_folders,
             &known_tags,
             &mut warnings,
@@ -249,12 +256,12 @@ pub fn import_connections_inner(
             ssl_key_path: rec.ssl_key_path.clone(),
             environment: rec.environment.clone(),
             tag_ids,
-            use_keychain: rec.use_keychain,
+            use_keychain: rec.use_keychain.unwrap_or(true),
         };
         match store.create_connection(input) {
             Ok(created) => {
                 imported += 1;
-                if rec.favorite {
+                if rec.favorite.unwrap_or(false) {
                     if let Err(e) = store.set_connection_favorite(&created.id, true) {
                         warnings.push(ImportWarning {
                             index: i,

@@ -259,6 +259,32 @@ describe("HomeScreen", () => {
       );
     });
   });
+
+  it("reports a rejected import instead of failing silently", async () => {
+    const user = userEvent.setup();
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { readTextFile } = await import("@tauri-apps/plugin-fs");
+    const commands = await import("../../lib/commands");
+    (open as any).mockResolvedValue("/tmp/broken.json");
+    (readTextFile as any).mockResolvedValue("{ not json");
+    (commands.importConnections as any).mockRejectedValue(
+      "invalid connection file: expected value at line 1 column 1",
+    );
+    render(<HomeScreen />);
+
+    await user.click(screen.getByRole("button", { name: /import \/ export/i }));
+    await user.click(screen.getByText("Import Connections"));
+
+    await waitFor(() => {
+      const errorNotifications = useNotificationStore
+        .getState()
+        .notifications.filter((n) => n.type === "error");
+      expect(errorNotifications.map((n) => n.message)).toContain(
+        "Import failed: invalid connection file: expected value at line 1 column 1",
+      );
+    });
+    expect(commands.importConnections).toHaveBeenCalledWith("{ not json");
+  });
 });
 
 function makeConnection(id: string): Connection {

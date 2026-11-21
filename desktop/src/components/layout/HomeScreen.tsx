@@ -16,7 +16,12 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EditConnectionModal } from "../db-viewer/EditConnectionModal";
 import { MoveToFolderDialog } from "../connections/MoveToFolderDialog";
 import { RecentConnectionsStrip } from "../connections/RecentConnectionsStrip";
-import { handleImport, handleExport, describeImportResult } from "../../lib/importExport";
+import {
+    handleImport,
+    handleExport,
+    describeImportResult,
+    importErrorMessage,
+} from "../../lib/importExport";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { getChildFolders } from "../../lib/utils";
 import { useShortcut } from "../../hooks/useShortcut";
@@ -197,7 +202,16 @@ export function HomeScreen() {
                 <ActionRow
                     onNewFolder={() => setFolderDialogOpen(true)}
                     onImport={async () => {
-                        const r = await handleImport();
+                        let r: Awaited<ReturnType<typeof handleImport>>;
+                        try {
+                            r = await handleImport();
+                        } catch (e) {
+                            // A malformed or unreadable file rejects the whole
+                            // import; that must be visible, not an unhandled
+                            // rejection only the console sees.
+                            notify(`Import failed: ${importErrorMessage(e)}`, "error");
+                            return;
+                        }
                         if (!r) return;
                         const summary = describeImportResult(r);
                         notify(summary.message, summary.type);
