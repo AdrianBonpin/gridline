@@ -3,6 +3,13 @@ import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo,
 import { getDatabases, getSchemas, getTables } from "../lib/commands";
 import type { ObjectKind, DdlParams } from "../lib/objectCrud";
 import { changeOriginFor, isSameChangeOrigin, isSameChangeTarget, type ChangeOrigin } from "../lib/changeOrigin";
+import {
+  isSameTab,
+  outOfOriginReason,
+  sameTabOrigin,
+  type TabIdentity,
+} from "../lib/tabIdentity";
+import { invalidateColumnCache } from "../lib/sqlCompletion";
 import { useUiStore } from "./uiStore";
 import { useConnectionStore } from "./connectionStore";
 
@@ -91,6 +98,27 @@ export interface ViewerTab {
   smartSortApplied: boolean;
   tabType: "table" | "query" | "object" | "objectForm";
   query?: string;
+  /**
+   * The Change Origin this tab was opened on: the saved connection, the
+   * database selected at open time, and that connection's target
+   * configuration. Tab identity is never keyed on the display label, and the
+   * same table name in two databases/connections is two distinct tabs.
+   *
+   * Optional so hand-built tabs (fixtures/tests) stay valid; every tab the
+   * store opens is stamped from live state.
+   */
+  origin?: ChangeOrigin | null;
+  /**
+   * Why the rows on screen are not current, when the reason is not a failed
+   * request (e.g. the database selector moved to another database).
+   */
+  staleReason?: string | null;
+  /**
+   * True when this tab's Change Origin no longer matches the viewer's live
+   * target. Its rows stay visible but are never presented as current, and no
+   * request for it may reach the database until the target comes back.
+   */
+  outOfOrigin?: boolean;
   /** Set when the tab's text came from an OS-opened `.sql` file. */
   filePath?: string;
   objectType?: ObjectType | null;
@@ -133,6 +161,9 @@ const initialTab = (schema: string, table: string, defaultPageSize?: number): Vi
   error: null,
   requestSeq: 0,
   stale: false,
+  staleReason: null,
+  outOfOrigin: false,
+  origin: currentChangeOrigin(),
   data: null,
   filterRules: [],
   sortRules: [],
@@ -173,6 +204,12 @@ interface DbViewerState {
   setSchemaTreeLoading: (loading: boolean) => void;
   constraints: ConstraintInfo[] | null;
   roles: RoleInfo[];
+  /**
+   * Monotonic counter bumped whenever schema metadata is invalidated (DDL,
+   * rebuild, reconnect). Components that cache metadata include it in their
+   * cache scope, so a bump makes every cached entry unreachable.
+   */
+  metadataRev: number;
 
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
@@ -191,7 +228,11 @@ interface DbViewerState {
   setDefaultPageSize: (size: number) => void;
   closeTab: (tabId: string) => void;
   reorderTab: (fromIndex: number, toIndex: number) => void;
-  closeTabsForTable: (schema: string, table: string) => void;
+  closeTabsForTable: (
+    schema: string,
+    table: string,
+    origin?: ChangeOrigin | null,
+  ) => void;
   setActiveTab: (tabId: string) => void;
   setPage: (tabId: string, page: number) => void;
   setPageSize: (tabId: string, pageSize: number) => void;
@@ -230,6 +271,34 @@ interface DbViewerState {
    * still running).
    */
   reportTabError: (tabId: string, error: string) => void;
+  /**
+   * Mark a tab whose data cannot be produced from the live target as visibly
+   * stale, with the reason. Its rows stay on screen but never as current, and
+   * any request still in flight for it is sealed off.
+   */
+  markTabOutOfOrigin: (tabId: string, reason: string) => void;
+  /**
+   * Reconcile every tab with the live target: tabs belonging to another
+   * connection/database become visibly stale (never re-queried against the new
+   * target), and tabs that come back into context are cleared and reported so
+   * the caller can re-query them from their own database.
+   */
+  syncTabOrigins: (live: ChangeOrigin | null) => string[];
+  /**
+   * Drop the committed optimistic markers of a table that has just been
+   * refreshed, so committed values stop being re-applied over the fresh rows.
+   */
+  pruneCommittedOptimisticMarkers: (
+    origin: ChangeOrigin | null,
+    schema: string,
+    table: string,
+  ) => void;
+  /**
+   * Schema metadata changed (DDL/rebuild/reconnect): invalidate the caches that
+   * map an origin to columns so autocomplete and the tree never offer stale
+   * columns.
+   */
+  invalidateMetadata: () => void;
   setColumnFilter: (tabId: string, column: string, value: string) => void;
   clearColumnFilter: (tabId: string) => void;
   setFilterRules: (tabId: string, rules: FilterRule[]) => void;
@@ -319,6 +388,7 @@ const initialState = {
   constraints: null as ConstraintInfo[] | null,
   roles: [] as RoleInfo[],
   schemaTreeLoading: false,
+  metadataRev: 0,
 };
 
 // ─── Store ──────────────────────────────────────────────────────
@@ -329,11 +399,17 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   openTab: (schema, table, forceNew = false) => {
     const { tabs } = get();
 
-    // Dedup: if not forceNew and an identical tab exists, just activate it
+    // Dedup on (kind, origin, schema, table): an identical *table* tab of the
+    // same connection + database is focused, while a query or object tab that
+    // happens to share the label is a different tab.
     if (!forceNew) {
-      const existing = tabs.find(
-        (t) => t.schema === schema && t.table === table,
-      );
+      const identity: TabIdentity = {
+        tabType: "table",
+        origin: currentChangeOrigin(),
+        schema,
+        table,
+      };
+      const existing = tabs.find((t) => isSameTab(t, identity));
       if (existing) {
         set({ activeTabId: existing.id });
         return;
@@ -350,7 +426,12 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     // Re-opening the same file focuses its tab instead of duplicating it, and
     // deliberately does NOT overwrite the text — the user may have edited it.
     if (initial?.filePath) {
-      const existing = tabs.find((t) => t.filePath === initial.filePath);
+      const identity: TabIdentity = {
+        tabType: "query",
+        origin: currentChangeOrigin(),
+        filePath: initial.filePath,
+      };
+      const existing = tabs.find((t) => isSameTab(t, identity));
       if (existing) {
         set({ activeTabId: existing.id });
         return;
@@ -368,6 +449,9 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       error: null,
       requestSeq: 0,
       stale: false,
+      staleReason: null,
+      outOfOrigin: false,
+      origin: currentChangeOrigin(),
       data: null,
       filterRules: [],
       sortRules: [],
@@ -383,15 +467,16 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   openObjectTab: (objectType, schema, name, item) => {
     const { tabs } = get();
 
-    // Dedup on the object's identity (objectType + schema + name); an object
-    // tab is distinct from a table tab of the same name.
-    const existing = tabs.find(
-      (t) =>
-        t.tabType === "object" &&
-        t.objectType === objectType &&
-        t.schema === schema &&
-        t.table === name,
-    );
+    // Dedup on the object's identity (kind + origin + objectType + schema +
+    // name); an object tab is distinct from a table tab of the same label.
+    const identity: TabIdentity = {
+      tabType: "object",
+      origin: currentChangeOrigin(),
+      schema,
+      table: name,
+      objectType,
+    };
+    const existing = tabs.find((t) => isSameTab(t, identity));
     if (existing) {
       set({ activeTabId: existing.id });
       return;
@@ -407,6 +492,9 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       error: null,
       requestSeq: 0,
       stale: false,
+      staleReason: null,
+      outOfOrigin: false,
+      origin: currentChangeOrigin(),
       data: null,
       filterRules: [],
       sortRules: [],
@@ -421,6 +509,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
 
   openFormTab: ({ kind, schema, name, title, description, mode, params }) => {
     const { tabs } = get();
+    const origin = currentChangeOrigin();
 
     // Resolve the effective schema before building the tab: an explicit schema
     // wins, otherwise fall back to the viewer's current schema, then "public".
@@ -438,6 +527,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     const existing = tabs.find(
       (t) =>
         t.tabType === "objectForm" &&
+        sameTabOrigin(t.origin ?? null, origin) &&
         t.form?.kind === kind &&
         t.form?.mode === mode &&
         (mode === "create" ||
@@ -460,6 +550,9 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       error: null,
       requestSeq: 0,
       stale: false,
+      staleReason: null,
+      outOfOrigin: false,
+      origin: currentChangeOrigin(),
       data: null,
       filterRules: [],
       sortRules: [],
@@ -514,10 +607,18 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set({ tabs: next });
   },
 
-  closeTabsForTable: (schema, table) => {
+  closeTabsForTable: (schema, table, origin) => {
     const { tabs, activeTabId } = get();
     const remaining = tabs.filter(
-      (t) => !(t.tabType === "table" && t.schema === schema && t.table === table),
+      (t) =>
+        !(
+          t.tabType === "table" &&
+          t.schema === schema &&
+          t.table === table &&
+          // A committed drop belongs to one origin: another database's tab for
+          // the same table name is a different object and stays open.
+          (origin === undefined || sameTabOrigin(t.origin ?? null, origin))
+        ),
     );
     if (remaining.length === tabs.length) return;
     const newActiveId =
@@ -575,6 +676,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
                 loading: false,
                 error: null,
                 stale: false,
+                staleReason: null,
             }
           : t,
       ),
@@ -634,6 +736,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
                 loading: false,
                 error: null,
                 stale: false,
+                staleReason: null,
             }
           : t,
       ),
@@ -677,6 +780,86 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
         t.id === tabId ? { ...t, error } : t,
       ),
     })),
+
+  markTabOutOfOrigin: (tabId, reason) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? {
+                ...t,
+                outOfOrigin: true,
+                // The rows stay on screen so the user keeps context, but they
+                // are never presented as the current target's data.
+                stale: true,
+                staleReason: reason,
+                loading: false,
+                // Seal off whatever is still in flight for this tab.
+                requestSeq: (t.requestSeq ?? 0) + 1,
+            }
+          : t,
+      ),
+    })),
+
+  syncTabOrigins: (live) => {
+    const restored: string[] = [];
+    let changed = false;
+    const tabs = get().tabs.map((t) => {
+      const origin = t.origin ?? null;
+      // Only a recorded origin can prove a tab belongs elsewhere; a tab with
+      // no origin carries nothing to contradict.
+      const foreign = origin !== null && live !== null && !sameTabOrigin(origin, live);
+      if (foreign) {
+        if (t.outOfOrigin) return t;
+        changed = true;
+        return {
+          ...t,
+          outOfOrigin: true,
+          stale: true,
+          staleReason: outOfOriginReason(origin, live),
+          loading: false,
+          requestSeq: (t.requestSeq ?? 0) + 1,
+        };
+      }
+      if (t.outOfOrigin) {
+        changed = true;
+        restored.push(t.id);
+        return {
+          ...t,
+          outOfOrigin: false,
+          stale: false,
+          staleReason: null,
+          error: null,
+          // Only a table tab re-queries itself automatically; a query tab's
+          // text is an Execution Entry Point and runs when the user runs it.
+          loading: t.tabType === "table",
+        };
+      }
+      return t;
+    });
+    if (changed) set({ tabs });
+    return restored;
+  },
+
+  pruneCommittedOptimisticMarkers: (origin, schema, table) =>
+    set((state) => ({
+      changesQueue: state.changesQueue.filter(
+        (c) =>
+          !(
+            c.status === "committed" &&
+            c.type === "update" &&
+            c.schema === schema &&
+            c.table === table &&
+            sameTabOrigin(c.origin, origin)
+          ),
+      ),
+    })),
+
+  invalidateMetadata: () => {
+    // Autocomplete's column cache lives outside the store; clear it with the
+    // revision bump so every origin's suggestions are rebuilt.
+    invalidateColumnCache();
+    set((state) => ({ metadataRev: state.metadataRev + 1 }));
+  },
 
   setColumnFilter: (tabId, column, value) =>
     set((state) => ({

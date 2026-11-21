@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useDbViewerStore, currentChangeOrigin } from "./dbViewerStore";
+import { changeOriginFor } from "../lib/changeOrigin";
 import { useUiStore } from "./uiStore";
 import { useConnectionStore } from "./connectionStore";
 import type { QueryResult, TableInfo, RoleInfo, Connection } from "../lib/types";
@@ -947,5 +948,174 @@ describe("tab request generations", () => {
     expect(tab(tabId).stale).toBe(true);
     expect(tab(tabId).loading).toBe(false);
     expect(tab(tabId).data?.page).toBe(1);
+  });
+});
+
+describe("tab identity and freshness", () => {
+  const tab = (id: string) =>
+    useDbViewerStore.getState().tabs.find((t) => t.id === id)!;
+
+  it("stamps every tab with the Change Origin it was opened on", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openQueryTab();
+    useDbViewerStore.getState().openObjectTab("functions", "public", "fn");
+
+    for (const t of useDbViewerStore.getState().tabs) {
+      expect(t.origin?.connectionId).toBe("c1");
+      expect(t.origin?.database).toBe("appdb");
+    }
+  });
+
+  it("keeps a query, an object and a table with the same label as three tabs", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.setState({ currentSchema: "public" });
+    const store = useDbViewerStore.getState();
+
+    store.openQueryTab({ label: "users" });
+    store.openObjectTab("functions", "public", "users");
+    store.openTab("public", "users");
+
+    const tabs = useDbViewerStore.getState().tabs;
+    expect(tabs.map((t) => t.tabType)).toEqual(["query", "object", "table"]);
+    expect(new Set(tabs.map((t) => t.id)).size).toBe(3);
+    // the table tab is the one the user just asked for
+    expect(useDbViewerStore.getState().activeTabId).toBe(tabs[2].id);
+  });
+
+  it("still dedups a re-opened table tab of the same origin", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openTab("public", "users");
+    expect(useDbViewerStore.getState().tabs).toHaveLength(1);
+  });
+
+  it("opens a second tab for the same table in another database", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().setCurrentDatabase("analytics");
+    useDbViewerStore.getState().openTab("public", "users");
+
+    const tabs = useDbViewerStore.getState().tabs;
+    expect(tabs).toHaveLength(2);
+    expect(tabs.map((t) => t.origin?.database)).toEqual(["appdb", "analytics"]);
+  });
+
+  it("marks tabs from another database visibly stale without dropping their rows", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    const tabId = useDbViewerStore.getState().activeTabId!;
+    useDbViewerStore.getState().setTabData(tabId, {
+      columns: [],
+      rows: [[1]],
+      total_rows: 1,
+      page: 1,
+      page_size: 50,
+    });
+
+    const analytics = changeOriginFor(
+      { ...savedConnection(), database: "analytics" },
+      "analytics",
+    );
+    const restored = useDbViewerStore.getState().syncTabOrigins(analytics);
+
+    const after = tab(tabId);
+    expect(restored).toEqual([]);
+    expect(after.outOfOrigin).toBe(true);
+    expect(after.stale).toBe(true);
+    expect(after.staleReason).toContain("appdb");
+    expect(after.data?.rows).toEqual([[1]]);
+    // any request still in flight for the old context can no longer land
+    expect(after.requestSeq).toBe(1);
+  });
+
+  it("re-queries a tab that comes back into context", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    const tabId = useDbViewerStore.getState().activeTabId!;
+    const appdb = changeOriginFor(savedConnection(), "appdb");
+    const analytics = changeOriginFor(
+      { ...savedConnection(), database: "analytics" },
+      "analytics",
+    );
+
+    useDbViewerStore.getState().syncTabOrigins(analytics);
+    const restored = useDbViewerStore.getState().syncTabOrigins(appdb);
+
+    expect(restored).toEqual([tabId]);
+    const after = tab(tabId);
+    expect(after.outOfOrigin).toBe(false);
+    expect(after.stale).toBe(false);
+    expect(after.staleReason).toBeNull();
+    expect(after.loading).toBe(true);
+  });
+
+  it("keeps a tab with no recorded origin unmarked (nothing to contradict)", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    const tabId = useDbViewerStore.getState().activeTabId!;
+    useDbViewerStore
+      .getState()
+      .syncTabOrigins(changeOriginFor(savedConnection(), "appdb"));
+    expect(tab(tabId).outOfOrigin).toBeFalsy();
+    expect(tab(tabId).stale).toBe(false);
+  });
+
+  it("prunes committed optimistic markers for a refreshed table only", () => {
+    activateTarget({}, "appdb");
+    const store = useDbViewerStore.getState();
+    const appdb = changeOriginFor(savedConnection(), "appdb");
+    store.addChange({
+      type: "update",
+      schema: "public",
+      table: "users",
+      primaryKey: { id: 1 },
+      oldData: { name: "Alice" },
+      newData: { name: "Alicia" },
+      origin: appdb,
+    });
+    store.addChange({
+      type: "update",
+      schema: "public",
+      table: "orders",
+      primaryKey: { id: 9 },
+      oldData: { total: 1 },
+      newData: { total: 2 },
+      origin: appdb,
+    });
+    for (const c of useDbViewerStore.getState().changesQueue) {
+      useDbViewerStore.getState().markChangeCommitted(c.id);
+    }
+
+    useDbViewerStore
+      .getState()
+      .pruneCommittedOptimisticMarkers(appdb, "public", "users");
+
+    const tables = useDbViewerStore
+      .getState()
+      .changesQueue.map((c) => c.table);
+    expect(tables).toEqual(["orders"]);
+  });
+
+  it("closeTabsForTable only closes tabs of the given origin", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().setCurrentDatabase("analytics");
+    useDbViewerStore.getState().openTab("public", "users");
+
+    const analytics = changeOriginFor(
+      { ...savedConnection(), database: "analytics" },
+      "analytics",
+    );
+    useDbViewerStore.getState().closeTabsForTable("public", "users", analytics);
+
+    const tabs = useDbViewerStore.getState().tabs;
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].origin?.database).toBe("appdb");
+  });
+
+  it("invalidateMetadata bumps a revision so metadata caches can be scoped to it", () => {
+    const before = useDbViewerStore.getState().metadataRev;
+    useDbViewerStore.getState().invalidateMetadata();
+    expect(useDbViewerStore.getState().metadataRev).toBe(before + 1);
   });
 });

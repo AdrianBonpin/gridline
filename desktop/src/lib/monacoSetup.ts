@@ -60,8 +60,15 @@ monaco.languages.registerCompletionItemProvider("sql", {
     const tableRef = parseTableRef(before);
     if (tableRef) {
       const schema = tableRef.schema ?? currentSchema;
-      const connectionId = useUiStore.getState().activeConnectionId;
-      const cached = schema ? getCachedColumns(schema, tableRef.table) : undefined;
+      // Columns are cached per Change Origin (connection + database): the same
+      // table name in another database must never answer from this one's cache.
+      const scope = {
+        connectionId: useUiStore.getState().activeConnectionId,
+        database: useDbViewerStore.getState().currentDatabase,
+      };
+      const cached = schema
+        ? getCachedColumns(scope, schema, tableRef.table)
+        : undefined;
       if (cached) {
         return {
           suggestions: buildColumnSuggestions(cached).map(withRange),
@@ -69,7 +76,7 @@ monaco.languages.registerCompletionItemProvider("sql", {
       }
       // Not introspected yet: warm the cache in the background and ask Monaco
       // to re-request once the columns are available.
-      void getColumnsForTable(connectionId, schema, tableRef.table);
+      void getColumnsForTable(scope, schema, tableRef.table);
       return { suggestions: [], incomplete: true };
     }
 

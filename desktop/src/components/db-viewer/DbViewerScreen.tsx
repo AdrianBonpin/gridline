@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense, lazy } from "react";
 import { ChevronDown, ChevronUp, Table2, Terminal, AlertCircle, AlertTriangle, Database } from "lucide-react";
 import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
@@ -44,9 +44,19 @@ import { ObjectSearchPalette } from "./ObjectSearchPalette";
 import * as cmd from "../../lib/commands";
 import type { EnumInfo } from "../../lib/types";
 import type { FkOption } from "../grid/CellEditor";
+import { fkRelation, fkTarget } from "../../lib/fkTarget";
 import type { QueueItem } from "../../stores/dbViewerStore";
 import { rowIdentityFor } from "../../lib/rowIdentity";
-import { itemsForChangeTarget } from "../../lib/changeOrigin";
+import {
+    changeOriginFor,
+    itemsForChangeTarget,
+    type ChangeOrigin,
+} from "../../lib/changeOrigin";
+import {
+    outOfOriginReason,
+    tabDataIsCurrent,
+    tabsAffectedByChanges,
+} from "../../lib/tabIdentity";
 import { useActiveChangeOrigin } from "../../hooks/useActiveChangeOrigin";
 
 /**
@@ -166,6 +176,46 @@ export function pickDisplayColumn(
     return textish ? textish.name : refCol;
 }
 
+/** Page size for FK option search (one dropdown page). */
+const FK_OPTION_PAGE_SIZE = 50;
+
+/**
+ * Build FK dropdown options from one page of the referenced table.
+ *
+ * `refCol` is the referenced key column (the value that gets staged); the label
+ * pairs it with a human-friendly display column.
+ */
+export function fkOptionsFrom(
+    result: { columns: { name: string; data_type: string }[]; rows: unknown[][] },
+    refCol: string,
+): FkOption[] {
+    const refIdx = result.columns.findIndex((c) => c.name === refCol);
+    if (refIdx < 0) return [];
+    const displayCol = pickDisplayColumn(result.columns, refCol);
+    const displayIdx =
+        displayCol === refCol
+            ? refIdx
+            : result.columns.findIndex((c) => c.name === displayCol);
+    return result.rows.map((row) => {
+        const refValue = String(row[refIdx]);
+        const dispValue =
+            displayIdx >= 0 && displayIdx !== refIdx
+                ? String(row[displayIdx])
+                : "";
+        return {
+            value: refValue,
+            label:
+                dispValue && dispValue !== refValue
+                    ? `${refValue} — ${dispValue}`
+                    : refValue,
+            // Referenced-row cells for the FK-reference-style one-row dropdown.
+            cells: result.columns
+                .slice(0, 5)
+                .map((c, i) => ({ name: c.name, value: String(row[i] ?? "") })),
+        };
+    });
+}
+
 /**
  * Identity of a table data request: the whole intent (target + page + filter +
  * sort), not just "something is in flight". A request for a *different* intent
@@ -197,9 +247,11 @@ function tableRequestKey(tab: {
 function TabStatusBanners({
     error,
     stale,
+    staleReason,
 }: {
     error: string | null;
     stale: boolean;
+    staleReason?: string | null;
 }) {
     return (
         <>
@@ -220,7 +272,8 @@ function TabStatusBanners({
                 >
                     <AlertTriangle size={14} className="shrink-0" />
                     <span>
-                        These results are stale — the last run did not complete.
+                        {staleReason ??
+                            "These results are stale — the last run did not complete."}
                     </span>
                 </div>
             )}
@@ -356,6 +409,7 @@ export function DbViewerScreen({
     const applyTabError = useDbViewerStore((s) => s.applyTabError);
     const cancelTabRequest = useDbViewerStore((s) => s.cancelTabRequest);
     const reportTabError = useDbViewerStore((s) => s.reportTabError);
+    const markTabOutOfOrigin = useDbViewerStore((s) => s.markTabOutOfOrigin);
     const databases = useDbViewerStore((s) => s.databases);
     const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
     const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
@@ -364,25 +418,54 @@ export function DbViewerScreen({
     const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
     const fetchingRef = useRef<Map<string, string>>(new Map());
 
+    // The Change Origin the viewer is *actually* pointed at right now. Tabs and
+    // their data are attached to the origin they were opened on, so this is what
+    // decides whether a tab may be queried at all (same connection + database).
+    const liveOrigin: ChangeOrigin | null = useMemo(
+        () =>
+            currentConnection
+                ? changeOriginFor(currentConnection, currentDatabase)
+                : null,
+        [currentConnection, currentDatabase],
+    );
+
     // CellEditor options for the active table tab: PG enum labels (cached per
     // connection+schema) + FK reference rows (page 1, 50 per FK column).
     const [editorOptions, setEditorOptions] = useState<{
         enums: Record<string, string[]>;
         fks: Record<string, FkOption[]>;
         fkPlaceholders: Record<string, string>;
+        fkSearches: Record<string, (query: string) => Promise<FkOption[]>>;
     } | null>(null);
     const enumCacheRef = useRef<Map<string, EnumInfo[]>>(new Map());
+    const metadataRev = useDbViewerStore((s) => s.metadataRev);
     // Key identifying the (connection, tab, schema) the options were fetched for;
     // guards against refetching on every render while data updates in place.
     const editorOptionsKeyRef = useRef<string>("");
 
+    /**
+     * Fetch one tab's rows from the database the tab belongs to.
+     *
+     * Returns whether the rows shown for the tab are now current (a superseded
+     * request and a failure both return false). A tab whose origin database no
+     * longer matches the live target is never queried — the pool is connected
+     * somewhere else, so the answer would be another environment's data under
+     * this tab's identity — and is marked visibly stale instead.
+     */
     const fetchData = useCallback(
-        async (tab: NonNullable<typeof activeTab>) => {
+        async (tab: NonNullable<typeof activeTab>): Promise<boolean> => {
+            if (!tabDataIsCurrent(tab.origin ?? null, liveOrigin)) {
+                markTabOutOfOrigin(
+                    tab.id,
+                    outOfOriginReason(tab.origin ?? null, liveOrigin),
+                );
+                return false;
+            }
             // De-duplicate only the *same* intent: a request for a new page,
             // filter or sort supersedes the one in flight instead of being
             // discarded (which would leave the grid on the old rows forever).
             const intent = tableRequestKey(tab);
-            if (fetchingRef.current.get(tab.id) === intent) return;
+            if (fetchingRef.current.get(tab.id) === intent) return false;
             fetchingRef.current.set(tab.id, intent);
             const token = beginTabRequest(tab.id);
             try {
@@ -397,17 +480,25 @@ export function DbViewerScreen({
                 );
                 // Only the newest request may write: a slow response for a
                 // superseded page never replaces newer controls' rows.
-                applyTabResult(tab.id, token, result);
+                return applyTabResult(tab.id, token, result);
             } catch (e) {
                 const msg = e instanceof Error ? e.message : String(e);
                 applyTabError(tab.id, token, msg);
+                return false;
             } finally {
                 if (fetchingRef.current.get(tab.id) === intent) {
                     fetchingRef.current.delete(tab.id);
                 }
             }
         },
-        [connectionId, applyTabError, applyTabResult, beginTabRequest],
+        [
+            connectionId,
+            liveOrigin,
+            applyTabError,
+            applyTabResult,
+            beginTabRequest,
+            markTabOutOfOrigin,
+        ],
     );
 
     /**
@@ -445,7 +536,9 @@ export function DbViewerScreen({
                           // empty-state behavior.
                           columns: [],
                           rows: [],
+                          // No result set at all: zero rows is exact, not unknown.
                           total_rows: 0,
+                          has_more: false,
                           page,
                           page_size: pageSize,
                           execution_time_ms: multi.execution_time_ms,
@@ -455,6 +548,10 @@ export function DbViewerScreen({
                 useQueryStore.getState().invalidateHistory(connectionId);
                 if (isSchemaModifyingQuery(sql)) {
                     const st = useDbViewerStore.getState();
+                    // Columns may be gone/renamed: autocomplete and the tree's
+                    // expanded columns must re-introspect rather than keep
+                    // offering the pre-DDL snapshot.
+                    st.invalidateMetadata();
                     void st.refreshTree(connectionId, st.currentSchema ?? undefined);
                 }
             } catch (e) {
@@ -508,10 +605,37 @@ export function DbViewerScreen({
         setRowDetailIdx(rowIndex);
     }, []);
 
-    const handleCommitted = useCallback(() => {
-        if (!activeTab) return;
-        fetchData(activeTab);
-    }, [activeTab, fetchData]);
+    /**
+     * After Commit All: refresh **every** affected tab and clear its optimistic
+     * markers once its own refetch lands.
+     *
+     * Commit All is per-change; a commit can touch several tables (and several
+     * open tabs). Refreshing only the active tab would leave every other tab
+     * showing pre-commit rows with stale optimistic values painted over them. A
+     * refresh that fails marks that tab visibly stale (via the request
+     * generation) instead of pretending the tab is current, and its optimistic
+     * markers stay until a refresh succeeds.
+     */
+    const handleCommitted = useCallback(
+        async (committed: QueueItem[], origin: ChangeOrigin) => {
+            const state = useDbViewerStore.getState();
+            const affected = tabsAffectedByChanges(state.tabs, committed, origin);
+            for (const tab of affected) {
+                if (tab.tabType !== "table") continue;
+                const fresh = await fetchData(tab);
+                if (fresh) {
+                    useDbViewerStore
+                        .getState()
+                        .pruneCommittedOptimisticMarkers(
+                            origin,
+                            tab.schema,
+                            tab.table,
+                        );
+                }
+            }
+        },
+        [fetchData],
+    );
 
     /** Paging intent carried by a guarded query run (page or page size). */
     const pendingPageIntentRef = useRef<{
@@ -554,6 +678,19 @@ export function DbViewerScreen({
             sql: string,
             intent: { page?: number; pageSize?: number } = {},
         ) => {
+            // An Execution Entry Point may only reach the database this tab
+            // belongs to: running an old tab's SQL against a newly selected
+            // database would silently execute it somewhere else.
+            const tab = useDbViewerStore
+                .getState()
+                .tabs.find((t) => t.id === tabId);
+            if (tab && !tabDataIsCurrent(tab.origin ?? null, liveOrigin)) {
+                markTabOutOfOrigin(
+                    tabId,
+                    outOfOriginReason(tab.origin ?? null, liveOrigin),
+                );
+                return;
+            }
             const plan = planExecution(sql);
             if (!plan.hasText) return;
             if (plan.needsConfirmation) {
@@ -566,7 +703,12 @@ export function DbViewerScreen({
                 void executeQueryForTab(tabId, plan.sql);
             }
         },
-        [applyPageIntent, executeQueryForTab],
+        [
+            applyPageIntent,
+            executeQueryForTab,
+            liveOrigin,
+            markTabOutOfOrigin,
+        ],
     );
 
     /**
@@ -707,17 +849,39 @@ export function DbViewerScreen({
         if (activeTab.tabType !== "table") return;
         if (!activeTab.loading) return;
         if (activeTab.error) return;
-        fetchData(activeTab);
+        void fetchData(activeTab);
     }, [activeTab, fetchData]);
+
+    /**
+     * Keep every tab attached to the connection + database it was opened on.
+     *
+     * Switching the database selector never re-queries a tab against the newly
+     * selected database: foreign tabs become visibly stale (their rows stay on
+     * screen, but never as the current target's data). When the selector comes
+     * back, those tabs are re-queried from the database they belong to.
+     */
+    useEffect(() => {
+        const restored = useDbViewerStore.getState().syncTabOrigins(liveOrigin);
+        for (const tabId of restored) {
+            const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId);
+            if (tab && tab.tabType === "table") void fetchData(tab);
+        }
+    }, [liveOrigin, fetchData]);
 
     // Feed the grid's CellEditor with enum labels + FK reference rows for the
     // active table tab. Fetched once per tab/schema (enums additionally cached
     // per connection+schema across tabs); a failed fetch for one FK column is
     // skipped without breaking the tab. Never refetches on in-place data updates.
+    //
+    // FK options come from `search_fk_options`, which resolves the *referenced*
+    // relation in the backend and searches it in the engine. Fetching the
+    // referenced table from the tab's own schema is what used to substitute a
+    // same-named local table, and taking only page one is what truncated the
+    // dropdown's search.
     useEffect(() => {
         const key =
             activeTab && activeTab.tabType === "table" && activeTab.data
-                ? `${connectionId}:${activeTab.id}:${activeTab.schema}`
+                ? `${connectionId}:${currentDatabase ?? ""}:${metadataRev}:${activeTab.id}:${activeTab.schema}`
                 : "";
         if (key === editorOptionsKeyRef.current) return;
         editorOptionsKeyRef.current = key;
@@ -733,7 +897,7 @@ export function DbViewerScreen({
             const fkPlaceholders: Record<string, string> = {};
 
             // PG enums: fetched once per connection+schema, reused across tabs.
-            const cacheKey = `${connectionId}:${tab.schema}`;
+            const cacheKey = `${connectionId}:${currentDatabase ?? ""}:${metadataRev}:${tab.schema}`;
             let enumList = enumCacheRef.current.get(cacheKey);
             if (!enumList) {
                 try {
@@ -748,57 +912,33 @@ export function DbViewerScreen({
                 if (match) enums[col.name] = match.labels;
             }
 
-            // FK options: referenced rows (page 1, 50) per FK column.
-            const fkCols = cols.filter((c) => c.is_fk && c.fk_ref);
+            // FK options: one page of the *referenced* relation per FK column,
+            // plus a search function so the dropdown queries the whole table.
+            const fkSearches: Record<
+                string,
+                (query: string) => Promise<FkOption[]>
+            > = {};
+            const fkCols = cols.filter((c) => fkTarget(c));
             await Promise.all(
                 fkCols.map(async (col) => {
-                    const [refTable, refCol] = col.fk_ref!;
-                    try {
-                        const result = await cmd.getTableData(
+                    const ref = fkTarget(col);
+                    if (!ref) return;
+                    fkPlaceholders[col.name] = `Search ${fkRelation(ref)}…`;
+                    const load = async (search: string) => {
+                        const result = await cmd.searchFkOptions(
                             connectionId,
                             tab.schema,
-                            refTable,
+                            tab.table,
+                            col.name,
+                            search,
                             1,
-                            50,
+                            FK_OPTION_PAGE_SIZE,
                         );
-                        const refIdx = result.columns.findIndex(
-                            (c) => c.name === refCol,
-                        );
-                        if (refIdx >= 0) {
-                            const displayCol = pickDisplayColumn(
-                                result.columns,
-                                refCol,
-                            );
-                            const displayIdx =
-                                displayCol === refCol
-                                    ? refIdx
-                                    : result.columns.findIndex(
-                                          (c) => c.name === displayCol,
-                                      );
-                            fks[col.name] = result.rows.map((row) => {
-                                const refValue = String(row[refIdx]);
-                                const dispValue =
-                                    displayIdx >= 0 && displayIdx !== refIdx
-                                        ? String(row[displayIdx])
-                                        : "";
-                                return {
-                                    value: refValue,
-                                    label:
-                                        dispValue && dispValue !== refValue
-                                            ? `${refValue} — ${dispValue}`
-                                            : refValue,
-                                    // Referenced-row cells for the FK-reference-style
-                                    // one-row dropdown (first 5 columns).
-                                    cells: result.columns
-                                        .slice(0, 5)
-                                        .map((c, i) => ({
-                                            name: c.name,
-                                            value: String(row[i] ?? ""),
-                                        })),
-                                };
-                            });
-                            fkPlaceholders[col.name] = `Search ${refTable}…`;
-                        }
+                        return fkOptionsFrom(result, ref.column);
+                    };
+                    try {
+                        fks[col.name] = await load("");
+                        fkSearches[col.name] = load;
                     } catch {
                         // Skip this FK column; the cell keeps the plain editor.
                     }
@@ -807,10 +947,15 @@ export function DbViewerScreen({
 
             // Apply only if no newer fetch superseded this one (tab/schema switched).
             if (editorOptionsKeyRef.current === key) {
-                setEditorOptions({ enums, fks, fkPlaceholders });
+                setEditorOptions({
+                    enums,
+                    fks,
+                    fkPlaceholders,
+                    fkSearches,
+                });
             }
         })();
-    }, [activeTab, connectionId]);
+    }, [activeTab, connectionId, currentDatabase, metadataRev]);
 
     // Smart default sort: apply once when data first loads for a tab
     useEffect(() => {
@@ -1295,6 +1440,7 @@ const onQueriesPanelResizeStart = useCallback(
             enumValues: editorOptions?.enums,
             fkOptions: editorOptions?.fks,
             fkPlaceholders: editorOptions?.fkPlaceholders,
+            fkSearches: editorOptions?.fkSearches,
             stagedValues,
             pendingKeys,
             pendingInsertChangeIds,
@@ -1372,7 +1518,12 @@ const onQueriesPanelResizeStart = useCallback(
                                                 error={activeTab.error}
                                                 stale={
                                                     !!activeTab.stale &&
-                                                    !!activeTab.data
+                                                    (!!activeTab.data ||
+                                                        !!activeTab.outOfOrigin)
+                                                }
+                                                staleReason={
+                                                    activeTab.staleReason ??
+                                                    null
                                                 }
                                             />
                                             <div className="flex-1 min-h-0 overflow-hidden">
@@ -1618,7 +1769,11 @@ const onQueriesPanelResizeStart = useCallback(
                                             error={activeTab?.error ?? null}
                                             stale={
                                                 !!activeTab?.stale &&
-                                                !!activeTab?.data
+                                                (!!activeTab?.data ||
+                                                    !!activeTab?.outOfOrigin)
+                                            }
+                                            staleReason={
+                                                activeTab?.staleReason ?? null
                                             }
                                         />
                                         {activeTab && (
@@ -1700,6 +1855,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 enumValues={editorOptions?.enums}
                                                 fkOptions={editorOptions?.fks}
                                                 fkPlaceholders={editorOptions?.fkPlaceholders}
+                                                fkSearches={editorOptions?.fkSearches}
                                                 stagedValues={stagedValues}
                                                 pendingKeys={pendingKeys}
                                                 pendingInsertChangeIds={pendingInsertChangeIds}

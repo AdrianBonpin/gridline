@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { CellEditor } from "./CellEditor";
 
 describe("CellEditor", () => {
@@ -255,5 +255,53 @@ describe("CellEditor", () => {
     // clicking the row commits the value
     fireEvent.click(screen.getByRole("button"));
     expect(onCommit).toHaveBeenCalledWith("1");
+  });
+
+  it("searches the referenced table beyond the first page and stages the selected value", async () => {
+    // Page one (the options the dropdown started with) does NOT contain the
+    // wanted row: only the server-side search can find it.
+    const onSearchFk = vi.fn(async (q: string) =>
+      q.trim() === ""
+        ? [{ value: "1", label: "1 — Alice" }]
+        : [{ value: "120", label: "120 — Grace Hopper" }],
+    );
+    const onCommit = vi.fn();
+    render(
+      <CellEditor
+        initialValue="1"
+        dataType="integer"
+        fkOptions={[{ value: "1", label: "1 — Alice" }]}
+        onSearchFk={onSearchFk}
+        onCommit={onCommit}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    const input = screen.getByLabelText(/search foreign key/i);
+    fireEvent.change(input, { target: { value: "grace" } });
+
+    await waitFor(() => expect(onSearchFk).toHaveBeenCalledWith("grace"));
+    const option = await screen.findByText("120 — Grace Hopper");
+    expect(screen.queryByText("1 — Alice")).toBeNull();
+
+    fireEvent.click(option);
+    // The referenced key value is what gets staged.
+    expect(onCommit).toHaveBeenCalledWith("120");
+  });
+
+  it("shows the referenced relation in the search placeholder", () => {
+    render(
+      <CellEditor
+        initialValue=""
+        dataType="integer"
+        fkOptions={[{ value: "1", label: "1 — Alice" }]}
+        fkPlaceholder="Search reporting.users…"
+        onCommit={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByPlaceholderText("Search reporting.users…"),
+    ).toBeInTheDocument();
   });
 });

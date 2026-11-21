@@ -4,6 +4,7 @@ import { Key, Braces, ArrowUpRight } from "lucide-react";
 import type { ColumnInfo } from "../../lib/types";
 import { abbreviateType } from "../../lib/utils";
 import { FkPreviewPopover } from "../db-viewer/FkPreviewPopover";
+import { fkLabel, fkTarget, type FkTarget } from "../../lib/fkTarget";
 import { JsonCellPopover, jsonPreview } from "../db-viewer/JsonCellPopover";
 import { CellEditor, type FkOption } from "./CellEditor";
 import { CellContextMenu } from "./CellContextMenu";
@@ -43,6 +44,11 @@ interface VirtualDataGridProps {
   fkOptions?: Record<string, FkOption[]>;
   /** Placeholder text for the FK search input, keyed by column NAME. */
   fkPlaceholders?: Record<string, string>;
+  /**
+   * Server-side FK option search keyed by column NAME. Present → the dropdown
+   * queries the referenced table instead of filtering the first page locally.
+   */
+  fkSearches?: Record<string, (query: string) => Promise<FkOption[]>>;
   /** Optimistic staged cell values keyed `${rowIndex}:${colName}` → value (null = NULL), from the changes queue. */
   stagedValues?: Record<string, string | null>;
   /** Keys of cells with a PENDING (not yet committed) update → drives the pulsing orange outline. */
@@ -78,6 +84,7 @@ export function VirtualDataGrid({
   enumValues,
   fkOptions,
   fkPlaceholders,
+  fkSearches,
   stagedValues,
   pendingKeys,
   pendingInsertChangeIds,
@@ -199,28 +206,28 @@ export function VirtualDataGrid({
 
   const [fkPreview, setFkPreview] = useState<{
     connectionId: string;
-    schema: string;
-    table: string;
-    column: string;
+    source: { schema: string; table: string; column: string };
+    target: FkTarget;
     value: string;
     anchorRect: DOMRect | null;
   } | null>(null);
 
   const handleFkClick = useCallback(
     (col: ColumnInfo, cellValue: unknown, e: React.MouseEvent) => {
-      if (!col.is_fk || !col.fk_ref || cellValue === null || cellValue === undefined) return;
-      const [refTable] = col.fk_ref;
+      const target = fkTarget(col);
+      if (!target || cellValue === null || cellValue === undefined) return;
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
       setFkPreview({
         connectionId,
-        schema,
-        table: refTable,
-        column: col.fk_ref[1],
+        // The request carries the source column; the backend resolves the
+        // referenced relation, so a same-named local table cannot be used.
+        source: { schema, table, column: col.name },
+        target,
         value: String(cellValue),
         anchorRect: rect,
       });
     },
-    [connectionId, schema],
+    [connectionId, schema, table],
   );
 
   // ── JSON popover state ────────────────────────────────
@@ -382,7 +389,7 @@ export function VirtualDataGrid({
               : isNull
                 ? "NULL"
                 : isFk
-                  ? `FK → ${col.fk_ref![0]}.${col.fk_ref![1]}: ${String(displayCell)}`
+                  ? `FK → ${fkLabel(fkTarget(col))}: ${String(displayCell)}`
                   : isJson
                     ? "Click to view JSON"
                     : String(displayCell)
@@ -410,6 +417,7 @@ export function VirtualDataGrid({
                 enumValues={enumValues?.[col.name]}
                 fkOptions={fkOptions?.[col.name]}
                 fkPlaceholder={fkPlaceholders?.[col.name]}
+                onSearchFk={fkSearches?.[col.name]}
                 onCommit={commitEdit}
                 onCancel={() => setEditingCell(null)}
               />
@@ -428,7 +436,7 @@ export function VirtualDataGrid({
               <button
                 type="button"
                 aria-label="Open FK reference"
-                title={`FK → ${col.fk_ref![0]}.${col.fk_ref![1]}`}
+                title={`FK → ${fkLabel(fkTarget(col))}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
@@ -613,9 +621,8 @@ export function VirtualDataGrid({
       {fkPreview && (
         <FkPreviewPopover
           connectionId={fkPreview.connectionId}
-          schema={fkPreview.schema}
-          table={fkPreview.table}
-          column={fkPreview.column}
+          source={fkPreview.source}
+          target={fkPreview.target}
           value={fkPreview.value}
           anchorRect={fkPreview.anchorRect}
           onClose={() => setFkPreview(null)}
@@ -671,7 +678,8 @@ export function VirtualDataGrid({
               setCtxMenu(null);
             }}
             onOpenFk={() => {
-              if (ctxCol?.is_fk && ctxCol.fk_ref) {
+              const target = fkTarget(ctxCol);
+              if (target && ctxCol) {
                 // Resolve the column index into `rows` (ctxMenu.col indexes visibleColumns,
                 // which can differ when columns are hidden).
                 const ci = columns.findIndex((c) => c.name === ctxCol.name);
@@ -679,9 +687,8 @@ export function VirtualDataGrid({
                 if (cellValue !== null && cellValue !== undefined) {
                   setFkPreview({
                     connectionId,
-                    schema,
-                    table: ctxCol.fk_ref[0],
-                    column: ctxCol.fk_ref[1],
+                    source: { schema, table, column: ctxCol.name },
+                    target,
                     value: String(cellValue),
                     anchorRect: ctxMenu.pos,
                   });
