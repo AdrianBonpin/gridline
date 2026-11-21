@@ -409,14 +409,19 @@ async fn test_mysql_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
         .await
     {
         Ok(pool) => {
-            close_probe_tunnel(ssh, target.tunnel_key.as_deref());
-            // Best-effort server version; None if the query fails.
+            // Latency stays "time to a usable connection"; the version query is
+            // a diagnostic extra and is not folded into the number.
+            let latency_ms = Some(start.elapsed().as_millis() as u64);
+            // Query the version BEFORE the probe tunnel is closed: through a
+            // tunnel every query travels the forwarded connection, so closing
+            // first would hang the query and report no version (or, worse, a
+            // loopback artifact) for a target that is perfectly reachable.
             let server_version = sqlx::query_scalar::<_, String>("SELECT VERSION()")
                 .fetch_one(&pool)
                 .await
                 .ok();
-            let latency_ms = Some(start.elapsed().as_millis() as u64);
             pool.close().await;
+            close_probe_tunnel(ssh, target.tunnel_key.as_deref());
             TestConnectionResult {
                 ok: true,
                 error: None,
@@ -438,12 +443,65 @@ async fn test_mysql_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
 
 /// Test a SQLite connection using `rusqlite`.
 ///
-/// Opens the database file at `config.host`. Returns success if the file
-/// can be opened as a valid SQLite database.
+/// Opens the database file at `config.host` **read-write without create**, so a
+/// missing file fails instead of being silently created — the test reports what
+/// is there, never a database it just made up. Creating a new database is the
+/// separate, explicit [`create_sqlite_database_at`] action.
+///
+/// Opening alone does not prove the file is a SQLite database (SQLite defers the
+/// header check), so the probe also reads the schema; only that read validates
+/// an existing file and rejects an arbitrary non-database file.
 fn test_sqlite_connection(config: &DbConfig) -> TestConnectionResult {
     let start = std::time::Instant::now();
-    match rusqlite::Connection::open(&config.host) {
+    let path = std::path::Path::new(&config.host);
+
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => {
+            return TestConnectionResult {
+                ok: false,
+                error: Some(format!("not a database file: {}", config.host)),
+                server_version: None,
+                latency_ms: None,
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return TestConnectionResult {
+                ok: false,
+                error: Some(format!(
+                    "database file does not exist: {} (create it first if you meant to start a new database)",
+                    config.host
+                )),
+                server_version: None,
+                latency_ms: None,
+            }
+        }
+        Err(e) => {
+            return TestConnectionResult {
+                ok: false,
+                error: Some(format!("cannot access database file {}: {e}", config.host)),
+                server_version: None,
+                latency_ms: None,
+            }
+        }
+    }
+
+    // READ_WRITE without CREATE: the flags the real connect path uses, minus the
+    // ability to conjure a file.
+    let open =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE);
+    match open {
         Ok(conn) => {
+            if let Err(e) = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+                r.get::<_, i64>(0)
+            }) {
+                return TestConnectionResult {
+                    ok: false,
+                    error: Some(format!("not a valid SQLite database: {}: {e}", config.host)),
+                    server_version: None,
+                    latency_ms: None,
+                };
+            }
             // Best-effort server version; None if the query fails.
             let server_version = conn
                 .query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
@@ -464,11 +522,54 @@ fn test_sqlite_connection(config: &DbConfig) -> TestConnectionResult {
     }
 }
 
+/// Create a new SQLite database file at `path` — the explicit alternative to
+/// testing a connection.
+///
+/// Fails closed on anything that could destroy data: an existing path is never
+/// opened or truncated, and the parent directory must already exist (creation
+/// does not build directory trees).
+pub fn create_sqlite_database_at(path: &str) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("file path must not be empty".to_string());
+    }
+    let file = std::path::Path::new(path);
+    if file.exists() {
+        return Err(format!(
+            "a file already exists at {path}; refusing to overwrite it"
+        ));
+    }
+    if let Some(parent) = file.parent() {
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            return Err(format!("directory does not exist: {}", parent.display()));
+        }
+    }
+
+    let conn = rusqlite::Connection::open_with_flags(
+        file,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_CREATE,
+    )
+    .map_err(|e| format!("could not create database at {path}: {e}"))?;
+    // Write a real database header immediately, so the new file is a database
+    // rather than an empty placeholder that only becomes one on first write.
+    conn.execute_batch("VACUUM;")
+        .map_err(|e| format!("could not initialise database at {path}: {e}"))?;
+    Ok(())
+}
+
+/// Tauri command to create a new SQLite database file (explicit user action).
+#[tauri::command]
+pub fn create_sqlite_database(path: String) -> Result<(), String> {
+    create_sqlite_database_at(&path)
+}
+
 /// Test a Redis connection using the `redis` crate.
 ///
-/// Uses `redis::Client::open` followed by `get_async_connection` with a
-/// 10-second timeout via `tokio::time::timeout`. Connects through an SSH
-/// tunnel when configured; any probe tunnel is closed in every path.
+/// Builds a [`redis::ConnectionInfo`] directly instead of interpolating a
+/// `redis://` URL: a stored password may contain any character (`@`, `:`, `/`,
+/// `?`, `#`, `%`…), and URL userinfo/percent-encoding would either reject it or
+/// hand Redis a mangled credential. Uses `get_multiplexed_async_connection` with
+/// a 10-second timeout. Connects through an SSH tunnel when configured; any probe
+/// tunnel is closed in every path.
 async fn test_redis_connection(config: &DbConfig, ssh: &SshManager) -> TestConnectionResult {
     use tokio::time::timeout;
 
@@ -483,16 +584,19 @@ async fn test_redis_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
             }
         }
     };
-    let password = config.password.as_deref();
 
-    let conn_str = if let Some(pwd) = password {
-        format!("redis://:{}@{}:{}/", pwd, target.host, target.port)
-    } else {
-        format!("redis://{}:{}/", target.host, target.port)
+    let conn_info = redis::ConnectionInfo {
+        addr: redis::ConnectionAddr::Tcp(target.host.clone(), target.port),
+        redis: redis::RedisConnectionInfo {
+            db: 0,
+            username: config.username.clone().filter(|u| !u.is_empty()),
+            password: config.password.clone(),
+            protocol: redis::ProtocolVersion::RESP2,
+        },
     };
 
     let start = std::time::Instant::now();
-    match redis::Client::open(conn_str.as_str()) {
+    match redis::Client::open(conn_info) {
         Ok(client) => {
             match timeout(
                 std::time::Duration::from_secs(10),

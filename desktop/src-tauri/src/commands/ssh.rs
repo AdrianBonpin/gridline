@@ -38,6 +38,18 @@ impl Tunnel {
             closer: None,
         }
     }
+
+    /// Create a tunnel handle whose `closer` runs when the tunnel is closed.
+    ///
+    /// Backends that own real resources (a listener, a session) hand their
+    /// teardown in here, so closing the tunnel actually ends them — which is
+    /// what makes "the tunnel stayed open for this query" observable.
+    pub fn with_closer(local_port: u16, closer: Box<dyn FnOnce() + Send>) -> Self {
+        Tunnel {
+            local_port,
+            closer: Some(closer),
+        }
+    }
 }
 
 impl Drop for Tunnel {
