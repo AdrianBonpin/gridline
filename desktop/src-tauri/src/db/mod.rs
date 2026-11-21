@@ -7,6 +7,7 @@ pub mod object_crud;
 pub mod object_ddl;
 pub mod pool;
 pub mod read_only;
+pub mod row_write;
 pub mod schema_diff;
 pub mod sql_classify;
 pub mod sql_split;
