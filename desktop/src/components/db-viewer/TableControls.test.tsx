@@ -156,6 +156,65 @@ describe("TableControls query variant", () => {
     expect(screen.getByLabelText(/next page/i)).toBeInTheDocument();
   });
 
+  it("never arms an auto-refresh timer, even when a rate is passed in", () => {
+    vi.useFakeTimers();
+    try {
+      seed([makeTab({ tabType: "query" })], "tab-1");
+      const onRefresh = vi.fn();
+      // A query tab's text is reviewed per execution; a hidden timer re-running
+      // it would execute SQL nobody asked to run again.
+      renderControls({ variant: "query", onRefresh, defaultRefreshRate: 5000 });
+
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(onRefresh).not.toHaveBeenCalled();
+      expect(screen.queryByLabelText(/auto-refresh/i)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("routes paging through onRequestPage instead of the store when provided", () => {
+    seed(
+      [
+        makeTab({
+          tabType: "query",
+          data: { columns, rows: [[1]], total_rows: 120, page: 1, page_size: 50 },
+        }),
+      ],
+      "tab-1",
+    );
+    const onRequestPage = vi.fn();
+    renderControls({ variant: "query", onRequestPage });
+
+    fireEvent.click(screen.getByLabelText(/next page/i));
+    expect(onRequestPage).toHaveBeenCalledWith(2);
+    // The tab must not be left loading by an unguarded store-side page bump.
+    const tab = useDbViewerStore.getState().tabs.find((t) => t.id === "tab-1");
+    expect(tab?.page).toBe(1);
+    expect(tab?.loading).toBe(false);
+  });
+
+  it("routes page-size changes through onRequestPageSize when provided", () => {
+    seed(
+      [
+        makeTab({
+          tabType: "query",
+          data: { columns, rows: [[1]], total_rows: 120, page: 1, page_size: 50 },
+        }),
+      ],
+      "tab-1",
+    );
+    const onRequestPageSize = vi.fn();
+    renderControls({ variant: "query", onRequestPageSize });
+
+    fireEvent.change(screen.getByDisplayValue("50"), { target: { value: "100" } });
+    expect(onRequestPageSize).toHaveBeenCalledWith(100);
+    const tab = useDbViewerStore.getState().tabs.find((t) => t.id === "tab-1");
+    expect(tab?.pageSize).toBe(50);
+  });
+
   it("table variant has no queue button (moved to tab bar) and no execution time", () => {
     seed(
       [

@@ -33,3 +33,40 @@ export function tableTreeItemSelector(table = DEMO_TABLE) {
 export function gridSelector() {
   return '[role="grid"]';
 }
+
+/**
+ * Query workspace anchors for the destructive-execution flow.
+ *
+ * Each selector targets an accessible label or a `data-testid` that the owning
+ * component pins in its own unit test, so renaming the UI breaks a fast test
+ * instead of silently turning an end-to-end assertion into a no-op.
+ */
+export function newQueryTabSelector() {
+  return 'button[aria-label="New query tab"]';
+}
+
+/** Monaco's hidden input area: clicking the editor focuses it, then sendKeys types. */
+export function queryEditorInputSelector() {
+  return '[data-testid="query-editor"] textarea.inputarea';
+}
+
+export function runQuerySelector() {
+  return 'button[aria-label="Run query"]';
+}
+
+/** The query tab's toolbar re-run control (TableControls, query variant). */
+export function rerunQuerySelector() {
+  return 'button[aria-label="Re-run query"]';
+}
+
+export function destructiveDialogSelector() {
+  return '[data-testid="destructive-query-dialog"]';
+}
+
+export function destructiveDialogConfirmSelector() {
+  return '[data-testid="destructive-query-confirm"]';
+}
+
+export function destructiveDialogCancelSelector() {
+  return '[data-testid="destructive-query-cancel"]';
+}

@@ -16,12 +16,14 @@ import { errorMessage } from "./errors.mjs";
 import { describeMatchedValues, describeRenderedCells } from "./gridContent.mjs";
 import { FLOWS, planRun } from "./preflight.mjs";
 import { runDemoSmokeFlow } from "./smokeFlow.mjs";
+import { runDestructiveRerunFlow } from "./destructiveFlow.mjs";
 import { buildCapabilities, startTauriDriver } from "./tauriDriver.mjs";
 import { WebDriverClient } from "./webdriverClient.mjs";
 
 /** Flow registry: later tickets register their critical flows here. */
 export const FLOW_RUNNERS = {
   "demo-smoke": runDemoSmokeFlow,
+  "destructive-rerun": runDestructiveRerunFlow,
 };
 
 export function reexecCommand({ argv, execPath, scriptPath }) {
@@ -78,13 +80,18 @@ export async function executeRun(plan, dependencies = {}) {
     const matched = describeMatchedValues(result.matchedCells);
     if (observed) log(`e2e: grid observed ${observed}`);
     if (matched) log(`e2e: fixture values rendered in the grid: ${matched}`);
+    // A flow may report evidence of its own (what it actually observed); the
+    // pass line names that flow's claim instead of one hard-coded message.
+    const evidence = Array.isArray(result.evidence) ? result.evidence : [];
+    for (const line of evidence) log(`e2e: ${line}`);
     artifacts.writeSummary([
       ...result.steps.map((step) => `${step.name} (${step.durationMs}ms)`),
       ...(observed ? [`grid observed ${observed}`] : []),
       ...(matched ? [`fixture values rendered in the grid: ${matched}`] : []),
+      ...evidence,
       "PASS",
     ]);
-    log("e2e: PASS the built app rendered the seeded demo rows");
+    log(`e2e: PASS ${result.passMessage ?? FLOWS[plan.flow] ?? plan.flow}`);
     return { exitCode: 0, steps: result.steps };
   } catch (error) {
     await artifacts.captureFailure({ error, client, display: plan.display });

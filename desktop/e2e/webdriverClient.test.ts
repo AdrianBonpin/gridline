@@ -68,6 +68,23 @@ describe("WebDriverClient", () => {
     await expect(client.createSession({ alwaysMatch: {} })).rejects.toThrow(/sessionId/);
   });
 
+  it("sends text to a focused element with the W3C value body", async () => {
+    const { calls, fetchImpl } = fakeDriver([{ status: 200, body: { value: null } }]);
+    const client = clientFor(fetchImpl);
+    client.sessionId = "s1";
+
+    await client.sendKeys({ elementId: "editor" }, "DELETE FROM products;");
+
+    expect(calls[0]).toEqual({
+      method: "POST",
+      url: `${BASE}/session/s1/element/editor/value`,
+      body: {
+        text: "DELETE FROM products;",
+        value: Array.from("DELETE FROM products;"),
+      },
+    });
+  });
+
   it("finds an element by CSS selector and unwraps the W3C element key", async () => {
     const { calls, fetchImpl } = fakeDriver([
       { status: 200, body: { value: { [ELEMENT_KEY]: "element-1" } } },

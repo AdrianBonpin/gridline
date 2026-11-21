@@ -42,7 +42,13 @@ export function DestructiveQueryDialog({
     : null;
 
   return (
-    <div className="fixed inset-0 bg-canvas/60 backdrop-blur-sm flex items-center justify-center z-50">
+    <div
+      data-testid="destructive-query-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Destructive Query"
+      className="fixed inset-0 bg-canvas/60 backdrop-blur-sm flex items-center justify-center z-50"
+    >
       <div className="glass rounded-2xl p-6 shadow-2xl ring-1 ring-white/10 max-w-md w-full">
         <div className="flex items-start gap-3 mb-4">
           <AlertTriangle size={20} className="text-amber-400 shrink-0 mt-0.5" />
@@ -67,8 +73,20 @@ export function DestructiveQueryDialog({
         </div>
 
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onCancel}>Cancel</Button>
-          <Button onClick={onConfirm} className="!bg-red-500 hover:!bg-red-600 !border-red-500">Execute</Button>
+          <Button
+            variant="ghost"
+            onClick={onCancel}
+            data-testid="destructive-query-cancel"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={onConfirm}
+            data-testid="destructive-query-confirm"
+            className="!bg-red-500 hover:!bg-red-600 !border-red-500"
+          >
+            Execute
+          </Button>
         </div>
       </div>
     </div>
