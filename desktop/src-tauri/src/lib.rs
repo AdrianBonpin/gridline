@@ -16,7 +16,9 @@ use store::Store;
 use tauri::{Emitter, Manager};
 
 pub struct AppState {
-    pub db_store: StdMutex<Store>,
+    /// Shared so SSH host trust (ADR 0001) can read and write enrollments
+    /// through the same connection as every other command.
+    pub db_store: Arc<StdMutex<Store>>,
     pub pool_manager: tokio::sync::Mutex<ConnectionPoolManager>,
     pub ssh_manager: StdMutex<SshTunnelManager>,
     pub cancel_registry: crate::cancel::CancelRegistry,
@@ -24,7 +26,7 @@ pub struct AppState {
 
 use commands::{
     backup, connections, db_viewer, demo, folders, import_export, keychain, maintenance, objects,
-    query, query_export, schema_diff, schema_graph, settings, tags,
+    query, query_export, schema_diff, schema_graph, settings, ssh, tags,
 };
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -77,8 +79,13 @@ pub fn run() {
                 .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
             std::fs::create_dir_all(&data_dir)
                 .map_err(|e| format!("failed to create app data dir: {e}"))?;
-            let store = Store::open(&data_dir.join("gridline.db").to_string_lossy())
-                .expect("failed to open db");
+            let store = Arc::new(StdMutex::new(
+                Store::open(&data_dir.join("gridline.db").to_string_lossy())
+                    .expect("failed to open db"),
+            ));
+            // SSH host trust: system known-hosts files plus the enrollments this
+            // user accepted (non-secret metadata in the same local store).
+            let ssh_trust = Arc::new(commands::ssh_trust::StoreHostTrust::new(store.clone()));
 
             // Cold-start "open with": the path arrived as a process argument
             // before the webview existed, so queue it here. macOS uses
@@ -89,9 +96,11 @@ pub fn run() {
             }
 
             app.manage(AppState {
-                db_store: StdMutex::new(store),
+                db_store: store.clone(),
                 pool_manager: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
-                ssh_manager: StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend))),
+                ssh_manager: StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend::new(
+                    ssh_trust,
+                )))),
                 cancel_registry: crate::cancel::CancelRegistry::default(),
             });
 
@@ -183,6 +192,8 @@ pub fn run() {
             keychain::save_connection_password,
             keychain::get_connection_password,
             keychain::delete_connection_password,
+            ssh::ssh_host_trust_state,
+            ssh::ssh_host_trust_enroll,
             keychain::save_connection_ssh_password,
             keychain::get_connection_ssh_password,
             keychain::delete_connection_ssh_password,

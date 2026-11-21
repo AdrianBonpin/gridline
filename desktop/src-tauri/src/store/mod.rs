@@ -11,6 +11,32 @@ pub struct Store {
     conn: Mutex<SqliteConnection>,
 }
 
+/// Host-key blobs are persisted base64-encoded (the same encoding known-hosts
+/// uses), never as raw bytes in a text column.
+fn trust_blob_to_text(blob: &[u8]) -> String {
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, blob)
+}
+
+fn row_to_trust_record(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<crate::models::HostTrustRecord> {
+    let key_blob: String = row.get(4)?;
+    let blob = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &key_blob)
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+    Ok(crate::models::HostTrustRecord {
+        host: row.get(0)?,
+        port: row.get::<_, i64>(1)? as u16,
+        key: crate::models::HostKey {
+            key_type: row.get(2)?,
+            blob,
+        },
+        fingerprint: row.get(3)?,
+        enrolled_at: row.get(5)?,
+    })
+}
+
 /// A saved query row (returned from the store).
 #[derive(Debug, Clone)]
 pub struct SavedQueryRow {
@@ -403,6 +429,75 @@ impl Store {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM recent_connections", [])
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // SSH host trust (ADR 0001)
+    //
+    // Non-secret metadata only: the endpoint, the host-key identity and when
+    // the user accepted it. Passwords, private keys and passphrases live in
+    // the OS keychain, never here.
+    // ------------------------------------------------------------------
+
+    pub fn get_ssh_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<Option<crate::models::HostTrustRecord>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT host, port, key_type, fingerprint, key_blob, enrolled_at
+                 FROM ssh_host_trust WHERE host = ?1 AND port = ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(params![host, port as i64], row_to_trust_record)
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            Some(Ok(record)) => Ok(Some(record)),
+            Some(Err(e)) => Err(e.to_string()),
+            None => Ok(None),
+        }
+    }
+
+    pub fn remember_ssh_host_trust(
+        &self,
+        record: &crate::models::HostTrustRecord,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO ssh_host_trust
+                 (host, port, key_type, fingerprint, key_blob, enrolled_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(host, port) DO UPDATE SET
+                 key_type = excluded.key_type,
+                 fingerprint = excluded.fingerprint,
+                 key_blob = excluded.key_blob,
+                 enrolled_at = excluded.enrolled_at",
+            params![
+                record.host,
+                record.port as i64,
+                record.key.key_type,
+                record.fingerprint,
+                trust_blob_to_text(&record.key.blob),
+                record.enrolled_at
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Forget an enrollment so the next connection re-enrolls. Deliberate
+    /// re-enrollment uses this; authentication never does.
+    pub fn forget_ssh_host_trust(&self, host: &str, port: u16) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM ssh_host_trust WHERE host = ?1 AND port = ?2",
+            params![host, port as i64],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -1641,5 +1736,115 @@ mod tests {
             "disallowed font -> default"
         );
         assert_eq!(s.editor_word_wrap, "off", "invalid wrap -> default");
+    }
+
+    fn trust_record(host: &str, port: u16, seed: u8) -> crate::models::HostTrustRecord {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&11u32.to_be_bytes());
+        blob.extend_from_slice(b"ssh-ed25519");
+        blob.extend_from_slice(&[seed; 32]);
+        crate::models::HostTrustRecord {
+            host: host.to_string(),
+            port,
+            key: crate::models::HostKey {
+                key_type: "ssh-ed25519".into(),
+                blob,
+            },
+            fingerprint: format!("SHA256:seed-{seed}"),
+            enrolled_at: "2026-11-21T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn ssh_host_trust_round_trips_and_is_keyed_by_endpoint() {
+        let store = fresh_store();
+        assert!(store
+            .get_ssh_host_trust("db.example.com", 22)
+            .unwrap()
+            .is_none());
+
+        let record = trust_record("db.example.com", 2222, 1);
+        store.remember_ssh_host_trust(&record).unwrap();
+
+        let got = store
+            .get_ssh_host_trust("db.example.com", 2222)
+            .unwrap()
+            .expect("record persisted");
+        assert_eq!(got.key, record.key, "the key blob survives the round trip");
+        assert_eq!(got.fingerprint, record.fingerprint);
+
+        // Non-standard ports are part of the identity: another port is a
+        // different endpoint, not the same trust.
+        assert!(store
+            .get_ssh_host_trust("db.example.com", 22)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_ssh_host_trust("other.example.com", 2222)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn remembering_a_trust_record_replaces_the_endpoint_row() {
+        let store = fresh_store();
+        store
+            .remember_ssh_host_trust(&trust_record("db.example.com", 22, 1))
+            .unwrap();
+        store
+            .remember_ssh_host_trust(&trust_record("db.example.com", 22, 2))
+            .unwrap();
+
+        let got = store
+            .get_ssh_host_trust("db.example.com", 22)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.fingerprint, "SHA256:seed-2");
+        let rows: i64 = {
+            let conn = store.conn.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM ssh_host_trust", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(rows, 1, "one trust record per endpoint");
+    }
+
+    #[test]
+    fn forgetting_a_trust_record_removes_it() {
+        let store = fresh_store();
+        store
+            .remember_ssh_host_trust(&trust_record("db.example.com", 22, 1))
+            .unwrap();
+        store.forget_ssh_host_trust("db.example.com", 22).unwrap();
+        assert!(store
+            .get_ssh_host_trust("db.example.com", 22)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn ssh_host_trust_rows_carry_no_credentials() {
+        let store = fresh_store();
+        store
+            .remember_ssh_host_trust(&trust_record("db.example.com", 22, 1))
+            .unwrap();
+
+        // Structural guarantee: the table has no credential columns at all.
+        let columns: Vec<String> = {
+            let conn = store.conn.lock().unwrap();
+            let mut stmt = conn.prepare("PRAGMA table_info(ssh_host_trust)").unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        assert_eq!(
+            columns,
+            vec![
+                "host".to_string(),
+                "port".to_string(),
+                "key_type".to_string(),
+                "fingerprint".to_string(),
+                "key_blob".to_string(),
+                "enrolled_at".to_string(),
+            ]
+        );
     }
 }

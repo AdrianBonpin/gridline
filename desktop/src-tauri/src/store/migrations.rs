@@ -266,6 +266,26 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
 
+    // v9: SSH host trust enrollments (ADR 0001). Non-secret metadata only:
+    // endpoint, key identity and when the user accepted it.
+    if current_ver < 9 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ssh_host_trust (
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                key_type TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                key_blob TEXT NOT NULL,
+                enrolled_at TEXT NOT NULL,
+                PRIMARY KEY (host, port)
+            );",
+        )
+        .map_err(|e| e.to_string())?;
+
+        conn.execute("INSERT INTO schema_version (version) VALUES (9)", [])
+            .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -316,7 +336,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 7);
+        assert_eq!(count, 8);
     }
 
     #[test]
@@ -622,12 +642,31 @@ mod tests {
     }
 
     #[test]
-    fn v8_bumps_schema_version_to_8() {
+    fn migration_v9_creates_the_ssh_host_trust_table() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         let ver: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(ver, 8);
+        assert_eq!(ver, 9);
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(ssh_host_trust)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(
+            columns,
+            vec![
+                "host".to_string(),
+                "port".to_string(),
+                "key_type".to_string(),
+                "fingerprint".to_string(),
+                "key_blob".to_string(),
+                "enrolled_at".to_string(),
+            ],
+            "trust metadata only, keyed by endpoint"
+        );
     }
 }

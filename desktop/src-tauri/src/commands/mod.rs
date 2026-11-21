@@ -14,5 +14,6 @@ pub mod schema_diff;
 pub mod schema_graph;
 pub mod settings;
 pub mod ssh;
+pub mod ssh_trust;
 pub mod tags;
 pub mod test_connection;

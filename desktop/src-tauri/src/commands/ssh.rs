@@ -1,8 +1,14 @@
+use crate::commands::ssh_trust::{
+    enroll_host_trust, establish_trusted_session, host_key_from_blob, probe_host_trust,
+    HostTrustProvider, SshTransport, SshTunnelError,
+};
 use crate::db::tls::TlsDecision;
+use crate::models::ssh_trust::{HostKey, HostKeyFingerprint, SshHostTrustState};
 use crate::models::SshConfig;
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,6 +55,9 @@ impl Drop for Tunnel {
 pub trait TunnelBackend: Send + Sync {
     /// Open a tunnel to `remote_host:remote_port` via `cfg` and return a
     /// handle exposing the bound local port.
+    ///
+    /// The SSH host key is verified before any credential is sent; an unknown
+    /// or conflicting key returns a `SshTunnelError` carrying the trust state.
     fn open(
         &self,
         key: &str,
@@ -57,7 +66,19 @@ pub trait TunnelBackend: Send + Sync {
         remote_port: u16,
         password: Option<&str>,
         passphrase: Option<&str>,
-    ) -> Result<Tunnel, String>;
+    ) -> Result<Tunnel, SshTunnelError>;
+
+    /// Report the host-trust state for an endpoint. Handshakes only: no
+    /// password, key or passphrase is sent.
+    fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String>;
+
+    /// Remember an explicitly accepted fingerprint for an endpoint.
+    fn enroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String>;
 }
 
 /// Manages SSH tunnels, mapping connection keys to active tunnels.
@@ -91,9 +112,11 @@ impl SshTunnelManager {
         remote_port: u16,
         password: Option<&str>,
         passphrase: Option<&str>,
-    ) -> Result<u16, String> {
+    ) -> Result<u16, SshTunnelError> {
         if !cfg.is_valid() {
-            return Err("invalid SSH configuration".to_string());
+            return Err(SshTunnelError::Failed(
+                "invalid SSH configuration".to_string(),
+            ));
         }
         let tunnel = self
             .backend
@@ -142,14 +165,109 @@ impl SshTunnelManager {
     pub fn active_count(&self) -> usize {
         self.tunnels.len()
     }
+
+    /// Report the host-trust state for an SSH endpoint (no credentials sent).
+    pub fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
+        self.backend.probe_host_trust(host, port)
+    }
+
+    /// Remember an explicitly accepted fingerprint for an SSH endpoint.
+    pub fn enroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String> {
+        self.backend.enroll_host_trust(host, port, accepted)
+    }
 }
 
-/// Real ssh2 backend: binds a loopback listener, authenticates to the SSH
-/// host over a blocking socket, then forwards clients on nonblocking channels.
+/// Real ssh2 backend: binds a loopback listener, verifies the SSH host key,
+/// authenticates over a blocking socket, then forwards clients on nonblocking
+/// channels.
 ///
 /// The whole `open` runs inside `tokio::task::spawn_blocking` at the call
 /// sites because `ssh2::Session` is purely blocking.
-pub struct Ssh2Backend;
+pub struct Ssh2Backend {
+    trust: Arc<dyn HostTrustProvider>,
+}
+
+impl Ssh2Backend {
+    pub fn new(trust: Arc<dyn HostTrustProvider>) -> Self {
+        Ssh2Backend { trust }
+    }
+}
+
+/// Open a TCP connection to the SSH host and complete the SSH handshake.
+///
+/// No credentials are involved, which is why probing an endpoint's host key can
+/// use the same path as a real connection.
+fn connect_session(host: &str, port: u16) -> Result<ssh2::Session, String> {
+    use ssh2::Session;
+
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("resolve ssh host: {e}"))?;
+    let mut last_error = io::Error::new(io::ErrorKind::NotFound, "no SSH host addresses");
+    let tcp = addresses
+        .filter_map(
+            |addr| match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
+                Ok(tcp) => Some(tcp),
+                Err(e) => {
+                    last_error = e;
+                    None
+                }
+            },
+        )
+        .next()
+        .ok_or_else(|| format!("connect ssh host: {last_error}"))?;
+    let mut session = Session::new().map_err(|e| format!("ssh session: {e}"))?;
+    session.set_timeout(10_000);
+    session.set_tcp_stream(tcp);
+    Ok(session)
+}
+
+/// Adapter that lets the shared host-trust seam drive a real ssh2 session.
+struct Ssh2Transport<'a> {
+    session: &'a mut ssh2::Session,
+}
+
+impl SshTransport for Ssh2Transport<'_> {
+    fn handshake(&mut self) -> Result<(), String> {
+        self.session
+            .handshake()
+            .map_err(|e| format!("ssh handshake: {e}"))
+    }
+
+    fn host_key(&mut self) -> Result<HostKey, String> {
+        let (blob, _kind) = self
+            .session
+            .host_key()
+            .ok_or_else(|| "ssh server did not present a host key".to_string())?;
+        host_key_from_blob(blob)
+    }
+
+    fn authenticate_password(&mut self, user: &str, password: &str) -> Result<(), String> {
+        self.session
+            .userauth_password(user, password)
+            .map_err(|e| format!("ssh password auth: {e}"))
+    }
+
+    fn authenticate_key(
+        &mut self,
+        user: &str,
+        private_key_path: &Path,
+        passphrase: Option<&str>,
+    ) -> Result<(), String> {
+        self.session
+            .userauth_pubkey_file(user, None, private_key_path, passphrase)
+            .map_err(|e| format!("ssh key auth: {e}"))
+    }
+
+    fn authenticated(&self) -> bool {
+        self.session.authenticated()
+    }
+}
 
 impl TunnelBackend for Ssh2Backend {
     fn open(
@@ -160,56 +278,30 @@ impl TunnelBackend for Ssh2Backend {
         remote_port: u16,
         password: Option<&str>,
         passphrase: Option<&str>,
-    ) -> Result<Tunnel, String> {
-        use ssh2::Session;
-
+    ) -> Result<Tunnel, SshTunnelError> {
         // Loopback-only listener with an ephemeral port.
         let listener = std::net::TcpListener::bind("127.0.0.1:0")
-            .map_err(|e| format!("bind local tunnel port: {e}"))?;
+            .map_err(|e| SshTunnelError::Failed(format!("bind local tunnel port: {e}")))?;
         let local_port = listener
             .local_addr()
-            .map_err(|e| format!("local tunnel address: {e}"))?
+            .map_err(|e| SshTunnelError::Failed(format!("local tunnel address: {e}")))?
             .port();
 
-        let addresses = (cfg.host.as_str(), cfg.port)
-            .to_socket_addrs()
-            .map_err(|e| format!("resolve ssh host: {e}"))?;
-        let mut last_error = io::Error::new(io::ErrorKind::NotFound, "no SSH host addresses");
-        let tcp = addresses
-            .filter_map(
-                |addr| match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
-                    Ok(tcp) => Some(tcp),
-                    Err(e) => {
-                        last_error = e;
-                        None
-                    }
-                },
-            )
-            .next()
-            .ok_or_else(|| format!("connect ssh host: {last_error}"))?;
-        let mut session = Session::new().map_err(|e| format!("ssh session: {e}"))?;
-        session.set_timeout(10_000);
-        session.set_tcp_stream(tcp);
-        session
-            .handshake()
-            .map_err(|e| format!("ssh handshake: {e}"))?;
-
-        match cfg.auth_method.as_str() {
-            "key" => {
-                let path = cfg
-                    .private_key_path
-                    .as_deref()
-                    .ok_or_else(|| "private_key_path required for key auth".to_string())?;
-                session
-                    .userauth_pubkey_file(&cfg.user, None, std::path::Path::new(path), passphrase)
-                    .map_err(|e| format!("ssh key auth: {e}"))?;
-            }
-            _ => session
-                .userauth_password(&cfg.user, password.unwrap_or(""))
-                .map_err(|e| format!("ssh password auth: {e}"))?,
-        }
-        if !session.authenticated() {
-            return Err("SSH authentication failed".into());
+        let mut session = connect_session(&cfg.host, cfg.port).map_err(SshTunnelError::Failed)?;
+        // Verify the host key before authentication: an unknown or conflicting
+        // key returns here, so no password, key or passphrase is ever sent to
+        // an unverified server.
+        {
+            let mut transport = Ssh2Transport {
+                session: &mut session,
+            };
+            establish_trusted_session(
+                &mut transport,
+                self.trust.as_ref(),
+                cfg,
+                password,
+                passphrase,
+            )?;
         }
 
         // Channel clones share the session's mutex. A blocking read would
@@ -217,7 +309,7 @@ impl TunnelBackend for Ssh2Backend {
         session.set_blocking(false);
         listener
             .set_nonblocking(true)
-            .map_err(|e| format!("nonblocking tunnel listener: {e}"))?;
+            .map_err(|e| SshTunnelError::Failed(format!("nonblocking tunnel listener: {e}")))?;
         let remote_host = remote_host.to_string();
         let (closer_tx, closer_rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
@@ -287,6 +379,103 @@ impl TunnelBackend for Ssh2Backend {
             })),
         })
     }
+
+    fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
+        self.probe_session(host, port, None)
+    }
+
+    fn enroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String> {
+        self.probe_session(host, port, Some(accepted))
+    }
+}
+
+impl Ssh2Backend {
+    /// Handshake and read the host key, then drop the session: nothing is
+    /// authenticated and no credential is sent.
+    fn probe_session(
+        &self,
+        host: &str,
+        port: u16,
+        enroll: Option<&HostKeyFingerprint>,
+    ) -> Result<SshHostTrustState, String> {
+        let mut session = connect_session(host, port)?;
+        let mut transport = Ssh2Transport {
+            session: &mut session,
+        };
+        match enroll {
+            Some(accepted) => {
+                enroll_host_trust(&mut transport, self.trust.as_ref(), host, port, accepted)
+            }
+            None => probe_host_trust(&mut transport, self.trust.as_ref(), host, port),
+        }
+    }
+}
+
+/// Report the SSH host-trust state for an endpoint.
+///
+/// Handshake + host key only: no password, private key or passphrase is sent,
+/// so the UI can show the fingerprint and ask for acceptance *before* a
+/// connection attempt carries credentials.
+#[tauri::command]
+pub async fn ssh_host_trust_state(
+    host: String,
+    port: u16,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<SshHostTrustState, String> {
+    validate_endpoint(&host, port)?;
+    let backend = state
+        .ssh_manager
+        .lock()
+        .map_err(|e| e.to_string())?
+        .backend_clone();
+    tokio::task::spawn_blocking(move || backend.probe_host_trust(&host, port))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::commands::db_viewer::sanitize_error(&e))
+}
+
+/// Remember an explicitly accepted host-key fingerprint for an endpoint.
+///
+/// Re-reads the offered key: a server that switched keys between the prompt and
+/// the acceptance is refused, and a key that conflicts with existing trust is
+/// never replaced here (that is a deliberate re-enrollment, not authentication).
+#[tauri::command]
+pub async fn ssh_host_trust_enroll(
+    host: String,
+    port: u16,
+    key_type: String,
+    fingerprint: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<SshHostTrustState, String> {
+    validate_endpoint(&host, port)?;
+    let backend = state
+        .ssh_manager
+        .lock()
+        .map_err(|e| e.to_string())?
+        .backend_clone();
+    let accepted = HostKeyFingerprint {
+        key_type,
+        fingerprint,
+    };
+    tokio::task::spawn_blocking(move || backend.enroll_host_trust(&host, port, &accepted))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::commands::db_viewer::sanitize_error(&e))
+}
+
+fn validate_endpoint(host: &str, port: u16) -> Result<(), String> {
+    if host.trim().is_empty() {
+        return Err("an SSH host is required".to_string());
+    }
+    if port == 0 {
+        return Err("an SSH port is required".to_string());
+    }
+    Ok(())
 }
 
 fn ssh_would_block(error: &ssh2::Error) -> bool {
@@ -477,7 +666,31 @@ mod tests {
             .parse()
             .unwrap();
         let passphrase = std::env::var("GRIDLINE_TEST_SSH_PASSPHRASE").ok();
-        let tunnel = Ssh2Backend
+
+        // Host trust first, exactly like the UI: probe the offered key, accept
+        // its fingerprint explicitly, then connect.
+        let backend = Ssh2Backend::new(Arc::new(
+            crate::commands::ssh_trust::fake::FakeHostTrust::default(),
+        ));
+        let state = backend
+            .probe_host_trust(&cfg.host, cfg.port)
+            .expect("probe SSH host key");
+        let accepted = match &state {
+            SshHostTrustState::Unknown {
+                key_type,
+                fingerprint,
+                ..
+            } => HostKeyFingerprint {
+                key_type: key_type.clone(),
+                fingerprint: fingerprint.clone(),
+            },
+            other => panic!("expected an unknown host on first use, got {other:?}"),
+        };
+        backend
+            .enroll_host_trust(&cfg.host, cfg.port, &accepted)
+            .expect("enroll the live host key");
+
+        let tunnel = backend
             .open(
                 "live-test",
                 &cfg,
@@ -582,6 +795,8 @@ mod tests {
     #[derive(Debug, Default)]
     struct FakeBackend {
         opens: std::sync::Mutex<Vec<String>>,
+        probes: std::sync::Mutex<Vec<(String, u16)>>,
+        enrollments: std::sync::Mutex<Vec<(String, u16, HostKeyFingerprint)>>,
         next_port: u16,
     }
 
@@ -589,7 +804,20 @@ mod tests {
         fn clone(&self) -> Self {
             Self {
                 opens: std::sync::Mutex::new(self.opens.lock().unwrap().clone()),
+                probes: std::sync::Mutex::new(self.probes.lock().unwrap().clone()),
+                enrollments: std::sync::Mutex::new(self.enrollments.lock().unwrap().clone()),
                 next_port: self.next_port,
+            }
+        }
+    }
+
+    impl FakeBackend {
+        fn unknown_state(host: &str, port: u16) -> SshHostTrustState {
+            SshHostTrustState::Unknown {
+                host: host.to_string(),
+                port,
+                key_type: "ssh-ed25519".into(),
+                fingerprint: "SHA256:fake".into(),
             }
         }
     }
@@ -603,10 +831,34 @@ mod tests {
             _remote_port: u16,
             _pw: Option<&str>,
             _pp: Option<&str>,
-        ) -> Result<Tunnel, String> {
+        ) -> Result<Tunnel, SshTunnelError> {
             self.opens.lock().unwrap().push(key.to_string());
             let p = self.next_port;
             Ok(Tunnel::fake(p))
+        }
+
+        fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
+            self.probes.lock().unwrap().push((host.to_string(), port));
+            Ok(FakeBackend::unknown_state(host, port))
+        }
+
+        fn enroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            self.enrollments
+                .lock()
+                .unwrap()
+                .push((host.to_string(), port, accepted.clone()));
+            Ok(SshHostTrustState::Trusted {
+                host: host.to_string(),
+                port,
+                key_type: accepted.key_type.clone(),
+                fingerprint: accepted.fingerprint.clone(),
+                source: crate::models::ssh_trust::TrustSource::Enrolled,
+            })
         }
     }
 
@@ -705,5 +957,37 @@ mod tests {
         mgr.open_tunnel("b", &cfg, "db", 5432, None, None).ok();
         mgr.close_all();
         assert_eq!(mgr.active_count(), 0);
+    }
+
+    #[test]
+    fn manager_delegates_host_trust_probe_and_enrollment() {
+        let backend = Arc::new(FakeBackend::default());
+        let mgr = SshTunnelManager::new(backend.clone());
+
+        let state = mgr
+            .probe_host_trust("db.example.com", 2222)
+            .expect("probe delegates to the backend");
+        assert!(matches!(
+            state,
+            SshHostTrustState::Unknown { port: 2222, .. }
+        ));
+
+        let accepted = HostKeyFingerprint {
+            key_type: "ssh-ed25519".into(),
+            fingerprint: "SHA256:fake".into(),
+        };
+        let enrolled = mgr
+            .enroll_host_trust("db.example.com", 2222, &accepted)
+            .expect("enrollment delegates to the backend");
+        assert!(enrolled.is_trusted());
+
+        assert_eq!(
+            *backend.probes.lock().unwrap(),
+            vec![("db.example.com".to_string(), 2222)]
+        );
+        assert_eq!(
+            *backend.enrollments.lock().unwrap(),
+            vec![("db.example.com".to_string(), 2222, accepted)]
+        );
     }
 }
