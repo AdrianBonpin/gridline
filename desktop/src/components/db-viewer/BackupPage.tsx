@@ -29,6 +29,7 @@ import {
     type FileGrantErrorKind,
 } from "../../lib/fileGrant";
 import { isMysqlFamily } from "../../lib/dbCapabilities";
+import { withSessionCredential } from "../../lib/sessionCredential";
 
 interface BackupPageProps {
     connectionId: string;
@@ -261,33 +262,39 @@ export function BackupPage({ connectionId }: BackupPageProps) {
 
         await runWithProgress("dump", async () => {
             try {
-                if (isPg) {
-                    return await pgDump(
-                        connectionId,
-                        {
-                            format,
-                            schema: schema || undefined,
-                            tables: undefined,
-                            noOwner,
-                        },
-                        grantId,
-                    );
-                }
-                if (isMysql) {
-                    return await mysqlDump(
-                        connectionId,
-                        {
-                            database: database!,
-                            singleTransaction,
-                            noData,
-                            routines,
-                            triggers,
-                            events,
-                        },
-                        grantId,
-                    );
-                }
-                return await sqliteDump(connectionId, grantId);
+                // A keychain-off connection supplies its session password
+                // through a prompt if the backend does not have it yet. The
+                // command resolves the credential before it consumes `grantId`,
+                // so retrying with the same grant is safe.
+                return await withSessionCredential(connectionId, async () => {
+                    if (isPg) {
+                        return await pgDump(
+                            connectionId,
+                            {
+                                format,
+                                schema: schema || undefined,
+                                tables: undefined,
+                                noOwner,
+                            },
+                            grantId,
+                        );
+                    }
+                    if (isMysql) {
+                        return await mysqlDump(
+                            connectionId,
+                            {
+                                database: database!,
+                                singleTransaction,
+                                noData,
+                                routines,
+                                triggers,
+                                events,
+                            },
+                            grantId,
+                        );
+                    }
+                    return await sqliteDump(connectionId, grantId);
+                });
             } catch (e) {
                 const kind = fileGrantErrorKind(e);
                 if (!kind) throw e;

@@ -29,6 +29,7 @@ import {
 } from "../../lib/fileGrant";
 import { isMysqlFamily } from "../../lib/dbCapabilities";
 import { nonAtomicRefusalReason } from "../../lib/restoreRisk";
+import { withSessionCredential } from "../../lib/sessionCredential";
 
 interface RestorePageProps {
     connectionId: string;
@@ -215,31 +216,37 @@ export function RestorePage({ connectionId }: RestorePageProps) {
 
         await runWithProgress("restore", async () => {
             try {
-                if (isPg) {
-                    return await pgRestore(
-                        connectionId,
-                        {
-                            format,
-                            clean,
-                            schema: schema || undefined,
-                            // Only ever sent after the user accepted the risk the
-                            // backend named for this dump.
-                            ...(nonAtomicReason ? { acceptNonAtomic: true } : {}),
-                        },
-                        grantId,
-                    );
-                }
-                if (isMysql) {
-                    return await mysqlRestore(
-                        connectionId,
-                        {
-                            database: database!,
-                            clean,
-                        },
-                        grantId,
-                    );
-                }
-                return await sqliteRestore(connectionId, { clean }, grantId);
+                // A keychain-off connection supplies its session password
+                // through a prompt if the backend does not have it yet. The
+                // credential is resolved before `grantId` is consumed, so the
+                // retry reuses this selection.
+                return await withSessionCredential(connectionId, async () => {
+                    if (isPg) {
+                        return await pgRestore(
+                            connectionId,
+                            {
+                                format,
+                                clean,
+                                schema: schema || undefined,
+                                // Only ever sent after the user accepted the risk the
+                                // backend named for this dump.
+                                ...(nonAtomicReason ? { acceptNonAtomic: true } : {}),
+                            },
+                            grantId,
+                        );
+                    }
+                    if (isMysql) {
+                        return await mysqlRestore(
+                            connectionId,
+                            {
+                                database: database!,
+                                clean,
+                            },
+                            grantId,
+                        );
+                    }
+                    return await sqliteRestore(connectionId, { clean }, grantId);
+                });
             } catch (e) {
                 const kind = fileGrantErrorKind(e);
                 if (kind) {

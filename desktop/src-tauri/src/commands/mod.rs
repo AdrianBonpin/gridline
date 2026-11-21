@@ -1,5 +1,6 @@
 pub mod backup;
 pub mod connections;
+pub mod credentials;
 pub mod db_viewer;
 pub mod demo;
 pub mod file_grant;

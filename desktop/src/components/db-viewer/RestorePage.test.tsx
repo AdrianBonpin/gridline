@@ -18,10 +18,23 @@ function readGrant(id = "grant-1", path = "/tmp/backup.dump") {
   };
 }
 
-const mockConnections: any[] = [];
-vi.mock("../../stores/connectionStore", () => ({
-  useConnectionStore: (selector: any) => selector({ connections: mockConnections }),
+const sessionCredentialMock = vi.hoisted(() => ({
+  requestSessionCredential: vi.fn(),
+  setSessionPassword: vi.fn(),
 }));
+
+const mockConnections: any[] = [];
+vi.mock("../../stores/connectionStore", () => {
+  // The page reads connections through the hook, and only reaches `getState()`
+  // when a tool job asks for a session password.
+  const hook = ((selector: any) =>
+    selector({ connections: mockConnections })) as any;
+  hook.getState = () => ({
+    requestSessionCredential: sessionCredentialMock.requestSessionCredential,
+    setSessionPassword: sessionCredentialMock.setSessionPassword,
+  });
+  return { useConnectionStore: hook };
+});
 
 const pgToolsOk = {
   pg_dump_found: true,
@@ -343,5 +356,64 @@ describe("RestorePage PostgreSQL restore atomicity", () => {
     expect(screen.queryByTestId("restore-non-atomic-risk")).toBeNull();
     const messages = useNotificationStore.getState().notifications.map((n) => n.message);
     expect(messages.some((m) => /cannot be restored transactionally/.test(m))).toBe(false);
+  });
+});
+
+describe("RestorePage session credential prompt (ticket 27)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockConnections.length = 0;
+    mockConnections.push({ id: "r1", db_type: "postgresql", name: "p", use_keychain: false });
+    useBackupStore.setState({ jobs: [], activeJobId: null, progress: 0 });
+    useNotificationStore.setState({ notifications: [] });
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    vi.spyOn(commands, "detectPgTools").mockResolvedValue(pgToolsOk);
+    sessionCredentialMock.requestSessionCredential.mockReset();
+    sessionCredentialMock.setSessionPassword.mockReset();
+    sessionCredentialMock.requestSessionCredential.mockResolvedValue("typed-password");
+    sessionCredentialMock.setSessionPassword.mockResolvedValue(undefined);
+  });
+
+  it("asks for the session password and retries the restore with the same grant", async () => {
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(readGrant("grant-restore"));
+    const restore = vi
+      .spyOn(commands, "pgRestore")
+      .mockRejectedValueOnce(new Error("session-credential-required:r1"))
+      .mockResolvedValueOnce("job-1");
+
+    render(<RestorePage connectionId="r1" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_restore/i)).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /browse for file/i }));
+    await waitFor(() => expect(commands.selectFileForGrant).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId("restore-confirm-checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /start restore/i }));
+
+    await waitFor(() => expect(restore).toHaveBeenCalledTimes(2));
+    expect(sessionCredentialMock.requestSessionCredential).toHaveBeenCalledWith("r1");
+    expect(sessionCredentialMock.setSessionPassword).toHaveBeenCalledWith("r1", "typed-password");
+    expect(restore.mock.calls[1][2]).toBe("grant-restore");
+  });
+
+  it("fails visibly when the prompt is cancelled instead of restoring with an empty password", async () => {
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(readGrant("grant-restore"));
+    const restore = vi
+      .spyOn(commands, "pgRestore")
+      .mockRejectedValue(new Error("session-credential-required:r1"));
+    sessionCredentialMock.requestSessionCredential.mockResolvedValue(null);
+
+    render(<RestorePage connectionId="r1" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_restore/i)).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /browse for file/i }));
+    await waitFor(() => expect(commands.selectFileForGrant).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId("restore-confirm-checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /start restore/i }));
+
+    await waitFor(() => expect(restore).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(useBackupStore.getState().jobs[0]?.error_message).toContain("session password is required"),
+    );
+    expect(sessionCredentialMock.setSessionPassword).not.toHaveBeenCalled();
   });
 });

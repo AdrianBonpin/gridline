@@ -3692,9 +3692,17 @@ pub async fn get_table_ddl(
             let port = conn_row.port.unwrap_or(5432) as u16;
             let user = conn_row.username.unwrap_or_else(|| "postgres".into());
             let db = conn_row.database.unwrap_or_else(|| "postgres".into());
-            let password =
+            // Same credential split as the tool jobs: a keychain-enabled
+            // connection reads the keychain exactly as before (and reports a
+            // keychain failure), while a keychain-off connection uses the
+            // session credential for this connection — or refuses so the UI can
+            // prompt instead of handing pg_dump an empty password.
+            let password = if conn_row.use_keychain {
                 crate::commands::keychain::get_connection_password_internal(&app, &connection_id)?
-                    .unwrap_or_default();
+                    .unwrap_or_default()
+            } else {
+                state.session_credentials.require(&connection_id)?
+            };
 
             // SSH-tunneled connections: pg_dump must reach the DB through the
             // same local loopback listener the app uses, not the remote host.
