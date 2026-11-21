@@ -17,8 +17,11 @@ pub struct SqliteColumn {
 }
 
 /// Double-quote an identifier, doubling embedded quotes.
+///
+/// Delegates to the one shared quoting implementation (`db::ident`) so
+/// PostgreSQL identifiers have a single tested implementation in this crate.
 pub fn quote_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
+    crate::db::ident::quote(crate::db::ident::Engine::PostgreSql, name)
 }
 
 /// Reject empty / SQL-injection-prone names (mirrors schema_graph::validate_schema_name).

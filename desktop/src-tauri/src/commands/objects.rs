@@ -302,7 +302,7 @@ fn sqlite_live_columns(
     conn: &rusqlite::Connection,
     table: &str,
 ) -> Result<Vec<SqliteColumn>, String> {
-    let pragma_query = format!("PRAGMA table_info('{}')", table);
+    let pragma_query = crate::db::introspection::sqlite_columns_query(table);
     let mut stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
     let col_meta: Vec<(String, String, bool, bool, Option<String>)> = stmt
         .query_map([], |row| {
@@ -328,7 +328,9 @@ fn sqlite_live_columns(
         .unwrap_or(false);
     // Columns covered by a single-column unique index (origin != 'pk').
     let mut unique_cols: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if let Ok(mut idx_stmt) = conn.prepare(&format!("PRAGMA index_list('{}')", table)) {
+    if let Ok(mut idx_stmt) =
+        conn.prepare(&crate::db::introspection::sqlite_index_list_query(table))
+    {
         let indexes: Vec<(String, bool, String)> = idx_stmt
             .query_map([], |row| {
                 Ok((
@@ -344,10 +346,9 @@ fn sqlite_live_columns(
             if !is_unique || origin == "pk" {
                 continue;
             }
-            if let Ok(mut info_stmt) = conn.prepare(&format!(
-                "PRAGMA index_info('{}')",
-                idx_name.replace('\'', "''")
-            )) {
+            if let Ok(mut info_stmt) = conn.prepare(
+                &crate::db::introspection::sqlite_index_info_query(&idx_name),
+            ) {
                 let cols: Vec<String> = info_stmt
                     .query_map([], |row| row.get::<_, String>(2))
                     .map_err(|e| e.to_string())?
@@ -501,8 +502,8 @@ pub(crate) async fn build_rebuild_script_inner(
             //    unchanged (attribute edits belong in the diff path, not the rebuild).
             let live = client
                 .query(
-                    &crate::db::introspection::pg_columns_query(schema, table),
-                    &[],
+                    &crate::db::introspection::pg_columns_query(),
+                    &[&schema, &table],
                 )
                 .await
                 .map_err(|e| sanitize(&e.to_string()))?;
@@ -759,8 +760,8 @@ pub(crate) async fn get_role_privileges_inner(
     };
     for row in client
         .query(
-            &crate::db::introspection::pg_table_privileges_query(role),
-            &[],
+            &crate::db::introspection::pg_table_privileges_query(),
+            &[&role],
         )
         .await
         .map_err(|e| sanitize(&e.to_string()))?
@@ -776,8 +777,8 @@ pub(crate) async fn get_role_privileges_inner(
     }
     for row in client
         .query(
-            &crate::db::introspection::pg_sequence_privileges_query(role),
-            &[],
+            &crate::db::introspection::pg_sequence_privileges_query(),
+            &[&role],
         )
         .await
         .map_err(|e| sanitize(&e.to_string()))?
@@ -793,8 +794,8 @@ pub(crate) async fn get_role_privileges_inner(
     }
     for row in client
         .query(
-            &crate::db::introspection::pg_routine_privileges_query(role),
-            &[],
+            &crate::db::introspection::pg_routine_privileges_query(),
+            &[&role],
         )
         .await
         .map_err(|e| sanitize(&e.to_string()))?
@@ -810,8 +811,8 @@ pub(crate) async fn get_role_privileges_inner(
     }
     for row in client
         .query(
-            &crate::db::introspection::pg_schema_privileges_query(role),
-            &[],
+            &crate::db::introspection::pg_schema_privileges_query(),
+            &[&role],
         )
         .await
         .map_err(|e| sanitize(&e.to_string()))?
@@ -827,8 +828,8 @@ pub(crate) async fn get_role_privileges_inner(
     }
     for row in client
         .query(
-            &crate::db::introspection::pg_database_privileges_query(role),
-            &[],
+            &crate::db::introspection::pg_database_privileges_query(),
+            &[&role],
         )
         .await
         .map_err(|e| sanitize(&e.to_string()))?

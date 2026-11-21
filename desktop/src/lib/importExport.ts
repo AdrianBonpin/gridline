@@ -22,3 +22,49 @@ export async function handleExport(): Promise<string | null> {
   await writeTextFile(filePath, json);
   return filePath;
 }
+
+/**
+ * A rejected import has to read like a message, whatever the boundary threw:
+ * Tauri rejects a failed command with the backend's plain string, while the
+ * file plugins reject with an `Error`.
+ */
+export function importErrorMessage(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.length > 0) return message;
+  }
+  return "unknown error";
+}
+
+export interface ImportSummary {
+  message: string;
+  type: "success" | "error" | "info";
+  /** One line per dropped link, naming the record it belonged to. */
+  warnings: string[];
+}
+
+/**
+ * Turn an import report into something the user can act on: how much landed,
+ * what was skipped, and which links were dropped from which record.
+ */
+export function describeImportResult(result: ImportResult): ImportSummary {
+  const imported = result.imported ?? 0;
+  const skipped = result.skipped ?? 0;
+  const warnings = (result.warnings ?? []).map((w) => `${w.name}: ${w.message}`);
+
+  const parts: string[] = [
+    imported === 1 ? "Imported 1 connection" : `Imported ${imported} connections`,
+  ];
+  if (imported === 0) parts[0] = "No connections imported";
+  if (skipped > 0) parts.push(skipped === 1 ? "1 record skipped" : `${skipped} records skipped`);
+  if (warnings.length > 0) {
+    parts.push(warnings.length === 1 ? "1 link dropped" : `${warnings.length} links dropped`);
+  }
+
+  const type: ImportSummary["type"] =
+    skipped > 0 ? "error" : imported === 0 || warnings.length > 0 ? "info" : "success";
+
+  return { message: `${parts.join(", ")}.`, type, warnings };
+}
