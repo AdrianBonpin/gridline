@@ -30,54 +30,8 @@ use tokio_postgres::types::{Format, IsNull, ToSql, Type};
 pub(crate) fn pg_error_message(err: &tokio_postgres::Error) -> String {
     // Prefer the Debug representation, which includes severity + message + code.
     let raw = format!("{:?}", err);
-    // Redact postgres URL fragments and password=... sequences.
-    let redacted = redact_secrets(&raw);
-    truncate(&redacted, 400)
-}
-
-/// Redact credential-bearing substrings from an error/debug string so we
-/// never leak usernames/passwords/connection strings to the frontend.
-fn redact_secrets(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    // Replace `postgresql://user:password@host` style URLs with safely redacted text.
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if s[i..].to_lowercase().starts_with("postgres://")
-            || s[i..].to_lowercase().starts_with("postgresql://")
-        {
-            // Skip the scheme.
-            let scheme_end = i + s[i..].find("://").unwrap_or(0) + 3;
-            out.push_str("[redacted-url://");
-            // Find end of authority (next '/'. '/', or end).
-            let rest = &s[scheme_end..];
-            let end = match rest.find(['/', '?']) {
-                Some(pos) => scheme_end + pos,
-                None => s.len(),
-            };
-            i = end;
-        } else if s[i..].to_lowercase().starts_with("password=") {
-            out.push_str("[redacted]");
-            // Skip to next whitespace or end.
-            let rest = &s[i + "password=".len()..];
-            let skip = rest.find(char::is_whitespace).unwrap_or(rest.len());
-            i += "password=".len() + skip;
-        } else {
-            // Copy one char.
-            let ch = s[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
-        }
-    }
-    out
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max.saturating_sub(3)])
-    }
+    // One shared, bounded, Unicode-safe redactor (see `crate::diagnostics`).
+    crate::diagnostics::redact(&raw, crate::diagnostics::MAX_ERROR_BYTES)
 }
 
 /// Largest page a table browse may request.
@@ -218,6 +172,55 @@ pub fn pg_dump_available_at(path: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// Interpret a finished `pg_dump` job: stdout is payload, stderr is a
+/// diagnostic.
+///
+/// **stdout is the copied DDL**, so on success its bytes are returned verbatim.
+/// Redacting them would rewrite legal SQL — a `DEFAULT 'postgresql://…'`, a
+/// comment, a check constraint — and the error-path size cap truncated every
+/// statement longer than a few hundred bytes. **stderr is a diagnostic**, so a
+/// failed job reports it redacted, Unicode-safe, and bounded, and carries no
+/// credentials from the connection `pg_dump` was given.
+///
+/// `target` (`schema.table`) is only used to name what failed.
+pub fn ddl_from_dump_output(
+    target: &str,
+    success: bool,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<String, String> {
+    if success {
+        let ddl = String::from_utf8_lossy(stdout).to_string();
+        if ddl.trim().is_empty() {
+            // A `--table=` pattern that matched nothing exits successfully with
+            // no output. Copying "" would look like a copied statement.
+            return Err(format!(
+                "pg_dump returned no DDL for {target}. Check that it still exists and that your role can read its definition."
+            ));
+        }
+        return Ok(ddl);
+    }
+    let raw = String::from_utf8_lossy(stderr);
+    let detail = sanitize_error(raw.trim());
+    Err(if detail.is_empty() {
+        format!("pg_dump failed while reading {target} and reported no diagnostic")
+    } else {
+        detail
+    })
+}
+
+/// Read shared state on the DDL path even if a lock was poisoned.
+///
+/// A panic while holding a `std::sync::Mutex` poisons it, and every later
+/// `lock()` then reports the poison — so one failed diagnostic path would make
+/// every subsequent DDL copy fail with a message about the lock instead of
+/// copying anything. The store and the SSH manager hold no invariant a panic
+/// could leave half-updated (an entry is either present or not), so a poisoned
+/// guard is recovered rather than turned into a permanent error.
+fn lock_recovering_poison<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Extract a single table's DDL from a PostgreSQL database by shelling out to
 /// `pg_dump` (system-first, bundled-fallback) with `--schema-only`.
 /// Credentials are supplied via the `PGPASSWORD` environment variable only —
@@ -251,10 +254,12 @@ pub fn get_pg_ddl_via_dump(
     let out = cmd
         .output()
         .map_err(|e| format!("pg_dump spawn failed: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).to_string());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    ddl_from_dump_output(
+        &format!("{schema}.{table}"),
+        out.status.success(),
+        &out.stdout,
+        &out.stderr,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -876,9 +881,13 @@ pub async fn apply_bulk_insert_pg(
 }
 
 /// Sanitize a raw error string before it crosses the IPC boundary: redact
-/// credential-like fragments (connection URLs, `password=...`) and cap length.
+/// credential-like fragments (connection URLs, `password=...`, `user=...`,
+/// `secret…`) and cap length.
+///
+/// Diagnostics only. Payload — copied DDL, rows, exports — never goes through
+/// here; see [`ddl_from_dump_output`].
 pub(crate) fn sanitize_error(e: &str) -> String {
-    truncate(&redact_secrets(e), 400)
+    crate::diagnostics::redact(e, crate::diagnostics::MAX_ERROR_BYTES)
 }
 
 /// Original values of a queued write, where "absent" is legitimately empty.
@@ -3648,10 +3657,7 @@ pub async fn get_table_ddl(
         Some(DbHandle::Postgresql(_client, _)) => {
             // Pull connection metadata so pg_dump reaches the same server the
             // pool is connected to (host/port/user/dbname + keychain password).
-            let conn_row = state
-                .db_store
-                .lock()
-                .map_err(|e| e.to_string())?
+            let conn_row = lock_recovering_poison(&state.db_store)
                 .get_connections()
                 .map_err(|e| e.to_string())?
                 .into_iter()
@@ -3667,11 +3673,8 @@ pub async fn get_table_ddl(
 
             // SSH-tunneled connections: pg_dump must reach the DB through the
             // same local loopback listener the app uses, not the remote host.
-            let tunnel_port = state
-                .ssh_manager
-                .lock()
-                .map_err(|e| e.to_string())?
-                .get_local_port(&connection_id);
+            let tunnel_port =
+                lock_recovering_poison(&state.ssh_manager).get_local_port(&connection_id);
             let (dump_host, dump_port) = match tunnel_port {
                 Some(lp) => ("127.0.0.1".to_string(), lp),
                 None => (host, port),
@@ -3695,7 +3698,8 @@ pub async fn get_table_ddl(
             })
             .await
             .map_err(|e| format!("pg_dump task failed: {e}"))??;
-            Ok(sanitize_error(&ddl))
+            // The DDL is payload, not an error: it is returned verbatim.
+            Ok(ddl)
         }
         None => Err("Connection not found".into()),
     }
@@ -4658,3 +4662,7 @@ mod db_viewer_fk_tests;
 #[cfg(test)]
 #[path = "db_viewer_pagination.test.rs"]
 mod db_viewer_pagination_tests;
+
+#[cfg(test)]
+#[path = "db_viewer_tool_ddl.test.rs"]
+mod db_viewer_tool_ddl_tests;
