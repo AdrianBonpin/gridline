@@ -7,9 +7,9 @@
 **Seams:** Built-product seam: catches integrated launch, webview automation, and demo data flowing into the grid; misses packaged AppImage behavior (ticket 41) and the reporter's hardware.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/64
-**Status:** ready
+**Status:** done
 
-- [ ] One documented command launches the built non-AppImage desktop binary headlessly and reaches the demo database.
-- [ ] The smoke flow asserts visible grid content for a demo table, not merely a live process or window.
-- [ ] A failed launch, missing window, or absent grid content fails the job and retains launch logs and a screenshot.
-- [ ] The harness is wired into pull-request CI for changes to the desktop frontend, viewer state, Tauri command behavior, or their dependencies.
+- [x] One documented command launches the built non-AppImage desktop binary headlessly and reaches the demo database.
+- [x] The smoke flow asserts visible grid content for a demo table, not merely a live process or window.
+- [x] A failed launch, missing window, or absent grid content fails the job and retains launch logs and a screenshot.
+- [x] The harness is wired into pull-request CI for changes to the desktop frontend, viewer state, Tauri command behavior, or their dependencies.

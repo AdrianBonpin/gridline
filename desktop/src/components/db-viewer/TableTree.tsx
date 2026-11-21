@@ -84,6 +84,8 @@ export function TableTree({ searchQuery, dbType }: { searchQuery?: string; dbTyp
                         <div
                             className="group flex items-center gap-1 px-3 py-1 hover:bg-surface-raised cursor-pointer"
                             onClick={() => openTab(table.schema, table.name)}
+                            data-testid="table-tree-item"
+                            data-table-name={table.name}
                         >
                             <button
                                 aria-label={isExpanded ? "Collapse" : "Expand"}

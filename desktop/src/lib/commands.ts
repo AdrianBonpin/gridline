@@ -206,6 +206,17 @@ export async function dbSync(options: SyncOptions): Promise<string> {
   return invoke<string>("db_sync", { options });
 }
 
+/**
+ * Cancel a running backup/restore/sync job.
+ *
+ * The backend terminates the job's whole child process tree, so cancelling a
+ * `pg_dump`/`pg_restore`/`mysqldump` leaves no helper process behind. Resolves
+ * to whether a job with that id was still running.
+ */
+export async function cancelToolJob(jobId: string): Promise<boolean> {
+  return invoke<boolean>("cancel_tool_job", { jobId });
+}
+
 // ─── v0.7.8: Cancel / MySQL / SQLite / Settings export-import ────
 
 export async function cancelQuery(connectionId: string): Promise<void> {

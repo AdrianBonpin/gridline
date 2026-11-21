@@ -39,6 +39,9 @@ docs/superpowers/
 !.env.example
 .worktrees/
 
+# Desktop E2E harness artifacts (launch logs, screenshots, seeded app data)
+e2e-artifacts/
+
 # Bundled DB client tools (built/downloaded during release, never committed)
 desktop/src-tauri/resources/pg_tools/pg_dump
 desktop/src-tauri/resources/pg_tools/pg_restore

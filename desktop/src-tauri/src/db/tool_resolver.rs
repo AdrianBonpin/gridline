@@ -10,7 +10,6 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -194,35 +193,21 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Aggregate deadline for one detection pass across all candidates.
 pub const AGGREGATE_DEADLINE: Duration = Duration::from_secs(3);
 
-/// Run `<program> --version` with a bounded wait. The child's stdio is
-/// discarded — output is read separately by `version_of`.
+/// Run `<program> --version` under the managed-job supervisor, returning
+/// whether it ran successfully.
+///
+/// The supervisor is what makes this bounded: the probe runs in its own process
+/// group, is killed with its whole tree at the deadline, and its output is
+/// drained (so a chatty binary cannot fill a pipe and wedge the wait). A
+/// binary that never answers fails here instead of hanging detection forever.
+pub fn probe_outcome(program: &Path, timeout: Duration) -> Result<bool, crate::job::JobError> {
+    let out = crate::job::capture_bounded(&program.to_string_lossy(), &["--version"], timeout)?;
+    Ok(out.status.success())
+}
+
+/// Boolean form of [`probe_outcome`] for callers that only need "usable?".
 pub fn run_version(program: &Path, timeout: Duration) -> bool {
-    let mut cmd = Command::new(program);
-    cmd.arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let Ok(mut child) = cmd.spawn() else {
-        return false;
-    };
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return false;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            Err(_) => {
-                let _ = child.kill();
-                return false;
-            }
-        }
-    }
+    probe_outcome(program, timeout).unwrap_or(false)
 }
 
 /// A tool candidate counts only when it is a regular file AND runs.
@@ -300,13 +285,17 @@ where
 }
 
 /// Read the first non-empty line of `<program> --version` (stdout, else stderr).
+///
+/// Bounded like every other probe: `Command::output()` had no deadline, so a
+/// tool that never answered `--version` blocked detection (and therefore the
+/// Backup form) indefinitely.
 pub fn version_of(program: &str) -> Option<String> {
-    let out = Command::new(program).arg("--version").output().ok()?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let out = crate::job::capture_bounded(program, &["--version"], PROBE_TIMEOUT).ok()?;
+    let stdout = out.stdout.trim().to_string();
     if !stdout.is_empty() {
         return Some(stdout);
     }
-    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let stderr = out.stderr.trim().to_string();
     if stderr.is_empty() {
         None
     } else {

@@ -1,8 +1,9 @@
 name: CI
 
 # Pull-request validation for the Tauri desktop app: Rust formatting + unit
-# tests, frontend unit tests, and the frontend production build. Deliberately
-# separate from release.yml — no secrets, no bundling, read-only permissions.
+# tests, frontend unit tests, the frontend production build, and a gated
+# built-product desktop E2E smoke flow. Deliberately separate from release.yml —
+# no secrets, no bundling, read-only permissions.
 #
 # `pull_request` (never `pull_request_target`) so a fork PR cannot reach a
 # write-scoped token.
@@ -12,22 +13,74 @@ on:
     branches: [prod]
   workflow_dispatch:
 
-permissions:
-  contents: read
+# Default-deny: each job below grants only the scope it uses.
+permissions: {}
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # The desktop E2E job builds and launches the real app, so it is scoped to
+  # pull requests that can actually change desktop behavior. Everything else
+  # (docs, website) skips it. Computed with git rather than a third-party
+  # action so no extra action needs pinning.
+  changes:
+    name: detect desktop changes
+    runs-on: ubuntu-22.04
+    # Read-only: the job only reads git history to diff the pull request.
+    permissions:
+      contents: read
+    outputs:
+      desktop: ${{ steps.detect.outputs.desktop }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes that can affect the desktop app
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA:-}" ]; then
+            echo "Not a pull_request run; running the desktop E2E harness."
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE_SHA" >/dev/null 2>&1 || true
+          if ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed-files.txt 2>/dev/null; then
+            echo "Could not diff $BASE_SHA..$HEAD_SHA; running the desktop E2E harness."
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cat changed-files.txt
+          if grep -Eq '^(desktop/|bun\.lock|package\.json|\.github/workflows/ci\.yml)' changed-files.txt; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=false" >> "$GITHUB_OUTPUT"
+          fi
+
   checks:
     name: fmt + tests + build
     runs-on: ubuntu-22.04
     # Bounded runtime: a hung `cargo test` cannot burn a runner for hours.
     timeout-minutes: 30
+    # Read-only: this job only checks out and tests.
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Asserts the release pipeline's trust rules (one pipeline, pinned
+      # actions, job-scoped tokens, tag metadata as data) before anything is
+      # built. See scripts/check-workflows.sh.
+      - name: Check release pipeline hygiene
+        run: ./scripts/check-workflows.sh
 
       # Tauri v2 needs these to compile the crate on Linux. Same list as
       # release.yml, so a missing system dependency surfaces on the PR
@@ -39,17 +92,18 @@ jobs:
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
         with:
+          toolchain: stable
           components: rustfmt
 
       - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: './desktop/src-tauri -> target'
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -67,3 +121,66 @@ jobs:
 
       - name: Build the desktop frontend
         run: bun run --filter gridline-desktop build
+
+  # Targeted built-product coverage: launches the real (non-AppImage) desktop
+  # binary through tauri-driver + WebKitWebDriver under Xvfb, opens the demo
+  # database the app seeds on first launch, and asserts demo rows reach the
+  # grid. A failed launch, a missing window, or an empty grid fails the job and
+  # uploads the launch log plus a screenshot/page source of the failure.
+  desktop-e2e:
+    name: desktop e2e (demo smoke)
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # Read-only: it builds the app locally and uploads artifacts from it.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # WebKitGTK runtime + `WebKitWebDriver` (the native driver tauri-driver
+      # drives) + Xvfb for a headless display. ubuntu-24.04 ships the
+      # WebKitGTK 4.1 driver, matching what Tauri v2 links against.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+            webkit2gtk-driver xvfb
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: './desktop/src-tauri -> target'
+          key: desktop-e2e
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - name: Build the desktop binary
+        run: bun run --filter gridline-desktop e2e:build
+
+      - name: Run the desktop E2E smoke flow
+        run: xvfb-run -a bun run --filter gridline-desktop e2e
+
+      - name: Upload E2E failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-e2e-artifacts
+          path: desktop/e2e-artifacts
+          retention-days: 7
+          if-no-files-found: warn

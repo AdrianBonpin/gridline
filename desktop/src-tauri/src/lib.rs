@@ -5,6 +5,7 @@
 mod cancel;
 mod commands;
 mod db;
+mod job;
 mod keychain_acl;
 mod models;
 mod store;
@@ -22,6 +23,10 @@ pub struct AppState {
     pub pool_manager: tokio::sync::Mutex<ConnectionPoolManager>,
     pub ssh_manager: StdMutex<SshTunnelManager>,
     pub cancel_registry: crate::cancel::CancelRegistry,
+    /// Process-lifetime ownership of running tool jobs (backup / restore /
+    /// sync). Shared so a cancel command and the app-exit hook can reach a job
+    /// that is running on another thread.
+    pub jobs: Arc<crate::job::JobRegistry>,
 }
 
 use commands::{
@@ -102,6 +107,7 @@ pub fn run() {
                     ssh_trust,
                 )))),
                 cancel_registry: crate::cancel::CancelRegistry::default(),
+                jobs: Arc::new(crate::job::JobRegistry::new()),
             });
 
             let state = app.state::<AppState>();
@@ -207,6 +213,7 @@ pub fn run() {
             backup::pg_dump,
             backup::pg_restore,
             backup::db_sync,
+            backup::cancel_tool_job,
             backup::detect_mysql_tools,
             backup::mysql_dump,
             backup::mysql_restore,
@@ -253,12 +260,15 @@ pub fn run() {
                     let _ = app_handle.emit("sql-file-opened", ());
                 }
             }
-            // Close all SSH tunnels on exit: ExitRequested fires before the
-            // event loop ends, Exit fires after it has.
+            // Close all SSH tunnels and terminate every running tool job on
+            // exit: ExitRequested fires before the event loop ends, Exit fires
+            // after it has. A cancelled job's whole child tree is terminated,
+            // so quitting cannot leave a pg_dump/pg_restore/mysqldump behind.
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 if let Ok(mut mgr) = app_handle.state::<AppState>().ssh_manager.lock() {
                     mgr.close_all();
                 }
+                app_handle.state::<AppState>().jobs.cancel_all();
             }
             _ => {}
         });

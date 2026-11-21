@@ -92,6 +92,8 @@ function ConnectionCardBase({
             ref={setNodeRef}
             style={style}
             onClick={handleClick}
+            data-testid="connection-card"
+            data-connection-name={connection.name}
             className={`relative group rounded-xl border transition-colors cursor-pointer ${
                 isSelected
                     ? "bg-accent/10 border-accent"
