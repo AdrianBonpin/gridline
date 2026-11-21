@@ -20,6 +20,25 @@ const CONNECTION_COLUMNS_V3: &[(&str, &str)] = &[("environment", "TEXT")];
 /// New columns added in version 7.
 const CONNECTION_COLUMNS_V7: &[(&str, &str)] = &[("favorite", "INTEGER NOT NULL DEFAULT 0")];
 
+/// Orphan cleanup (schema version 9). Written as idempotent deletes so a second
+/// run removes nothing; saved-query cleanup runs last so a failing step proves
+/// the transaction rolls back every earlier delete.
+const ORPHAN_CLEANUP_SQL: &str = "
+    DELETE FROM connection_tags
+     WHERE NOT EXISTS (SELECT 1 FROM connections c WHERE c.id = connection_tags.connection_id)
+        OR NOT EXISTS (SELECT 1 FROM tags t WHERE t.id = connection_tags.tag_id);
+    DELETE FROM folder_tags
+     WHERE NOT EXISTS (SELECT 1 FROM folders f WHERE f.id = folder_tags.folder_id)
+        OR NOT EXISTS (SELECT 1 FROM tags t WHERE t.id = folder_tags.tag_id);
+    DELETE FROM recent_connections
+     WHERE NOT EXISTS (SELECT 1 FROM connections c WHERE c.id = recent_connections.connection_id);
+    DELETE FROM query_history
+     WHERE NOT EXISTS (SELECT 1 FROM connections c WHERE c.id = query_history.connection_id);
+    DELETE FROM queries
+     WHERE connection_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM connections c WHERE c.id = queries.connection_id);
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
@@ -266,6 +285,24 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
 
+    // v9: transactional removal of orphaned Connection-owned Data and dangling
+    // joins. Stores written before referential enforcement was guaranteed on
+    // every connection can hold query history, recent records and
+    // connection-specific saved queries whose connection is gone, plus tag and
+    // folder joins pointing at rows that no longer exist. Global saved queries
+    // (NULL connection_id) are not Connection-owned Data and are kept.
+    if current_ver < 9 {
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(ORPHAN_CLEANUP_SQL)
+            .map_err(|e| format!("local store cleanup failed: {e}"))?;
+        tx.execute("INSERT INTO schema_version (version) VALUES (9)", [])
+            .map_err(|e| e.to_string())?;
+        // Committing records the migration; any earlier failure drops the
+        // transaction and leaves the prior store unchanged.
+        tx.commit()
+            .map_err(|e| format!("local store cleanup failed: {e}"))?;
+    }
+
     Ok(())
 }
 
@@ -278,6 +315,194 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         conn
+    }
+
+    /// A representative pre-fix store: the v8 schema plus rows written while
+    /// referential enforcement was not guaranteed on every store connection, so
+    /// Connection-owned Data can outlive its connection and joins can dangle.
+    fn pre_fix_store_with_orphans() -> Connection {
+        let conn = fresh_db();
+        // Stop at the pre-fix schema and turn enforcement off, which is how a
+        // store written by a build without per-connection enforcement looks.
+        conn.execute_batch(
+            "DELETE FROM schema_version WHERE version = 9;
+             PRAGMA foreign_keys = OFF;",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO folders (id, name, parent_id, created_at, updated_at)
+                 VALUES ('f1', 'Work', NULL, 't', 't');
+             INSERT INTO connections (id, name, db_type, host, port, folder_id, created_at, updated_at)
+                 VALUES ('c1', 'Prod', 'postgresql', 'h', 5432, 'f1', 't', 't');
+             INSERT INTO tags (id, name, color, created_at)
+                 VALUES ('t1', 'env:prod', '#ef4444', 't');
+             -- valid joins
+             INSERT INTO connection_tags (connection_id, tag_id) VALUES ('c1', 't1');
+             INSERT INTO folder_tags (folder_id, tag_id) VALUES ('f1', 't1');
+             -- joins dangling on either side
+             INSERT INTO connection_tags (connection_id, tag_id) VALUES ('c1', 'ghost-tag');
+             INSERT INTO connection_tags (connection_id, tag_id) VALUES ('ghost-conn', 't1');
+             INSERT INTO folder_tags (folder_id, tag_id) VALUES ('f1', 'ghost-tag');
+             INSERT INTO folder_tags (folder_id, tag_id) VALUES ('ghost-folder', 't1');
+             -- query history: reachable and unreachable
+             INSERT INTO query_history (id, connection_id, query_text, status, executed_at)
+                 VALUES ('h-valid', 'c1', 'SELECT 1', 'success', 't');
+             INSERT INTO query_history (id, connection_id, query_text, status, executed_at)
+                 VALUES ('h-orphan', 'ghost-conn', 'SELECT 2', 'success', 't');
+             -- recent records: reachable and unreachable
+             INSERT INTO recent_connections (connection_id, opened_at) VALUES ('c1', 't');
+             INSERT INTO recent_connections (connection_id, opened_at) VALUES ('ghost-conn', 't');
+             -- saved queries: connection-specific (reachable/unreachable) and global
+             INSERT INTO queries (id, connection_id, name, query_text, folder)
+                 VALUES ('q-valid', 'c1', 'valid', 'SELECT 1', '');
+             INSERT INTO queries (id, connection_id, name, query_text, folder)
+                 VALUES ('q-orphan', 'ghost-conn', 'orphan', 'SELECT 2', '');
+             INSERT INTO queries (id, connection_id, name, query_text, folder)
+                 VALUES ('q-global', NULL, 'global', 'SELECT 3', '');",
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn v9_removes_orphaned_connection_owned_data_and_dangling_joins() {
+        let conn = pre_fix_store_with_orphans();
+        run_migrations(&conn).unwrap();
+
+        // Reachable Connection-owned Data survives.
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM query_history WHERE id = 'h-valid'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM recent_connections WHERE connection_id = 'c1'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM queries WHERE id = 'q-valid'"),
+            1
+        );
+
+        // Unreachable Connection-owned Data is removed.
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM query_history WHERE connection_id = 'ghost-conn'"
+            ),
+            0,
+            "query history for a missing connection must be removed"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM recent_connections WHERE connection_id = 'ghost-conn'"
+            ),
+            0,
+            "recent records for a missing connection must be removed"
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM queries WHERE id = 'q-orphan'"),
+            0,
+            "connection-specific saved queries for a missing connection must be removed"
+        );
+
+        // Global saved queries are not Connection-owned Data.
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM queries WHERE id = 'q-global'"),
+            1,
+            "global saved queries must survive"
+        );
+
+        // Dangling joins are removed on either side; valid joins stay.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM connection_tags"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM folder_tags"), 1);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM connection_tags WHERE connection_id = 'c1' AND tag_id = 't1'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM folder_tags WHERE folder_id = 'f1' AND tag_id = 't1'"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn v9_cleanup_is_idempotent() {
+        let conn = pre_fix_store_with_orphans();
+        run_migrations(&conn).unwrap();
+        // A second full run must not error, must not touch the surviving rows and
+        // must not record the version twice.
+        run_migrations(&conn).unwrap();
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM schema_version WHERE version = 9"
+            ),
+            1
+        );
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM query_history"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM recent_connections"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM queries"), 2);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM connection_tags"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM folder_tags"), 1);
+    }
+
+    #[test]
+    fn v9_cleanup_failure_rolls_back_and_leaves_the_store_unchanged() {
+        let conn = pre_fix_store_with_orphans();
+        // Simulate a failing cleanup step late in the transaction (saved queries
+        // are cleaned last), so every earlier delete must be rolled back too.
+        conn.execute_batch(
+            "CREATE TRIGGER fail_queries_cleanup BEFORE DELETE ON queries
+             BEGIN SELECT RAISE(ABORT, 'simulated cleanup failure'); END;",
+        )
+        .unwrap();
+
+        let err = run_migrations(&conn).expect_err("a failing cleanup must be reported");
+        assert!(
+            err.contains("simulated cleanup failure"),
+            "failure must be reported visibly, got: {err}"
+        );
+
+        // Prior store content is untouched, including rows an earlier step had
+        // already deleted inside the aborted transaction.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM query_history"), 2);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM recent_connections"), 2);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM queries"), 3);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM connection_tags"), 3);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM folder_tags"), 3);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM schema_version WHERE version = 9"
+            ),
+            0,
+            "an aborted cleanup must not record its schema version"
+        );
+
+        // Once the cause is removed the same store migrates normally.
+        conn.execute_batch("DROP TRIGGER fail_queries_cleanup;")
+            .unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM query_history"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM queries"), 2);
     }
 
     #[test]
@@ -316,7 +541,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 7);
+        assert_eq!(count, 8, "versions 2..=9 are recorded exactly once each");
     }
 
     #[test]
@@ -622,12 +847,12 @@ mod tests {
     }
 
     #[test]
-    fn v8_bumps_schema_version_to_8() {
+    fn schema_version_bumps_to_latest() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         let ver: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(ver, 8);
+        assert_eq!(ver, 9);
     }
 }
