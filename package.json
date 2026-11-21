@@ -8,6 +8,8 @@
     "tauri:dev": "bun run --filter gridline-desktop tauri:dev",
     "dev:www": "bun run --filter gridline-www dev",
     "build:www": "bun run --filter gridline-www build",
-    "test": "bun run --filter gridline-desktop test"
+    "test": "bun run --filter gridline-desktop test",
+    "e2e:desktop:build": "bun run --filter gridline-desktop e2e:build",
+    "e2e:desktop": "bun run --filter gridline-desktop e2e"
   }
 }

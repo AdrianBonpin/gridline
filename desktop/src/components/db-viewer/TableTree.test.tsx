@@ -23,6 +23,20 @@ describe("TableTree", () => {
     expect(screen.getByText("orders")).toBeInTheDocument();
   });
 
+  it("exposes the stable hooks the desktop E2E harness selects on", () => {
+    // desktop/e2e opens a table tab by these attributes; renaming one
+    // silently breaks the smoke flow, so pin it here.
+    useDbViewerStore.setState({
+      schemas: ["main"],
+      currentSchema: "main",
+      tables: [{ name: "products", schema: "main", table_type: "TABLE" }],
+    });
+    const { container } = render(<TableTree />);
+    const row = container.querySelector('[data-testid="table-tree-item"]');
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute("data-table-name")).toBe("products");
+  });
+
   it("shows a distinct icon and label for materialized views", () => {
     useDbViewerStore.setState({
       schemas: ["public"],

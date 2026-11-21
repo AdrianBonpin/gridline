@@ -162,6 +162,8 @@ bun run --filter gridline-desktop build            # Desktop production build
 bun run dev:www                                    # Website dev server (Astro)
 bun run build:www                                  # Website static build (www/dist/)
 bun run test                                       # Desktop frontend tests (vitest)
+bun run e2e:desktop:build                          # Build the real desktop binary the E2E harness launches
+bun run e2e:desktop                                # Built-product E2E smoke (Linux/Windows only — see desktop/e2e/README.md)
 cargo build                                        # Rust backend only (from desktop/src-tauri/)
 cargo test                                         # Rust tests (from desktop/src-tauri/)
 ```
@@ -244,7 +246,7 @@ TMP=$(mktemp -d) && cp www/package.json "$TMP/package.json" && cd "$TMP" && bun 
 
 - **Rust:** Unit tests for database logic, connection pool management, and command handlers. Use `sqlx::test` with a test PostgreSQL instance for integration tests.
 - **Frontend:** Vitest + React Testing Library for component tests. Focus on store logic, command wrappers, and critical UI flows (connection form, query execution).
-- **E2E:** (Future) Tauri WebDriver or Playwright for critical paths.
+- **E2E:** Targeted built-product flows live in [`desktop/e2e/`](./desktop/e2e/README.md) and drive the real, built (non-AppImage) binary through `tauri-driver` + WebKitWebDriver under Xvfb. The first flow opens the seeded demo SQLite database and asserts demo rows reach the grid. It runs on Linux and Windows; `tauri-driver` has no macOS WKWebView driver, so macOS coverage comes from the packaged-artifact lane instead. CI runs it on pull requests that change `desktop/`, the lockfile, or the root manifest.
 
 ---
 
