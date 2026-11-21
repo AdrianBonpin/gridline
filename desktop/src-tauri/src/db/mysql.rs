@@ -167,65 +167,51 @@ pub fn mysql_default_sort(columns: &[String]) -> &str {
 }
 
 // ── Change-SQL builders ──────────────────────────────────────────────
+/// A single-row MySQL UPDATE.
+///
+/// The predicate is the complete Row Identity plus `guard` (the edited
+/// column's original value), and there is deliberately no `LIMIT 1`: a limited
+/// statement would silently cap an ambiguous match at one row instead of
+/// letting the caller's transaction detect and roll it back
+/// (see [`crate::db::row_write`]).
 pub fn mysql_build_update_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
     new_data: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
 ) -> Result<(String, Vec<serde_json::Value>), String> {
-    if primary_key.is_empty() {
-        return Err("cannot update a row without a primary key (MySQL has no ctid)".to_string());
+    let stmt = crate::db::row_write::RowWrite {
+        engine: Engine::MySql,
+        schema,
+        table,
+        kind: crate::db::row_write::WriteKind::Update,
+        identity: primary_key,
+        new_data,
+        guard: guard.to_vec(),
     }
-    let mut params: Vec<serde_json::Value> = Vec::new();
-    let set_clause: Vec<String> = new_data
-        .iter()
-        .map(|(col, val)| {
-            params.push(val.clone());
-            format!("{} = ?", mysql_quote_ident(col))
-        })
-        .collect();
-    let where_clause: Vec<String> = primary_key
-        .iter()
-        .map(|(col, val)| {
-            params.push(val.clone());
-            format!("{} = ?", mysql_quote_ident(col))
-        })
-        .collect();
-    Ok((
-        format!(
-            "UPDATE {} SET {} WHERE {} LIMIT 1",
-            qualified(schema, table),
-            set_clause.join(", "),
-            where_clause.join(" AND ")
-        ),
-        params,
-    ))
+    .statement()?;
+    Ok((stmt.sql, stmt.params))
 }
 
+/// A single-row MySQL DELETE (no `LIMIT 1`, for the same reason as the update).
 pub fn mysql_build_delete_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
 ) -> Result<(String, Vec<serde_json::Value>), String> {
-    if primary_key.is_empty() {
-        return Err("cannot delete a row without a primary key (MySQL has no ctid)".to_string());
+    let stmt = crate::db::row_write::RowWrite {
+        engine: Engine::MySql,
+        schema,
+        table,
+        kind: crate::db::row_write::WriteKind::Delete,
+        identity: primary_key,
+        new_data: &[],
+        guard: guard.to_vec(),
     }
-    let mut params: Vec<serde_json::Value> = Vec::new();
-    let where_clause: Vec<String> = primary_key
-        .iter()
-        .map(|(col, val)| {
-            params.push(val.clone());
-            format!("{} = ?", mysql_quote_ident(col))
-        })
-        .collect();
-    Ok((
-        format!(
-            "DELETE FROM {} WHERE {} LIMIT 1",
-            qualified(schema, table),
-            where_clause.join(" AND ")
-        ),
-        params,
-    ))
+    .statement()?;
+    Ok((stmt.sql, stmt.params))
 }
 
 pub fn mysql_build_insert_sql(
@@ -437,31 +423,38 @@ mod tests {
     }
 
     #[test]
-    fn build_update_uses_backticks_question_and_limit_one() {
+    fn build_update_uses_backticks_question_and_original_value_guard() {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
         let data = vec![("status".to_string(), serde_json::json!("paid"))];
-        let (sql, params) = mysql_build_update_sql("shop", "orders", &pk, &data).unwrap();
+        let guard = vec![("status".to_string(), serde_json::json!("unpaid"))];
+        let (sql, params) = mysql_build_update_sql("shop", "orders", &pk, &data, &guard).unwrap();
+        // No `LIMIT 1`: the caller's transaction must see an ambiguous match.
         assert_eq!(
             sql,
-            "UPDATE `shop`.`orders` SET `status` = ? WHERE `id` = ? LIMIT 1"
+            "UPDATE `shop`.`orders` SET `status` = ? WHERE `id` = ? AND `status` = ?"
         );
         assert_eq!(
             params,
-            vec![serde_json::json!("paid"), serde_json::json!(1)]
+            vec![
+                serde_json::json!("paid"),
+                serde_json::json!(1),
+                serde_json::json!("unpaid")
+            ]
         );
     }
 
     #[test]
     fn build_update_rejects_empty_primary_key() {
-        let r = mysql_build_update_sql("shop", "orders", &[], &[]);
+        let data = vec![("status".to_string(), serde_json::json!("paid"))];
+        let r = mysql_build_update_sql("shop", "orders", &[], &data, &[]);
         assert!(r.is_err());
     }
 
     #[test]
-    fn build_delete_uses_backticks_question_and_limit_one() {
+    fn build_delete_uses_backticks_question_and_no_limit() {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
-        let (sql, params) = mysql_build_delete_sql("shop", "orders", &pk).unwrap();
-        assert_eq!(sql, "DELETE FROM `shop`.`orders` WHERE `id` = ? LIMIT 1");
+        let (sql, params) = mysql_build_delete_sql("shop", "orders", &pk, &[]).unwrap();
+        assert_eq!(sql, "DELETE FROM `shop`.`orders` WHERE `id` = ?");
         assert_eq!(params, vec![serde_json::json!(1)]);
     }
 

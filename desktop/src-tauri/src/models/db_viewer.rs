@@ -268,6 +268,15 @@ pub enum Change {
         schema: String,
         table: String,
         primary_key: String,
+        /// The original values of the row the user saw, as displayed.
+        ///
+        /// Used as the write predicate for a physical-locator identity
+        /// (`ctid`/`rowid`), so a row that moved — or whose locator was reused
+        /// by a different row — is refused instead of modified. Absent on
+        /// payloads staged before this field existed; a locator delete without
+        /// it fails closed rather than writing unguarded.
+        #[serde(default)]
+        old_data: String,
     },
     AlterTable {
         id: String,
@@ -558,6 +567,7 @@ mod tests {
             schema: "public".to_string(),
             table: "users".to_string(),
             primary_key: "{\"id\": 2}".to_string(),
+            old_data: String::new(),
         };
         assert_eq!(deleted.id(), "chg-3");
 
