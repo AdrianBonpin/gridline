@@ -1,3 +1,4 @@
+pub mod ident;
 pub mod introspection;
 pub mod mysql;
 pub mod mysql_clean;

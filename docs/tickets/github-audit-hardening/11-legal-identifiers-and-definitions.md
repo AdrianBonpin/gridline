@@ -7,10 +7,10 @@
 **Seams:** Change-application seam and SQL safety seam: catch correct quoting and binding in generated SQL; viewer seam: catches invalid filter or sort requests being reported rather than ignored.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/67
-**Status:** ready
+**Status:** done
 
-- [ ] Browsing, editing, filtering, sorting, and DDL copy work for legal names containing quotes or spaces.
-- [ ] A filter or sort request whose column cannot be represented safely fails visibly instead of returning unfiltered rows.
-- [ ] Introspection works for such names across supported engines.
-- [ ] Routine and trigger definitions containing quotes, dollar delimiters, or semicolons are saved unchanged.
-- [ ] A definition that cannot be represented faithfully is rejected with a reason rather than altered.
+- [x] Browsing, editing, filtering, sorting, and DDL copy work for legal names containing quotes or spaces.
+- [x] A filter or sort request whose column cannot be represented safely fails visibly instead of returning unfiltered rows.
+- [x] Introspection works for such names across supported engines.
+- [x] Routine and trigger definitions containing quotes, dollar delimiters, or semicolons are saved unchanged.
+- [x] A definition that cannot be represented faithfully is rejected with a reason rather than altered.

@@ -5,6 +5,7 @@ import { HomeScreen } from "./HomeScreen";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useNotificationStore } from "../../stores/notificationStore";
 import type { Connection, Folder } from "../../lib/types";
 
 vi.mock("../../lib/commands", () => ({
@@ -17,6 +18,8 @@ vi.mock("../../lib/commands", () => ({
   deleteConnection: vi.fn().mockResolvedValue(undefined),
   deleteConnectionPassword: vi.fn().mockResolvedValue(undefined),
   deleteFolder: vi.fn().mockResolvedValue(undefined),
+  importConnections: vi.fn(),
+  exportConnections: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
@@ -30,6 +33,7 @@ describe("HomeScreen", () => {
     useConnectionStore.setState({ connections: [], folders: [], tags: [], recent: [], loading: false, error: null });
     useUiStore.setState({ searchQuery: "", activeFolderId: null, activeTagIds: [], activeDbTypes: [], activeView: "home", selectedItemIds: [] });
     useSettingsStore.setState({ settings: null, loading: false, error: null });
+    useNotificationStore.setState({ notifications: [] });
     // SearchBar stores its debounce timer on window.__sb; clear any timer leaked
     // by a previous test (e.g. typing a URL) so it can't fire mid-test.
     window.clearTimeout((window as unknown as { __sb?: number }).__sb);
@@ -219,6 +223,67 @@ describe("HomeScreen", () => {
     expect(
       screen.queryByText(/are you sure you want to delete/i),
     ).not.toBeInTheDocument();
+  });
+
+  it("reports imported, skipped, and dropped-link counts after an import", async () => {
+    const user = userEvent.setup();
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { readTextFile } = await import("@tauri-apps/plugin-fs");
+    const commands = await import("../../lib/commands");
+    (open as any).mockResolvedValue("/tmp/connections.json");
+    (readTextFile as any).mockResolvedValue("[]");
+    (commands.importConnections as any).mockResolvedValue({
+      imported: 1,
+      skipped: 1,
+      skippedRecords: [{ index: 1, reason: "missing or empty name" }],
+      warnings: [
+        {
+          index: 0,
+          name: "Prod",
+          message: 'tag "tag-remote" does not exist here; connection imported without that tag',
+        },
+      ],
+    });
+    render(<HomeScreen />);
+
+    await user.click(screen.getByRole("button", { name: /import \/ export/i }));
+    await user.click(screen.getByText("Import Connections"));
+
+    await waitFor(() => {
+      const messages = useNotificationStore.getState().notifications.map((n) => n.message);
+      expect(messages).toContain(
+        "Imported 1 connection, 1 record skipped, 1 link dropped.",
+      );
+      expect(messages).toContain(
+        'Prod: tag "tag-remote" does not exist here; connection imported without that tag',
+      );
+    });
+  });
+
+  it("reports a rejected import instead of failing silently", async () => {
+    const user = userEvent.setup();
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { readTextFile } = await import("@tauri-apps/plugin-fs");
+    const commands = await import("../../lib/commands");
+    (open as any).mockResolvedValue("/tmp/broken.json");
+    (readTextFile as any).mockResolvedValue("{ not json");
+    (commands.importConnections as any).mockRejectedValue(
+      "invalid connection file: expected value at line 1 column 1",
+    );
+    render(<HomeScreen />);
+
+    await user.click(screen.getByRole("button", { name: /import \/ export/i }));
+    await user.click(screen.getByText("Import Connections"));
+
+    await waitFor(() => {
+      const errorNotifications = useNotificationStore
+        .getState()
+        .notifications.filter((n) => n.type === "error");
+      expect(errorNotifications.map((n) => n.message)).toContain(
+        "Import failed: invalid connection file: expected value at line 1 column 1",
+      );
+    });
+    expect(commands.importConnections).toHaveBeenCalledWith("{ not json");
   });
 });
 
