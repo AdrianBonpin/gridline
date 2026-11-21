@@ -3,6 +3,7 @@
 //! This module provides pure SQL builder functions, pagination helpers,
 //! and Tauri commands for the database viewer.
 
+use crate::db::ident::{self, Engine};
 use crate::db::pool::{ConnectionPoolManager, DbConfig, DbHandle};
 use crate::models::db_viewer::{
     Change, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, HypertableInfo,
@@ -202,118 +203,138 @@ pub fn get_pg_ddl_via_dump(
 // ---------------------------------------------------------------------------
 // Filter / Sort → SQL helpers
 // ---------------------------------------------------------------------------
-
-/// Returns true when the column name contains only safe identifier characters.
-fn is_safe_identifier(col: &str) -> bool {
-    !col.is_empty() && col.chars().all(|c| c.is_alphanumeric() || c == '_')
-}
+//
+// Column names are legal user data: they may contain double quotes, spaces,
+// single quotes, or be SQL keywords. Every clause below quotes the name through
+// `db::ident` (one shared, tested helper per engine) and *fails* when a request
+// cannot be represented. Silently dropping a rule would return unfiltered or
+// unsorted rows under filter/sort controls that look active — a wrong-results
+// bug that no error message would explain.
 
 /// Build a WHERE clause from filter rules for PostgreSQL (parameterized $n).
 /// Returns `(where_clause, param_values)` where `where_clause` starts with
 /// " AND " (suitable for appending after WHERE 1=1).
-fn build_pg_filter_clause(
+///
+/// Values are always bound (`$n`), never interpolated.
+pub(crate) fn build_pg_filter_clause(
     filters: &[crate::models::db_viewer::FilterRule],
     param_start: &mut usize,
-) -> (String, Vec<String>) {
+) -> Result<(String, Vec<String>), String> {
     let mut clauses = String::new();
     let mut params: Vec<String> = Vec::new();
 
     for rule in filters {
-        let col = &rule.column;
-        if !is_safe_identifier(col) {
-            continue; // skip unsafe column names
-        }
+        let col = ident::quote_checked(Engine::PostgreSql, &rule.column).map_err(|e| {
+            format!("cannot apply filter on column {:?}: {e}", rule.column)
+        })?;
 
         let clause = match rule.operator.as_str() {
             "null" => {
-                format!(" AND \"{}\" IS NULL", col)
+                format!(" AND {col} IS NULL")
             }
             "notnull" => {
-                format!(" AND \"{}\" IS NOT NULL", col)
+                format!(" AND {col} IS NOT NULL")
             }
             op @ ("eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt") => {
                 *param_start += 1;
                 let p = *param_start;
                 params.push(rule.value.clone());
                 match op {
-                    "eq" => format!(" AND \"{}\"::text = ${}", col, p),
-                    "neq" => format!(" AND \"{}\"::text != ${}", col, p),
-                    "contains" => format!(" AND \"{}\"::text ILIKE '%' || ${} || '%'", col, p),
-                    "starts" => format!(" AND \"{}\"::text ILIKE ${} || '%'", col, p),
-                    "ends" => format!(" AND \"{}\"::text ILIKE '%' || ${}", col, p),
-                    "gt" => format!(" AND \"{}\"::numeric > ${}::numeric", col, p),
-                    "lt" => format!(" AND \"{}\"::numeric < ${}::numeric", col, p),
+                    "eq" => format!(" AND {col}::text = ${p}"),
+                    "neq" => format!(" AND {col}::text != ${p}"),
+                    "contains" => format!(" AND {col}::text ILIKE '%' || ${p} || '%'"),
+                    "starts" => format!(" AND {col}::text ILIKE ${p} || '%'"),
+                    "ends" => format!(" AND {col}::text ILIKE '%' || ${p}"),
+                    "gt" => format!(" AND {col}::numeric > ${p}::numeric"),
+                    "lt" => format!(" AND {col}::numeric < ${p}::numeric"),
                     _ => unreachable!(),
                 }
             }
-            _ => continue, // unknown operator → skip
+            other => {
+                return Err(format!(
+                    "cannot apply filter on column {:?}: unsupported operator {other:?}",
+                    rule.column
+                ))
+            }
         };
         clauses.push_str(&clause);
     }
 
-    (clauses, params)
+    Ok((clauses, params))
 }
 
 /// Build a WHERE clause from filter rules for SQLite (positional ? params).
 fn build_sqlite_filter_clause(
     filters: &[crate::models::db_viewer::FilterRule],
-) -> (String, Vec<String>) {
+) -> Result<(String, Vec<String>), String> {
     let mut clauses = String::new();
     let mut params: Vec<String> = Vec::new();
 
     for rule in filters {
-        let col = &rule.column;
-        if !is_safe_identifier(col) {
-            continue;
-        }
+        let col = ident::quote_checked(Engine::Sqlite, &rule.column).map_err(|e| {
+            format!("cannot apply filter on column {:?}: {e}", rule.column)
+        })?;
 
         let clause = match rule.operator.as_str() {
             "null" => {
-                format!(" AND \"{}\" IS NULL", col)
+                format!(" AND {col} IS NULL")
             }
             "notnull" => {
-                format!(" AND \"{}\" IS NOT NULL", col)
+                format!(" AND {col} IS NOT NULL")
             }
             op @ ("eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt") => {
                 params.push(rule.value.clone());
                 match op {
-                    "eq" => format!(" AND \"{}\" = ?", col),
-                    "neq" => format!(" AND \"{}\" != ?", col),
-                    "contains" => format!(" AND \"{}\" LIKE '%' || ? || '%'", col),
-                    "starts" => format!(" AND \"{}\" LIKE ? || '%'", col),
-                    "ends" => format!(" AND \"{}\" LIKE '%' || ?", col),
-                    "gt" => format!(" AND CAST(\"{}\" AS REAL) > CAST(? AS REAL)", col),
-                    "lt" => format!(" AND CAST(\"{}\" AS REAL) < CAST(? AS REAL)", col),
+                    "eq" => format!(" AND {col} = ?"),
+                    "neq" => format!(" AND {col} != ?"),
+                    "contains" => format!(" AND {col} LIKE '%' || ? || '%'"),
+                    "starts" => format!(" AND {col} LIKE ? || '%'"),
+                    "ends" => format!(" AND {col} LIKE '%' || ?"),
+                    "gt" => format!(" AND CAST({col} AS REAL) > CAST(? AS REAL)"),
+                    "lt" => format!(" AND CAST({col} AS REAL) < CAST(? AS REAL)"),
                     _ => unreachable!(),
                 }
             }
-            _ => continue,
+            other => {
+                return Err(format!(
+                    "cannot apply filter on column {:?}: unsupported operator {other:?}",
+                    rule.column
+                ))
+            }
         };
         clauses.push_str(&clause);
     }
 
-    (clauses, params)
+    Ok((clauses, params))
 }
 
 /// Build an ORDER BY clause from sort rules.
-/// Returns an empty string when there are no valid sort rules.
-fn build_order_clause(sorts: &[crate::models::db_viewer::SortRule]) -> String {
+/// Returns an empty string when there are no sort rules; an unrepresentable
+/// column or direction is an error rather than a dropped sort.
+fn build_order_clause(
+    engine: Engine,
+    sorts: &[crate::models::db_viewer::SortRule],
+) -> Result<String, String> {
     let mut parts: Vec<String> = Vec::new();
     for rule in sorts {
-        if !is_safe_identifier(&rule.column) {
-            continue;
-        }
+        let col = ident::quote_checked(engine, &rule.column)
+            .map_err(|e| format!("cannot apply sort on column {:?}: {e}", rule.column))?;
         let dir = match rule.order.as_str() {
             "asc" | "ASC" => "ASC",
             "desc" | "DESC" => "DESC",
-            _ => continue,
+            other => {
+                return Err(format!(
+                    "cannot apply sort on column {:?}: unsupported direction {other:?}",
+                    rule.column
+                ))
+            }
         };
-        parts.push(format!("\"{}\" {}", rule.column, dir));
+        parts.push(format!("{col} {dir}"));
     }
     if parts.is_empty() {
-        String::new()
+        Ok(String::new())
     } else {
-        format!(" ORDER BY {}", parts.join(", "))
+        Ok(format!(" ORDER BY {}", parts.join(", ")))
     }
 }
 
@@ -348,17 +369,15 @@ fn build_pg_select_from_items(
     table: &str,
     items: Vec<String>,
     append_locator: bool,
-) -> String {
+) -> Result<String, String> {
     let mut all_cols = items;
     if append_locator {
         all_cols.push("ctid".to_string());
     }
-    format!(
-        "SELECT {} FROM \"{}\".\"{}\"",
-        all_cols.join(", "),
-        schema,
-        table
-    )
+    // A schema/table that cannot be represented fails here, with a reason,
+    // instead of producing a statement aimed at the wrong object.
+    let from = ident::qualified(Engine::PostgreSql, schema, table)?;
+    Ok(format!("SELECT {} FROM {}", all_cols.join(", "), from))
 }
 
 /// Build the PG data SELECT, appending `ctid` only when `append_locator` is
@@ -368,13 +387,16 @@ pub(crate) fn build_pg_data_select(
     table: &str,
     visible_cols: &[String],
     append_locator: bool,
-) -> String {
-    let base_cols: Vec<String> = visible_cols.iter().map(|c| format!("\"{}\"", c)).collect();
+) -> Result<String, String> {
+    let base_cols: Vec<String> = visible_cols
+        .iter()
+        .map(|c| ident::quote(Engine::PostgreSql, c))
+        .collect();
     build_pg_select_from_items(schema, table, base_cols, append_locator)
 }
 
 /// Build the SQLite data SELECT, appending `rowid` when `append_locator` is
-/// true (a no-PK *physical table*) so later UPDATE/DELETE queue changes can
+/// true (no-PK *physical table*) so later UPDATE/DELETE queue changes can
 /// target the exact row. Views expose no `rowid`, so callers must pass `false`
 /// for them. The table is unqualified; SQLite browsing in this app is always
 /// scoped to the `main` schema, where an unqualified name resolves identically.
@@ -383,12 +405,18 @@ pub(crate) fn build_sqlite_data_select(
     visible_cols: &[String],
     append_locator: bool,
 ) -> String {
-    let base_cols: Vec<String> = visible_cols.iter().map(|c| format!("\"{}\"", c)).collect();
-    let mut all_cols = base_cols;
+    let mut all_cols: Vec<String> = visible_cols
+        .iter()
+        .map(|c| ident::quote(Engine::Sqlite, c))
+        .collect();
     if append_locator {
         all_cols.push("rowid".to_string());
     }
-    format!("SELECT {} FROM \"{}\"", all_cols.join(", "), table)
+    format!(
+        "SELECT {} FROM {}",
+        all_cols.join(", "),
+        ident::quote(Engine::Sqlite, table)
+    )
 }
 
 /// Build a parameterized UPDATE SQL statement.
@@ -411,11 +439,11 @@ pub fn build_update_sql(
     }
     let set_clause: Vec<String> = new_data
         .iter()
-        .map(|(col, _)| format!("\"{}\" = ?", col))
+        .map(|(col, _)| format!("{} = ?", ident::quote(Engine::Sqlite, col)))
         .collect();
     let where_clause: Vec<String> = primary_key
         .iter()
-        .map(|(col, _)| format!("\"{}\" = ?", col))
+        .map(|(col, _)| format!("{} = ?", ident::quote(Engine::Sqlite, col)))
         .collect();
     // Params must follow placeholder order: SET values first, then WHERE.
     let params: Vec<serde_json::Value> = new_data
@@ -425,9 +453,8 @@ pub fn build_update_sql(
         .collect();
     Ok((
         format!(
-            "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
-            schema,
-            table,
+            "UPDATE {} SET {} WHERE {}",
+            ident::qualified(Engine::Sqlite, schema, table)?,
             set_clause.join(", "),
             where_clause.join(" AND ")
         ),
@@ -451,13 +478,12 @@ pub fn build_delete_sql(
     }
     let where_clause: Vec<String> = primary_key
         .iter()
-        .map(|(col, _)| format!("\"{}\" = ?", col))
+        .map(|(col, _)| format!("{} = ?", ident::quote(Engine::Sqlite, col)))
         .collect();
     Ok((
         format!(
-            "DELETE FROM \"{}\".\"{}\" WHERE {}",
-            schema,
-            table,
+            "DELETE FROM {} WHERE {}",
+            ident::qualified(Engine::Sqlite, schema, table)?,
             where_clause.join(" AND ")
         ),
         primary_key.iter().map(|(_, v)| v.clone()).collect(),
@@ -471,12 +497,18 @@ pub fn build_delete_sql(
 /// INSERT INTO "public"."users" ("id", "name") VALUES (?, ?)
 /// ```
 pub fn build_insert_sql(schema: &str, table: &str, columns: &[String]) -> String {
-    let cols: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c)).collect();
+    let cols: Vec<String> = columns
+        .iter()
+        .map(|c| ident::quote(Engine::Sqlite, c))
+        .collect();
     let placeholders: Vec<&str> = vec!["?"; columns.len()];
+    // `build_insert_sql` stays infallible for its many callers; a name that
+    // cannot be represented yields SQL the server rejects loudly (never a
+    // statement against a different object), while the filter/sort seams
+    // reject such names up front.
+    let into = ident::qualified_unchecked(Engine::Sqlite, schema, table);
     format!(
-        "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({})",
-        schema,
-        table,
+        "INSERT INTO {into} ({}) VALUES ({})",
         cols.join(", "),
         placeholders.join(", ")
     )
@@ -510,21 +542,20 @@ pub fn build_pg_update_sql(
         .iter()
         .map(|(col, val)| {
             params.push(val.clone());
-            format!("\"{}\" = ${}", col, params.len())
+            format!("{} = ${}", ident::quote(Engine::PostgreSql, col), params.len())
         })
         .collect();
     let where_clause: Vec<String> = primary_key
         .iter()
         .map(|(col, val)| {
             params.push(val.clone());
-            format!("\"{}\" = ${}", col, params.len())
+            format!("{} = ${}", ident::quote(Engine::PostgreSql, col), params.len())
         })
         .collect();
     Ok((
         format!(
-            "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
-            schema,
-            table,
+            "UPDATE {} SET {} WHERE {}",
+            ident::qualified(Engine::PostgreSql, schema, table)?,
             set_clause.join(", "),
             where_clause.join(" AND ")
         ),
@@ -546,14 +577,13 @@ pub fn build_pg_delete_sql(
         .iter()
         .map(|(col, val)| {
             params.push(val.clone());
-            format!("\"{}\" = ${}", col, params.len())
+            format!("{} = ${}", ident::quote(Engine::PostgreSql, col), params.len())
         })
         .collect();
     Ok((
         format!(
-            "DELETE FROM \"{}\".\"{}\" WHERE {}",
-            schema,
-            table,
+            "DELETE FROM {} WHERE {}",
+            ident::qualified(Engine::PostgreSql, schema, table)?,
             where_clause.join(" AND ")
         ),
         params,
@@ -568,13 +598,14 @@ pub fn build_pg_insert_sql(
 ) -> (String, Vec<serde_json::Value>) {
     // A table with no editable columns (e.g. only a serial/identity PK) inserts
     // with all defaults — `INSERT ... () VALUES ()` is invalid SQL.
+    let into = ident::qualified_unchecked(Engine::PostgreSql, schema, table);
     if columns.is_empty() {
-        return (
-            format!("INSERT INTO \"{}\".\"{}\" DEFAULT VALUES", schema, table),
-            vec![],
-        );
+        return (format!("INSERT INTO {into} DEFAULT VALUES"), vec![]);
     }
-    let cols: Vec<String> = columns.iter().map(|(c, _)| format!("\"{}\"", c)).collect();
+    let cols: Vec<String> = columns
+        .iter()
+        .map(|(c, _)| ident::quote(Engine::PostgreSql, c))
+        .collect();
     let mut params: Vec<serde_json::Value> = Vec::new();
     let placeholders: Vec<String> = columns
         .iter()
@@ -585,9 +616,7 @@ pub fn build_pg_insert_sql(
         .collect();
     (
         format!(
-            "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({})",
-            schema,
-            table,
+            "INSERT INTO {into} ({}) VALUES ({})",
             cols.join(", "),
             placeholders.join(", ")
         ),
@@ -691,12 +720,14 @@ fn json_to_sqlite_value(v: &serde_json::Value) -> rusqlite::types::Value {
 /// Emits `$N` placeholders; callers bind one row of values per execution so
 /// the same statement can be reused for every row in the batch.
 pub fn build_pg_bulk_insert_sql(schema: &str, table: &str, columns: &[String]) -> String {
-    let cols: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c)).collect();
+    let cols: Vec<String> = columns
+        .iter()
+        .map(|c| ident::quote(Engine::PostgreSql, c))
+        .collect();
     let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
+    let into = ident::qualified_unchecked(Engine::PostgreSql, schema, table);
     format!(
-        "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({})",
-        schema,
-        table,
+        "INSERT INTO {into} ({}) VALUES ({})",
         cols.join(", "),
         placeholders.join(", ")
     )
@@ -705,13 +736,15 @@ pub fn build_pg_bulk_insert_sql(schema: &str, table: &str, columns: &[String]) -
 /// Build a `DROP TABLE` statement (schema-qualified). SQLite accepts the same
 /// qualified form against the `main` schema.
 pub fn build_drop_table_sql(schema: &str, table: &str) -> String {
-    format!("DROP TABLE \"{}\".\"{}\"", schema, table)
+    let target = ident::qualified_unchecked(Engine::PostgreSql, schema, table);
+    format!("DROP TABLE {target}")
 }
 
 /// Build a `DELETE FROM` (empty-table) statement (schema-qualified). SQLite
 /// accepts the same qualified form against the `main` schema.
 pub fn build_empty_table_sql(schema: &str, table: &str) -> String {
-    format!("DELETE FROM \"{}\".\"{}\"", schema, table)
+    let target = ident::qualified_unchecked(Engine::PostgreSql, schema, table);
+    format!("DELETE FROM {target}")
 }
 
 /// Apply a batch of rows to a SQLite table inside a single transaction.
@@ -1592,17 +1625,15 @@ pub(crate) async fn get_table_data_inner(
     let mut pm = pool_manager.lock().await;
     match pm.get(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let qualified = ident::qualified(Engine::PostgreSql, schema, table)?;
             // Build filter clause (shared by COUNT and data queries)
             let mut pg_param_idx: usize = 0;
             let (filter_clause, filter_params) =
-                build_pg_filter_clause(&filters, &mut pg_param_idx);
-            let order_clause = build_order_clause(&sorts);
+                build_pg_filter_clause(&filters, &mut pg_param_idx)?;
+            let order_clause = build_order_clause(Engine::PostgreSql, &sorts)?;
 
             // Get total count (with filters applied)
-            let count_query = format!(
-                "SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}",
-                schema, table, filter_clause
-            );
+            let count_query = format!("SELECT COUNT(*) FROM {qualified} WHERE 1=1{filter_clause}");
             let count_row = if filter_params.is_empty() {
                 client
                     .query_one(&count_query, &[])
@@ -1764,11 +1795,12 @@ ORDER BY c.ordinal_position"#;
                 .iter()
                 .map(|c| {
                     let lower = c.data_type.to_lowercase();
+                    let quoted = ident::quote(Engine::PostgreSql, &c.name);
                     if standard_pg_types.contains(&lower.as_str()) {
-                        format!("\"{}\"", c.name)
+                        quoted
                     } else {
                         // Custom type (enum, composite, domain) — cast to text
-                        format!("\"{}\"::text", c.name)
+                        format!("{quoted}::text")
                     }
                 })
                 .collect();
@@ -1777,7 +1809,7 @@ ORDER BY c.ordinal_position"#;
             // Views are excluded — they expose no ctid and are read-only.
             let data_query = format!(
                 "{} WHERE 1=1{} {} LIMIT {} OFFSET {}",
-                build_pg_select_from_items(&schema, &table, select_items, !has_pk && !is_view),
+                build_pg_select_from_items(&schema, &table, select_items, !has_pk && !is_view)?,
                 filter_clause,
                 order_clause,
                 ps,
@@ -1824,12 +1856,13 @@ ORDER BY c.ordinal_position"#;
                 .unwrap_or(false);
 
             // Build filter clause (shared by COUNT and data queries)
-            let (filter_clause, filter_vals) = build_sqlite_filter_clause(&filters);
-            let order_clause = build_order_clause(&sorts);
+            let (filter_clause, filter_vals) = build_sqlite_filter_clause(&filters)?;
+            let order_clause = build_order_clause(Engine::Sqlite, &sorts)?;
 
             let count_query = format!(
-                "SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}",
-                schema, table, filter_clause
+                "SELECT COUNT(*) FROM {} WHERE 1=1{}",
+                ident::qualified(Engine::Sqlite, schema, table)?,
+                filter_clause
             );
             let total_rows: i64 = if filter_vals.is_empty() {
                 conn.query_row(&count_query, [], |r| r.get(0))
@@ -1845,8 +1878,8 @@ ORDER BY c.ordinal_position"#;
                 .map_err(|e| e.to_string())?
             };
 
-            // Get column metadata via PRAGMA table_info
-            let pragma_query = format!("PRAGMA table_info('{}')", table);
+            // Get column metadata via PRAGMA table_info (quoted identifier)
+            let pragma_query = crate::db::introspection::sqlite_columns_query(table);
             let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
             let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
                 .query_map([], |row| {
@@ -1862,8 +1895,8 @@ ORDER BY c.ordinal_position"#;
                 .filter_map(|r| r.ok())
                 .collect();
 
-            // Get FK metadata via PRAGMA foreign_key_list
-            let fk_query = format!("PRAGMA foreign_key_list('{}')", table);
+            // Get FK metadata via PRAGMA foreign_key_list (quoted identifier)
+            let fk_query = crate::db::introspection::sqlite_foreign_keys_query(table);
             let fk_map: HashMap<String, (String, String)> =
                 if let Ok(mut fk_stmt) = conn.prepare(&fk_query) {
                     fk_stmt
@@ -2186,8 +2219,9 @@ ORDER BY c.ordinal_position"#;
 
             // Fetch the referenced row
             let data_query = format!(
-                "SELECT * FROM \"{}\".\"{}\" WHERE \"{}\"::text = $1 LIMIT 1",
-                schema, table, column
+                "SELECT * FROM {} WHERE {}::text = $1 LIMIT 1",
+                ident::qualified(Engine::PostgreSql, schema, table)?,
+                ident::quote(Engine::PostgreSql, column)
             );
             let data_rows = client
                 .query(&data_query, &[&value])
@@ -2208,8 +2242,8 @@ ORDER BY c.ordinal_position"#;
             })
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
-            // Get column metadata via PRAGMA table_info
-            let pragma_query = format!("PRAGMA table_info('{}')", table);
+            // Get column metadata via PRAGMA table_info (quoted identifier)
+            let pragma_query = crate::db::introspection::sqlite_columns_query(&table);
             let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
             let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
                 .query_map([], |row| {
@@ -2226,7 +2260,7 @@ ORDER BY c.ordinal_position"#;
                 .collect();
 
             // Get FK metadata
-            let fk_query = format!("PRAGMA foreign_key_list('{}')", table);
+            let fk_query = crate::db::introspection::sqlite_foreign_keys_query(&table);
             let fk_map: HashMap<String, (String, String)> =
                 if let Ok(mut fk_stmt) = conn.prepare(&fk_query) {
                     fk_stmt
@@ -2269,8 +2303,9 @@ ORDER BY c.ordinal_position"#;
 
             // Fetch the referenced row
             let data_query = format!(
-                "SELECT * FROM \"{}\".\"{}\" WHERE \"{}\" = ?1 LIMIT 1",
-                schema, table, column
+                "SELECT * FROM {} WHERE {} = ?1 LIMIT 1",
+                ident::qualified(Engine::Sqlite, schema, table)?,
+                ident::quote(Engine::Sqlite, column)
             );
             let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
             let col_count = stmt.column_count();
@@ -2300,15 +2335,10 @@ ORDER BY c.ordinal_position"#;
                                // The request already resolves the referenced table/column (the
                                // frontend reads `fk_ref`); fetch the referenced row directly.
             let columns = mysql_load_columns(pool, &schema, &table).await?;
-            let qualified = format!(
-                "{}.{}",
-                crate::db::mysql::mysql_quote_ident(&schema),
-                crate::db::mysql::mysql_quote_ident(&table)
-            );
             let data_query = format!(
                 "SELECT * FROM {} WHERE {} = ? LIMIT 1",
-                qualified,
-                crate::db::mysql::mysql_quote_ident(&column)
+                ident::qualified(Engine::MySql, &schema, &table)?,
+                ident::quote(Engine::MySql, &column)
             );
             let data_rows = sqlx::query(&data_query)
                 .bind(&value)
@@ -3801,6 +3831,125 @@ mod tests {
         // A bare name that resolves on PATH passes; a bogus path fails.
         assert!(pg_dump_available_at("pg_dump") || !pg_dump_available_at("pg_dump"));
         assert!(!pg_dump_available_at("/nonexistent/pg_dump_999999"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Legal identifiers: filter / sort (ticket 11)
+    // -----------------------------------------------------------------------
+
+    fn filter(column: &str, operator: &str, value: &str) -> crate::models::db_viewer::FilterRule {
+        crate::models::db_viewer::FilterRule {
+            id: "f1".into(),
+            column: column.into(),
+            operator: operator.into(),
+            value: value.into(),
+        }
+    }
+
+    fn sort(column: &str, order: &str) -> crate::models::db_viewer::SortRule {
+        crate::models::db_viewer::SortRule {
+            id: "s1".into(),
+            column: column.into(),
+            order: order.into(),
+        }
+    }
+
+    /// A legal-but-awkward column name is quoted, not skipped. Skipping it
+    /// would return unfiltered rows — the exact silent failure this guards.
+    #[test]
+    fn pg_filter_quotes_legal_column_names() {
+        for (column, quoted) in [
+            ("we ird", "\"we ird\""),
+            ("a\"b", "\"a\"\"b\""),
+            ("select", "\"select\""),
+            ("o'brien", "\"o'brien\""),
+        ] {
+            let mut idx = 0;
+            let (clause, params) =
+                build_pg_filter_clause(&[filter(column, "eq", "x")], &mut idx).unwrap();
+            assert_eq!(clause, format!(" AND {quoted}::text = $1"));
+            assert_eq!(params, vec!["x".to_string()]);
+        }
+    }
+
+    #[test]
+    fn sqlite_filter_quotes_legal_column_names() {
+        let (clause, params) =
+            build_sqlite_filter_clause(&[filter("a\"b c", "contains", "x")]).unwrap();
+        assert_eq!(clause, " AND \"a\"\"b c\" LIKE '%' || ? || '%'");
+        assert_eq!(params, vec!["x".to_string()]);
+    }
+
+    /// Values are bound, never interpolated — a value containing quotes is a
+    /// parameter, not SQL.
+    #[test]
+    fn filter_values_are_bound_not_interpolated() {
+        let mut idx = 0;
+        let (clause, params) =
+            build_pg_filter_clause(&[filter("col", "eq", "'; DROP TABLE t; --")], &mut idx)
+                .unwrap();
+        assert_eq!(clause, " AND \"col\"::text = $1");
+        assert_eq!(params, vec!["'; DROP TABLE t; --".to_string()]);
+    }
+
+    /// A column that cannot be represented fails visibly with the column named.
+    /// It must never be dropped from the clause (unfiltered rows) instead.
+    #[test]
+    fn filter_rejects_unrepresentable_column_instead_of_ignoring_it() {
+        for (column, reason) in [("", "empty"), ("a\0b", "NUL")] {
+            let mut idx = 0;
+            let err = build_pg_filter_clause(&[filter(column, "eq", "x")], &mut idx)
+                .expect_err("unrepresentable column must fail");
+            assert!(
+                err.contains("filter") && err.contains(reason),
+                "error must name the filter and the reason ({reason}): {err}"
+            );
+            let err = build_sqlite_filter_clause(&[filter(column, "eq", "x")])
+                .expect_err("unrepresentable column must fail");
+            assert!(
+                err.contains("filter") && err.contains(reason),
+                "error must name the filter and the reason ({reason}): {err}"
+            );
+        }
+    }
+
+    /// An operator the backend does not implement is an error, not a dropped
+    /// clause.
+    #[test]
+    fn filter_rejects_unknown_operator() {
+        let mut idx = 0;
+        let err = build_pg_filter_clause(&[filter("col", "regexp", "x")], &mut idx)
+            .expect_err("unknown operator must fail");
+        assert!(err.contains("regexp"), "error must name the operator: {err}");
+        assert!(build_sqlite_filter_clause(&[filter("col", "regexp", "x")]).is_err());
+    }
+
+    #[test]
+    fn order_clause_quotes_legal_column_names() {
+        let clause = build_order_clause(
+            crate::db::ident::Engine::PostgreSql,
+            &[sort("a\"b c", "desc"), sort("select", "asc")],
+        )
+        .unwrap();
+        assert_eq!(clause, " ORDER BY \"a\"\"b c\" DESC, \"select\" ASC");
+    }
+
+    /// A sort whose column or direction cannot be represented fails visibly
+    /// rather than returning unsorted rows.
+    #[test]
+    fn order_clause_rejects_unrepresentable_input() {
+        let engine = crate::db::ident::Engine::Sqlite;
+        let err = build_order_clause(engine, &[sort("", "asc")]).expect_err("empty column");
+        assert!(err.contains("sort"), "error must mention the sort: {err}");
+
+        let err = build_order_clause(engine, &[sort("col", "sideways")])
+            .expect_err("unknown direction");
+        assert!(
+            err.contains("sideways"),
+            "error must name the direction: {err}"
+        );
+
+        assert!(build_order_clause(engine, &[]).unwrap().is_empty());
     }
 }
 

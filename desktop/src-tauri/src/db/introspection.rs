@@ -148,13 +148,24 @@ pub fn sqlite_tables_query() -> String {
 }
 
 /// Column metadata via `PRAGMA table_info`.
+///
+/// The table name is a *quoted identifier*, not a string literal: a legal name
+/// containing a single quote (`o'brien`) would otherwise end the literal and
+/// either break the statement or change which table is introspected.
 pub fn sqlite_columns_query(table: &str) -> String {
-    format!("PRAGMA table_info('{}')", table)
+    format!(
+        "PRAGMA table_info({})",
+        crate::db::ident::quote(crate::db::ident::Engine::Sqlite, table)
+    )
 }
 
-/// Foreign-key metadata via `PRAGMA foreign_key_list`.
+/// Foreign-key metadata via `PRAGMA foreign_key_list` (see
+/// [`sqlite_columns_query`] for the quoting rule).
 pub fn sqlite_foreign_keys_query(table: &str) -> String {
-    format!("PRAGMA foreign_key_list('{}')", table)
+    format!(
+        "PRAGMA foreign_key_list({})",
+        crate::db::ident::quote(crate::db::ident::Engine::Sqlite, table)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -178,21 +189,21 @@ pub fn build_select_query(
     let cols = if columns.is_empty() {
         "*".to_string()
     } else {
-        let mut buf = String::new();
-        for (i, col) in columns.iter().enumerate() {
-            if i > 0 {
-                buf.push_str(", ");
-            }
-            buf.push('"');
-            buf.push_str(col);
-            buf.push('"');
-        }
-        buf
+        columns
+            .iter()
+            .map(|c| crate::db::ident::quote(crate::db::ident::Engine::PostgreSql, c))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     let sql = format!(
-        "SELECT {} FROM \"{}\".\"{}\" LIMIT $1 OFFSET $2",
-        cols, schema, table
+        "SELECT {} FROM {} LIMIT $1 OFFSET $2",
+        cols,
+        crate::db::ident::qualified_unchecked(
+            crate::db::ident::Engine::PostgreSql,
+            schema,
+            table
+        )
     );
 
     let params = vec![page_size, page * page_size];
@@ -202,7 +213,14 @@ pub fn build_select_query(
 
 /// Build a `COUNT(*)` query.
 pub fn build_count_query(schema: &str, table: &str) -> String {
-    format!("SELECT COUNT(*) FROM \"{}\".\"{}\"", schema, table)
+    format!(
+        "SELECT COUNT(*) FROM {}",
+        crate::db::ident::qualified_unchecked(
+            crate::db::ident::Engine::PostgreSql,
+            schema,
+            table
+        )
+    )
 }
 
 // ---------------------------------------------------------------------------
