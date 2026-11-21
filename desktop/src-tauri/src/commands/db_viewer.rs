@@ -3561,7 +3561,7 @@ mod tests {
     /// edited or deleted.
     #[test]
     fn pg_locator_select_casts_ctid_to_text() {
-        let sql = build_pg_data_select("public", "no_pk", &["id".into()], true);
+        let sql = build_pg_data_select("public", "no_pk", &["id".into()], true).expect("select");
         assert!(
             sql.contains("ctid::text"),
             "the row locator must be selected as text; got: {}",

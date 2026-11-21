@@ -117,7 +117,8 @@ INSERT INTO page_views (url, session_id, user_agent) VALUES
 
 fn sqlite_pool(setup_sql: &str) -> (tokio::sync::Mutex<ConnectionPoolManager>, String) {
     let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-    conn.execute_batch(setup_sql).expect("fixture schema + seed");
+    conn.execute_batch(setup_sql)
+        .expect("fixture schema + seed");
     let mut pm = ConnectionPoolManager::new();
     pm.register("sqlite-change", DbHandle::Sqlite(conn));
     (tokio::sync::Mutex::new(pm), "sqlite-change".to_string())
@@ -314,10 +315,7 @@ async fn live_pg_pool() -> (tokio::sync::Mutex<ConnectionPoolManager>, String) {
         let _ = conn.await;
     });
     let mut pm = ConnectionPoolManager::new();
-    pm.register(
-        "test-pg-row-identity",
-        DbHandle::Postgresql(client, handle),
-    );
+    pm.register("test-pg-row-identity", DbHandle::Postgresql(client, handle));
     (
         tokio::sync::Mutex::new(pm),
         "test-pg-row-identity".to_string(),
@@ -332,10 +330,9 @@ async fn pg_execute(
 ) -> Result<(), String> {
     let mut guard = pm.lock().await;
     match guard.get(id) {
-        Some(DbHandle::Postgresql(c, _)) => c
-            .batch_execute(sql)
-            .await
-            .map_err(|e| format!("{e:?}")),
+        Some(DbHandle::Postgresql(c, _)) => {
+            c.batch_execute(sql).await.map_err(|e| format!("{e:?}"))
+        }
         _ => panic!("expected a postgresql handle"),
     }
 }
@@ -416,15 +413,24 @@ async fn live_pg_row_identity_addresses_exactly_one_row() {
         &format!("SELECT order_id::text || ':' || product_id::text || ':' || quantity::text FROM public.\"{composite}\" ORDER BY order_id, product_id"),
     )
     .await;
-    assert_eq!(rows, vec![vec!["1:1:2".to_string()], vec!["1:3:9".to_string()]]);
+    assert_eq!(
+        rows,
+        vec![vec!["1:1:2".to_string()], vec!["1:3:9".to_string()]]
+    );
 
     // ── no primary key: the locator must be a real value, not NULL ───────
     let data = get_table_data_inner(&pm, &id, "public", &no_pk, None, None, None, None)
         .await
         .expect("no-PK data fetch");
-    assert_eq!(data.columns.len(), 1, "only the declared column is a column");
+    assert_eq!(
+        data.columns.len(),
+        1,
+        "only the declared column is a column"
+    );
     let locator = data.rows[1][data.columns.len()].clone();
-    let locator = locator.as_str().expect("ctid must decode as text, not NULL");
+    let locator = locator
+        .as_str()
+        .expect("ctid must decode as text, not NULL");
     assert!(
         locator.starts_with('(') && locator.ends_with(')'),
         "expected a textual ctid, got: {locator}"
@@ -444,7 +450,12 @@ async fn live_pg_row_identity_addresses_exactly_one_row() {
     )
     .await
     .expect("locator update applies");
-    let rows = pg_rows(&pm, &id, &format!("SELECT url FROM public.\"{no_pk}\" ORDER BY url")).await;
+    let rows = pg_rows(
+        &pm,
+        &id,
+        &format!("SELECT url FROM public.\"{no_pk}\" ORDER BY url"),
+    )
+    .await;
     assert_eq!(
         rows,
         vec![
@@ -482,7 +493,12 @@ async fn live_pg_row_identity_addresses_exactly_one_row() {
     )
     .await
     .expect("locator delete applies");
-    let rows = pg_rows(&pm, &id, &format!("SELECT url FROM public.\"{no_pk}\" ORDER BY url")).await;
+    let rows = pg_rows(
+        &pm,
+        &id,
+        &format!("SELECT url FROM public.\"{no_pk}\" ORDER BY url"),
+    )
+    .await;
     assert_eq!(
         rows,
         vec![vec!["/orders".to_string()], vec!["/products".to_string()]]
@@ -491,9 +507,7 @@ async fn live_pg_row_identity_addresses_exactly_one_row() {
     pg_execute(
         &pm,
         &id,
-        &format!(
-            "DROP TABLE public.\"{composite}\"; DROP TABLE public.\"{no_pk}\""
-        ),
+        &format!("DROP TABLE public.\"{composite}\"; DROP TABLE public.\"{no_pk}\""),
     )
     .await
     .expect("cleanup");
