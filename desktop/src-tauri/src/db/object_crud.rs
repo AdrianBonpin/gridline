@@ -500,6 +500,22 @@ fn arg_sql(a: &FunctionArg) -> String {
     format!("{}{} {}", mode, a.name, a.type_)
 }
 
+/// A routine language is a plain identifier (`plpgsql`, `sql`, `c`, …). It is
+/// interpolated into DDL, so anything else — a statement separator, a comment,
+/// whitespace — is rejected with a reason instead of being pasted in.
+fn validate_language(language: &str) -> Result<&str, String> {
+    let l = language.trim();
+    let mut chars = l.chars();
+    let looks_like_identifier = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !looks_like_identifier {
+        return Err(format!(
+            "Function language {language:?} must be a plain identifier (letters, digits, underscore)"
+        ));
+    }
+    Ok(l)
+}
+
 pub fn function_ddl(p: &FunctionParams) -> Result<Vec<String>, String> {
     let q = qual(&p.schema, &p.name)?;
     let kind = if p.is_procedure {
@@ -528,8 +544,15 @@ pub fn function_ddl(p: &FunctionParams) -> Result<Vec<String>, String> {
                 _ => "",
             };
             let strict = if *strict { " STRICT" } else { "" };
+            let language = validate_language(language)?;
+            // The body is arbitrary text — quotes, semicolons, and even `$$`
+            // are all legal inside it. `pg_dollar_quote` picks a delimiter the
+            // body does not contain (and rejects unrepresentable bodies), so the
+            // stored definition is byte-for-byte what the user wrote instead of
+            // being cut short at an inner `$$`.
+            let quoted_body = crate::db::ident::pg_dollar_quote(body)?;
             format!(
-                "CREATE OR REPLACE {} {}({}){} LANGUAGE {}{}{} AS $${}$$",
+                "CREATE OR REPLACE {} {}({}){} LANGUAGE {}{}{} AS {}",
                 kind,
                 q,
                 arglist.join(", "),
@@ -537,7 +560,7 @@ pub fn function_ddl(p: &FunctionParams) -> Result<Vec<String>, String> {
                 language,
                 vol,
                 strict,
-                body
+                quoted_body
             )
         }
         FunctionAction::Drop { arg_types } => {
@@ -2175,3 +2198,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "object_crud_definitions.test.rs"]
+mod definition_round_trip_tests;

@@ -38,6 +38,21 @@ impl Engine {
             Engine::MySql => "MySQL",
         }
     }
+
+    /// Map the app's `db_type` strings onto a dialect, so callers that only
+    /// know a connection type (schema diff, generated DDL, ticket 12's
+    /// schema-qualified identifiers) can reach the same quoting helper.
+    ///
+    /// Returns `None` for engines this crate does not quote for (Redis), so a
+    /// caller can fail with a reason instead of guessing a delimiter.
+    pub fn from_db_type(db_type: &str) -> Option<Engine> {
+        match db_type.trim().to_ascii_lowercase().as_str() {
+            "postgresql" | "postgres" | "pg" => Some(Engine::PostgreSql),
+            "sqlite" | "sqlite3" => Some(Engine::Sqlite),
+            "mysql" | "mariadb" => Some(Engine::MySql),
+            _ => None,
+        }
+    }
 }
 
 /// Quote an identifier for `engine`, doubling any embedded delimiter.
@@ -98,11 +113,7 @@ pub fn qualified(engine: Engine, schema: &str, name: &str) -> Result<String, Str
 /// object; an unrepresentable name produces SQL the server rejects loudly
 /// instead of being silently rewritten.
 pub fn qualified_unchecked(engine: Engine, schema: &str, name: &str) -> String {
-    format!(
-        "{}.{}",
-        quote(engine, schema),
-        quote(engine, name)
-    )
+    format!("{}.{}", quote(engine, schema), quote(engine, name))
 }
 
 /// Wrap a routine/trigger definition body in a PostgreSQL dollar-quoted
@@ -126,7 +137,10 @@ pub fn pg_dollar_quote(body: &str) -> Result<String, String> {
             return Ok(format!("{tag}{body}{tag}"));
         }
     }
-    Err("definition body contains every candidate dollar-quote tag and cannot be represented".into())
+    Err(
+        "definition body contains every candidate dollar-quote tag and cannot be represented"
+            .into(),
+    )
 }
 
 #[cfg(test)]

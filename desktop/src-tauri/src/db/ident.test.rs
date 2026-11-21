@@ -12,7 +12,10 @@ fn pg_and_sqlite_quote_with_doubled_embedded_quotes() {
         assert_eq!(quote(engine, "we ird"), "\"we ird\"");
         assert_eq!(quote(engine, "o'brien"), "\"o'brien\"");
         assert_eq!(quote(engine, "a\"b"), "\"a\"\"b\"");
-        assert_eq!(quote(engine, "a\"; DROP TABLE t; --"), "\"a\"\"; DROP TABLE t; --\"");
+        assert_eq!(
+            quote(engine, "a\"; DROP TABLE t; --"),
+            "\"a\"\"; DROP TABLE t; --\""
+        );
     }
 }
 
@@ -22,7 +25,10 @@ fn mysql_quotes_with_doubled_backticks() {
     assert_eq!(quote(Engine::MySql, "we ird"), "`we ird`");
     assert_eq!(quote(Engine::MySql, "o`brien"), "`o``brien`");
     assert_eq!(quote(Engine::MySql, "a\"b"), "`a\"b`");
-    assert_eq!(quote(Engine::MySql, "a`; DROP TABLE t; --"), "`a``; DROP TABLE t; --`");
+    assert_eq!(
+        quote(Engine::MySql, "a`; DROP TABLE t; --"),
+        "`a``; DROP TABLE t; --`"
+    );
     // A single quote is not special inside backticks.
     assert_eq!(quote(Engine::MySql, "o'brien"), "`o'brien`");
 }
@@ -116,14 +122,20 @@ fn qualified_names_reject_unrepresentable_parts() {
 fn plain_body_uses_an_anonymous_dollar_quote() {
     let q = pg_dollar_quote("BEGIN RETURN 1; END;").unwrap();
     assert_eq!(q, "$$BEGIN RETURN 1; END;$$");
-    assert_eq!(pg_dollar_quote("SELECT 'quoted';").unwrap(), "$$SELECT 'quoted';$$");
+    assert_eq!(
+        pg_dollar_quote("SELECT 'quoted';").unwrap(),
+        "$$SELECT 'quoted';$$"
+    );
 }
 
 #[test]
 fn body_containing_double_dollar_gets_a_named_tag() {
     let body = "BEGIN RETURN '$$'; END;";
     let q = pg_dollar_quote(body).unwrap();
-    assert!(!q.starts_with("$$"), "must not reuse a delimiter the body contains: {q}");
+    assert!(
+        !q.starts_with("$$"),
+        "must not reuse a delimiter the body contains: {q}"
+    );
     assert_eq!(unquote_dollar(&q), body);
 }
 
@@ -177,4 +189,32 @@ fn unquote_dollar(quoted: &str) -> String {
         .strip_suffix(&close)
         .expect("body ends with the same tag");
     body.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Downstream usability (ticket 12 needs schema-qualified identifiers)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn db_type_strings_map_onto_the_quoting_dialect() {
+    assert_eq!(Engine::from_db_type("postgresql"), Some(Engine::PostgreSql));
+    assert_eq!(Engine::from_db_type("MySQL"), Some(Engine::MySql));
+    assert_eq!(Engine::from_db_type("mariadb"), Some(Engine::MySql));
+    assert_eq!(Engine::from_db_type(" sqlite "), Some(Engine::Sqlite));
+    assert_eq!(Engine::from_db_type("redis"), None);
+}
+
+/// `qualified` is the entry point a schema-qualified builder should use: both
+/// parts are quoted independently, so a `.` inside a name stays part of that
+/// name instead of becoming an extra qualifier.
+#[test]
+fn qualified_keeps_dots_inside_a_single_identifier() {
+    assert_eq!(
+        qualified(Engine::PostgreSql, "public", "a.b").unwrap(),
+        "\"public\".\"a.b\""
+    );
+    assert_eq!(
+        qualified_unchecked(Engine::MySql, "db", "a.b"),
+        "`db`.`a.b`"
+    );
 }

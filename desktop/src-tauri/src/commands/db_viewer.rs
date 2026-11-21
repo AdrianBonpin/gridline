@@ -143,13 +143,25 @@ pub fn get_sqlite_ddl(conn: &rusqlite::Connection, table: &str) -> Result<String
 /// single table. The password is intentionally NOT part of these args — it is
 /// passed via the `PGPASSWORD` environment variable so it never appears on
 /// the command line.
-pub fn build_pg_dump_ddl_args(schema: &str, table: &str) -> Vec<String> {
-    vec![
+///
+/// `--schema` / `--table` take *patterns*, not raw names: pg_dump parses them
+/// with psql's `\d` rules, so a legal name containing a space, a double quote,
+/// or a wildcard has to be identifier-quoted (`we ird "tbl"` →
+/// `"we ird ""tbl"""`) or the pattern simply matches no table. Quoting every
+/// name also stops a name like `user*` from selecting unrelated tables.
+pub fn build_pg_dump_ddl_args(schema: &str, table: &str) -> Result<Vec<String>, String> {
+    Ok(vec![
         "--schema-only".into(),
         "--no-owner".into(),
-        format!("--schema={schema}"),
-        format!("--table={table}"),
-    ]
+        format!(
+            "--schema={}",
+            ident::quote_checked(Engine::PostgreSql, schema)?
+        ),
+        format!(
+            "--table={}",
+            ident::quote_checked(Engine::PostgreSql, table)?
+        ),
+    ])
 }
 
 /// Check whether the `pg_dump` binary at the given path (bare name or
@@ -189,7 +201,7 @@ pub fn get_pg_ddl_via_dump(
         format!("--username={user}"),
         format!("--dbname={db}"),
     ]);
-    cmd.args(build_pg_dump_ddl_args(schema, table));
+    cmd.args(build_pg_dump_ddl_args(schema, table)?);
     cmd.env("PGPASSWORD", password);
     let out = cmd
         .output()
@@ -224,9 +236,8 @@ pub(crate) fn build_pg_filter_clause(
     let mut params: Vec<String> = Vec::new();
 
     for rule in filters {
-        let col = ident::quote_checked(Engine::PostgreSql, &rule.column).map_err(|e| {
-            format!("cannot apply filter on column {:?}: {e}", rule.column)
-        })?;
+        let col = ident::quote_checked(Engine::PostgreSql, &rule.column)
+            .map_err(|e| format!("cannot apply filter on column {:?}: {e}", rule.column))?;
 
         let clause = match rule.operator.as_str() {
             "null" => {
@@ -245,8 +256,12 @@ pub(crate) fn build_pg_filter_clause(
                     "contains" => format!(" AND {col}::text ILIKE '%' || ${p} || '%'"),
                     "starts" => format!(" AND {col}::text ILIKE ${p} || '%'"),
                     "ends" => format!(" AND {col}::text ILIKE '%' || ${p}"),
-                    "gt" => format!(" AND {col}::numeric > ${p}::numeric"),
-                    "lt" => format!(" AND {col}::numeric < ${p}::numeric"),
+                    // The value arrives as a string from the UI. `$n::numeric`
+                    // would make PostgreSQL infer the *parameter* as numeric, and
+                    // the text value then fails to serialize; `$n::text::numeric`
+                    // keeps the parameter a string and casts inside the server.
+                    "gt" => format!(" AND {col}::numeric > ${p}::text::numeric"),
+                    "lt" => format!(" AND {col}::numeric < ${p}::text::numeric"),
                     _ => unreachable!(),
                 }
             }
@@ -271,9 +286,8 @@ fn build_sqlite_filter_clause(
     let mut params: Vec<String> = Vec::new();
 
     for rule in filters {
-        let col = ident::quote_checked(Engine::Sqlite, &rule.column).map_err(|e| {
-            format!("cannot apply filter on column {:?}: {e}", rule.column)
-        })?;
+        let col = ident::quote_checked(Engine::Sqlite, &rule.column)
+            .map_err(|e| format!("cannot apply filter on column {:?}: {e}", rule.column))?;
 
         let clause = match rule.operator.as_str() {
             "null" => {
@@ -542,14 +556,22 @@ pub fn build_pg_update_sql(
         .iter()
         .map(|(col, val)| {
             params.push(val.clone());
-            format!("{} = ${}", ident::quote(Engine::PostgreSql, col), params.len())
+            format!(
+                "{} = ${}",
+                ident::quote(Engine::PostgreSql, col),
+                params.len()
+            )
         })
         .collect();
     let where_clause: Vec<String> = primary_key
         .iter()
         .map(|(col, val)| {
             params.push(val.clone());
-            format!("{} = ${}", ident::quote(Engine::PostgreSql, col), params.len())
+            format!(
+                "{} = ${}",
+                ident::quote(Engine::PostgreSql, col),
+                params.len()
+            )
         })
         .collect();
     Ok((
@@ -577,7 +599,11 @@ pub fn build_pg_delete_sql(
         .iter()
         .map(|(col, val)| {
             params.push(val.clone());
-            format!("{} = ${}", ident::quote(Engine::PostgreSql, col), params.len())
+            format!(
+                "{} = ${}",
+                ident::quote(Engine::PostgreSql, col),
+                params.len()
+            )
         })
         .collect();
     Ok((
@@ -1474,7 +1500,12 @@ pub(crate) async fn get_tables_inner(
                                // 2 columns (name, type) when a schema is given; 3 (+ schema)
                                // when not — hence sqlx::query + try_get, not query_as.
             let query = crate::db::introspection::mysql_tables_query(schema);
-            let rows = sqlx::query(&query)
+            // The schema-filtered form binds `?`; the unfiltered form takes none.
+            let mut q = sqlx::query(&query);
+            if let Some(s) = schema {
+                q = q.bind(s);
+            }
+            let rows = q
                 .fetch_all(pool)
                 .await
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -1525,8 +1556,10 @@ pub(crate) async fn mysql_load_columns(
     schema: &str,
     table: &str,
 ) -> Result<Vec<ColumnInfo>, String> {
-    let col_query = crate::db::mysql::mysql_columns_query(schema, table);
+    let col_query = crate::db::mysql::mysql_columns_query();
     let col_rows = sqlx::query(&col_query)
+        .bind(schema)
+        .bind(table)
         .fetch_all(pool)
         .await
         .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -1560,8 +1593,10 @@ pub(crate) async fn mysql_load_columns(
         .collect();
 
     // FK pass: mark is_fk + fk_ref for columns named in the FK metadata.
-    let fk_query = crate::db::mysql::mysql_fk_query(schema, table);
+    let fk_query = crate::db::mysql::mysql_fk_query();
     let fk_rows = sqlx::query(&fk_query)
+        .bind(schema)
+        .bind(table)
         .fetch_all(pool)
         .await
         .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -2014,7 +2049,7 @@ ORDER BY c.ordinal_position"#;
                 &filters,
                 &sorts,
                 &default_sort,
-            );
+            )?;
 
             let mut q = sqlx::query(&data_query);
             for f in &filters {
@@ -2094,8 +2129,8 @@ pub(crate) async fn get_table_columns_inner(
     };
     let rows = client
         .query(
-            &crate::db::introspection::pg_columns_query(schema, table),
-            &[],
+            &crate::db::introspection::pg_columns_query(),
+            &[&schema, &table],
         )
         .await
         .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -2220,8 +2255,8 @@ ORDER BY c.ordinal_position"#;
             // Fetch the referenced row
             let data_query = format!(
                 "SELECT * FROM {} WHERE {}::text = $1 LIMIT 1",
-                ident::qualified(Engine::PostgreSql, schema, table)?,
-                ident::quote(Engine::PostgreSql, column)
+                ident::qualified(Engine::PostgreSql, &schema, &table)?,
+                ident::quote(Engine::PostgreSql, &column)
             );
             let data_rows = client
                 .query(&data_query, &[&value])
@@ -2304,8 +2339,8 @@ ORDER BY c.ordinal_position"#;
             // Fetch the referenced row
             let data_query = format!(
                 "SELECT * FROM {} WHERE {} = ?1 LIMIT 1",
-                ident::qualified(Engine::Sqlite, schema, table)?,
-                ident::quote(Engine::Sqlite, column)
+                ident::qualified(Engine::Sqlite, &schema, &table)?,
+                ident::quote(Engine::Sqlite, &column)
             );
             let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
             let col_count = stmt.column_count();
@@ -3325,17 +3360,35 @@ mod tests {
 
     /// Verify that the pg_dump argument builder emits schema-only DDL flags
     /// scoped to the requested schema and table.
+    ///
+    /// The patterns are identifier-quoted because pg_dump treats a bare
+    /// `--table=` value as a pattern: `--table=we ird "tbl"` matches nothing,
+    /// while `--table="we ird ""tbl"""` selects the table whose name really
+    /// does contain a space and a double quote (verified against pg_dump 18).
     #[test]
     fn pg_dump_ddl_args_built() {
-        let args = build_pg_dump_ddl_args("public", "users");
+        let args = build_pg_dump_ddl_args("public", "users").expect("args build");
         assert_eq!(
             args,
             vec![
                 "--schema-only".to_string(),
                 "--no-owner".to_string(),
-                "--schema=public".to_string(),
-                "--table=users".to_string()
+                "--schema=\"public\"".to_string(),
+                "--table=\"users\"".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn pg_dump_ddl_args_quote_legal_names() {
+        let args = build_pg_dump_ddl_args("my schema", "we ird \"tbl\"").expect("args build");
+        assert!(
+            args.contains(&"--schema=\"my schema\"".to_string()),
+            "schema pattern must be identifier-quoted: {args:?}"
+        );
+        assert!(
+            args.contains(&"--table=\"we ird \"\"tbl\"\"\"".to_string()),
+            "table pattern must double embedded quotes: {args:?}"
         );
     }
 
@@ -3449,7 +3502,8 @@ mod tests {
 
     #[test]
     fn pg_locator_select_adds_ctid() {
-        let sql = build_pg_data_select("public", "no_pk", &["id".into(), "name".into()], true);
+        let sql =
+            build_pg_data_select("public", "no_pk", &["id".into(), "name".into()], true).unwrap();
         assert!(
             sql.contains("ctid"),
             "no-PK table must select ctid; got: {}",
@@ -3464,7 +3518,8 @@ mod tests {
 
     #[test]
     fn pg_locator_select_omits_ctid_when_pk_present() {
-        let sql = build_pg_data_select("public", "with_pk", &["id".into(), "name".into()], false);
+        let sql = build_pg_data_select("public", "with_pk", &["id".into(), "name".into()], false)
+            .unwrap();
         assert!(
             !sql.contains("ctid"),
             "PK table must NOT select ctid; got: {}",
@@ -3475,7 +3530,8 @@ mod tests {
     #[test]
     fn pg_locator_select_omits_ctid_for_view() {
         // Views expose no ctid — the locator must never be appended for them.
-        let sql = build_pg_data_select("public", "order_summary", &["order_id".into()], false);
+        let sql =
+            build_pg_data_select("public", "order_summary", &["order_id".into()], false).unwrap();
         assert!(
             !sql.contains("ctid"),
             "view must NOT select ctid; got: {}",
@@ -3920,7 +3976,10 @@ mod tests {
         let mut idx = 0;
         let err = build_pg_filter_clause(&[filter("col", "regexp", "x")], &mut idx)
             .expect_err("unknown operator must fail");
-        assert!(err.contains("regexp"), "error must name the operator: {err}");
+        assert!(
+            err.contains("regexp"),
+            "error must name the operator: {err}"
+        );
         assert!(build_sqlite_filter_clause(&[filter("col", "regexp", "x")]).is_err());
     }
 
@@ -3942,8 +4001,8 @@ mod tests {
         let err = build_order_clause(engine, &[sort("", "asc")]).expect_err("empty column");
         assert!(err.contains("sort"), "error must mention the sort: {err}");
 
-        let err = build_order_clause(engine, &[sort("col", "sideways")])
-            .expect_err("unknown direction");
+        let err =
+            build_order_clause(engine, &[sort("col", "sideways")]).expect_err("unknown direction");
         assert!(
             err.contains("sideways"),
             "error must name the direction: {err}"
@@ -3956,3 +4015,7 @@ mod tests {
 #[cfg(test)]
 #[path = "db_viewer.test.rs"]
 mod db_viewer_extra_tests;
+
+#[cfg(test)]
+#[path = "db_viewer_ident_live.test.rs"]
+mod db_viewer_ident_live_tests;
