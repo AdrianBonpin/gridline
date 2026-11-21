@@ -899,9 +899,117 @@ fn bundled_mariadb_dump_accepts_our_generated_args() {
 
 #[test]
 fn restore_failure_names_the_statement_position() {
-    // The user must be able to find the offending statement in their file.
-    let err = format_restore_statement_error(3, 10, "syntax error near 'CREAT'");
-    assert_eq!(err, "Statement 3 of 10 failed: syntax error near 'CREAT'");
+    // The user must be able to find the offending statement in their file: its
+    // 1-based position in the script *and* the line it starts on.
+    let err = format_mysql_restore_statement_error(3, 10, 42, "syntax error near 'CREAT'");
+    assert_eq!(
+        err,
+        "Statement 3 of 10 (line 42) failed: syntax error near 'CREAT'"
+    );
+}
+
+#[test]
+fn a_failing_statement_is_reported_with_its_position_in_the_script() {
+    let script = "CREATE TABLE `t` (id int);\n\nINSERT INTO `t` VALUES ('a;b');\nBROKEN;\n";
+    let statements = parse_mysql_restore_script(script).expect("parse");
+    assert_eq!(statements.len(), 3);
+    assert_eq!((statements[2].index, statements[2].line), (3, 4));
+    assert_eq!(
+        format_mysql_restore_statement_error(
+            statements[2].index,
+            statements.len(),
+            statements[2].line,
+            "syntax error"
+        ),
+        "Statement 3 of 3 (line 4) failed: syntax error"
+    );
+}
+
+#[test]
+fn a_failing_clean_drop_is_reported_with_its_position() {
+    assert_eq!(
+        format_mysql_clean_drop_error(2, 5, "table is referenced by a foreign key"),
+        "Clean drop 2 of 5 failed: table is referenced by a foreign key"
+    );
+}
+
+// ── native MySQL restore: script parsing ───────────────────────────
+
+#[test]
+fn a_dump_with_dialect_escapes_reaches_the_server_as_complete_statements() {
+    // Criterion 1, at the job seam: the statements actually sent carry the
+    // backslash-escaped and doubled quotes intact instead of being cut at the
+    // semicolons inside them.
+    let script = "CREATE TABLE `t` (id int, note varchar(50));\n\
+                  INSERT INTO `t` VALUES (1,'it\\'s; ok');\n\
+                  INSERT INTO `t` VALUES (2,'O''Brien; Ltd');\n";
+    let statements = parse_mysql_restore_script(script).expect("parse");
+    assert_eq!(statements.len(), 3, "got {statements:#?}");
+    assert_eq!(
+        statements[1].text,
+        "INSERT INTO `t` VALUES (1,'it\\'s; ok')"
+    );
+    assert_eq!(
+        statements[2].text,
+        "INSERT INTO `t` VALUES (2,'O''Brien; Ltd')"
+    );
+}
+
+#[test]
+fn a_clean_restore_targets_the_dotted_name_the_dump_creates() {
+    // Criteria 2 and 4 at the job seam: the drop list names exactly the objects
+    // the dump recreates, and a dotted quoted name stays one name.
+    let script = "CREATE TABLE `my.table` (id int);\nCREATE VIEW `v` AS SELECT 1;\n\
+                  INSERT INTO `audit` VALUES ('CREATE TABLE ignored (id int)');\n";
+    let statements = parse_mysql_restore_script(script).expect("parse");
+    let drops = crate::db::mysql_clean::plan_clean_drops("shop", &statements);
+    assert_eq!(
+        drops,
+        vec![
+            "DROP VIEW IF EXISTS `shop`.`v`".to_string(),
+            "DROP TABLE IF EXISTS `shop`.`my.table`".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn parsing_a_restore_script_borrows_instead_of_copying() {
+    // Criterion 3: the file is read into one buffer and each statement is a
+    // borrowed slice of it, so a 100 MB dump is not duplicated in memory.
+    let mut script = String::new();
+    for i in 0..5_000 {
+        script.push_str(&format!("INSERT INTO `t` VALUES ({i}, 'v{i};');\n"));
+    }
+    let start = script.as_ptr() as usize;
+    let end = start + script.len();
+
+    let statements = parse_mysql_restore_script(&script).expect("parse");
+    assert_eq!(statements.len(), 5_000);
+    for stmt in &statements {
+        assert!(
+            matches!(stmt.text, std::borrow::Cow::Borrowed(_)),
+            "statement text must borrow from the script buffer, not copy it"
+        );
+        let p = stmt.text.as_ref().as_ptr() as usize;
+        assert!(
+            p >= start && p + stmt.text.len() <= end,
+            "borrowed text must point inside the script buffer"
+        );
+    }
+    let total: usize = statements.iter().map(|s| s.text.len()).sum();
+    assert!(
+        total <= script.len(),
+        "statements must not duplicate the script text ({total} > {})",
+        script.len()
+    );
+}
+
+#[test]
+fn restore_script_parsing_enforces_the_statement_budget() {
+    let script = "SELECT 1;\nSELECT 2;\nSELECT 3;\n";
+    let err = parse_mysql_restore_script_with_cap(script, 2).expect_err("must reject");
+    assert!(err.contains('3') && err.contains('2'), "got {err:?}");
+    assert!(parse_mysql_restore_script_with_cap(script, 3).is_ok());
 }
 
 #[test]
@@ -944,18 +1052,38 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
         .await
         .expect("connect");
 
-    // Scratch table, removed again at the end, so the live DB is never harmed.
+    // Scratch objects, removed again at the end, so the live DB is never harmed.
     let table = "gl_restore_probe";
-    sqlx::query(&format!("DROP TABLE IF EXISTS `{db}`.`{table}`"))
+    // A quoted name containing a dot: one object, not schema `gl` + table `dot`.
+    let dotted = "gl.dot.table";
+    let bystander = "gl_restore_bystander";
+    for obj in [table, dotted, bystander] {
+        sqlx::query(&format!("DROP TABLE IF EXISTS `{db}`.`{obj}`"))
+            .execute(&mut conn)
+            .await
+            .expect("pre-clean");
+    }
+    // Created by the test but never by the dump: a clean restore must leave it.
+    sqlx::query(&format!(
+        "CREATE TABLE `{db}`.`{bystander}` (id INT PRIMARY KEY)"
+    ))
+    .execute(&mut conn)
+    .await
+    .expect("bystander");
+    sqlx::query(&format!("INSERT INTO `{db}`.`{bystander}` VALUES (7)"))
         .execute(&mut conn)
         .await
-        .expect("pre-clean");
+        .expect("bystander row");
 
+    // The dump carries MySQL dialect escapes (backslash and doubled quotes) and
+    // a dotted quoted table name; both must survive splitting and restore.
     let script = format!(
-        "CREATE TABLE `{table}` (id INT PRIMARY KEY, name VARCHAR(20));\n\
-         INSERT INTO `{table}` VALUES (1, 'first');"
+        "CREATE TABLE `{table}` (id INT PRIMARY KEY, name VARCHAR(40));\n\
+         INSERT INTO `{table}` VALUES (1, 'it\\'s; O''Brien');\n\
+         CREATE TABLE `{dotted}` (id INT PRIMARY KEY);\n\
+         INSERT INTO `{dotted}` VALUES (1);"
     );
-    let statements = crate::db::sql_split::split_statements(&script);
+    let statements = parse_mysql_restore_script(&script).expect("parse");
 
     let mut events: Vec<(usize, usize)> = Vec::new();
     let mut on_progress = |done: usize, total: usize| events.push((done, total));
@@ -979,6 +1107,27 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
         .await
         .expect("count");
     assert_eq!(count, 1);
+    let stored: String = sqlx::query_scalar(&format!("SELECT name FROM `{db}`.`{table}`"))
+        .fetch_one(&mut conn)
+        .await
+        .expect("escaped value");
+    assert_eq!(
+        stored, "it's; O'Brien",
+        "dialect escapes must reach the server intact"
+    );
+    let dotted_rows: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM `{db}`.`{dotted}`"))
+        .fetch_one(&mut conn)
+        .await
+        .expect("dotted name");
+    assert_eq!(dotted_rows, 1, "a dotted quoted name is one table");
+    let survivors: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM `{db}`.`{bystander}`"))
+        .fetch_one(&mut conn)
+        .await
+        .expect("bystander survives");
+    assert_eq!(
+        survivors, 1,
+        "a clean restore must not drop objects the dump does not recreate"
+    );
     assert_eq!(
         events.last().copied(),
         Some((statements.len() + 1, statements.len() + 1))
@@ -1008,8 +1157,8 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
     assert_eq!(count2, 1, "clean restore must replace, not append");
 
     // A statement that cannot succeed must fail and name its position.
-    let bad =
-        crate::db::sql_split::split_statements("SELECT 1;\nSELECT * FROM gl_no_such_table_xyz;");
+    let bad = parse_mysql_restore_script("SELECT 1;\nSELECT * FROM gl_no_such_table_xyz;")
+        .expect("parse");
     let mut noop = |_: usize, _: usize| {};
     let err = run_mysql_restore_on(
         &mut conn,
@@ -1023,7 +1172,10 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
     )
     .await
     .expect_err("must fail");
-    assert!(err.starts_with("Statement 2 of 2 failed:"), "got {err:?}");
+    assert!(
+        err.starts_with("Statement 2 of 2 (line 2) failed:"),
+        "got {err:?}"
+    );
 
     let _ = conn.close().await;
     let mut cleanup = sqlx::mysql::MySqlConnectOptions::new()
@@ -1037,10 +1189,12 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
         .connect()
         .await
         .expect("reconnect");
-    sqlx::query(&format!("DROP TABLE IF EXISTS `{db}`.`{table}`"))
-        .execute(&mut cleanup)
-        .await
-        .expect("cleanup");
+    for obj in [table, dotted, bystander] {
+        sqlx::query(&format!("DROP TABLE IF EXISTS `{db}`.`{obj}`"))
+            .execute(&mut cleanup)
+            .await
+            .expect("cleanup");
+    }
     let _ = cleanup.close().await;
 }
 
