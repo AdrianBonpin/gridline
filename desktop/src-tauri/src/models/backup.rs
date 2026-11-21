@@ -1,5 +1,21 @@
+//! Backup / restore / sync models.
+//!
+//! Two families live here and the split is a security boundary:
+//!
+//! * **Engine options** ([`BackupOptions`], [`MySqlBackupOptions`],
+//!   [`RestoreOptions`], …) carry the on-disk path the engine actually uses.
+//!   They are built at the command boundary from a consumed File Grant (see
+//!   `crate::file_grant`) and are never deserialized straight from renderer
+//!   input.
+//! * **Renderer requests** ([`PgDumpOptions`], [`MySqlDumpOptions`]) carry no
+//!   path at all — only a grant id travels alongside them — and reject unknown
+//!   fields, so a stale renderer that still sends `filePath` fails loudly
+//!   instead of having its path silently ignored.
+
 use serde::{Deserialize, Serialize};
 
+/// Engine options for a PostgreSQL dump: the output path is already resolved
+/// from a File Grant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupOptions {
@@ -8,6 +24,30 @@ pub struct BackupOptions {
     pub schema: Option<String>,
     pub tables: Option<Vec<String>>,
     pub no_owner: bool,
+}
+
+/// What the renderer may ask for when it starts a PostgreSQL backup. No output
+/// path: the path comes from the File Grant named by `file_grant`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PgDumpOptions {
+    pub format: String,
+    pub schema: Option<String>,
+    pub tables: Option<Vec<String>>,
+    pub no_owner: bool,
+}
+
+impl PgDumpOptions {
+    /// Combine this request with the path a File Grant authorized.
+    pub fn with_output_path(self, file_path: String) -> BackupOptions {
+        BackupOptions {
+            format: self.format,
+            file_path,
+            schema: self.schema,
+            tables: self.tables,
+            no_owner: self.no_owner,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,18 +144,40 @@ pub struct MySqlBackupOptions {
     pub events: bool,
 }
 
+/// What the renderer may ask for when it starts a MySQL backup. No output path
+/// — see [`PgDumpOptions`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MySqlDumpOptions {
+    pub database: String,
+    pub single_transaction: bool,
+    pub no_data: bool,
+    pub routines: bool,
+    pub triggers: bool,
+    pub events: bool,
+}
+
+impl MySqlDumpOptions {
+    /// Combine this request with the path a File Grant authorized.
+    pub fn with_output_path(self, file_path: String) -> MySqlBackupOptions {
+        MySqlBackupOptions {
+            database: self.database,
+            file_path,
+            single_transaction: self.single_transaction,
+            no_data: self.no_data,
+            routines: self.routines,
+            triggers: self.triggers,
+            events: self.events,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MySqlRestoreOptions {
     pub database: String,
     pub file_path: String,
     pub clean: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SqliteBackupOptions {
-    pub file_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -5,6 +5,7 @@
 mod cancel;
 mod commands;
 mod db;
+mod file_grant;
 mod job;
 mod keychain_acl;
 mod models;
@@ -27,6 +28,9 @@ pub struct AppState {
     /// sync). Shared so a cancel command and the app-exit hook can reach a job
     /// that is running on another thread.
     pub jobs: Arc<crate::job::JobRegistry>,
+    /// Backend-issued File Grants. The only authorization a file-touching
+    /// command accepts; a renderer-supplied path authorizes nothing.
+    pub file_grants: Arc<crate::file_grant::FileGrantStore>,
 }
 
 use commands::{
@@ -108,6 +112,7 @@ pub fn run() {
                 )))),
                 cancel_registry: crate::cancel::CancelRegistry::default(),
                 jobs: Arc::new(crate::job::JobRegistry::new()),
+                file_grants: Arc::new(crate::file_grant::FileGrantStore::new()),
             });
 
             let state = app.state::<AppState>();
@@ -209,6 +214,7 @@ pub fn run() {
             keychain::delete_connection_ssh_passphrase,
             demo::recreate_demo_db,
             demo::regenerate_demo_db,
+            commands::file_grant::select_file_for_grant,
             backup::detect_pg_tools,
             backup::pg_dump,
             backup::pg_restore,
