@@ -1,15 +1,55 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useConnectionStore } from "../../stores/connectionStore";
+import { useNotificationStore } from "../../stores/notificationStore";
 import * as commands from "../../lib/commands";
+import type { Connection } from "../../lib/types";
+
+function savedConnection(overrides: Partial<Connection> = {}): Connection {
+  return {
+    id: "c1",
+    name: "Local dev",
+    db_type: "postgresql",
+    host: "localhost",
+    port: 5432,
+    username: "dev",
+    database: "appdb",
+    folder_id: null,
+    keychain_ref: null,
+    tag_ids: [],
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    favorite: false,
+    ...overrides,
+  };
+}
+
+/** Make `overrides` the active Change Origin: saved connection + selected database. */
+function activateTarget(overrides: Partial<Connection> = {}, database = "appdb") {
+  const connection = savedConnection(overrides);
+  useConnectionStore.setState({ connections: [connection] });
+  useUiStore.setState({ activeConnectionId: connection.id });
+  useDbViewerStore.setState({ currentDatabase: database });
+}
+
+/** Every message the UI surfaced through the notification store. */
+function notifications(): string {
+  return useNotificationStore
+    .getState()
+    .notifications.map((n) => n.message)
+    .join(" | ");
+}
 
 describe("ChangesQueuePanel", () => {
   beforeEach(() => {
     useDbViewerStore.getState().reset();
-    useUiStore.setState({ activeConnectionId: "c1" });
+    useConnectionStore.setState({ connections: [] });
+    useNotificationStore.setState({ notifications: [] });
+    activateTarget();
     vi.resetAllMocks();
   });
 
@@ -263,5 +303,203 @@ describe("ChangesQueuePanel", () => {
     expect(screen.getByText("REBUILD")).toBeInTheDocument();
     expect(screen.getByText(/rebuild public\.users/i)).toBeInTheDocument();
     expect(screen.getByText(/BEGIN;/)).toBeInTheDocument();
+  });
+
+  // ─── Change Origin scoping (ticket 04) ───────────────────────
+
+  it("stamps every staged change with the active Change Origin", () => {
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+
+    const [change] = useDbViewerStore.getState().changesQueue;
+    expect(change.origin).toMatchObject({ connectionId: "c1", database: "appdb" });
+    expect(change.origin?.target).toBeTruthy();
+  });
+
+  it("hides another origin's pending work from the panel and from Commit All", async () => {
+    const exec = vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+
+    // Switch to a different saved connection while the work is pending.
+    act(() => activateTarget({ id: "c2", host: "other.example.com" }, "appdb"));
+    render(<ChangesQueuePanel />);
+
+    expect(screen.queryByTestId("commit-all")).not.toBeInTheDocument();
+    expect(screen.queryByText(/insert row into t/i)).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "s", metaKey: true });
+    await waitFor(() => expect(useDbViewerStore.getState().changesQueue[0].status).toBe("pending"));
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it("hides another database's pending work under the same connection", () => {
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+
+    act(() => activateTarget({}, "analytics"));
+    render(<ChangesQueuePanel />);
+    expect(screen.queryByTestId("commit-all")).not.toBeInTheDocument();
+  });
+
+  it("restores the original connection's pending queue unchanged when returning to it", async () => {
+    useDbViewerStore.getState().addChange({
+      type: "update",
+      schema: "public",
+      table: "t",
+      primaryKey: { id: 1 },
+      oldData: { a: 1 },
+      newData: { a: 2 },
+      description: "Edit one",
+    } as any);
+    useDbViewerStore.getState().addChange({
+      type: "delete",
+      schema: "public",
+      table: "t",
+      primaryKey: { id: 2 },
+      description: "Delete two",
+    } as any);
+    const staged = useDbViewerStore
+      .getState()
+      .changesQueue.map((c) => ({ id: c.id, origin: c.origin, status: c.status }));
+
+    render(<ChangesQueuePanel />);
+    expect(screen.getByTestId("commit-all")).toHaveTextContent("Commit All (2)");
+
+    act(() => activateTarget({ id: "c2", host: "other.example.com" }));
+    await waitFor(() =>
+      expect(screen.queryByTestId("commit-all")).not.toBeInTheDocument(),
+    );
+
+    act(() => activateTarget());
+    await waitFor(() =>
+      expect(screen.getByTestId("commit-all")).toHaveTextContent("Commit All (2)"),
+    );
+    expect(
+      useDbViewerStore
+        .getState()
+        .changesQueue.map((c) => ({ id: c.id, origin: c.origin, status: c.status })),
+    ).toEqual(staged);
+  });
+
+  it("refuses Commit All when the saved connection was retargeted after staging", async () => {
+    const exec = vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+
+    // Same connection id, same database, different target (host moved).
+    act(() => activateTarget({ host: "new.example.com" }));
+    render(<ChangesQueuePanel />);
+    fireEvent.click(screen.getByTestId("commit-all"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/staged against/i);
+    expect(alert.textContent).toMatch(/localhost:5432/);
+    expect(alert.textContent).toMatch(/now targets/i);
+    expect(alert.textContent).toMatch(/new\.example\.com:5432/);
+    expect(notifications()).toMatch(/new\.example\.com:5432/);
+    expect(exec).not.toHaveBeenCalled();
+    expect(useDbViewerStore.getState().changesQueue[0].status).toBe("pending");
+  });
+
+  it("applies changes in order, stops at the first failure, and reports the count and the failure", async () => {
+    const exec = vi
+      .spyOn(commands, "executeChange")
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("duplicate key value violates unique constraint"))
+      .mockResolvedValue(undefined);
+    for (const label of ["Insert A", "Insert B", "Insert C"]) {
+      useDbViewerStore.getState().addChange({
+        type: "insert",
+        schema: "public",
+        table: "t",
+        newData: { a: label },
+        description: label,
+      } as any);
+    }
+
+    render(<ChangesQueuePanel />);
+    fireEvent.click(screen.getByTestId("commit-all"));
+
+    await waitFor(() =>
+      expect(useDbViewerStore.getState().changesQueue.map((c) => c.status)).toEqual([
+        "committed",
+        "failed",
+        "pending",
+      ]),
+    );
+    // Ordered application, and nothing after the failure is attempted.
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(
+      exec.mock.calls.map(([, payload]) => (payload as { data?: string }).data),
+    ).toEqual([
+      expect.stringContaining("Insert A"),
+      expect.stringContaining("Insert B"),
+    ]);
+
+    const report = notifications();
+    expect(report).toMatch(/committed 1 of 3/i);
+    expect(report).toMatch(/Insert B/);
+    expect(report).toMatch(/duplicate key value/i);
+    // The failed card itself carries the reason, not just an icon.
+    expect(screen.getByText(/duplicate key value/i)).toBeInTheDocument();
+  });
+
+  it("never claims an all-or-nothing rollback after a partial commit", async () => {
+    vi.spyOn(commands, "executeChange")
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("permission denied for table t"));
+    for (const label of ["Insert A", "Insert B"]) {
+      useDbViewerStore.getState().addChange({
+        type: "insert",
+        schema: "public",
+        table: "t",
+        newData: { a: label },
+        description: label,
+      } as any);
+    }
+
+    render(<ChangesQueuePanel />);
+    fireEvent.click(screen.getByTestId("commit-all"));
+
+    await waitFor(() => expect(notifications()).toMatch(/permission denied for table t/));
+    expect(document.body.textContent).not.toMatch(/roll(ed)?\s*back/i);
+    expect(notifications()).not.toMatch(/roll(ed)?\s*back/i);
+    expect(notifications()).toMatch(/committed 1 of 2/i);
+  });
+
+  it("Clear All leaves other origins' pending work intact", async () => {
+    const user = userEvent.setup();
+    useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 }, description: "Here" } as any);
+    act(() => activateTarget({ id: "c2", host: "other.example.com" }));
+    useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 2 }, description: "Elsewhere" } as any);
+    act(() => activateTarget());
+
+    render(<ChangesQueuePanel />);
+    await user.click(screen.getByRole("button", { name: /clear all/i }));
+
+    const remaining = useDbViewerStore.getState().changesQueue;
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].description).toBe("Elsewhere");
   });
 });

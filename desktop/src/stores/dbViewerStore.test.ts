@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useDbViewerStore } from "./dbViewerStore";
-import type { QueryResult, TableInfo, RoleInfo } from "../lib/types";
+import { useDbViewerStore, currentChangeOrigin } from "./dbViewerStore";
+import { useUiStore } from "./uiStore";
+import { useConnectionStore } from "./connectionStore";
+import type { QueryResult, TableInfo, RoleInfo, Connection } from "../lib/types";
 import * as commands from "../lib/commands";
 
 vi.mock("../lib/commands", () => ({
@@ -9,8 +11,37 @@ vi.mock("../lib/commands", () => ({
   getTables: vi.fn(),
 }));
 
+function savedConnection(overrides: Partial<Connection> = {}): Connection {
+  return {
+    id: "c1",
+    name: "Local dev",
+    db_type: "postgresql",
+    host: "localhost",
+    port: 5432,
+    username: "dev",
+    database: "appdb",
+    folder_id: null,
+    keychain_ref: null,
+    tag_ids: [],
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    favorite: false,
+    ...overrides,
+  };
+}
+
+/** Make one saved connection + selected database the active Change Origin. */
+function activateTarget(overrides: Partial<Connection> = {}, database = "appdb") {
+  const connection = savedConnection(overrides);
+  useConnectionStore.setState({ connections: [connection] });
+  useUiStore.setState({ activeConnectionId: connection.id });
+  useDbViewerStore.setState({ currentDatabase: database });
+}
+
 beforeEach(() => {
   useDbViewerStore.getState().reset();
+  useConnectionStore.setState({ connections: [] });
+  useUiStore.setState({ activeConnectionId: null });
 });
 
 describe("dbViewerStore", () => {
@@ -361,6 +392,88 @@ describe("dbViewerStore", () => {
       oldData: { age: 30 }, newData: { age: 31 },
     });
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(2);
+  });
+
+  describe("Change Origin stamping", () => {
+    it("currentChangeOrigin is null without an active saved connection", () => {
+      expect(currentChangeOrigin()).toBeNull();
+    });
+
+    it("currentChangeOrigin follows the saved connection's live target", () => {
+      activateTarget();
+      const origin = currentChangeOrigin();
+      expect(origin).toMatchObject({ connectionId: "c1", database: "appdb" });
+
+      // The saved connection is retargeted: the derived origin changes with it.
+      activateTarget({ host: "new.example.com" });
+      expect(currentChangeOrigin()?.target).not.toBe(origin?.target);
+    });
+
+    it("stamps staged changes with the active origin", () => {
+      activateTarget({}, "analytics");
+      useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 } });
+      expect(useDbViewerStore.getState().changesQueue[0].origin).toMatchObject({
+        connectionId: "c1",
+        database: "analytics",
+      });
+    });
+
+    it("leaves an explicitly supplied origin untouched", () => {
+      activateTarget();
+      const explicit = currentChangeOrigin()!;
+      useDbViewerStore.setState({ currentDatabase: "other" });
+      useDbViewerStore.getState().addChange({
+        type: "ddl",
+        sql: "CREATE TABLE t ()",
+        origin: explicit,
+      });
+      expect(useDbViewerStore.getState().changesQueue[0].origin).toEqual(explicit);
+    });
+
+    it("stages un-owned work only when no origin is active (never committed)", () => {
+      useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 } });
+      expect(useDbViewerStore.getState().changesQueue[0].origin).toBeNull();
+    });
+
+    it("re-staging a cell after a retarget appends instead of overwriting the old origin's edit", () => {
+      activateTarget();
+      useDbViewerStore.getState().openTab("public", "users");
+      const tabId = useDbViewerStore.getState().activeTabId!;
+      const edit = {
+        tabId, schema: "public", table: "users", primaryKey: { id: 1 },
+        oldData: { name: "Alice" }, newData: { name: "Alicia" },
+      };
+      useDbViewerStore.getState().stageCellEdit(edit);
+
+      activateTarget({ host: "new.example.com" });
+      useDbViewerStore.getState().stageCellEdit({ ...edit, newData: { name: "Alicia 2" } });
+
+      const q = useDbViewerStore.getState().changesQueue;
+      expect(q).toHaveLength(2);
+      expect(q[0].newData).toEqual({ name: "Alicia" });
+      expect(q[1].newData).toEqual({ name: "Alicia 2" });
+      expect(q[0].origin?.target).not.toBe(q[1].origin?.target);
+    });
+
+    it("clearChangesForTarget clears only that origin's work", () => {
+      activateTarget();
+      useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 } });
+      activateTarget({ id: "c2", host: "other.example.com" });
+      useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 2 } });
+
+      useDbViewerStore.getState().clearChangesForTarget(currentChangeOrigin());
+
+      const remaining = useDbViewerStore.getState().changesQueue;
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].origin?.connectionId).toBe("c1");
+    });
+
+    it("clearChangesForTarget with no active origin clears nothing", () => {
+      activateTarget();
+      useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 } });
+      useDbViewerStore.getState().clearChangesForTarget(null);
+      expect(useDbViewerStore.getState().changesQueue).toHaveLength(1);
+    });
   });
 
   it("setIndexes / setConstraints update store slices", () => {

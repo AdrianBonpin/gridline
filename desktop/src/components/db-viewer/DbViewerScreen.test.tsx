@@ -99,7 +99,14 @@ const mockQueryResult = {
 describe("DbViewerScreen", () => {
     beforeEach(() => {
         useDbViewerStore.getState().reset();
-        useConnectionStore.setState({ connections: [] });
+        // A saved connection record is what gives staged work its Change
+        // Origin, so every test starts with "c1" active and resolved.
+        useConnectionStore.setState({
+            connections: [
+                { id: "c1", name: "local", db_type: "postgresql", host: "localhost", port: 5432, username: "dev", database: "mydb", folder_id: null, keychain_ref: null, tag_ids: [], favorite: false, created_at: "", updated_at: "" },
+            ] as Connection[],
+        });
+        useUiStore.setState({ activeConnectionId: "c1" });
         useDbViewerStore.setState({
             databases: ["mydb"],
             schemas: ["public"],
@@ -181,6 +188,53 @@ describe("DbViewerScreen", () => {
             expect(screen.getByText("Alice")).toBeInTheDocument();
         });
         expect(screen.queryByText("Alicia")).toBeNull();
+    });
+
+    it("does not show another Change Origin's staged value in the grid", async () => {
+        const store = useDbViewerStore.getState();
+        store.openTab("public", "users");
+        const tabId = useDbViewerStore.getState().activeTabId!;
+        store.setTabData(tabId, {
+            columns: [
+                { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+                { name: "name", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+            ],
+            rows: [[1, "Alice"]],
+            total_rows: 1,
+            page: 1,
+            page_size: 50,
+        } as any);
+
+        // Stage the edit while a *different* saved connection is active.
+        useConnectionStore.setState({
+            connections: [
+                { id: "c1", name: "local", db_type: "postgresql", host: "localhost", port: 5432, username: "dev", database: "mydb", folder_id: null, keychain_ref: null, tag_ids: [], favorite: false, created_at: "", updated_at: "" },
+                { id: "c2", name: "other", db_type: "postgresql", host: "other.example.com", port: 5432, username: "dev", database: "mydb", folder_id: null, keychain_ref: null, tag_ids: [], favorite: false, created_at: "", updated_at: "" },
+            ] as Connection[],
+        });
+        useUiStore.setState({ activeConnectionId: "c2" });
+        store.stageCellEdit({
+            tabId,
+            schema: "public",
+            table: "users",
+            primaryKey: { id: 1 },
+            oldData: { name: "Alice" },
+            newData: { name: "Alicia" },
+        });
+
+        // The c1 viewer renders under its own origin: the other origin's
+        // staged value and pending marker must not appear.
+        useUiStore.setState({ activeConnectionId: "c1" });
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        await waitFor(() => expect(screen.getByText("Alice")).toBeInTheDocument());
+        expect(screen.queryByText("Alicia")).toBeNull();
+        expect(screen.queryByTestId("pending-cell")).toBeNull();
     });
 
     it("stages a composite-key edit with every key column, not just the first", async () => {

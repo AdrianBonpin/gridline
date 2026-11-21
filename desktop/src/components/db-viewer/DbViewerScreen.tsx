@@ -46,6 +46,8 @@ import type { EnumInfo } from "../../lib/types";
 import type { FkOption } from "../grid/CellEditor";
 import type { QueueItem } from "../../stores/dbViewerStore";
 import { rowIdentityFor } from "../../lib/rowIdentity";
+import { itemsForChangeTarget } from "../../lib/changeOrigin";
+import { useActiveChangeOrigin } from "../../hooks/useActiveChangeOrigin";
 
 /**
  * Derive optimistic staged cell values from the changes queue for a table
@@ -251,7 +253,12 @@ export function DbViewerScreen({
     const filterRules = activeTab?.filterRules ?? [];
     const sortRules = activeTab?.sortRules ?? [];
     const hiddenColumns = new Set(activeTab?.hiddenColumns ?? []);
-    const changesQueue = useDbViewerStore((s) => s.changesQueue);
+    // Only the active Change Origin's staged work may drive this viewer:
+    // pending insert rows, optimistic staged values, and pending dots for a
+    // table never come from another connection, database, or target.
+    const allChanges = useDbViewerStore((s) => s.changesQueue);
+    const activeChangeOrigin = useActiveChangeOrigin();
+    const changesQueue = itemsForChangeTarget(allChanges, activeChangeOrigin);
     const tables = useDbViewerStore((s) => s.tables);
     const stageCellEdit = useDbViewerStore((s) => s.stageCellEdit);
     const updateChange = useDbViewerStore((s) => s.updateChange);

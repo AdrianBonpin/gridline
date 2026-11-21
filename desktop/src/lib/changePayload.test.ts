@@ -70,7 +70,7 @@ describe("buildChangeSql", () => {
 function rebuildItem(sql: string): QueueItem {
   return {
     id: "ch-rb1", type: "rebuild_table", sql, status: "pending",
-    createdAt: 0,
+    createdAt: 0, origin: null,
   } as unknown as QueueItem;
 }
 
@@ -87,7 +87,7 @@ describe("rebuild_table payload", () => {
 const ddlItem: QueueItem = {
   id: "ch-1", type: "ddl",
   sql: "CREATE TYPE public.role AS ENUM ('admin')",
-  status: "pending", createdAt: 0,
+  status: "pending", createdAt: 0, origin: null,
 };
 describe("ddl change", () => {
   it("builds a ddl payload with id + type + sql", () => {
