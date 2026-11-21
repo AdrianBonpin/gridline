@@ -759,6 +759,56 @@ pub mod fake {
             Ok(())
         }
     }
+
+    /// A tunnel backend that never touches the network and records every
+    /// `open`, so a test can prove a rejected configuration opened no tunnel.
+    #[derive(Default)]
+    pub struct FakeTunnelBackend {
+        opened: Mutex<Vec<String>>,
+    }
+
+    impl FakeTunnelBackend {
+        pub fn opened(&self) -> Vec<String> {
+            self.opened.lock().unwrap().clone()
+        }
+    }
+
+    impl crate::commands::ssh::TunnelBackend for FakeTunnelBackend {
+        fn open(
+            &self,
+            key: &str,
+            _cfg: &SshConfig,
+            _remote_host: &str,
+            _remote_port: u16,
+            _password: Option<&str>,
+            _passphrase: Option<&str>,
+        ) -> Result<crate::commands::ssh::Tunnel, SshTunnelError> {
+            self.opened.lock().unwrap().push(key.to_string());
+            Ok(crate::commands::ssh::Tunnel::fake(1))
+        }
+
+        fn probe_host_trust(&self, _host: &str, _port: u16) -> Result<SshHostTrustState, String> {
+            Err("not used".into())
+        }
+
+        fn enroll_host_trust(
+            &self,
+            _host: &str,
+            _port: u16,
+            _accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            Err("not used".into())
+        }
+
+        fn reenroll_host_trust(
+            &self,
+            _host: &str,
+            _port: u16,
+            _accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            Err("not used".into())
+        }
+    }
 }
 
 #[cfg(test)]
