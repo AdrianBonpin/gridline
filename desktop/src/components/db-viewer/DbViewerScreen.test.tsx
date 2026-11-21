@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, cleanup } from "@testing-library/react";
 import {
     DbViewerScreen,
     deriveStagedValues,
@@ -9,6 +9,8 @@ import {
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useConnectionStore } from "../../stores/connectionStore";
+import { useQueryStore } from "../../stores/queryStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import * as commands from "../../lib/commands";
 import type { Connection } from "../../lib/types";
 
@@ -1066,5 +1068,289 @@ describe("DbViewerScreen", () => {
         expect(
             screen.getByText(/objects is unsupported for mysql/i),
         ).toBeInTheDocument();
+    });
+});
+/**
+ * Every Execution Entry Point has to reach the same destructive-script
+ * confirmation. Each test below is one entry point, so a regression names the
+ * path that lost its guard instead of failing anonymously.
+ */
+describe("execution entry points", () => {
+    const emptyResult = {
+        result_sets: [{ columns: [], rows: [], total_rows: 0, page: 1, page_size: 50 }],
+        notices: [],
+        execution_time_ms: 42,
+    } as any;
+
+    // Earlier tests in this file leave their renders mounted; unmount them so a
+    // timer or a click in one entry-point test cannot be attributed to another.
+    beforeEach(() => {
+        cleanup();
+        vi.resetAllMocks();
+        useDbViewerStore.getState().reset();
+    });
+
+    function renderScreen() {
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+    }
+
+    /** The lazy Monaco wrapper resolves a tick after mount. */
+    function mountEditor() {
+        return waitFor(() => screen.getByTestId("monaco-editor"));
+    }
+
+    function seedQueryTab(
+        query: string,
+        overrides: Record<string, unknown> = {},
+    ) {
+        useDbViewerStore.setState({
+            tabs: [
+                {
+                    id: "q1",
+                    schema: "public",
+                    table: "Query",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    data: { columns: [], rows: [], total_rows: 0, page: 1, page_size: 50 },
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "query",
+                    query,
+                    ...overrides,
+                } as any,
+            ],
+            activeTabId: "q1",
+        });
+    }
+
+    function expectDialog() {
+        return waitFor(() =>
+            expect(screen.getByText("Destructive Query")).toBeInTheDocument(),
+        );
+    }
+
+    it("prompts from the Run button", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        renderScreen();
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        const textarea = await waitFor(() => screen.getByTestId("monaco-textarea"));
+        fireEvent.change(textarea, { target: { value: "DELETE FROM users" } });
+
+        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
+        await expectDialog();
+        expect(executeQuery).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByText("Execute"));
+        await waitFor(() =>
+            expect(executeQuery).toHaveBeenCalledWith("c1", "DELETE FROM users", 1, 50),
+        );
+    });
+
+    it("prompts from the Cmd/Ctrl+Enter editor action", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        renderScreen();
+        registeredActions.length = 0;
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        const textarea = await waitFor(() => screen.getByTestId("monaco-textarea"));
+        fireEvent.change(textarea, { target: { value: "DROP TABLE users" } });
+
+        expect(registeredActions).toHaveLength(1);
+        act(() => registeredActions[0].run());
+        await expectDialog();
+        expect(executeQuery).not.toHaveBeenCalled();
+    });
+
+    it("prompts from the toolbar re-run control", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedQueryTab("DELETE FROM users");
+        renderScreen();
+        await mountEditor();
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+        await expectDialog();
+        expect(executeQuery).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByText("Execute"));
+        await waitFor(() =>
+            expect(executeQuery).toHaveBeenCalledWith("c1", "DELETE FROM users", 1, 50),
+        );
+    });
+
+    it("prompts from the tab refresh control", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedQueryTab("UPDATE users SET name = 'x'");
+        renderScreen();
+        await mountEditor();
+
+        // A query tab's refresh control is the same re-run affordance: it must
+        // not fall back to executing the stored text directly.
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+        await expectDialog();
+        expect(executeQuery).not.toHaveBeenCalled();
+    });
+
+    it("prompts when a history entry is run", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        useQueryStore.setState({
+            history: [
+                {
+                    id: "h1",
+                    connection_id: "c1",
+                    query_text: "TRUNCATE TABLE users",
+                    status: "success",
+                    execution_time_ms: 5,
+                    row_count: 0,
+                    created_at: "2026-01-01T00:00:00Z",
+                    favorite: false,
+                } as any,
+            ],
+            historyStale: false,
+            historyLoading: false,
+        });
+        renderScreen();
+        fireEvent.click(screen.getByRole("button", { name: /new query/i }));
+        await waitFor(() => screen.getByTestId("monaco-textarea"));
+
+        fireEvent.click(screen.getByLabelText(/query history/i));
+        fireEvent.click(
+            await waitFor(() =>
+                screen.getByLabelText(/run query from history/i),
+            ),
+        );
+
+        await expectDialog();
+        expect(executeQuery).not.toHaveBeenCalled();
+    });
+
+    it("prompts when paging a destructive query", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedQueryTab("DELETE FROM users", {
+            data: { columns: [], rows: [], total_rows: 120, page: 1, page_size: 50 },
+        });
+        renderScreen();
+        await mountEditor();
+
+        fireEvent.click(screen.getByLabelText(/next page/i));
+        await expectDialog();
+        expect(executeQuery).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByText("Execute"));
+        await waitFor(() =>
+            expect(executeQuery).toHaveBeenCalledWith("c1", "DELETE FROM users", 2, 50),
+        );
+    });
+
+    it("prompts when the page size changes on a destructive query", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedQueryTab("DELETE FROM users", {
+            data: { columns: [], rows: [], total_rows: 120, page: 1, page_size: 50 },
+        });
+        renderScreen();
+        await mountEditor();
+
+        fireEvent.change(screen.getByDisplayValue("50"), {
+            target: { value: "100" },
+        });
+        await expectDialog();
+        expect(executeQuery).not.toHaveBeenCalled();
+    });
+
+    it("re-evaluates edited text on the next entry point", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedQueryTab("SELECT 1", {
+            data: { columns: [], rows: [], total_rows: 1, page: 1, page_size: 50 },
+        });
+        renderScreen();
+        const textarea = await waitFor(() => screen.getByTestId("monaco-textarea"));
+
+        // Editing the tab to destructive text, then re-running it, must prompt.
+        fireEvent.change(textarea, {
+            target: { value: "DELETE FROM users" },
+        });
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+        await expectDialog();
+        fireEvent.click(screen.getByText("Cancel"));
+        await waitFor(() =>
+            expect(screen.queryByText("Destructive Query")).toBeNull(),
+        );
+        expect(executeQuery).not.toHaveBeenCalled();
+
+        // Editing it back to a read-only script must run the *current* text —
+        // never a verdict cached for the text that was just cancelled.
+        fireEvent.change(textarea, { target: { value: "SELECT 2" } });
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+        await waitFor(() =>
+            expect(executeQuery).toHaveBeenCalledWith("c1", "SELECT 2", 1, 50),
+        );
+        expect(executeQuery).toHaveBeenCalledTimes(1);
+        expect(screen.queryByText("Destructive Query")).toBeNull();
+    });
+
+    it("prompts for a statement it cannot classify (fail closed)", async () => {
+        const executeQuery = vi
+            .spyOn(commands, "executeQueryMulti")
+            .mockResolvedValue(emptyResult);
+        seedQueryTab("CALL refresh_all()");
+        renderScreen();
+        await mountEditor();
+
+        fireEvent.click(screen.getByLabelText(/re-run query/i));
+        await expectDialog();
+        expect(executeQuery).not.toHaveBeenCalled();
+        expect(screen.getByTestId("destructive-statement-detail")).toHaveTextContent(
+            /could not be verified as read-only/i,
+        );
+    });
+
+    it("never arms an auto-refresh timer on an ad-hoc query tab", async () => {
+        vi.useFakeTimers();
+        try {
+            const executeQuery = vi
+                .spyOn(commands, "executeQueryMulti")
+                .mockResolvedValue(emptyResult);
+            useSettingsStore.setState({
+                settings: {
+                    ...(useSettingsStore.getState().settings ?? ({} as any)),
+                    table_refresh_rate: 5000,
+                } as any,
+            });
+            seedQueryTab("SELECT 1");
+            renderScreen();
+
+            // Nothing to run yet, and no timer may run it later either.
+            await act(async () => {
+                vi.advanceTimersByTime(60_000);
+            });
+            expect(executeQuery).not.toHaveBeenCalled();
+            expect(screen.queryByLabelText(/auto-refresh/i)).toBeNull();
+        } finally {
+            vi.useRealTimers();
+            useSettingsStore.setState({ settings: null });
+        }
     });
 });

@@ -12,6 +12,8 @@ export const DEFAULT_FLOW = "demo-smoke";
 export const FLOWS = {
   "demo-smoke":
     "open the seeded demo SQLite database and assert that a demo table's rows are rendered",
+  "destructive-rerun":
+    "prove a destructive script is confirmed from both the initial Run button and the toolbar re-run control",
 };
 
 const USAGE = `usage: bun run e2e [options]

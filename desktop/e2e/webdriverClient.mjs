@@ -121,6 +121,24 @@ export class WebDriverClient {
     );
   }
 
+  /**
+   * Type `text` into an element (`POST /element/{id}/value`).
+   *
+   * W3C requires both `text` and a per-character `value` array; drivers differ
+   * on which one they honour, so both are sent. The element must already hold
+   * focus — click it first.
+   *
+   * @param {{elementId: string}} element
+   * @param {string} text
+   */
+  async sendKeys(element, text) {
+    await this.#request(
+      "POST",
+      this.#sessionPath(`/element/${element.elementId}/value`),
+      { text, value: Array.from(text) },
+    );
+  }
+
   /** @param {{elementId: string}} element */
   async elementText(element) {
     const value = await this.#request(

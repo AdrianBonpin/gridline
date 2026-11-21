@@ -98,6 +98,7 @@ export async function runDemoSmokeFlow(driver, options = {}) {
       steps,
       renderedCells: rendered.cells,
       matchedCells: matchedValues(rendered.cells, expectedCells),
+      passMessage: "the built app rendered the seeded demo rows",
     };
   } catch (error) {
     // Attach completed steps so the failure report shows how far the app got.

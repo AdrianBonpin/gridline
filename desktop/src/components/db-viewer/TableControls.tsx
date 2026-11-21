@@ -469,6 +469,12 @@ interface TableControlsProps {
   variant?: "table" | "query";
   /** Open the full-result streamed export dialog. */
   onExportToFile?: () => void;
+  /**
+   * Paging hook for callers that must guard the request (query tabs re-execute
+   * their text to fetch a page). When absent, paging updates the store directly.
+   */
+  onRequestPage?: (page: number) => void;
+  onRequestPageSize?: (pageSize: number) => void;
 }
 
 export function TableControls({
@@ -491,6 +497,8 @@ export function TableControls({
   isMatview = false,
   variant = "table",
   onExportToFile,
+  onRequestPage,
+  onRequestPageSize,
 }: TableControlsProps) {
   const isQuery = variant === "query";
   const notify = useNotificationStore((s) => s.notify);
@@ -513,7 +521,7 @@ export function TableControls({
   const columnMenuWrapRef = useRef<HTMLDivElement>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const exportWrapRef = useRef<HTMLDivElement>(null);
-  const [autoRefresh, setAutoRefresh] = useState(defaultRefreshRate);
+  const [autoRefresh, setAutoRefresh] = useState(isQuery ? 0 : defaultRefreshRate);
   const [autoRefreshOpen, setAutoRefreshOpen] = useState(false);
   const autoRefreshWrapRef = useRef<HTMLDivElement>(null);
 
@@ -521,13 +529,18 @@ export function TableControls({
   // is idle. Fires a refresh, waits for it to complete (loading → false),
   // then starts a fresh countdown. Also resets whenever the active tab changes
   // so a freshly opened/reopened tab is not immediately refetched.
+  //
+  // Query tabs are excluded entirely: an ad-hoc query tab holds text the user
+  // edits and reviews per execution, so a timer that re-runs it would execute
+  // SQL nobody asked to run again. That holds even if a caller passes a
+  // non-zero `defaultRefreshRate`.
   useEffect(() => {
-    if (autoRefresh === 0) return;
+    if (isQuery || autoRefresh === 0) return;
     // While a refresh is in flight, wait for it to finish before counting down
     if (isRefreshing) return;
     const id = setTimeout(onRefresh, autoRefresh);
     return () => clearTimeout(id);
-  }, [autoRefresh, onRefresh, isRefreshing, activeTabId]);
+  }, [autoRefresh, onRefresh, isRefreshing, activeTabId, isQuery]);
 
   // pagination
   const totalRows = activeTab?.data?.total_rows ?? rows.length;
@@ -539,14 +552,23 @@ export function TableControls({
   const endRow = Math.min(clampedPage * pageSize, totalRows);
 
   const handlePrev = () => {
-    if (clampedPage > 1 && activeTabId) setPage(activeTabId, clampedPage - 1);
+    if (clampedPage > 1 && activeTabId) {
+      if (onRequestPage) onRequestPage(clampedPage - 1);
+      else setPage(activeTabId, clampedPage - 1);
+    }
   };
   const handleNext = () => {
-    if (clampedPage < totalPages && activeTabId) setPage(activeTabId, clampedPage + 1);
+    if (clampedPage < totalPages && activeTabId) {
+      if (onRequestPage) onRequestPage(clampedPage + 1);
+      else setPage(activeTabId, clampedPage + 1);
+    }
   };
 
   const handlePageSizeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    if (activeTabId) setPageSize(activeTabId, Number(e.target.value));
+    const size = Number(e.target.value);
+    if (!activeTabId) return;
+    if (onRequestPageSize) onRequestPageSize(size);
+    else setPageSize(activeTabId, size);
   };
 
   const handleInsertRow = () => {

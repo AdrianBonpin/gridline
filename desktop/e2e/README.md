@@ -51,6 +51,15 @@ setup is needed on a headless Linux box. Useful flags (`bun run e2e:desktop --
 | `--timeout-ms <ms>` | `30000` | per-step budget |
 | `--port` / `--native-port` | `4444` / `4445` | driver ports |
 
+## Flows
+
+`--flow <name>` selects one; `demo-smoke` is the default.
+
+| Flow | What it proves |
+| :--- | :--- |
+| `demo-smoke` | the built app opens the seeded demo database and paints real rows |
+| `destructive-rerun` | a destructive script is confirmed from **both** the initial Run button and the toolbar re-run control — the built-product proof that the entry point cannot bypass the guard |
+
 ## What the smoke flow asserts
 
 1. `home: Gridline Demo (SQLite) card visible` — the app rendered the Home
@@ -74,6 +83,28 @@ e2e: grid observed 288 rendered cell(s), e.g. "3", "GL-HUB-001", "Gridline 7-in-
 e2e: fixture values rendered in the grid: "GL-MSE-001", "Gridline Wireless Mouse"
 e2e: PASS the built app rendered the seeded demo rows
 ```
+
+## What the destructive re-run flow asserts
+
+1. `home: Gridline Demo (SQLite) card visible` / `home: open the demo database`
+2. `workspace: open an ad-hoc query tab` — the tab bar's *Query* button.
+3. `editor: type a destructive script` — `DELETE FROM products;` typed through
+   Monaco's hidden input area (`[data-testid="query-editor"] textarea.inputarea`),
+   which is the element the editor listens on. The editor is clicked first for
+   focus.
+4. `run: initial Run requires confirmation` — the `Destructive Query` dialog
+   (`[data-testid="destructive-query-dialog"]`) must appear.
+5. `run: cancel leaves the script unexecuted` — cancelling closes the dialog.
+6. `rerun: toolbar re-run requires confirmation again` — the toolbar's re-run
+   control (`button[aria-label="Re-run query"]`) must raise the *same* dialog.
+   This is the assertion the flow exists for.
+7. `rerun: cancel leaves the script unexecuted`.
+
+Every confirmation is cancelled, so the script never executes; each run also
+gets a pristine app-data directory. If any entry point executes without the
+dialog, the flow fails naming that entry point (`initial Run executed a
+destructive script without confirmation` / `toolbar re-run executed …`), so a
+regression cannot be mistaken for a pass.
 
 ### Why the grid assertion reads attributes, not text
 

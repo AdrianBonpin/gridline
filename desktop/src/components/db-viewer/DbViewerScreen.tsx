@@ -5,7 +5,8 @@ import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar, NAV_CAPABILITY_KEY } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
 import { isSchemaModifyingQuery } from "../../lib/utils";
-import { analyzeScript, type ScriptAnalysis } from "../../lib/sqlScan";
+import { planExecution } from "../../lib/executionGuard";
+import type { ScriptAnalysis } from "../../lib/sqlScan";
 import { executeQueryMulti, cancelQuery } from "../../lib/commands";
 import { getCapabilities, isMysqlFamily } from "../../lib/dbCapabilities";
 
@@ -401,14 +402,32 @@ export function DbViewerScreen({
     /** Route a script through the destructive-statement guard, or run it. */
     const runWithGuard = useCallback(
         (tabId: string, sql: string) => {
-            const analysis = analyzeScript(sql);
-            if (analysis.destructive) {
-                setPendingDestructive({ sql, analysis });
+            const plan = planExecution(sql);
+            if (!plan.hasText) return;
+            if (plan.needsConfirmation) {
+                setPendingDestructive({ sql: plan.sql, analysis: plan.analysis });
             } else {
-                executeQueryForTab(tabId, sql);
+                void executeQueryForTab(tabId, plan.sql);
             }
         },
         [executeQueryForTab],
+    );
+
+    /**
+     * Run the text a query tab holds *right now*.
+     *
+     * Re-run, refresh and paging are Execution Entry Points too, so each of
+     * them reads the tab's live text at click time and hands it to the same
+     * guard — never a query string captured earlier, and never a classification
+     * cached from a previous run.
+     */
+    const runCurrentQueryText = useCallback(
+        (tabId: string) => {
+            const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId);
+            if (!tab || tab.tabType !== "query") return;
+            runWithGuard(tabId, tab.query ?? "");
+        },
+        [runWithGuard],
     );
 
     // Read the active tab from the store directly so the Monaco keybinding action
@@ -417,10 +436,8 @@ export function DbViewerScreen({
         const state = useDbViewerStore.getState();
         const tab = state.tabs.find((t) => t.id === state.activeTabId);
         if (!tab || tab.tabType !== "query") return;
-        const sql = tab.query?.trim() ?? "";
-        if (!sql) return;
-        runWithGuard(tab.id, sql);
-    }, [runWithGuard]);
+        runCurrentQueryText(tab.id);
+    }, [runCurrentQueryText]);
 
     // Auto-format the active query tab's SQL
     const handleFormatQuery = useCallback(() => {
@@ -871,8 +888,9 @@ export function DbViewerScreen({
         const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId);
         if (!tab) return;
         if (tab.tabType === "query") {
-            const sql = tab.query?.trim() ?? "";
-            if (sql) executeQueryForTab(tabId, sql);
+            // Refresh on a query tab is an Execution Entry Point: it re-runs the
+            // tab's current text, so it goes through the same guard as Run.
+            runCurrentQueryText(tabId);
             return;
         }
         useDbViewerStore.setState((s) => ({
@@ -880,7 +898,46 @@ export function DbViewerScreen({
                 t.id === tabId ? { ...t, loading: true, error: null } : t,
             ),
         }));
-    }, []);
+    }, [runCurrentQueryText]);
+
+    /**
+     * Page/page-size changes on a query tab: record the requested page, then
+     * re-run the tab's current text through the guard. The page is set without
+     * flipping the loading flag, so cancelling the confirmation cannot leave
+     * the tab spinning on work that never started.
+     */
+    const handleQueryPageRequest = useCallback(
+        (next: { page?: number; pageSize?: number }) => {
+            const tabId = useDbViewerStore.getState().activeTabId;
+            if (!tabId) return;
+            useDbViewerStore.setState((s) => ({
+                tabs: s.tabs.map((t) =>
+                    t.id === tabId
+                        ? {
+                              ...t,
+                              page:
+                                  next.pageSize !== undefined
+                                      ? 1
+                                      : (next.page ?? t.page),
+                              pageSize: next.pageSize ?? t.pageSize,
+                          }
+                        : t,
+                ),
+            }));
+            runCurrentQueryText(tabId);
+        },
+        [runCurrentQueryText],
+    );
+
+    const handleQueryPageChange = useCallback(
+        (page: number) => handleQueryPageRequest({ page }),
+        [handleQueryPageRequest],
+    );
+
+    const handleQueryPageSizeChange = useCallback(
+        (pageSize: number) => handleQueryPageRequest({ pageSize }),
+        [handleQueryPageRequest],
+    );
 
     const rawRows = activeTab?.data?.rows ?? [];
     const columns = activeTab?.data?.columns ?? [];
@@ -1272,9 +1329,16 @@ const onQueriesPanelResizeStart = useCallback(
                                                                         rules,
                                                                     )
                                                                 }
-                                                                defaultRefreshRate={
-                                                                    settings?.table_refresh_rate ??
-                                                                    0
+                                                                // An ad-hoc query tab never gets an
+                                                                // auto-refresh timer: its text is
+                                                                // reviewed per execution, not run on a
+                                                                // hidden schedule.
+                                                                defaultRefreshRate={0}
+                                                                onRequestPage={
+                                                                    handleQueryPageChange
+                                                                }
+                                                                onRequestPageSize={
+                                                                    handleQueryPageSizeChange
                                                                 }
                                                                 selectedCount={
                                                                     selectedRows.size

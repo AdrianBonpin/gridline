@@ -115,6 +115,37 @@ describe("executeRun", () => {
     expect(driver.stop).toHaveBeenCalled();
   });
 
+  it("prints a flow's own evidence and pass message", async () => {
+    const artifacts = fakeArtifacts();
+    const driver = fakeDriver();
+    const client = fakeClient();
+    const log: string[] = [];
+
+    const result = await executeRun(plan({ flow: "destructive-rerun" }), {
+      createArtifacts: () => artifacts,
+      spawnDriver: async () => driver,
+      clientFor: () => client,
+      flows: {
+        "destructive-rerun": async () => ({
+          steps: [{ name: "rerun: toolbar re-run requires confirmation again", durationMs: 4 }],
+          confirmedEntryPoints: ["initial Run", "toolbar re-run"],
+          evidence: ['confirmed from: "initial Run", "toolbar re-run"'],
+          passMessage: "both execution entry points required confirmation",
+        }),
+      },
+      log: (line: string) => log.push(line),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(log).toContain('e2e: confirmed from: "initial Run", "toolbar re-run"');
+    expect(log).toContain("e2e: PASS both execution entry points required confirmation");
+    expect(artifacts.summary).toEqual([
+      "rerun: toolbar re-run requires confirmation again (4ms)",
+      'confirmed from: "initial Run", "toolbar re-run"',
+      "PASS",
+    ]);
+  });
+
   it("captures artifacts, stops the driver and fails when the flow fails", async () => {
     const artifacts = fakeArtifacts();
     const driver = fakeDriver();

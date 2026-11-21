@@ -7,9 +7,9 @@
 **Seams:** Viewer interaction seam: catches routing for every entry point; SQL safety seam: catches the classification used by that routing.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/96
-**Status:** ready
+**Status:** done
 
-- [ ] A destructive script prompts from the run button, the toolbar re-run control, a history run, refresh, and paging.
-- [ ] An ad-hoc query tab receives no auto-refresh timer and cannot execute unreviewed text on a timer.
-- [ ] Editing query text and using any entry point re-evaluates the current text.
-- [ ] An E2E flow proves the toolbar re-run requires confirmation.
+- [x] A destructive script prompts from the run button, the toolbar re-run control, a history run, refresh, and paging.
+- [x] An ad-hoc query tab receives no auto-refresh timer and cannot execute unreviewed text on a timer.
+- [x] Editing query text and using any entry point re-evaluates the current text.
+- [x] An E2E flow proves the toolbar re-run requires confirmation.

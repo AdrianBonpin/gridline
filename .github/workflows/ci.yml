@@ -176,6 +176,15 @@ jobs:
       - name: Run the desktop E2E smoke flow
         run: xvfb-run -a bun run --filter gridline-desktop e2e
 
+      # A second launch for the destructive-execution flow: it types SQL into an
+      # ad-hoc query tab and proves both the initial Run button and the toolbar
+      # re-run control raise the confirmation dialog. Separate artifacts dir so
+      # each flow keeps its own log/summary.
+      - name: Run the destructive re-run flow
+        run: >-
+          xvfb-run -a bun run --filter gridline-desktop e2e --
+          --flow destructive-rerun --artifacts e2e-artifacts/destructive
+
       - name: Upload E2E failure artifacts
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

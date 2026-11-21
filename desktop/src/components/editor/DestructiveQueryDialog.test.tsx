@@ -11,6 +11,17 @@ describe("DestructiveQueryDialog", () => {
     expect(screen.getByText(/DROP TABLE users/)).toBeInTheDocument();
   });
 
+  it("exposes stable anchors for the built-product E2E flow", () => {
+    // `e2e/destructiveFlow.mjs` finds the dialog and its buttons by these; the
+    // flow asserts the confirmation appears for every Execution Entry Point.
+    render(
+      <DestructiveQueryDialog open={true} query="DELETE FROM products" onConfirm={() => {}} onCancel={() => {}} />
+    );
+    expect(screen.getByTestId("destructive-query-dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("destructive-query-confirm")).toHaveTextContent("Execute");
+    expect(screen.getByTestId("destructive-query-cancel")).toHaveTextContent("Cancel");
+  });
+
   it("calls onConfirm when 'Execute' is clicked", () => {
     const onConfirm = vi.fn();
     render(
