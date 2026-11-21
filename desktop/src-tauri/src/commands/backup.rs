@@ -2349,7 +2349,7 @@ pub async fn pg_dump(
             .ok_or_else(|| format!("Connection not found: {connection_id}"))?
     };
 
-    // Get password from keychain
+    // Keychain when enabled, otherwise the session-only credential (or a prompt).
     let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
 
     let params = PgConnParams::new(
