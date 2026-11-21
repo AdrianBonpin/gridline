@@ -48,6 +48,11 @@ import { fkRelation, fkTarget } from "../../lib/fkTarget";
 import type { QueueItem } from "../../stores/dbViewerStore";
 import { rowIdentityFor } from "../../lib/rowIdentity";
 import {
+    rowSelectionKey,
+    rowSelectionKeys,
+    selectedRowIndices,
+} from "../../lib/rowSelection";
+import {
     changeOriginFor,
     itemsForChangeTarget,
     type ChangeOrigin,
@@ -216,6 +221,9 @@ export function fkOptionsFrom(
     });
 }
 
+/** Stable empty selection, so a tab with nothing selected keeps a stable identity. */
+const NO_SELECTION: string[] = [];
+
 /**
  * Identity of a table data request: the whole intent (target + page + filter +
  * sort), not just "something is in flight". A request for a *different* intent
@@ -309,7 +317,6 @@ export function DbViewerScreen({
     const [tablePanelWidth, setTablePanelWidth] = useState(280);
     const [queriesPanelWidth, setQueriesPanelWidth] = useState(280);
     const [searchQuery, setSearchQuery] = useState("");
-    const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
     const [rowDetailIdx, setRowDetailIdx] = useState<number | null>(null);
     const [editModalOpen, setEditModalOpen] = useState(false);
     const [pendingDestructive, setPendingDestructive] = useState<{
@@ -1256,6 +1263,73 @@ export function DbViewerScreen({
     const columns = activeTab?.data?.columns ?? [];
     // Data is already filtered and sorted server-side; no client-side transform needed.
     const processedRows = rawRows;
+    const dbType = currentConnection?.db_type ?? "postgresql";
+    const toggleRowSelection = useDbViewerStore((s) => s.toggleRowSelection);
+    const setRowSelection = useDbViewerStore((s) => s.setRowSelection);
+    const clearRowSelection = useDbViewerStore((s) => s.clearRowSelection);
+
+    /**
+     * The selection, resolved against the rows on screen.
+     *
+     * Selection is stored as Row Identity keys (`lib/rowSelection.ts`), never as
+     * positions, and is only ever turned into positions here — from the rows
+     * currently displayed. A key whose row is no longer on screen therefore
+     * counts as nothing: no checkbox, no count, no bulk action. The store clears
+     * the selection on every page, page-size, filter, sort, tab, origin, and
+     * dataset change, so this is the second line of defence, not the first.
+     */
+    const selectionKeys = activeTab?.selection ?? NO_SELECTION;
+    const selectedIndices = useMemo(
+        () => selectedRowIndices(columns, processedRows, dbType, selectionKeys),
+        [columns, processedRows, dbType, selectionKeys],
+    );
+    const selectedIndexSet = useMemo(
+        () => new Set(selectedIndices),
+        [selectedIndices],
+    );
+    // The exact rows a bulk action receives: the ones the user has selected in
+    // this result set, never a stale index into another page's rows.
+    const selectedRowData = useMemo(
+        () => selectedIndices.map((index) => processedRows[index]!),
+        [selectedIndices, processedRows],
+    );
+
+    /** Toggle one row's selection by its identity, not by its position. */
+    const handleToggleRow = useCallback(
+        (rowIndex: number) => {
+            const tabId = useDbViewerStore.getState().activeTabId;
+            const row = processedRows[rowIndex];
+            if (!tabId || !row) return;
+            const key = rowSelectionKey(columns, row, dbType);
+            if (!key) return;
+            toggleRowSelection(tabId, key);
+        },
+        [columns, processedRows, dbType, toggleRowSelection],
+    );
+
+    const handleToggleAll = useCallback(() => {
+        const tabId = useDbViewerStore.getState().activeTabId;
+        if (!tabId) return;
+        const all = rowSelectionKeys(columns, processedRows, dbType);
+        const everythingSelected =
+            all.length > 0 &&
+            selectedIndices.length > 0 &&
+            selectedIndices.length === all.length;
+        if (everythingSelected) clearRowSelection(tabId);
+        else setRowSelection(tabId, all);
+    }, [
+        columns,
+        processedRows,
+        dbType,
+        selectedIndices.length,
+        clearRowSelection,
+        setRowSelection,
+    ]);
+
+    const handleClearSelection = useCallback(() => {
+        const tabId = useDbViewerStore.getState().activeTabId;
+        if (tabId) clearRowSelection(tabId);
+    }, [clearRowSelection]);
 
     // Pending insert rows (from the changes queue) are prepended to the grid as
     // editable rows. Only pending inserts for the active table tab count.
@@ -1429,8 +1503,8 @@ const onQueriesPanelResizeStart = useCallback(
             rows: displayRows,
             columns,
             hiddenColumns,
-            selectedRows,
-            dbType: currentConnection?.db_type ?? "postgresql",
+            selectedRows: selectedIndexSet,
+            dbType,
             tabType: activeTab?.tabType ?? "table",
             getLocator,
             onStageEdit: readOnlyTable ? undefined : handleStageEdit,
@@ -1444,22 +1518,8 @@ const onQueriesPanelResizeStart = useCallback(
             stagedValues,
             pendingKeys,
             pendingInsertChangeIds,
-            onToggleRow: (rowIndex: number) => {
-                setSelectedRows((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(rowIndex)) next.delete(rowIndex);
-                    else next.add(rowIndex);
-                    return next;
-                });
-            },
-            onToggleAll: () => {
-                setSelectedRows((prev) => {
-                    if (prev.size === processedRows.length && processedRows.length > 0) {
-                        return new Set();
-                    }
-                    return new Set(processedRows.map((_, i) => i));
-                });
-            },
+            onToggleRow: handleToggleRow,
+            onToggleAll: handleToggleAll,
         };
 
         return (
@@ -1650,18 +1710,13 @@ const onQueriesPanelResizeStart = useCallback(
                                                                     handleQueryPageSizeChange
                                                                 }
                                                                 selectedCount={
-                                                                    selectedRows.size
+                                                                    selectedIndices.length
                                                                 }
-                                                                selectedRows={processedRows.filter(
-                                                                    (_, i) =>
-                                                                        selectedRows.has(
-                                                                            i,
-                                                                        ),
-                                                                )}
-                                                                onClearSelection={() =>
-                                                                    setSelectedRows(
-                                                                        new Set(),
-                                                                    )
+                                                                selectedRows={
+                                                                    selectedRowData
+                                                                }
+                                                                onClearSelection={
+                                                                    handleClearSelection
                                                                 }
                                                                 variant="query"
                                                                 dbType={
@@ -1809,13 +1864,12 @@ const onQueriesPanelResizeStart = useCallback(
                                                     settings?.table_refresh_rate ??
                                                     0
                                                 }
-                                                selectedCount={selectedRows.size}
-                                                selectedRows={processedRows.filter(
-                                                    (_, i) =>
-                                                        selectedRows.has(i),
-                                                )}
-                                                onClearSelection={() =>
-                                                    setSelectedRows(new Set())
+                                                selectedCount={
+                                                    selectedIndices.length
+                                                }
+                                                selectedRows={selectedRowData}
+                                                onClearSelection={
+                                                    handleClearSelection
                                                 }
                                                 dbType={
                                                     currentConnection?.db_type ??
@@ -1844,7 +1898,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 rows={displayRows}
                                                 columns={columns}
                                                 hiddenColumns={hiddenColumns}
-                                                selectedRows={selectedRows}
+                                                selectedRows={selectedIndexSet}
                                                 dbType={currentConnection?.db_type ?? "postgresql"}
                                                 tabType={activeTab?.tabType ?? "table"}
                                                 getLocator={getLocator}
@@ -1859,36 +1913,8 @@ const onQueriesPanelResizeStart = useCallback(
                                                 stagedValues={stagedValues}
                                                 pendingKeys={pendingKeys}
                                                 pendingInsertChangeIds={pendingInsertChangeIds}
-                                                onToggleRow={(rowIndex) => {
-                                                    setSelectedRows((prev) => {
-                                                        const next = new Set(
-                                                            prev,
-                                                        );
-                                                        if (next.has(rowIndex))
-                                                            next.delete(
-                                                                rowIndex,
-                                                            );
-                                                        else next.add(rowIndex);
-                                                        return next;
-                                                    });
-                                                }}
-                                                onToggleAll={() => {
-                                                    setSelectedRows((prev) => {
-                                                        if (
-                                                            prev.size ===
-                                                                processedRows.length &&
-                                                            processedRows.length >
-                                                                0
-                                                        ) {
-                                                            return new Set();
-                                                        }
-                                                        return new Set(
-                                                            processedRows.map(
-                                                                (_, i) => i,
-                                                            ),
-                                                        );
-                                                    });
-                                                }}
+                                                onToggleRow={handleToggleRow}
+                                                onToggleAll={handleToggleAll}
                                             />
                                         </div>
                                     </>
