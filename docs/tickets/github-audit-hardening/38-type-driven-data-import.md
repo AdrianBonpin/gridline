@@ -7,10 +7,10 @@
 **Seams:** Viewer interaction seam: catches mapping, conversion, and pre-staging validation; misses server-side insert behavior, covered by exact row identity and the change-application seam.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/83
-**Status:** ready
+**Status:** done
 
-- [ ] Source columns are tracked by position, so duplicate headers cannot duplicate one column's values.
-- [ ] Mapping the same target column twice is rejected.
-- [ ] Typed conversion preserves leading zeros, large-integer precision, empty-string versus null, and nested JSON.
-- [ ] An invalid value reports its row and column and stages nothing.
-- [ ] Unbalanced quotes, inconsistent widths, and byte-limit violations are reported before staging, with the byte limit checked before full buffering.
+- [x] Source columns are tracked by position, so duplicate headers cannot duplicate one column's values.
+- [x] Mapping the same target column twice is rejected.
+- [x] Typed conversion preserves leading zeros, large-integer precision, empty-string versus null, and nested JSON.
+- [x] An invalid value reports its row and column and stages nothing.
+- [x] Unbalanced quotes, inconsistent widths, and byte-limit violations are reported before staging, with the byte limit checked before full buffering.
