@@ -73,7 +73,7 @@ const jsonLd = [
           Query, explore, sync, and edit PostgreSQL, MySQL, SQLite, and Redis, with no paywalls, no tab limits, no account required.
         </p>
         <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
-          <a id="download" href="https://github.com/AdrianBonpin/gridline/releases" class="primary-btn" data-download>
+          <a id="hero-download" href="#download" class="primary-btn" data-download>
             Download
           </a>
           <a href="https://github.com/AdrianBonpin/gridline" target="_blank" rel="noopener" class="ghost-btn">
@@ -105,6 +105,105 @@ const jsonLd = [
       </p>
     </div>
   </header>
+
+  <!-- Download -->
+  <section id="download" class="section-animate py-20 md:py-28">
+    <div class="max-w-7xl mx-auto px-6">
+      <p class="font-mono text-xs text-[var(--accent)] uppercase tracking-[0.15em] text-center mb-3">Download</p>
+      <h2 class="font-serif text-3xl md:text-5xl text-center mb-5">Pick the build for your machine.</h2>
+      <p class="text-[var(--text-muted)] text-sm md:text-base text-center max-w-2xl mx-auto mb-12">
+        Every link below is the same v{version} app. A browser cannot tell an Intel Mac from Apple Silicon, or which
+        Linux package a distribution uses, so the choices are listed explicitly instead of guessed.
+      </p>
+
+      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
+        <a
+          class="glass-card block group"
+          href={`https://github.com/AdrianBonpin/gridline/releases/download/v${version}/Gridline_${version}_aarch64.dmg`}
+        >
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">MACOS</p>
+          <h3 class="text-lg font-semibold mb-1">Apple Silicon</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-3">M1, M2, M3, M4 and later — <code class="font-mono text-xs">aarch64</code></p>
+          <p class="font-mono text-xs text-[var(--text-muted)] group-hover:text-[var(--accent)]">Gridline_{version}_aarch64.dmg →</p>
+        </a>
+
+        <a
+          class="glass-card block group"
+          href={`https://github.com/AdrianBonpin/gridline/releases/download/v${version}/Gridline_${version}_x64.dmg`}
+        >
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">MACOS</p>
+          <h3 class="text-lg font-semibold mb-1">Intel</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-3">Intel Core / Xeon Macs — <code class="font-mono text-xs">x64</code></p>
+          <p class="font-mono text-xs text-[var(--text-muted)] group-hover:text-[var(--accent)]">Gridline_{version}_x64.dmg →</p>
+        </a>
+
+        <a
+          class="glass-card block group"
+          href={`https://github.com/AdrianBonpin/gridline/releases/download/v${version}/Gridline_${version}_x64-setup.exe`}
+        >
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">WINDOWS</p>
+          <h3 class="text-lg font-semibold mb-1">Windows 10 or newer</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-3">x64 installer; the <code class="font-mono text-xs">.msi</code> is available on the same release</p>
+          <p class="font-mono text-xs text-[var(--text-muted)] group-hover:text-[var(--accent)]">Gridline_{version}_x64-setup.exe →</p>
+        </a>
+
+        <a
+          class="glass-card block group"
+          href={`https://github.com/AdrianBonpin/gridline/releases/download/v${version}/Gridline_${version}_amd64.deb`}
+        >
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">LINUX · DEB</p>
+          <h3 class="text-lg font-semibold mb-1">Debian / Ubuntu</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-3">x86_64, glibc 2.35+ — <code class="font-mono text-xs">sudo apt install ./Gridline_{version}_amd64.deb</code></p>
+          <p class="font-mono text-xs text-[var(--text-muted)] group-hover:text-[var(--accent)]">Gridline_{version}_amd64.deb →</p>
+        </a>
+
+        <a
+          class="glass-card block group"
+          href={`https://github.com/AdrianBonpin/gridline/releases/download/v${version}/Gridline-${version}-1.x86_64.rpm`}
+        >
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">LINUX · RPM</p>
+          <h3 class="text-lg font-semibold mb-1">Fedora / RHEL / openSUSE</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-3">x86_64, glibc 2.35+ — <code class="font-mono text-xs">sudo dnf install Gridline-{version}-1.x86_64.rpm</code></p>
+          <p class="font-mono text-xs text-[var(--text-muted)] group-hover:text-[var(--accent)]">Gridline-{version}-1.x86_64.rpm →</p>
+        </a>
+
+        <a
+          class="glass-card block group"
+          href={`https://github.com/AdrianBonpin/gridline/releases/download/v${version}/Gridline_${version}_amd64.AppImage`}
+        >
+          <p class="font-mono text-xs text-[var(--accent)] mb-3">LINUX · APPIMAGE</p>
+          <h3 class="text-lg font-semibold mb-1">Other x86_64 distributions</h3>
+          <p class="text-[var(--text-muted)] text-sm mb-3">Portable, glibc 2.35+ — <code class="font-mono text-xs">chmod +x</code>, then run it</p>
+          <p class="font-mono text-xs text-[var(--text-muted)] group-hover:text-[var(--accent)]">Gridline_{version}_amd64.AppImage →</p>
+        </a>
+      </div>
+
+      <div class="mt-10 max-w-3xl mx-auto text-xs md:text-sm text-[var(--text-muted)] leading-relaxed">
+        <p class="mb-3">
+          <strong class="text-[var(--text)]">Not sure which Mac you have?</strong> Apple menu → About This Mac. An
+          “Apple M…” chip takes the <code class="font-mono text-xs">aarch64</code> DMG; an Intel chip takes
+          <code class="font-mono text-xs">x64</code>.
+        </p>
+        <p>
+          <strong class="text-[var(--text)]">Linux builds are x86_64 only.</strong> All three packages come from the same
+          build, verified on Ubuntu 22.04 (glibc 2.35); the RPM and AppImage are not certified per distribution. A reported
+          black window from the AppImage on Fedora is still
+          <a
+            class="underline hover:text-[var(--accent)]"
+            href="https://github.com/AdrianBonpin/gridline/issues/62"
+            target="_blank"
+            rel="noopener">an open issue</a
+          >. What is tested, and the diagnostic checklist for a blank window, are in the
+          <a
+            class="underline hover:text-[var(--accent)]"
+            href="https://github.com/AdrianBonpin/gridline/blob/prod/README.md#linux-support-and-troubleshooting"
+            target="_blank"
+            rel="noopener">Linux support notes</a
+          >.
+        </p>
+      </div>
+    </div>
+  </section>
 
   <!-- Why Gridline -->
   <section id="why" class="section-animate py-20 md:py-28">
