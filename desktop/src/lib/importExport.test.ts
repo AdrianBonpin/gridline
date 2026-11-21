@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { handleImport, handleExport } from "./importExport";
+import { handleImport, handleExport, describeImportResult } from "./importExport";
 import * as commands from "./commands";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -27,7 +27,7 @@ describe("handleImport", () => {
     );
     const spy = vi
       .spyOn(commands, "importConnections")
-      .mockResolvedValue({ imported: 1, skipped: 0, skippedRecords: [] });
+      .mockResolvedValue({ imported: 1, skipped: 0, skippedRecords: [], warnings: [] });
     const result = await handleImport();
     expect(spy).toHaveBeenCalled();
     expect(result?.imported).toBe(1);
@@ -51,5 +51,56 @@ describe("handleExport", () => {
     );
     const result = await handleExport();
     expect(result).toBe("/path/out.json");
+  });
+});
+
+describe("describeImportResult", () => {
+  it("reports a clean import as success", () => {
+    const summary = describeImportResult({
+      imported: 2,
+      skipped: 0,
+      skippedRecords: [],
+      warnings: [],
+    });
+    expect(summary.message).toBe("Imported 2 connections.");
+    expect(summary.type).toBe("success");
+    expect(summary.warnings).toEqual([]);
+  });
+
+  it("names each dropped link per record", () => {
+    const summary = describeImportResult({
+      imported: 1,
+      skipped: 1,
+      skippedRecords: [{ index: 1, reason: "missing or empty name" }],
+      warnings: [
+        {
+          index: 0,
+          name: "Prod",
+          message: 'folder "f1" does not exist here; connection imported without a folder',
+        },
+        {
+          index: 0,
+          name: "Prod",
+          message: 'tag "t1" does not exist here; connection imported without that tag',
+        },
+      ],
+    });
+    expect(summary.message).toBe("Imported 1 connection, 1 record skipped, 2 links dropped.");
+    expect(summary.type).toBe("error");
+    expect(summary.warnings).toEqual([
+      'Prod: folder "f1" does not exist here; connection imported without a folder',
+      'Prod: tag "t1" does not exist here; connection imported without that tag',
+    ]);
+  });
+
+  it("reports an empty file without claiming success", () => {
+    const summary = describeImportResult({
+      imported: 0,
+      skipped: 0,
+      skippedRecords: [],
+      warnings: [],
+    });
+    expect(summary.message).toBe("No connections imported.");
+    expect(summary.type).toBe("info");
   });
 });

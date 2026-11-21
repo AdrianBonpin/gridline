@@ -1,19 +1,103 @@
 use crate::models::ConnectionInput;
 use crate::store::Store;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 const VALID_DB_TYPES: [&str; 5] = ["postgresql", "mysql", "mariadb", "sqlite", "redis"];
 
+/// Version written into the export envelope. The record shape is the serialized
+/// [`crate::models::Connection`], which only ever grows optional fields, so a
+/// reader for version 1 stays a reader for every later version.
+const EXPORT_FORMAT_VERSION: u32 = 1;
+
+/// A connection file, in either shape Gridline has written.
+///
+/// The current shape is the versioned envelope `{ "version": 1,
+/// "connections": [...] }`; files written before the envelope existed are a
+/// bare array of the same records and must keep importing.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ConnectionFile {
+    Envelope {
+        #[serde(default)]
+        #[allow(dead_code)]
+        version: Option<u32>,
+        connections: Vec<ImportRecord>,
+    },
+    Legacy(Vec<ImportRecord>),
+}
+
+impl ConnectionFile {
+    fn into_records(self) -> Vec<ImportRecord> {
+        match self {
+            ConnectionFile::Envelope { connections, .. } => connections,
+            ConnectionFile::Legacy(records) => records,
+        }
+    }
+}
+
+/// One connection record from a transfer file.
+///
+/// Only non-secret settings are listed: a transfer file never carries a
+/// database password or an SSH secret, and a file that does contain such keys
+/// has them ignored rather than copied into the local store.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ImportRecord {
+    #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
     db_type: String,
+    #[serde(default)]
     host: String,
+    #[serde(default)]
     port: Option<i64>,
+    #[serde(default)]
     username: Option<String>,
+    #[serde(default)]
+    database: Option<String>,
+    #[serde(default)]
+    environment: Option<String>,
+    #[serde(default)]
     folder_id: Option<String>,
-    tag_ids: Option<Vec<String>>,
+    #[serde(default)]
+    tag_ids: Vec<String>,
+    #[serde(default)]
+    favorite: bool,
+    #[serde(default)]
+    ssh_host: Option<String>,
+    #[serde(default)]
+    ssh_port: Option<i64>,
+    #[serde(default)]
+    ssh_user: Option<String>,
+    #[serde(default)]
+    ssh_auth_method: Option<String>,
+    #[serde(default)]
+    ssh_private_key_path: Option<String>,
+    #[serde(default)]
+    ssl_mode: Option<String>,
+    #[serde(default)]
+    ssl_ca_path: Option<String>,
+    #[serde(default)]
+    ssl_cert_path: Option<String>,
+    #[serde(default)]
+    ssl_key_path: Option<String>,
+    #[serde(default = "default_true")]
+    use_keychain: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// A record that was imported but lost something: an organization link that
+/// does not exist locally. The connection itself survives; the link is dropped.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportWarning {
+    pub index: usize,
+    pub name: String,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -29,35 +113,80 @@ pub struct ImportResult {
     pub imported: usize,
     pub skipped: usize,
     pub skipped_records: Vec<SkippedRecord>,
+    pub warnings: Vec<ImportWarning>,
 }
 
-#[allow(dead_code)]
-pub fn parse_import(json: &str) -> Result<Vec<ImportRecord>, String> {
-    let records: Vec<ImportRecord> =
-        serde_json::from_str(json).map_err(|e| format!("invalid JSON: {}", e))?;
-    for (i, rec) in records.iter().enumerate() {
-        if rec.name.as_deref().unwrap_or("").is_empty() {
-            return Err(format!("record {}: name is required", i));
+/// Read either connection-file shape into its records.
+pub fn parse_connection_file(json: &str) -> Result<Vec<ImportRecord>, String> {
+    let file: ConnectionFile =
+        serde_json::from_str(json).map_err(|e| format!("invalid connection file: {}", e))?;
+    Ok(file.into_records())
+}
+
+/// Keep the organization links that resolve in this store, and report the ones
+/// that do not. A link to a folder or tag that does not exist here cannot be
+/// written: the store enforces referential integrity, so passing it through
+/// would reject an otherwise valid record.
+fn resolve_links(
+    index: usize,
+    name: &str,
+    folder_id: Option<&str>,
+    tag_ids: &[String],
+    known_folders: &HashSet<String>,
+    known_tags: &HashSet<String>,
+    warnings: &mut Vec<ImportWarning>,
+) -> (Option<String>, Vec<String>) {
+    let mut warn = |message: String| {
+        warnings.push(ImportWarning {
+            index,
+            name: name.to_string(),
+            message,
+        })
+    };
+
+    let resolved_folder = match folder_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) if known_folders.contains(id) => Some(id.to_string()),
+        Some(id) => {
+            warn(format!(
+                "folder \"{id}\" does not exist here; connection imported without a folder"
+            ));
+            None
         }
-        if !VALID_DB_TYPES.contains(&rec.db_type.as_str()) {
-            return Err(format!("record {}: invalid db_type: {}", i, rec.db_type));
+        None => None,
+    };
+
+    let mut resolved_tags: Vec<String> = Vec::new();
+    for tag_id in tag_ids.iter().map(|id| id.trim()).filter(|id| !id.is_empty()) {
+        if !known_tags.contains(tag_id) {
+            warn(format!(
+                "tag \"{tag_id}\" does not exist here; connection imported without that tag"
+            ));
+        } else if !resolved_tags.iter().any(|kept| kept == tag_id) {
+            resolved_tags.push(tag_id.to_string());
         }
     }
-    Ok(records)
+
+    (resolved_folder, resolved_tags)
 }
 
 pub fn import_connections_inner(
     state: &Mutex<Store>,
     json: String,
 ) -> Result<ImportResult, String> {
-    let records: Vec<ImportRecord> =
-        serde_json::from_str(&json).map_err(|e| format!("invalid JSON: {}", e))?;
+    let records = parse_connection_file(&json)?;
     let store = state.lock().map_err(|e| e.to_string())?;
+    let known_folders: HashSet<String> = store
+        .get_folders()?
+        .into_iter()
+        .map(|folder| folder.id)
+        .collect();
+    let known_tags: HashSet<String> = store.get_tags()?.into_iter().map(|tag| tag.id).collect();
     let mut imported = 0usize;
     let mut skipped_records = Vec::new();
+    let mut warnings = Vec::new();
     for (i, rec) in records.iter().enumerate() {
         let name = match &rec.name {
-            Some(n) if !n.is_empty() => n.clone(),
+            Some(n) if !n.trim().is_empty() => n.clone(),
             _ => {
                 skipped_records.push(SkippedRecord {
                     index: i,
@@ -66,6 +195,13 @@ pub fn import_connections_inner(
                 continue;
             }
         };
+        if rec.db_type.trim().is_empty() {
+            skipped_records.push(SkippedRecord {
+                index: i,
+                reason: "missing or empty db_type".into(),
+            });
+            continue;
+        }
         if !VALID_DB_TYPES.contains(&rec.db_type.as_str()) {
             skipped_records.push(SkippedRecord {
                 index: i,
@@ -73,39 +209,61 @@ pub fn import_connections_inner(
             });
             continue;
         }
-        if rec.host.is_empty() {
+        if rec.host.trim().is_empty() {
             skipped_records.push(SkippedRecord {
                 index: i,
                 reason: "missing or empty host".into(),
             });
             continue;
         }
+        let (folder_id, tag_ids) = resolve_links(
+            i,
+            &name,
+            rec.folder_id.as_deref(),
+            &rec.tag_ids,
+            &known_folders,
+            &known_tags,
+            &mut warnings,
+        );
         let input = ConnectionInput {
             name,
             db_type: rec.db_type.clone(),
             host: rec.host.clone(),
             port: rec.port,
             username: rec.username.clone(),
-            folder_id: rec.folder_id.clone(),
+            folder_id,
+            // A transfer file is not a credential: it never carries a password
+            // or an SSH secret, and the input stays empty for all three.
             password: None,
-            database: None,
-            ssh_host: None,
-            ssh_port: None,
-            ssh_user: None,
-            ssh_auth_method: None,
-            ssh_private_key_path: None,
+            database: rec.database.clone(),
+            ssh_host: rec.ssh_host.clone(),
+            ssh_port: rec.ssh_port,
+            ssh_user: rec.ssh_user.clone(),
+            ssh_auth_method: rec.ssh_auth_method.clone(),
+            ssh_private_key_path: rec.ssh_private_key_path.clone(),
             ssh_password: None,
             ssh_passphrase: None,
-            ssl_mode: None,
-            ssl_ca_path: None,
-            ssl_cert_path: None,
-            ssl_key_path: None,
-            environment: None,
-            tag_ids: rec.tag_ids.clone().unwrap_or_default(),
-            use_keychain: true,
+            ssl_mode: rec.ssl_mode.clone(),
+            ssl_ca_path: rec.ssl_ca_path.clone(),
+            ssl_cert_path: rec.ssl_cert_path.clone(),
+            ssl_key_path: rec.ssl_key_path.clone(),
+            environment: rec.environment.clone(),
+            tag_ids,
+            use_keychain: rec.use_keychain,
         };
         match store.create_connection(input) {
-            Ok(_) => imported += 1,
+            Ok(created) => {
+                imported += 1;
+                if rec.favorite {
+                    if let Err(e) = store.set_connection_favorite(&created.id, true) {
+                        warnings.push(ImportWarning {
+                            index: i,
+                            name: created.name.clone(),
+                            message: format!("connection imported but not marked favorite: {e}"),
+                        });
+                    }
+                }
+            }
             Err(e) => skipped_records.push(SkippedRecord {
                 index: i,
                 reason: e,
@@ -116,13 +274,14 @@ pub fn import_connections_inner(
         imported,
         skipped: skipped_records.len(),
         skipped_records,
+        warnings,
     })
 }
 
 pub fn export_connections_inner(state: &Mutex<Store>) -> Result<String, String> {
     let store = state.lock().map_err(|e| e.to_string())?;
     let conns = store.get_connections()?;
-    let export = serde_json::json!({ "version": 1, "connections": conns });
+    let export = serde_json::json!({ "version": EXPORT_FORMAT_VERSION, "connections": conns });
     serde_json::to_string_pretty(&export).map_err(|e| e.to_string())
 }
 
@@ -140,85 +299,5 @@ pub fn export_connections(state: tauri::State<crate::AppState>) -> Result<String
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::models::ConnectionInput;
-    use crate::store::Store;
-
-    fn state() -> std::sync::Mutex<Store> {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        crate::store::migrations::run_migrations(&conn).unwrap();
-        std::sync::Mutex::new(Store::from_connection(conn))
-    }
-
-    #[test]
-    fn parse_import_validates_required_fields() {
-        let json = r#"[{ "name": "X", "db_type": "postgresql", "host": "h", "port": 5432 }]"#;
-        let parsed = parse_import(json).unwrap();
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].name.as_deref(), Some("X"));
-    }
-
-    #[test]
-    fn parse_import_rejects_missing_name() {
-        let json = r#"[{ "db_type": "postgresql", "host": "h", "port": 5432 }]"#;
-        assert!(parse_import(json).is_err());
-    }
-
-    #[test]
-    fn parse_import_rejects_invalid_db_type() {
-        let json = r#"[{ "name": "X", "db_type": "mongodb", "host": "h", "port": 5432 }]"#;
-        assert!(parse_import(json).is_err());
-    }
-
-    #[test]
-    fn import_connections_inserts_all() {
-        let st = state();
-        let json = r#"[{ "name": "A", "db_type": "postgresql", "host": "h", "port": 5432 }, { "name": "B", "db_type": "redis", "host": "r", "port": 6379 }]"#;
-        let result = import_connections_inner(&st, json.to_string()).unwrap();
-        assert_eq!(result.imported, 2);
-        assert_eq!(result.skipped, 0);
-    }
-
-    #[test]
-    fn import_connections_skips_invalid_keeps_valid() {
-        let st = state();
-        let json = r#"[{ "name": "A", "db_type": "postgresql", "host": "h", "port": 5432 }, { "db_type": "postgresql", "host": "h", "port": 5432 }, { "name": "B", "db_type": "redis", "host": "r", "port": 6379 }]"#;
-        let result = import_connections_inner(&st, json.to_string()).unwrap();
-        assert_eq!(result.imported, 2);
-        assert_eq!(result.skipped, 1);
-        assert_eq!(result.skipped_records[0].reason, "missing or empty name");
-    }
-
-    #[test]
-    fn export_connections_returns_json() {
-        let st = state();
-        let _ = st.lock().unwrap().create_connection(ConnectionInput {
-            name: "A".into(),
-            db_type: "postgresql".into(),
-            host: "h".into(),
-            port: Some(5432),
-            username: None,
-            folder_id: None,
-            password: None,
-            database: None,
-            ssh_host: None,
-            ssh_port: None,
-            ssh_user: None,
-            ssh_auth_method: None,
-            ssh_private_key_path: None,
-            ssh_password: None,
-            ssh_passphrase: None,
-            ssl_mode: None,
-            ssl_ca_path: None,
-            ssl_cert_path: None,
-            ssl_key_path: None,
-            environment: None,
-            tag_ids: vec![],
-            use_keychain: true,
-        });
-        let json = export_connections_inner(&st).unwrap();
-        assert!(json.contains("\"name\""));
-        assert!(json.contains("\"version\""));
-    }
-}
+#[path = "import_export.test.rs"]
+mod tests;

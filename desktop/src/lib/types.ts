@@ -124,10 +124,17 @@ export interface ValidationResult {
   error: string;
 }
 
+export interface ImportWarning {
+  index: number;
+  name: string;
+  message: string;
+}
+
 export interface ImportResult {
   imported: number;
   skipped: number;
   skippedRecords: { index: number; reason: string }[];
+  warnings: ImportWarning[];
 }
 
 // ─── DB Viewer Types ────────────────────────────────────────────

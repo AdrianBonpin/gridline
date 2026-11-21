@@ -16,10 +16,15 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EditConnectionModal } from "../db-viewer/EditConnectionModal";
 import { MoveToFolderDialog } from "../connections/MoveToFolderDialog";
 import { RecentConnectionsStrip } from "../connections/RecentConnectionsStrip";
-import { handleImport, handleExport } from "../../lib/importExport";
+import { handleImport, handleExport, describeImportResult } from "../../lib/importExport";
+import { useNotificationStore } from "../../stores/notificationStore";
 import { getChildFolders } from "../../lib/utils";
 import { useShortcut } from "../../hooks/useShortcut";
 import type { Connection, Folder } from "../../lib/types";
+
+// Cap on individually reported dropped links, so importing a file from a
+// machine with a different folder/tag layout cannot bury the screen in toasts.
+const MAX_IMPORT_WARNINGS = 5;
 
 export function HomeScreen() {
     const connections = useFilteredConnections();
@@ -38,6 +43,7 @@ export function HomeScreen() {
     const recordRecent = useConnectionStore((s) => s.recordRecent);
     const loadRecent = useConnectionStore((s) => s.loadRecent);
     const recent = useConnectionStore((s) => s.recent);
+    const notify = useNotificationStore((s) => s.notify);
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const clearSelection = useUiStore((s) => s.clearSelection);
     const confirmBeforeDelete =
@@ -192,7 +198,21 @@ export function HomeScreen() {
                     onNewFolder={() => setFolderDialogOpen(true)}
                     onImport={async () => {
                         const r = await handleImport();
-                        if (r) await loadAll();
+                        if (!r) return;
+                        const summary = describeImportResult(r);
+                        notify(summary.message, summary.type);
+                        // Dropped links are reported per record, so a broken
+                        // folder/tag reference is never silent.
+                        for (const warning of summary.warnings.slice(0, MAX_IMPORT_WARNINGS)) {
+                            notify(warning, "info");
+                        }
+                        if (summary.warnings.length > MAX_IMPORT_WARNINGS) {
+                            notify(
+                                `${summary.warnings.length - MAX_IMPORT_WARNINGS} more links dropped`,
+                                "info"
+                            );
+                        }
+                        await loadAll();
                     }}
                     onExport={async () => {
                         await handleExport();
