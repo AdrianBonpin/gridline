@@ -7,10 +7,10 @@
 **Seams:** Viewer interaction seam: catches offered actions and the staged change; misses server-side rejection of an invalid action.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/68
-**Status:** ready
+**Status:** done
 
-- [ ] Views and materialized views offer no edit, empty-table, or drop action that would fail.
-- [ ] A dependent-table drop shows one acknowledgement and confirmation path, not stacked dialogs.
-- [ ] Proceeding through the confirmation stages exactly one drop change.
-- [ ] Cancelling stages nothing.
-- [ ] Read-only columns remain non-editable for these object kinds.
+- [x] Views and materialized views offer no edit, empty-table, or drop action that would fail.
+- [x] A dependent-table drop shows one acknowledgement and confirmation path, not stacked dialogs.
+- [x] Proceeding through the confirmation stages exactly one drop change.
+- [x] Cancelling stages nothing.
+- [x] Read-only columns remain non-editable for these object kinds.

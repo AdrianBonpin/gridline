@@ -237,3 +237,217 @@ describe("TableOverflowMenu", () => {
     expect(useDbViewerStore.getState().tabs).toHaveLength(0);
   });
 });
+describe("TableOverflowMenu offers only actions that apply to the relation kind", () => {
+  beforeEach(() => {
+    useDbViewerStore.getState().reset();
+    useUiStore.setState({ activeConnectionId: "c1" });
+    vi.resetAllMocks();
+  });
+
+  /** Menu labels only a plain table may offer. */
+  const TABLE_ONLY_LABELS = [
+    "Edit Table…",
+    "Empty Table",
+    "Delete Table",
+    "Import data (CSV/JSON)",
+    "Create Index…",
+    "Create Constraint…",
+    "VACUUM",
+  ];
+
+  function openMenu() {
+    fireEvent.click(screen.getByLabelText("Table options"));
+  }
+
+  function offered(label: string): boolean {
+    return screen.queryByText(label) !== null;
+  }
+
+  it("offers a plain table every action", () => {
+    render(
+      <TableOverflowMenu
+        schema="public"
+        table="users"
+        tableType="TABLE"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    openMenu();
+    for (const label of TABLE_ONLY_LABELS) {
+      expect(offered(label), label).toBe(true);
+    }
+  });
+
+  it("offers a view only the actions that apply to it", () => {
+    render(
+      <TableOverflowMenu
+        schema="main"
+        table="order_summary"
+        tableType="VIEW"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    openMenu();
+    // Reads still apply: a view is browsable, exportable, and its DDL is copyable.
+    expect(offered("Open in new tab")).toBe(true);
+    expect(offered("Export data (CSV)")).toBe(true);
+    expect(offered("Copy table schema")).toBe(true);
+    // Nothing the server would reject for a view is offered.
+    for (const label of TABLE_ONLY_LABELS) {
+      expect(offered(label), label).toBe(false);
+    }
+  });
+
+  it("offers a materialized view no edit, empty-table or drop action", () => {
+    render(
+      <TableOverflowMenu
+        schema="public"
+        table="mv_orders"
+        tableType="MATERIALIZED VIEW"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    openMenu();
+    // A materialized view is a real relation: indexing and maintenance apply.
+    expect(offered("Create Index…")).toBe(true);
+    expect(offered("VACUUM")).toBe(true);
+    // Its rows and its table shape never do.
+    for (const label of [
+      "Edit Table…",
+      "Empty Table",
+      "Delete Table",
+      "Import data (CSV/JSON)",
+      "Create Constraint…",
+    ]) {
+      expect(offered(label), label).toBe(false);
+    }
+  });
+
+  it("stages nothing when a table-only action is invoked for a view", async () => {
+    // The menu never renders these rows for a view; the action guard is the
+    // second line of defence so no invalid change can be staged either way.
+    vi.spyOn(commands, "getObjectDependencies").mockResolvedValue([]);
+    render(
+      <TableOverflowMenu
+        schema="main"
+        table="order_summary"
+        tableType="VIEW"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    openMenu();
+    expect(screen.queryByText("Empty Table")).toBeNull();
+    expect(screen.queryByText("Delete Table")).toBeNull();
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+  });
+});
+
+describe("TableOverflowMenu stages a dependent drop through one confirmation path", () => {
+  beforeEach(() => {
+    useDbViewerStore.getState().reset();
+    useUiStore.setState({ activeConnectionId: "c1" });
+    vi.resetAllMocks();
+  });
+
+  const dependencies = [
+    { deptype: "n", class: "pg_class", name: "v_orders" },
+    { deptype: "n", class: "pg_class", name: "fk_orders_user" },
+  ];
+
+  /** Open the menu and reach the point where the drop confirmation is shown. */
+  async function startDependentDrop() {
+    vi.spyOn(commands, "getObjectDependencies").mockResolvedValue(dependencies);
+    render(
+      <TableOverflowMenu
+        schema="public"
+        table="orders"
+        tableType="TABLE"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Delete Table"));
+    await screen.findByText("v_orders");
+  }
+
+  it("presents exactly one dialog that names the dependencies", async () => {
+    await startDependentDrop();
+    // One dialog — not a dependency dialog stacked on a confirm dialog.
+    expect(screen.getAllByTestId("animated-backdrop")).toHaveLength(1);
+    expect(
+      screen.getAllByRole("button", { name: /^delete table$/i }),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^cancel$/i })).toHaveLength(
+      1,
+    );
+    expect(screen.getByText("v_orders")).toBeInTheDocument();
+    expect(screen.getByText("fk_orders_user")).toBeInTheDocument();
+  });
+
+  it("stages exactly one drop change when that one confirmation proceeds", async () => {
+    await startDependentDrop();
+    const confirm = screen.getByRole("button", { name: /^delete table$/i });
+    // The single dialog requires one deliberate acknowledgement.
+    expect(confirm).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(confirm).toBeEnabled();
+
+    fireEvent.click(confirm);
+
+    const queue = useDbViewerStore.getState().changesQueue;
+    expect(queue).toHaveLength(1);
+    expect(queue[0]).toMatchObject({
+      type: "drop_table",
+      schema: "public",
+      table: "orders",
+    });
+    // No second confirmation follows: the one dialog is the whole path.
+    expect(screen.queryByTestId("animated-backdrop")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /^delete table$/i }),
+    ).toBeNull();
+  });
+
+  it("stages nothing when the acknowledgement is cancelled", async () => {
+    await startDependentDrop();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+    expect(screen.queryByTestId("animated-backdrop")).toBeNull();
+  });
+
+  it("still stages exactly one change for a drop with no dependencies", async () => {
+    vi.spyOn(commands, "getObjectDependencies").mockResolvedValue([]);
+    render(
+      <TableOverflowMenu
+        schema="public"
+        table="orders"
+        tableType="TABLE"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Delete Table"));
+    await waitFor(() =>
+      expect(screen.getAllByTestId("animated-backdrop")).toHaveLength(1),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^delete table$/i }));
+
+    const queue = useDbViewerStore.getState().changesQueue;
+    expect(queue).toHaveLength(1);
+    expect(queue[0]).toMatchObject({ type: "drop_table", table: "orders" });
+  });
+});
