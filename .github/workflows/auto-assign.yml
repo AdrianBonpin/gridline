@@ -9,13 +9,16 @@ on:
   issues:
     types: [opened]
 
-permissions:
-  issues: write
+# Default-deny: the job below grants the one scope it uses.
+permissions: {}
 
 jobs:
   auto-assign:
     name: Assign issue to repo owner
     runs-on: ubuntu-latest
+    # The only token scope this workflow needs: assign an issue.
+    permissions:
+      issues: write
     steps:
       - name: Assign to ${{ github.repository_owner }}
         env:
