@@ -20,6 +20,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The desktop E2E job builds and launches the real app, so it is scoped to
+  # pull requests that can actually change desktop behavior. Everything else
+  # (docs, website) skips it. Computed with git rather than a third-party
+  # action so no extra action needs pinning.
+  changes:
+    name: detect desktop changes
+    runs-on: ubuntu-22.04
+    outputs:
+      desktop: ${{ steps.detect.outputs.desktop }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes that can affect the desktop app
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA:-}" ]; then
+            echo "Not a pull_request run; running the desktop E2E harness."
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE_SHA" >/dev/null 2>&1 || true
+          if ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed-files.txt 2>/dev/null; then
+            echo "Could not diff $BASE_SHA..$HEAD_SHA; running the desktop E2E harness."
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cat changed-files.txt
+          if grep -Eq '^(desktop/|bun\.lock|package\.json|\.github/workflows/ci\.yml)' changed-files.txt; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=false" >> "$GITHUB_OUTPUT"
+          fi
+
   checks:
     name: fmt + tests + build
     runs-on: ubuntu-22.04
@@ -67,3 +107,61 @@ jobs:
 
       - name: Build the desktop frontend
         run: bun run --filter gridline-desktop build
+
+  # Targeted built-product coverage: launches the real (non-AppImage) desktop
+  # binary through tauri-driver + WebKitWebDriver under Xvfb, opens the demo
+  # database the app seeds on first launch, and asserts demo rows reach the
+  # grid. A failed launch, a missing window, or an empty grid fails the job and
+  # uploads the launch log plus a screenshot/page source of the failure.
+  desktop-e2e:
+    name: desktop e2e (demo smoke)
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # WebKitGTK runtime + `WebKitWebDriver` (the native driver tauri-driver
+      # drives) + Xvfb for a headless display. ubuntu-24.04 ships the
+      # WebKitGTK 4.1 driver, matching what Tauri v2 links against.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+            webkit2gtk-driver xvfb
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './desktop/src-tauri -> target'
+          key: desktop-e2e
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - name: Build the desktop binary
+        run: bun run --filter gridline-desktop e2e:build
+
+      - name: Run the desktop E2E smoke flow
+        run: xvfb-run -a bun run --filter gridline-desktop e2e
+
+      - name: Upload E2E failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-e2e-artifacts
+          path: desktop/e2e-artifacts
+          retention-days: 7
+          if-no-files-found: warn

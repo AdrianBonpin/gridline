@@ -62,6 +62,17 @@ describe("ConnectionCard", () => {
     expect(screen.getByText("Prod DB")).toBeInTheDocument();
     expect(screen.getByText("prod.example.com:5432")).toBeInTheDocument();
   });
+  it("exposes the stable hooks the desktop E2E harness selects on", () => {
+    // desktop/e2e drives the built app by these attributes; renaming one
+    // silently breaks the smoke flow, so pin it here.
+    const { container } = render(<ConnectionCard connection={conn} tags={tags} />, {
+      wrapper: Wrapper,
+    });
+    const card = container.querySelector('[data-testid="connection-card"]');
+    expect(card).not.toBeNull();
+    expect(card?.getAttribute("data-connection-name")).toBe("Prod DB");
+  });
+
   it("omits port for sqlite", () => {
     const sqlite = { ...conn, db_type: "sqlite" as const, host: "/data/x.db", port: null };
     render(<ConnectionCard connection={sqlite} tags={tags} />, { wrapper: Wrapper });
