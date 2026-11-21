@@ -1048,39 +1048,51 @@ where
 /// TLS in-process, where the bundled MariaDB client cannot.
 pub(crate) fn apply_mysql_tls(
     mut opts: sqlx::mysql::MySqlConnectOptions,
-    original_host: &str,
-    ssl_mode: Option<&str>,
+    tls: sqlx::mysql::MySqlSslMode,
     ssl_ca_path: Option<&str>,
-    via_tunnel: bool,
 ) -> sqlx::mysql::MySqlConnectOptions {
     use sqlx::mysql::MySqlSslMode;
 
-    // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
-    // degrade to encrypt-only `require`. Direct connections honor the mode.
-    let decision = crate::commands::ssh::effective_tls_decision(
-        crate::db::tls::tls_decision_for(original_host, ssl_mode),
-        via_tunnel,
-    );
-    match decision {
-        crate::db::tls::TlsDecision::Disable => {
-            opts = opts.ssl_mode(MySqlSslMode::Disabled);
-        }
-        crate::db::tls::TlsDecision::Require => {
-            opts = opts.ssl_mode(MySqlSslMode::Required);
-        }
-        crate::db::tls::TlsDecision::Verify => {
-            // sqlx 0.8 has no VerifyFull: verify-ca -> VerifyCa (chain only),
-            // verify-full -> VerifyIdentity (chain + hostname).
-            match ssl_mode {
-                Some("verify-ca") => opts = opts.ssl_mode(MySqlSslMode::VerifyCa),
-                _ => opts = opts.ssl_mode(MySqlSslMode::VerifyIdentity),
-            }
-            if let Some(ca) = ssl_ca_path {
-                opts = opts.ssl_ca(ca);
-            }
+    opts = opts.ssl_mode(tls);
+    if matches!(tls, MySqlSslMode::VerifyCa | MySqlSslMode::VerifyIdentity) {
+        if let Some(ca) = ssl_ca_path {
+            opts = opts.ssl_ca(ca);
         }
     }
     opts
+}
+
+/// Resolve a connection's `ssl_mode` into a sqlx `MySqlSslMode`.
+///
+/// An unrecognized mode is an error. sqlx 0.8 has no separate TLS hostname:
+/// `VerifyIdentity` checks the name it dials, and through a tunnel that name is
+/// loopback. So `verify-full` through a tunnel is refused (fail closed) rather
+/// than downgraded to encryption-only, while `verify-ca` maps to chain
+/// verification, which loopback forwarding can still establish.
+pub(crate) fn mysql_tls_mode(
+    original_host: &str,
+    ssl_mode: Option<&str>,
+    via_tunnel: bool,
+) -> Result<sqlx::mysql::MySqlSslMode, String> {
+    use sqlx::mysql::MySqlSslMode;
+
+    let decision = crate::db::tls::tls_decision_for(original_host, ssl_mode)?;
+    match decision {
+        crate::db::tls::TlsDecision::Disable => Ok(MySqlSslMode::Disabled),
+        crate::db::tls::TlsDecision::Require => Ok(MySqlSslMode::Required),
+        crate::db::tls::TlsDecision::Verify => {
+            let mode = crate::db::tls::parse_ssl_mode(ssl_mode)?;
+            match (mode, via_tunnel) {
+                // Chain verification survives loopback forwarding: the peer is
+                // still the real server, reached through the tunnel.
+                (Some(crate::db::tls::SslMode::VerifyCa), _) => Ok(MySqlSslMode::VerifyCa),
+                (_, false) => Ok(MySqlSslMode::VerifyIdentity),
+                _ => Err(format!(
+                    "verify-full through an SSH tunnel cannot verify the certificate against {original_host} (the MySQL driver verifies the address it dials, which is the tunnel's loopback endpoint); use verify-ca to verify the certificate chain through the tunnel, or connect without the tunnel"
+                )),
+            }
+        }
+    }
 }
 
 /// Build the final MySQL connect options (base params + TLS policy) for a
@@ -1095,14 +1107,15 @@ pub(crate) fn mysql_connect_options(
     ssl_mode: Option<&str>,
     ssl_ca_path: Option<&str>,
     via_tunnel: bool,
-) -> sqlx::mysql::MySqlConnectOptions {
+) -> Result<sqlx::mysql::MySqlConnectOptions, String> {
+    let tls = mysql_tls_mode(original_host, ssl_mode, via_tunnel)?;
     let opts = sqlx::mysql::MySqlConnectOptions::new()
         .host(host)
         .port(port)
         .username(username)
         .password(password)
         .database(database);
-    apply_mysql_tls(opts, original_host, ssl_mode, ssl_ca_path, via_tunnel)
+    Ok(apply_mysql_tls(opts, tls, ssl_ca_path))
 }
 
 /// Open a single standalone MySQL connection for a non-browsing operation
@@ -1130,7 +1143,7 @@ pub(crate) async fn open_mysql_connection(
         ssl_mode,
         ssl_ca_path,
         via_tunnel,
-    );
+    )?;
     opts.connect()
         .await
         .map_err(|e| sanitize_error(&format!("MySQL connection failed: {e}")))
@@ -1151,6 +1164,13 @@ pub(crate) async fn run_mysql_connect(
     if config.host.trim().is_empty() {
         return Err("host is required".to_string());
     }
+
+    let via_ssh = config.ssh_config().is_some();
+    // TLS first: an unknown mode, or verify-full through a tunnel (which MySQL
+    // cannot verify against the real hostname), is refused before any tunnel is
+    // opened on its behalf.
+    let tls = mysql_tls_mode(&config.host, config.ssl_mode.as_deref(), via_ssh)
+        .map_err(|e| sanitize_error(&e))?;
 
     let target_host: String;
     let target_port: u16;
@@ -1199,13 +1219,7 @@ pub(crate) async fn run_mysql_connect(
 
     // TLS: shared with the native restore path so browsing and restore make
     // identical TLS decisions.
-    let opts = apply_mysql_tls(
-        opts,
-        &config.host,
-        config.ssl_mode.as_deref(),
-        config.ssl_ca_path.as_deref(),
-        via_tunnel,
-    );
+    let opts = apply_mysql_tls(opts, tls, config.ssl_ca_path.as_deref());
 
     // Clone the (already final) options before `connect_with` consumes them so
     // `cancel_query` can open its own connection to run `KILL QUERY ?`.
@@ -1253,19 +1267,15 @@ pub async fn db_connect(
         let user = config.username.as_deref().unwrap_or("postgres");
         let dbname = config.database.as_deref().unwrap_or("postgres");
         let password = config.password.as_deref().unwrap_or("");
-        let default_port = config.port.unwrap_or(5432) as u16;
 
         let ssh_cfg = config.ssh_config();
-        let will_tunnel = ssh_cfg.is_some();
 
-        // TLS first: through a tunnel the peer is loopback, so
-        // verify-ca/verify-full degrade to encrypt-only `require`; direct
-        // connections honor the user's mode. Building this before opening the
-        // tunnel means a config error can't leak the tunnel.
-        let decision = crate::commands::ssh::effective_tls_decision(
-            crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref()),
-            will_tunnel,
-        );
+        // TLS first: the mode is validated here, so an unknown mode is refused
+        // before any tunnel is opened and before a connection is attempted.
+        // A tunnel never changes the decision — verification stays verification
+        // and is checked against the real host below.
+        let decision = crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref())
+            .map_err(|e| sanitize_error(&e))?;
         let tls = crate::db::tls::build_tls_config(
             decision,
             config.ssl_ca_path.as_deref(),
@@ -1279,46 +1289,51 @@ pub async fn db_connect(
         // SSH tunnel: if configured, open a loopback tunnel to the remote DB
         // and connect through it. The blocking ssh2 handshake runs in
         // `spawn_blocking` so it never blocks the async runtime.
-        let (connect_host, connect_port, via_tunnel) = match ssh_cfg {
-            Some(ssh) => {
-                let key = connection_id.clone();
-                let remote_host = config.host.clone();
-                let remote_port = config.port.unwrap_or(5432) as u16;
-                let pw = config.ssh_password.clone();
-                let pp = config.ssh_passphrase.clone();
-                let backend = state.ssh_manager.lock().unwrap().backend_clone();
-                let tunnel = tokio::task::spawn_blocking(move || {
-                    backend.open(
-                        &key,
-                        &ssh,
-                        &remote_host,
-                        remote_port,
-                        pw.as_deref(),
-                        pp.as_deref(),
-                    )
-                })
-                .await
-                .map_err(|e| format!("Connection failed: {e}"))?
-                .map_err(|e: crate::commands::ssh_trust::SshTunnelError| {
-                    sanitize_error(&e.message())
-                })?;
-                let lp = tunnel.local_port;
-                state
-                    .ssh_manager
-                    .lock()
-                    .unwrap()
-                    .insert_tunnel(connection_id.clone(), tunnel);
-                ("127.0.0.1".to_string(), lp, true)
-            }
-            None => (config.host.clone(), default_port, false),
+        let via_tunnel = if let Some(ssh) = ssh_cfg {
+            let key = connection_id.clone();
+            let remote_host = config.host.clone();
+            let remote_port = config.port.unwrap_or(5432) as u16;
+            let pw = config.ssh_password.clone();
+            let pp = config.ssh_passphrase.clone();
+            let backend = state.ssh_manager.lock().unwrap().backend_clone();
+            let tunnel = tokio::task::spawn_blocking(move || {
+                backend.open(
+                    &key,
+                    &ssh,
+                    &remote_host,
+                    remote_port,
+                    pw.as_deref(),
+                    pp.as_deref(),
+                )
+            })
+            .await
+            .map_err(|e| format!("Connection failed: {e}"))?
+            .map_err(|e: crate::commands::ssh_trust::SshTunnelError| {
+                sanitize_error(&e.message())
+            })?;
+            let lp = tunnel.local_port;
+            state
+                .ssh_manager
+                .lock()
+                .unwrap()
+                .insert_tunnel(connection_id.clone(), tunnel);
+            Some(lp)
+        } else {
+            None
         };
+
+        // Endpoint plan: through a tunnel the TCP endpoint is the tunnel's
+        // loopback listener (`hostaddr`) while `host` stays the real database
+        // name, so verify-ca/verify-full authenticate the certificate against
+        // the host the user asked for instead of 127.0.0.1.
+        let plan =
+            crate::db::tls::PgConnectPlan::new(&config.host, config.port, decision, via_tunnel);
 
         // Config builder: user/password/dbname are sent as-is (no URL
         // percent-encoding needed), and the TLS connector is chosen explicitly.
         let mut pgconfig = tokio_postgres::Config::new();
+        plan.apply(&mut pgconfig);
         pgconfig
-            .host(connect_host.clone())
-            .port(connect_port)
             .user(user)
             .password(password)
             .dbname(dbname)
@@ -1354,7 +1369,7 @@ pub async fn db_connect(
                 Ok(())
             }
             Err(e) => {
-                if via_tunnel {
+                if via_tunnel.is_some() {
                     state
                         .ssh_manager
                         .lock()
@@ -3719,6 +3734,134 @@ mod tests {
         Ssh2Backend::new(Arc::new(
             crate::commands::ssh_trust::fake::FakeHostTrust::default(),
         ))
+    }
+
+    /// A tunnel backend that records every `open` and never touches the network.
+    fn recording_tunnel_backend() -> Arc<crate::commands::ssh_trust::fake::FakeTunnelBackend> {
+        Arc::new(crate::commands::ssh_trust::fake::FakeTunnelBackend::default())
+    }
+
+    fn mysql_config_with_tls(ssl_mode: Option<&str>, ssh_host: Option<&str>) -> DbConfig {
+        DbConfig {
+            db_type: "mysql".into(),
+            host: "db.internal".into(),
+            port: Some(3306),
+            username: Some("app".into()),
+            password: Some("pw".into()),
+            database: Some("appdb".into()),
+            ssl_mode: ssl_mode.map(str::to_string),
+            ssh_host: ssh_host.map(str::to_string),
+            ssh_port: ssh_host.map(|_| 22),
+            ssh_user: ssh_host.map(|_| "tunnel".to_string()),
+            ssh_auth_method: ssh_host.map(|_| "password".to_string()),
+            ssh_password: ssh_host.map(|_| "pw".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// sqlx's `MySqlSslMode` has no `PartialEq`; this names it for assertions.
+    fn mysql_mode_name(mode: sqlx::mysql::MySqlSslMode) -> &'static str {
+        use sqlx::mysql::MySqlSslMode;
+        match mode {
+            MySqlSslMode::Disabled => "disabled",
+            MySqlSslMode::Preferred => "preferred",
+            MySqlSslMode::Required => "required",
+            MySqlSslMode::VerifyCa => "verify-ca",
+            MySqlSslMode::VerifyIdentity => "verify-identity",
+        }
+    }
+
+    /// Every mode has a behavioral mapping onto the driver's TLS modes.
+    #[test]
+    fn mysql_tls_mode_maps_every_supported_mode() {
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", Some("disable"), false).unwrap()),
+            "disabled"
+        );
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", Some("require"), false).unwrap()),
+            "required"
+        );
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", Some("verify-ca"), false).unwrap()),
+            "verify-ca"
+        );
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", Some("verify-full"), false).unwrap()),
+            "verify-identity"
+        );
+        // No mode keeps the managed-provider default (encrypt-only), because
+        // those providers refuse plaintext.
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("x.us-east-2.psdb.cloud", None, false).unwrap()),
+            "required"
+        );
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", None, false).unwrap()),
+            "disabled"
+        );
+    }
+
+    /// Through a tunnel: chain verification still works (the peer is the real
+    /// server, reached through the tunnel), while hostname verification cannot
+    /// and is refused instead of silently downgraded to encryption-only.
+    #[test]
+    fn mysql_tunnel_verification_fails_closed_instead_of_downgrading() {
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", Some("verify-ca"), true).unwrap()),
+            "verify-ca",
+            "verify-ca verifies the chain through the tunnel"
+        );
+        let err = mysql_tls_mode("db.internal", Some("verify-full"), true)
+            .expect_err("verify-full cannot be honored through a tunnel");
+        assert!(err.contains("verify-full"), "got: {err}");
+        assert!(err.contains("db.internal"), "got: {err}");
+        assert!(
+            err.contains("verify-ca"),
+            "error should name the workable mode: {err}"
+        );
+        // An unknown mode is refused on both paths.
+        assert!(mysql_tls_mode("db.internal", Some("bogus"), false).is_err());
+        assert!(mysql_tls_mode("db.internal", Some("bogus"), true).is_err());
+    }
+
+    /// An unknown mode is refused before any SSH handshake: no tunnel may be
+    /// opened on behalf of a configuration that can never connect.
+    #[tokio::test]
+    async fn run_mysql_connect_refuses_an_unknown_ssl_mode_before_opening_a_tunnel() {
+        let backend = recording_tunnel_backend();
+        let ssh = StdMutex::new(SshTunnelManager::new(backend.clone()));
+        let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
+        let cfg = mysql_config_with_tls(Some("prefer"), Some("bastion.internal"));
+
+        let err = run_mysql_connect("mysql-bogus-tls", &cfg, &ssh, &pm, &reg)
+            .await
+            .expect_err("an unknown TLS mode must be refused");
+        assert!(err.contains("prefer"), "got: {err}");
+        assert!(
+            backend.opened().is_empty(),
+            "no tunnel may be opened for a rejected TLS mode"
+        );
+        assert_eq!(ssh.lock().unwrap().active_count(), 0);
+        assert!(pm.lock().await.get("mysql-bogus-tls").is_none());
+    }
+
+    /// verify-full through a tunnel is refused for the same reason, and equally
+    /// before the tunnel opens.
+    #[tokio::test]
+    async fn run_mysql_connect_refuses_verify_full_through_a_tunnel() {
+        let backend = recording_tunnel_backend();
+        let ssh = StdMutex::new(SshTunnelManager::new(backend.clone()));
+        let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
+        let cfg = mysql_config_with_tls(Some("verify-full"), Some("bastion.internal"));
+
+        let err = run_mysql_connect("mysql-tunnel-verify", &cfg, &ssh, &pm, &reg)
+            .await
+            .expect_err("verify-full through a tunnel must fail closed");
+        assert!(err.contains("verify-full"), "got: {err}");
+        assert!(backend.opened().is_empty());
     }
 
     #[test]

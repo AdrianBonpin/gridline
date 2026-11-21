@@ -223,6 +223,13 @@ pub fn import_connections_inner(
             });
             continue;
         }
+        // An unrecognized TLS mode is not silently dropped or defaulted: the
+        // record is refused with the valid set named, so an imported connection
+        // can never end up weaker than the file asked for.
+        if let Err(reason) = crate::db::tls::validate_ssl_mode(rec.ssl_mode.as_deref()) {
+            skipped_records.push(SkippedRecord { index: i, reason });
+            continue;
+        }
         let (folder_id, tag_ids) = resolve_links(
             i,
             &name,

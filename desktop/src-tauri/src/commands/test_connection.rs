@@ -132,6 +132,12 @@ pub fn validate_test_input(config: &DbConfig) -> Option<String> {
         }
     }
 
+    // TLS: an unrecognized mode is refused here — before any SSH handshake or
+    // connection attempt — instead of silently testing without encryption.
+    if let Err(e) = crate::db::tls::validate_ssl_mode(config.ssl_mode.as_deref()) {
+        return Some(e);
+    }
+
     None
 }
 
@@ -195,6 +201,16 @@ async fn resolve_connect_target(
     }
 }
 
+/// A failed probe (no version, no latency).
+fn probe_failure(error: String) -> TestConnectionResult {
+    TestConnectionResult {
+        ok: false,
+        error: Some(error),
+        server_version: None,
+        latency_ms: None,
+    }
+}
+
 /// Close the probe tunnel if one was opened.
 fn close_probe_tunnel(ssh: &SshManager, key: Option<&str>) {
     if let Some(k) = key {
@@ -243,32 +259,22 @@ pub async fn test_database_connection(config: &DbConfig, ssh: &SshManager) -> Te
 /// Test a PostgreSQL connection using `tokio-postgres`.
 ///
 /// Connects through an SSH tunnel when configured, with TLS selected from
-/// `ssl_mode` (downgraded to encrypt-only through a tunnel). The connection
-/// handler is spawned and immediately dropped after confirming the
-/// connection is alive; any probe tunnel is closed in every path.
+/// `ssl_mode`. An unknown mode is refused before the probe starts, and through
+/// a tunnel the certificate is verified against the real database hostname
+/// (the tunnel only supplies the TCP endpoint). The connection handler is
+/// spawned and immediately dropped after confirming the connection is alive;
+/// any probe tunnel is closed in every path.
 async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnectionResult {
     let user = config.username.as_deref().unwrap_or("postgres");
     let dbname = config.database.as_deref().unwrap_or("postgres");
     let password = config.password.as_deref().unwrap_or("");
 
-    let target = match resolve_connect_target(config, ssh, 5432).await {
-        Ok(t) => t,
-        Err(e) => {
-            return TestConnectionResult {
-                ok: false,
-                error: Some(e),
-                server_version: None,
-                latency_ms: None,
-            }
-        }
+    // TLS first: an unknown mode must never open a tunnel or reach a driver.
+    let decision = match crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref())
+    {
+        Ok(d) => d,
+        Err(e) => return probe_failure(e),
     };
-
-    // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
-    // degrade to encrypt-only `require`. Direct connections honor the mode.
-    let decision = crate::commands::ssh::effective_tls_decision(
-        crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref()),
-        target.via_tunnel,
-    );
     let tls = match crate::db::tls::build_tls_config(
         decision,
         config.ssl_ca_path.as_deref(),
@@ -276,23 +282,29 @@ async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnecti
         config.ssl_key_path.as_deref(),
     ) {
         Ok(t) => t,
-        Err(e) => {
-            close_probe_tunnel(ssh, target.tunnel_key.as_deref());
-            return TestConnectionResult {
-                ok: false,
-                error: Some(e),
-                server_version: None,
-                latency_ms: None,
-            };
-        }
+        Err(e) => return probe_failure(e),
     };
+
+    let target = match resolve_connect_target(config, ssh, 5432).await {
+        Ok(t) => t,
+        Err(e) => return probe_failure(e),
+    };
+
+    // Endpoint plan: through a tunnel the driver dials the tunnel's loopback
+    // listener (`hostaddr`) but still verifies the certificate against
+    // `config.host`, so verification is never weakened to encryption-only.
+    let plan = crate::db::tls::PgConnectPlan::new(
+        &config.host,
+        config.port,
+        decision,
+        target.via_tunnel.then_some(target.port),
+    );
 
     // Config builder: user/password/dbname are sent as-is (no URL
     // percent-encoding needed), and the TLS connector is chosen explicitly.
     let mut pgconfig = tokio_postgres::Config::new();
+    plan.apply(&mut pgconfig);
     pgconfig
-        .host(target.host)
-        .port(target.port)
         .user(user)
         .password(password)
         .dbname(dbname)
@@ -351,10 +363,23 @@ async fn test_pg_connection(config: &DbConfig, ssh: &SshManager) -> TestConnecti
 ///
 /// Uses `MySqlPoolOptions` with a pool size of 1 and a 10-second
 /// `acquire_timeout`, connecting through an SSH tunnel when configured and
-/// mapping `ssl_mode` onto `MySqlSslMode` (downgraded to encrypt-only
-/// through a tunnel). Any probe tunnel is closed in every path.
+/// mapping `ssl_mode` onto `MySqlSslMode` with the same policy the viewer uses
+/// (`verify-full` through a tunnel is refused, never weakened). An unknown mode
+/// is refused before any probe tunnel is opened. Any probe tunnel is closed in
+/// every path.
 async fn test_mysql_connection(config: &DbConfig, ssh: &SshManager) -> TestConnectionResult {
-    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
+    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
+
+    // TLS first: the mode is validated, and a mode this engine cannot honor
+    // through a tunnel is refused, before a tunnel is opened on its behalf.
+    let tls = match crate::commands::db_viewer::mysql_tls_mode(
+        &config.host,
+        config.ssl_mode.as_deref(),
+        config.ssh_config().is_some(),
+    ) {
+        Ok(t) => t,
+        Err(e) => return probe_failure(e),
+    };
 
     let target = match resolve_connect_target(config, ssh, 3306).await {
         Ok(t) => t,
@@ -368,38 +393,17 @@ async fn test_mysql_connection(config: &DbConfig, ssh: &SshManager) -> TestConne
         }
     };
 
-    let mut opts = MySqlConnectOptions::new()
+    let opts = MySqlConnectOptions::new()
         .host(&target.host)
         .port(target.port)
         .username(config.username.as_deref().unwrap_or("root"))
         .password(config.password.as_deref().unwrap_or(""))
         .database(config.database.as_deref().unwrap_or("mysql"));
 
-    // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
-    // degrade to encrypt-only `require`. Direct connections honor the mode.
-    let decision = crate::commands::ssh::effective_tls_decision(
-        crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref()),
-        target.via_tunnel,
-    );
-    match decision {
-        crate::db::tls::TlsDecision::Disable => {
-            opts = opts.ssl_mode(MySqlSslMode::Disabled);
-        }
-        crate::db::tls::TlsDecision::Require => {
-            opts = opts.ssl_mode(MySqlSslMode::Required);
-        }
-        crate::db::tls::TlsDecision::Verify => {
-            // sqlx 0.8 has no VerifyFull: verify-ca -> VerifyCa (chain only),
-            // verify-full -> VerifyIdentity (chain + hostname).
-            match config.ssl_mode.as_deref() {
-                Some("verify-ca") => opts = opts.ssl_mode(MySqlSslMode::VerifyCa),
-                _ => opts = opts.ssl_mode(MySqlSslMode::VerifyIdentity),
-            }
-            if let Some(ca) = config.ssl_ca_path.as_deref() {
-                opts = opts.ssl_ca(ca);
-            }
-        }
-    }
+    // Same TLS policy as browsing, so a Test cannot succeed under a weaker mode
+    // than the connection will actually use.
+    let opts =
+        crate::commands::db_viewer::apply_mysql_tls(opts, tls, config.ssl_ca_path.as_deref());
 
     let start = std::time::Instant::now();
     match MySqlPoolOptions::new()
@@ -790,6 +794,96 @@ mod tests {
             validate_test_input(&config).is_some(),
             "port 0 should be rejected"
         );
+    }
+
+    #[test]
+    fn validate_test_input_rejects_unknown_tls_mode_naming_the_valid_set() {
+        let config = DbConfig {
+            db_type: "postgresql".to_string(),
+            host: "localhost".to_string(),
+            port: Some(5432),
+            ssl_mode: Some("prefer".to_string()),
+            ..Default::default()
+        };
+        let err = validate_test_input(&config).expect("an unknown TLS mode must be rejected");
+        assert!(err.contains("prefer"), "got: {err}");
+        for valid in crate::db::tls::VALID_SSL_MODES {
+            assert!(err.contains(valid), "error {err} must name {valid}");
+        }
+    }
+
+    #[test]
+    fn validate_test_input_accepts_every_supported_tls_mode() {
+        for mode in crate::db::tls::VALID_SSL_MODES {
+            let config = DbConfig {
+                db_type: "postgresql".to_string(),
+                host: "localhost".to_string(),
+                port: Some(5432),
+                ssl_mode: Some(mode.to_string()),
+                ..Default::default()
+            };
+            assert!(
+                validate_test_input(&config).is_none(),
+                "{mode} should be accepted"
+            );
+        }
+    }
+
+    /// The probe refuses an unknown mode before any tunnel is opened, and never
+    /// reports success for a mode it could not honor.
+    #[tokio::test]
+    async fn postgres_probe_refuses_an_unknown_tls_mode_before_opening_a_tunnel() {
+        let backend =
+            std::sync::Arc::new(crate::commands::ssh_trust::fake::FakeTunnelBackend::default());
+        let ssh = std::sync::Mutex::new(SshTunnelManager::new(backend.clone()));
+        let config = DbConfig {
+            db_type: "postgresql".to_string(),
+            host: "db.internal".to_string(),
+            port: Some(5432),
+            ssl_mode: Some("allow".to_string()),
+            ssh_host: Some("bastion.internal".to_string()),
+            ssh_port: Some(22),
+            ssh_user: Some("tunnel".to_string()),
+            ssh_auth_method: Some("password".to_string()),
+            ..Default::default()
+        };
+
+        let result = test_database_connection(&config, &ssh).await;
+
+        assert!(!result.ok);
+        let err = result.error.unwrap_or_default();
+        assert!(err.contains("allow"), "got: {err}");
+        assert!(
+            backend.opened().is_empty(),
+            "no probe tunnel may be opened for a rejected TLS mode"
+        );
+    }
+
+    /// MySQL cannot verify `verify-full` against the real hostname through a
+    /// tunnel, so the probe refuses it instead of testing under a weaker mode.
+    #[tokio::test]
+    async fn mysql_probe_refuses_verify_full_through_a_tunnel() {
+        let backend =
+            std::sync::Arc::new(crate::commands::ssh_trust::fake::FakeTunnelBackend::default());
+        let ssh = std::sync::Mutex::new(SshTunnelManager::new(backend.clone()));
+        let config = DbConfig {
+            db_type: "mysql".to_string(),
+            host: "db.internal".to_string(),
+            port: Some(3306),
+            ssl_mode: Some("verify-full".to_string()),
+            ssh_host: Some("bastion.internal".to_string()),
+            ssh_port: Some(22),
+            ssh_user: Some("tunnel".to_string()),
+            ssh_auth_method: Some("password".to_string()),
+            ..Default::default()
+        };
+
+        let result = test_database_connection(&config, &ssh).await;
+
+        assert!(!result.ok);
+        let err = result.error.unwrap_or_default();
+        assert!(err.contains("verify-full"), "got: {err}");
+        assert!(backend.opened().is_empty());
     }
 
     // ------------------------------------------------------------------
