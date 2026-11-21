@@ -367,6 +367,13 @@ export interface PgRestoreRequest {
   format: string;
   clean: boolean;
   schema?: string;
+  /**
+   * The user explicitly accepted a non-atomic restore after the backend named
+   * the dump's incompatibility and the partial-application risk. Omitted (or
+   * false) means a dump that cannot be restored in one transaction is refused
+   * instead of silently downgraded — see {@link nonAtomicRefusalReason}.
+   */
+  acceptNonAtomic?: boolean;
 }
 
 export interface SyncOptions {

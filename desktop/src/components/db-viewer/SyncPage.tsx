@@ -399,6 +399,18 @@ export function SyncPage() {
                                     be undone.
                                 </span>
                             </label>
+                            {isPg && (
+                                <p
+                                    data-testid="sync-atomicity"
+                                    className="text-[11px] leading-relaxed text-text-muted/70"
+                                >
+                                    A PostgreSQL sync restores into the target in one
+                                    transaction: if the restore fails, everything it
+                                    applied is rolled back and the target is left
+                                    unchanged. A failure is reported as the target's
+                                    error, not as the dump's closed pipe.
+                                </p>
+                            )}
                         </div>
 
                         {/* Progress */}

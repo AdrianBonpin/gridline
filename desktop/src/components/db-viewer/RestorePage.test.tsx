@@ -227,3 +227,121 @@ describe("RestorePage File Grants", () => {
     expect(screen.getByTestId("restore-input-path")).toHaveProperty("value", "/tmp/backup.dump");
   });
 });
+// Ticket 33: a PostgreSQL restore is transactional whenever the dump allows it,
+// and a dump that cannot be restored in one transaction never runs without an
+// explicit risk acceptance that names what a failure would leave behind.
+describe("RestorePage PostgreSQL restore atomicity", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockConnections.length = 0;
+    useBackupStore.setState({ jobs: [], activeJobId: null, progress: 0 });
+    useNotificationStore.setState({ notifications: [] });
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    vi.spyOn(commands, "detectPgTools").mockResolvedValue(pgToolsOk);
+  });
+
+  const refusal =
+    "pg-restore-non-atomic: This SQL script contains statements PostgreSQL cannot run " +
+    "inside a single transaction: VACUUM (line 12). Restoring it as one transaction is " +
+    "impossible, so a failure partway through can leave the target partially applied. " +
+    "It can only be restored one statement at a time, so a failure partway through is " +
+    "not rolled back and can leave the target partially applied. Accept that risk to " +
+    "run it anyway.";
+
+  it("states the transactional guarantee for a PostgreSQL restore", async () => {
+    mockConnections.push({ id: "a1", db_type: "postgresql", name: "p" });
+    render(<RestorePage connectionId="a1" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_restore/i)).not.toBeInTheDocument());
+
+    const note = screen.getByTestId("restore-atomicity");
+    expect(note.textContent).toMatch(/one\s+transaction/i);
+    expect(note.textContent).toMatch(/left\s+unchanged/i);
+    // The remaining non-atomic guarantee is stated too, not left implicit.
+    expect(note.textContent).toMatch(/partially\s+applied/i);
+  });
+
+  it("requires an explicit risk acceptance before running a non-atomic dump", async () => {
+    mockConnections.push({ id: "a2", db_type: "postgresql", name: "p", database: "appdb" });
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(readGrant("grant-refused", "/tmp/dump.sql"));
+    const restore = vi
+      .spyOn(commands, "pgRestore")
+      .mockRejectedValueOnce(new Error(refusal))
+      .mockResolvedValueOnce("job-nonatomic");
+
+    render(<RestorePage connectionId="a2" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_restore/i)).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /browse for file/i }));
+    await waitFor(() => expect(commands.selectFileForGrant).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId("restore-confirm-checkbox"));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: /start restore/i }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /start restore/i }));
+
+    // The backend identified the incompatibility and named the risk.
+    const panel = await screen.findByTestId("restore-non-atomic-risk");
+    expect(panel.textContent).toMatch(/cannot be restored in one transaction/i);
+    expect(screen.getByTestId("restore-non-atomic-reason").textContent).toMatch(/VACUUM \(line 12\)/);
+
+    // Nothing ran non-atomically: the first attempt carried no acceptance.
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(restore.mock.calls[0][1]).not.toHaveProperty("acceptNonAtomic");
+
+    // The refusal is a risk decision, not a failed restore.
+    const messages = useNotificationStore.getState().notifications.map((n) => n.message);
+    expect(messages.some((m) => /^Restore failed/.test(m))).toBe(false);
+
+    // Start stays disabled until the risk is accepted...
+    let start = screen.getByRole("button", { name: /start restore/i }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+
+    fireEvent.click(screen.getByTestId("restore-non-atomic-risk-checkbox"));
+    start = screen.getByRole("button", { name: /start restore/i }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true); // the attempt used up the file selection
+
+    // ...and the accepted run sends that acceptance explicitly.
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(
+      readGrant("grant-accepted", "/tmp/dump.sql"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /choose file/i }));
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
+
+    await waitFor(() =>
+      expect(restore).toHaveBeenLastCalledWith(
+        "a2",
+        { format: "custom", clean: true, schema: undefined, acceptNonAtomic: true },
+        "grant-accepted",
+      ),
+    );
+  });
+
+  it("reports a genuine restore failure as a failure", async () => {
+    mockConnections.push({ id: "a3", db_type: "postgresql", name: "p" });
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(readGrant("grant-fail"));
+    vi.spyOn(commands, "pgRestore").mockRejectedValue(
+      new Error("pg_restore: error: could not execute query: ERROR: syntax error"),
+    );
+
+    render(<RestorePage connectionId="a3" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_restore/i)).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /browse for file/i }));
+    await waitFor(() => expect(commands.selectFileForGrant).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId("restore-confirm-checkbox"));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: /start restore/i }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /start restore/i }));
+
+    // A real failure stays a failure, with no risk panel and no acceptance sent.
+    await waitFor(() => expect(screen.getByText("Failed")).toBeTruthy());
+    expect(screen.queryByTestId("restore-non-atomic-risk")).toBeNull();
+    const messages = useNotificationStore.getState().notifications.map((n) => n.message);
+    expect(messages.some((m) => /cannot be restored transactionally/.test(m))).toBe(false);
+  });
+});
