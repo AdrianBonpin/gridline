@@ -228,6 +228,39 @@ describe("TableOverflowMenu", () => {
     expect(openFormTab).not.toHaveBeenCalled();
     expect(useDbViewerStore.getState().tabs).toHaveLength(0);
   });
+
+  it("Import reads the live columns so conversion is driven by declared types", async () => {
+    // An unexpanded tree row passes no columns at all, and a cached list can be
+    // stale; the import dialog needs the declared types either way.
+    const getTableColumns = vi.spyOn(commands, "getTableColumns").mockResolvedValue([
+      { name: "zip", data_type: "character varying", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      { name: "age", data_type: "integer", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    ] as any);
+    render(<TableOverflowMenu schema="public" table="people" onOpenTab={() => ""} connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Import data (CSV/JSON)"));
+
+    await waitFor(() => expect(screen.getByText(/import into public.people/i)).toBeInTheDocument());
+    expect(getTableColumns).toHaveBeenCalledWith("c1", "public", "people");
+  });
+
+  it("Import reports a failed column read instead of opening an unusable dialog", async () => {
+    vi.spyOn(commands, "getTableColumns").mockRejectedValue(new Error("connection reset"));
+    const { useNotificationStore } = await import("../../stores/notificationStore");
+    useNotificationStore.getState().notifications.length = 0;
+    render(<TableOverflowMenu schema="public" table="people" onOpenTab={() => ""} connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Import data (CSV/JSON)"));
+
+    await waitFor(() => {
+      expect(
+        useNotificationStore
+          .getState()
+          .notifications.some((n) => /could not load the columns/i.test(n.message)),
+      ).toBe(true);
+    });
+    expect(screen.queryByText(/import into/i)).toBeNull();
+  });
 });
 describe("TableOverflowMenu offers only actions that apply to the relation kind", () => {
   beforeEach(() => {
