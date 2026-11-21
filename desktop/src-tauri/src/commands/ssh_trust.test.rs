@@ -620,6 +620,235 @@ fn a_probe_reports_state_without_credentials() {
 }
 
 // ---------------------------------------------------------------------------
+// Deliberate re-enrollment (ticket 22)
+//
+// Replacing stale trust is a separate action from authenticating: it is only
+// reachable from the connection's trust state, never from a connect attempt.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn re_enrollment_replaces_stale_trust_and_the_next_connection_verifies_the_new_key() {
+    let stale = host_key("ssh-ed25519", 100);
+    let rotated = host_key("ssh-ed25519", 101);
+    let mut trust = FakeHostTrust::default();
+    trust.add_record(record_for("db.example.com", 2222, &stale));
+
+    let accepted = HostKeyFingerprint {
+        key_type: rotated.key_type.clone(),
+        fingerprint: fingerprint_of(&rotated.blob),
+    };
+    let mut transport = FakeTransport::offering(rotated.clone());
+    let state = reenroll_host_trust(&mut transport, &trust, "db.example.com", 2222, &accepted)
+        .expect("a confirmed fingerprint replaces stale trust");
+
+    assert!(matches!(
+        state,
+        SshHostTrustState::Trusted {
+            source: crate::models::ssh_trust::TrustSource::Enrolled,
+            ..
+        }
+    ));
+    assert_eq!(
+        transport.ops,
+        vec![TransportOp::Handshake, TransportOp::HostKey],
+        "re-enrollment reads the key and sends no credentials"
+    );
+
+    // One record per endpoint, now holding the rotated key.
+    let records = trust.records();
+    assert_eq!(records.len(), 1, "re-enrollment replaces rather than adds");
+    assert_eq!(records[0].key, rotated);
+    assert_eq!(records[0].fingerprint, fingerprint_of(&rotated.blob));
+
+    // The new key verifies on later connections...
+    let mut next = FakeTransport::offering(rotated.clone());
+    establish_trusted_session(
+        &mut next,
+        &trust,
+        &ssh_config("db.example.com", 2222, "password"),
+        Some("db-password"),
+        None,
+    )
+    .expect("the re-enrolled key connects");
+    assert!(next.saw_credentials());
+
+    // ...and the replaced key does not.
+    let mut stale_offer = FakeTransport::offering(stale);
+    let err = establish_trusted_session(
+        &mut stale_offer,
+        &trust,
+        &ssh_config("db.example.com", 2222, "password"),
+        Some("db-password"),
+        None,
+    )
+    .expect_err("the replaced key is no longer trusted");
+    assert!(matches!(err, SshTunnelError::HostKeyMismatch(_)));
+    assert!(!stale_offer.saw_credentials());
+}
+
+#[test]
+fn re_enrollment_requires_the_confirmed_fingerprint_to_match_the_offered_key() {
+    let stale = host_key("ssh-ed25519", 102);
+    let confirmed = host_key("ssh-ed25519", 103);
+    let switched = host_key("ssh-ed25519", 104);
+    let mut trust = FakeHostTrust::default();
+    trust.add_record(record_for("db.example.com", 22, &stale));
+    let mut transport = FakeTransport::offering(switched.clone());
+
+    let err = reenroll_host_trust(
+        &mut transport,
+        &trust,
+        "db.example.com",
+        22,
+        &HostKeyFingerprint {
+            key_type: confirmed.key_type.clone(),
+            fingerprint: fingerprint_of(&confirmed.blob),
+        },
+    )
+    .expect_err("a server that switched keys after the confirmation is refused");
+
+    assert!(err.contains("different host key"), "{err}");
+    assert!(!transport.saw_credentials());
+    let records = trust.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].key, stale, "the existing trust is untouched");
+}
+
+#[test]
+fn re_enrollment_never_overrides_a_known_hosts_entry() {
+    let configured = host_key("ssh-ed25519", 105);
+    let rotated = host_key("ssh-ed25519", 106);
+    let mut trust = FakeHostTrust::default();
+    trust.add_known_hosts(&known_hosts_line("db.example.com", &configured));
+
+    let err = reenroll_host_trust(
+        &mut FakeTransport::offering(rotated.clone()),
+        &trust,
+        "db.example.com",
+        22,
+        &HostKeyFingerprint {
+            key_type: rotated.key_type.clone(),
+            fingerprint: fingerprint_of(&rotated.blob),
+        },
+    )
+    .expect_err("Gridline does not rewrite the user's known-hosts file");
+
+    assert!(err.contains("known-hosts"), "{err}");
+    assert!(
+        trust.records().is_empty(),
+        "nothing was enrolled over the user's own SSH configuration"
+    );
+
+    // Still a dead end on the next connection: known hosts stay authoritative.
+    let mut next = FakeTransport::offering(rotated);
+    let connect_error = establish_trusted_session(
+        &mut next,
+        &trust,
+        &ssh_config("db.example.com", 22, "password"),
+        Some("db-password"),
+        None,
+    )
+    .expect_err("the known-hosts conflict still fails closed");
+    assert!(matches!(connect_error, SshTunnelError::HostKeyMismatch(_)));
+    assert!(!next.saw_credentials());
+}
+
+#[test]
+fn re_enrollment_of_an_unknown_host_enrolls_it_deliberately() {
+    let key = host_key("ssh-ed25519", 107);
+    let trust = FakeHostTrust::default();
+    let accepted = HostKeyFingerprint {
+        key_type: key.key_type.clone(),
+        fingerprint: fingerprint_of(&key.blob),
+    };
+
+    let state = reenroll_host_trust(
+        &mut FakeTransport::offering(key.clone()),
+        &trust,
+        "db.example.com",
+        22,
+        &accepted,
+    )
+    .expect("an explicit confirmation also establishes first trust");
+
+    assert!(state.is_trusted());
+    assert_eq!(trust.records().len(), 1);
+    assert_eq!(trust.records()[0].key, key);
+}
+
+#[test]
+fn no_authentication_entry_point_accepts_a_conflicting_key() {
+    let trusted = host_key("ssh-ed25519", 108);
+    let offered = host_key("ssh-ed25519", 109);
+    let mut trust = FakeHostTrust::default();
+    trust.add_record(record_for("db.example.com", 22, &trusted));
+    let accepted = HostKeyFingerprint {
+        key_type: offered.key_type.clone(),
+        fingerprint: fingerprint_of(&offered.blob),
+    };
+
+    // 1. Connecting fails closed, before credentials, and leaves trust intact.
+    let mut connect = FakeTransport::offering(offered.clone());
+    let error = establish_trusted_session(
+        &mut connect,
+        &trust,
+        &ssh_config("db.example.com", 22, "password"),
+        Some("db-password"),
+        None,
+    )
+    .expect_err("a changed key cannot connect");
+    assert!(matches!(error, SshTunnelError::HostKeyMismatch(_)));
+    assert!(!connect.saw_credentials());
+
+    // 2. The acceptance offered during a failed attempt refuses a mismatch too.
+    enroll_host_trust(
+        &mut FakeTransport::offering(offered.clone()),
+        &trust,
+        "db.example.com",
+        22,
+        &accepted,
+    )
+    .expect_err("the connect-path acceptance offers no override");
+
+    // 3. Probing only reports the conflict.
+    let state = probe_host_trust(
+        &mut FakeTransport::offering(offered.clone()),
+        &trust,
+        "db.example.com",
+        22,
+    )
+    .expect("a probe reports state");
+    assert!(matches!(state, SshHostTrustState::Mismatch { .. }));
+
+    // Nothing above replaced the trusted key; only the deliberate action does.
+    assert_eq!(trust.records()[0].key, trusted);
+    reenroll_host_trust(
+        &mut FakeTransport::offering(offered.clone()),
+        &trust,
+        "db.example.com",
+        22,
+        &accepted,
+    )
+    .expect("deliberate re-enrollment is the only path that replaces trust");
+    assert_eq!(trust.records()[0].key, offered);
+}
+
+#[test]
+fn only_the_deliberate_command_can_replace_host_trust() {
+    // The connect/test path must never be able to replace host trust: a
+    // mismatch stays a dead end there (ADR 0001).
+    for (name, source) in [
+        ("db_viewer.rs", include_str!("db_viewer.rs")),
+        ("connections.rs", include_str!("connections.rs")),
+    ] {
+        assert!(
+            !source.contains("reenroll_host_trust"),
+            "{name} is on the connect path and must not replace SSH host trust"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Store-backed provider: a real known-hosts file plus real SQLite records
 // ---------------------------------------------------------------------------
 
@@ -691,6 +920,72 @@ fn store_backed_provider_honors_known_hosts_and_remembers_enrollments() {
         trust.lookup("new.example.com", 2222).unwrap().is_none(),
         "trust is keyed by endpoint, not host name"
     );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn store_backed_re_enrollment_replaces_the_row_with_public_metadata_only() {
+    let dir = std::env::temp_dir().join(format!("gridline-ssh-reenroll-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // A file-backed store so the persisted row itself can be inspected.
+    let db_path = dir.join("store.sqlite");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    crate::store::migrations::run_migrations(&conn).unwrap();
+    let store = std::sync::Arc::new(std::sync::Mutex::new(crate::store::Store::from_connection(
+        conn,
+    )));
+    let trust = StoreHostTrust::with_known_hosts_paths(store, vec![dir.join("known_hosts")]);
+
+    let stale = host_key("ssh-ed25519", 97);
+    trust
+        .remember(&record_for("db.example.com", 2222, &stale))
+        .unwrap();
+    let rotated = host_key("ssh-ed25519", 98);
+    let accepted = HostKeyFingerprint {
+        key_type: rotated.key_type.clone(),
+        fingerprint: fingerprint_of(&rotated.blob),
+    };
+
+    let mut transport = FakeTransport::offering(rotated.clone());
+    reenroll_host_trust(&mut transport, &trust, "db.example.com", 2222, &accepted)
+        .expect("re-enrollment writes through to the store");
+    assert!(!transport.saw_credentials());
+
+    let stored = trust
+        .lookup("db.example.com", 2222)
+        .unwrap()
+        .expect("record");
+    assert_eq!(stored.key, rotated);
+    assert_eq!(stored.fingerprint, fingerprint_of(&rotated.blob));
+    assert!(
+        !stored.enrolled_at.is_empty(),
+        "the acceptance is timestamped"
+    );
+
+    // The persisted row holds host-key metadata only: no password, private key
+    // or passphrase column exists, so none can be stored.
+    let inspect = rusqlite::Connection::open(&db_path).unwrap();
+    let columns: Vec<String> = {
+        let mut stmt = inspect.prepare("PRAGMA table_info(ssh_host_trust)").unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|c| c.unwrap())
+            .collect()
+    };
+    assert_eq!(
+        columns,
+        vec![
+            "host".to_string(),
+            "port".to_string(),
+            "key_type".to_string(),
+            "fingerprint".to_string(),
+            "key_blob".to_string(),
+            "enrolled_at".to_string(),
+        ]
+    );
+    drop(inspect);
 
     std::fs::remove_dir_all(&dir).ok();
 }

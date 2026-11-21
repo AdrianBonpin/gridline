@@ -482,6 +482,85 @@ pub fn enroll_host_trust(
     })
 }
 
+/// Deliberately replace host trust for one endpoint.
+///
+/// This is the *only* way a conflicting key can become trusted, and it is
+/// deliberately **not** reachable from an authentication attempt: [`enroll_host_trust`]
+/// (what a failed connect offers) refuses a mismatch, and
+/// [`establish_trusted_session`] simply fails closed. The caller is a separate
+/// user action taken from the connection's trust state, after the user compared
+/// the presented fingerprint with the server out of band.
+///
+/// The confirmation is still bound to the key that is offered *now*: a server
+/// that switched keys between the prompt and the confirmation is refused, and
+/// nothing is written. The user's own known-hosts file is never rewritten — a
+/// conflict sourced from it stays a conflict, because Gridline does not own
+/// that configuration (ADR 0001 keeps known hosts authoritative). Everything
+/// this records is public host-key metadata; no password, private key or
+/// passphrase ever reaches the trust store.
+///
+/// Replacing (rather than forgetting then remembering) means a failure cannot
+/// leave the endpoint with no trust at all.
+pub fn reenroll_host_trust(
+    transport: &mut dyn SshTransport,
+    trust: &dyn HostTrustProvider,
+    host: &str,
+    port: u16,
+    accepted: &HostKeyFingerprint,
+) -> Result<SshHostTrustState, String> {
+    let (state, key) = read_and_evaluate(transport, trust, host, port)?;
+
+    // The user confirmed a specific fingerprint; only that key may be trusted.
+    let offered = HostKeyFingerprint {
+        key_type: key.key_type.clone(),
+        fingerprint: fingerprint_of(&key.blob),
+    };
+    if offered.key_type != accepted.key_type || offered.fingerprint != accepted.fingerprint {
+        return Err(format!(
+            "the SSH server now offers a different host key ({} {}) than the confirmed {} {}. \
+             Nothing was trusted.",
+            offered.key_type, offered.fingerprint, accepted.key_type, accepted.fingerprint
+        ));
+    }
+
+    match &state {
+        SshHostTrustState::Mismatch {
+            source: TrustSource::KnownHosts,
+            host,
+            port,
+            expected_key_type,
+            expected_fingerprint,
+            ..
+        } => {
+            return Err(format!(
+                "SSH host {host}:{port} conflicts with the known-hosts entry for {expected_key_type} \
+                 {expected_fingerprint}, which Gridline does not modify. Update or remove that entry \
+                 in your known-hosts file, then connect again. Nothing was trusted."
+            ));
+        }
+        // Already trusted (by known hosts or by a matching enrollment): there
+        // is no stale trust to replace.
+        SshHostTrustState::Trusted { .. } => return Ok(state),
+        _ => {}
+    }
+
+    let record = HostTrustRecord {
+        host: host.to_string(),
+        port,
+        key,
+        fingerprint: offered.fingerprint.clone(),
+        enrolled_at: chrono::Utc::now().to_rfc3339(),
+    };
+    trust.remember(&record)?;
+    Ok(SshHostTrustState::Trusted {
+        host: host.to_string(),
+        port,
+        key_type: record.key.key_type,
+        fingerprint: record.fingerprint,
+        source: TrustSource::Enrolled,
+    })
+}
+
 /// Handshake, verify the host key, and only then authenticate.
 ///
 /// This is the whole point of ticket 21: no password, private key or passphrase

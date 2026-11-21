@@ -1,6 +1,6 @@
 use crate::commands::ssh_trust::{
     enroll_host_trust, establish_trusted_session, host_key_from_blob, probe_host_trust,
-    HostTrustProvider, SshTransport, SshTunnelError,
+    reenroll_host_trust, HostTrustProvider, SshTransport, SshTunnelError,
 };
 use crate::db::tls::TlsDecision;
 use crate::models::ssh_trust::{HostKey, HostKeyFingerprint, SshHostTrustState};
@@ -74,6 +74,17 @@ pub trait TunnelBackend: Send + Sync {
 
     /// Remember an explicitly accepted fingerprint for an endpoint.
     fn enroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String>;
+
+    /// Deliberately replace stale host trust for an endpoint.
+    ///
+    /// Reachable only from the connection's trust state — never from `open` or
+    /// any other authentication path.
+    fn reenroll_host_trust(
         &self,
         host: &str,
         port: u16,
@@ -179,6 +190,16 @@ impl SshTunnelManager {
         accepted: &HostKeyFingerprint,
     ) -> Result<SshHostTrustState, String> {
         self.backend.enroll_host_trust(host, port, accepted)
+    }
+
+    /// Deliberately replace stale host trust for an SSH endpoint.
+    pub fn reenroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String> {
+        self.backend.reenroll_host_trust(host, port, accepted)
     }
 }
 
@@ -381,7 +402,7 @@ impl TunnelBackend for Ssh2Backend {
     }
 
     fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
-        self.probe_session(host, port, None)
+        self.probe_session(host, port, TrustAction::Probe)
     }
 
     fn enroll_host_trust(
@@ -390,8 +411,28 @@ impl TunnelBackend for Ssh2Backend {
         port: u16,
         accepted: &HostKeyFingerprint,
     ) -> Result<SshHostTrustState, String> {
-        self.probe_session(host, port, Some(accepted))
+        self.probe_session(host, port, TrustAction::Enroll(accepted))
     }
+
+    fn reenroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String> {
+        self.probe_session(host, port, TrustAction::Reenroll(accepted))
+    }
+}
+
+/// What a handshake-only session should do with the host key it reads.
+#[derive(Clone, Copy)]
+enum TrustAction<'a> {
+    /// Report the state, change nothing.
+    Probe,
+    /// First use: remember an explicit acceptance.
+    Enroll(&'a HostKeyFingerprint),
+    /// Deliberate re-enrollment: replace stale trust.
+    Reenroll(&'a HostKeyFingerprint),
 }
 
 impl Ssh2Backend {
@@ -401,17 +442,20 @@ impl Ssh2Backend {
         &self,
         host: &str,
         port: u16,
-        enroll: Option<&HostKeyFingerprint>,
+        action: TrustAction<'_>,
     ) -> Result<SshHostTrustState, String> {
         let mut session = connect_session(host, port)?;
         let mut transport = Ssh2Transport {
             session: &mut session,
         };
-        match enroll {
-            Some(accepted) => {
+        match action {
+            TrustAction::Probe => probe_host_trust(&mut transport, self.trust.as_ref(), host, port),
+            TrustAction::Enroll(accepted) => {
                 enroll_host_trust(&mut transport, self.trust.as_ref(), host, port, accepted)
             }
-            None => probe_host_trust(&mut transport, self.trust.as_ref(), host, port),
+            TrustAction::Reenroll(accepted) => {
+                reenroll_host_trust(&mut transport, self.trust.as_ref(), host, port, accepted)
+            }
         }
     }
 }
@@ -463,6 +507,38 @@ pub async fn ssh_host_trust_enroll(
         fingerprint,
     };
     tokio::task::spawn_blocking(move || backend.enroll_host_trust(&host, port, &accepted))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::commands::db_viewer::sanitize_error(&e))
+}
+
+/// Deliberately replace stale host trust for an endpoint after the user
+/// confirmed the presented fingerprint out of band (ADR 0001).
+///
+/// This is the only command that replaces trust. It is deliberately absent from
+/// every connect/test path: a mismatched key during authentication stays a dead
+/// end, and the user has to come here — from the connection's trust state — to
+/// re-enroll. Re-reads the offered key, so a server that switched keys after the
+/// confirmation is refused. Sends no credentials and records none.
+#[tauri::command]
+pub async fn ssh_host_trust_reenroll(
+    host: String,
+    port: u16,
+    key_type: String,
+    fingerprint: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<SshHostTrustState, String> {
+    validate_endpoint(&host, port)?;
+    let backend = state
+        .ssh_manager
+        .lock()
+        .map_err(|e| e.to_string())?
+        .backend_clone();
+    let accepted = HostKeyFingerprint {
+        key_type,
+        fingerprint,
+    };
+    tokio::task::spawn_blocking(move || backend.reenroll_host_trust(&host, port, &accepted))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| crate::commands::db_viewer::sanitize_error(&e))
@@ -797,6 +873,7 @@ mod tests {
         opens: std::sync::Mutex<Vec<String>>,
         probes: std::sync::Mutex<Vec<(String, u16)>>,
         enrollments: std::sync::Mutex<Vec<(String, u16, HostKeyFingerprint)>>,
+        reenrollments: std::sync::Mutex<Vec<(String, u16, HostKeyFingerprint)>>,
         next_port: u16,
     }
 
@@ -806,6 +883,7 @@ mod tests {
                 opens: std::sync::Mutex::new(self.opens.lock().unwrap().clone()),
                 probes: std::sync::Mutex::new(self.probes.lock().unwrap().clone()),
                 enrollments: std::sync::Mutex::new(self.enrollments.lock().unwrap().clone()),
+                reenrollments: std::sync::Mutex::new(self.reenrollments.lock().unwrap().clone()),
                 next_port: self.next_port,
             }
         }
@@ -849,6 +927,25 @@ mod tests {
             accepted: &HostKeyFingerprint,
         ) -> Result<SshHostTrustState, String> {
             self.enrollments
+                .lock()
+                .unwrap()
+                .push((host.to_string(), port, accepted.clone()));
+            Ok(SshHostTrustState::Trusted {
+                host: host.to_string(),
+                port,
+                key_type: accepted.key_type.clone(),
+                fingerprint: accepted.fingerprint.clone(),
+                source: crate::models::ssh_trust::TrustSource::Enrolled,
+            })
+        }
+
+        fn reenroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            self.reenrollments
                 .lock()
                 .unwrap()
                 .push((host.to_string(), port, accepted.clone()));
@@ -988,6 +1085,35 @@ mod tests {
         assert_eq!(
             *backend.enrollments.lock().unwrap(),
             vec![("db.example.com".to_string(), 2222, accepted)]
+        );
+    }
+
+    #[test]
+    fn manager_delegates_deliberate_re_enrollment() {
+        let backend = Arc::new(FakeBackend::default());
+        let mgr = SshTunnelManager::new(backend.clone());
+        let accepted = HostKeyFingerprint {
+            key_type: "ssh-ed25519".into(),
+            fingerprint: "SHA256:rotated".into(),
+        };
+
+        let state = mgr
+            .reenroll_host_trust("db.example.com", 2222, &accepted)
+            .expect("re-enrollment delegates to the backend");
+
+        assert!(state.is_trusted());
+        assert_eq!(
+            *backend.reenrollments.lock().unwrap(),
+            vec![("db.example.com".to_string(), 2222, accepted)],
+            "re-enrollment goes through the deliberate path, not the connect path"
+        );
+        assert!(
+            backend.opens.lock().unwrap().is_empty(),
+            "no tunnel was opened"
+        );
+        assert!(
+            backend.enrollments.lock().unwrap().is_empty(),
+            "first-use enrollment was not used"
         );
     }
 }
