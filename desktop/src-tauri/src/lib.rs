@@ -34,8 +34,8 @@ pub struct AppState {
 }
 
 use commands::{
-    backup, connections, db_viewer, demo, folders, import_export, keychain, maintenance, objects,
-    query, query_export, schema_diff, schema_graph, settings, ssh, tags,
+    backup, connections, db_viewer, demo, folders, import_export, import_file, keychain,
+    maintenance, objects, query, query_export, schema_diff, schema_graph, settings, ssh, tags,
 };
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -234,6 +234,7 @@ pub fn run() {
             query::execute_query,
             query::execute_query_multi,
             query_export::export_query_to_file,
+            import_file::read_import_file,
             query::cancel_query,
             crate::commands::open_files::take_pending_sql_files,
             query::get_query_history,

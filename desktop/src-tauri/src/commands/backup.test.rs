@@ -2688,3 +2688,149 @@ fn a_dump_request_takes_its_output_path_from_the_granted_path() {
     assert_eq!(mysql.file_path, "/tmp/granted.sql");
     assert_eq!(mysql.database, "shop");
 }
+
+// ---------------------------------------------------------------------------
+// Restore input is authorized by a Read File Grant, never by a renderer path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_raw_renderer_path_authorizes_no_restore_input() {
+    let grants = crate::file_grant::FileGrantStore::new();
+
+    // The exact string a pre-fix renderer would have sent as `options.filePath`.
+    let err = resolve_restore_input(&grants, "/tmp/renderer-chosen.dump").unwrap_err();
+
+    assert!(
+        err.starts_with(crate::file_grant::CODE_INVALID),
+        "a bare path must be rejected as an invalid grant, got: {err}"
+    );
+}
+
+#[test]
+fn a_restore_grant_resolves_its_path_exactly_once() {
+    let grants = crate::file_grant::FileGrantStore::new();
+    let grant = grants.mint(
+        std::path::PathBuf::from("/tmp/gridline-granted.dump"),
+        crate::file_grant::FileIntent::Read,
+    );
+
+    assert_eq!(
+        resolve_restore_input(&grants, &grant.id).unwrap(),
+        "/tmp/gridline-granted.dump"
+    );
+
+    // Same grant, second job: consumed on first use.
+    let replay = resolve_restore_input(&grants, &grant.id).unwrap_err();
+    assert!(
+        replay.starts_with(crate::file_grant::CODE_CONSUMED),
+        "a replayed grant must report the consumed state, got: {replay}"
+    );
+}
+
+#[test]
+fn a_backup_write_grant_cannot_authorize_a_restore_read() {
+    let grants = crate::file_grant::FileGrantStore::new();
+    let grant = grants.mint(
+        std::path::PathBuf::from("/tmp/backup-output.dump"),
+        crate::file_grant::FileIntent::Write,
+    );
+
+    let err = resolve_restore_input(&grants, &grant.id).unwrap_err();
+    assert!(
+        err.starts_with(crate::file_grant::CODE_WRONG_INTENT),
+        "a write grant must not authorize a restore read, got: {err}"
+    );
+}
+
+#[test]
+fn an_expired_restore_grant_reports_the_expired_state() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    let base = std::time::Instant::now();
+    let elapsed = Arc::new(AtomicU64::new(0));
+    let clock: crate::file_grant::Clock = {
+        let elapsed = elapsed.clone();
+        Box::new(move || base + std::time::Duration::from_millis(elapsed.load(Ordering::SeqCst)))
+    };
+    let grants = crate::file_grant::FileGrantStore::with_clock(crate::file_grant::GRANT_TTL, clock);
+    let grant = grants.mint(
+        std::path::PathBuf::from("/tmp/stale.dump"),
+        crate::file_grant::FileIntent::Read,
+    );
+
+    elapsed.store(5 * 60 * 1000 + 1, Ordering::SeqCst);
+
+    let err = resolve_restore_input(&grants, &grant.id).unwrap_err();
+    assert!(
+        err.starts_with(crate::file_grant::CODE_EXPIRED),
+        "an expired grant must report the expired state, got: {err}"
+    );
+}
+
+#[test]
+fn the_restore_request_types_carry_no_input_path() {
+    // A renderer that still sends a path must fail loudly at the IPC boundary
+    // rather than have it silently ignored (or, worse, used to read a file).
+    let pg = serde_json::from_str::<PgRestoreRequest>(
+        r#"{"format":"custom","clean":true,"schema":null,"filePath":"/tmp/evil.dump"}"#,
+    );
+    assert!(
+        pg.is_err(),
+        "PgRestoreRequest must reject a renderer-supplied input path"
+    );
+
+    let mysql = serde_json::from_str::<MySqlRestoreRequest>(
+        r#"{"database":"shop","clean":true,"filePath":"/tmp/evil.sql"}"#,
+    );
+    assert!(
+        mysql.is_err(),
+        "MySqlRestoreRequest must reject a renderer-supplied input path"
+    );
+
+    let sqlite = serde_json::from_str::<SqliteRestoreRequest>(
+        r#"{"clean":true,"filePath":"/tmp/evil.sql"}"#,
+    );
+    assert!(
+        sqlite.is_err(),
+        "SqliteRestoreRequest must reject a renderer-supplied input path"
+    );
+
+    // The same payloads without a path are accepted.
+    assert!(serde_json::from_str::<PgRestoreRequest>(
+        r#"{"format":"custom","clean":true,"schema":null}"#
+    )
+    .is_ok());
+    assert!(
+        serde_json::from_str::<SqliteRestoreRequest>(r#"{"clean":false}"#).is_ok(),
+        "a path-free restore request must be accepted"
+    );
+}
+
+#[test]
+fn a_restore_request_takes_its_input_path_from_the_granted_path() {
+    let options = PgRestoreRequest {
+        format: "plain".into(),
+        clean: true,
+        schema: Some("public".into()),
+    }
+    .with_source_path("/tmp/granted.dump".to_string());
+
+    assert_eq!(options.file_path, "/tmp/granted.dump");
+    assert_eq!(options.format, "plain");
+    assert_eq!(options.schema.as_deref(), Some("public"));
+    assert!(options.clean);
+
+    let mysql = MySqlRestoreRequest {
+        database: "shop".into(),
+        clean: false,
+    }
+    .with_source_path("/tmp/granted.sql".to_string());
+    assert_eq!(mysql.file_path, "/tmp/granted.sql");
+    assert_eq!(mysql.database, "shop");
+
+    let sqlite = SqliteRestoreRequest { clean: true }
+        .with_source_path("/tmp/granted.sqlite.sql".to_string());
+    assert_eq!(sqlite.file_path, "/tmp/granted.sqlite.sql");
+    assert!(sqlite.clean);
+}

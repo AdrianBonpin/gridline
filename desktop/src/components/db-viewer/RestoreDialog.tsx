@@ -5,8 +5,10 @@ import { CopyButton } from "../ui/CopyButton";
 import { BackupProgress } from "./BackupProgress";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
-import { detectPgTools, pgRestore } from "../../lib/commands";
+import { detectPgTools, pgRestore, selectFileForGrant } from "../../lib/commands";
 import type { PgToolStatus } from "../../lib/types";
+import type { FileGrant } from "../../lib/fileGrant";
+import { fileGrantErrorMessage } from "../../lib/fileGrant";
 
 interface RestoreDialogProps {
   open: boolean;
@@ -29,7 +31,10 @@ function getPlatformInstructions(): string {
 }
 
 export function RestoreDialog({ open, connectionId, onClose }: RestoreDialogProps) {
-  const [filePath, setFilePath] = useState("");
+  // The input file is authorized by a backend-issued read grant; `selectedPath`
+  // is display metadata and `grant.id` is what the restore consumes.
+  const [grant, setGrant] = useState<FileGrant | null>(null);
+  const [selectedPath, setSelectedPath] = useState("");
   const [format, setFormat] = useState("custom");
   const [clean, setClean] = useState(true);
   const [schema, setSchema] = useState("");
@@ -57,44 +62,54 @@ export function RestoreDialog({ open, connectionId, onClose }: RestoreDialogProp
 
   const handlePickFile = useCallback(async () => {
     try {
-      const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
-      const picked = await openDialog({
-        multiple: false,
-        filters: [{ name: "Backup Files", extensions: ["dump", "sql", "tar", "custom", "gz"] }],
+      const picked = await selectFileForGrant({
+        intent: "read",
+        title: "Choose a backup file to restore",
+        filters: [
+          { name: "Backup Files", extensions: ["dump", "sql", "tar", "custom", "gz"] },
+        ],
       });
-      if (picked && typeof picked === "string") setFilePath(picked);
-    } catch {
-      // dialog not available (non-Tauri env), use manual path input
+      if (!picked) return; // cancelled: nothing to authorize
+      setGrant(picked);
+      setSelectedPath(picked.path);
+    } catch (e) {
+      notify(fileGrantErrorMessage(e) ?? String(e), "error");
     }
-  }, []);
+  }, [notify]);
 
   const handleStartRestore = useCallback(async () => {
-    if (!filePath) {
-      notify("Please select a file path", "error");
+    if (!grant) {
+      notify("Please choose a backup file", "error");
       return;
     }
+    // A grant is single-use: this selection is spent by the attempt.
+    const grantId = grant.id;
+    setGrant(null);
     setRunning(true);
     const jobId = `restore-${Date.now()}`;
     startJob(jobId, "restore");
     try {
-      await pgRestore(connectionId, {
-        format,
-        filePath,
-        clean,
-        schema: schema || undefined,
-      });
+      await pgRestore(
+        connectionId,
+        {
+          format,
+          clean,
+          schema: schema || undefined,
+        },
+        grantId,
+      );
       notify("Restore completed successfully", "success");
       onClose();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = fileGrantErrorMessage(e) ?? (e instanceof Error ? e.message : String(e));
       notify(`Restore failed: ${parseError(msg)}`, "error");
     } finally {
       setRunning(false);
     }
-  }, [filePath, format, clean, schema, connectionId, startJob, notify, onClose]);
+  }, [grant, format, clean, schema, connectionId, startJob, notify, onClose]);
 
   const toolsMissing = toolStatus && !toolStatus.pg_restore_found;
-  const canStart = filePath && confirmed && !running;
+  const canStart = Boolean(grant) && confirmed && !running;
   const installInstructions = getPlatformInstructions();
 
   return (
@@ -135,8 +150,10 @@ export function RestoreDialog({ open, connectionId, onClose }: RestoreDialogProp
               <div className="flex gap-2">
                 <input
                   type="text"
-                  value={filePath}
-                  onChange={(e) => setFilePath(e.target.value)}
+                  value={selectedPath}
+                  readOnly
+                  aria-label="Backup file"
+                  title="Chosen with Browse — the path alone does not authorize a read"
                   placeholder="/path/to/backup.dump"
                   className="flex-1 rounded-full bg-surface border border-border px-4 py-2 text-sm text-text placeholder-text-muted/60 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors"
                 />

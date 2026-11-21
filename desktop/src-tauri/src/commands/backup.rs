@@ -113,15 +113,25 @@ pub fn resolve_backup_output(
     grants: &crate::file_grant::FileGrantStore,
     grant_id: &str,
 ) -> Result<String, String> {
-    let path = grants
-        .consume(grant_id, crate::file_grant::FileIntent::Write)
-        .map_err(|e| e.to_ipc())?;
-    path.to_str().map(|s| s.to_string()).ok_or_else(|| {
-        format!(
-            "{}: The selected path cannot be represented as text. Choose the file again.",
-            crate::file_grant::CODE_INVALID
-        )
-    })
+    crate::file_grant::consume_granted_path(grants, grant_id, crate::file_grant::FileIntent::Write)
+}
+
+/// Consume the File Grant that authorizes reading a restore input and return its
+/// path.
+///
+/// Restore reads a file, so the grant has to carry the `Read` intent: a backup
+/// write grant is refused here (and a restore grant is refused by
+/// [`resolve_backup_output`]). A path the renderer supplied is not a grant, so
+/// handing one in fails closed with the `file-grant-invalid` state instead of
+/// naming a file for `pg_restore`/`psql`/the MySQL or SQLite restorers to read.
+///
+/// The grant is consumed on success, before any job is created: an invalid,
+/// expired, replayed or wrong-intent grant starts nothing.
+pub fn resolve_restore_input(
+    grants: &crate::file_grant::FileGrantStore,
+    grant_id: &str,
+) -> Result<String, String> {
+    crate::file_grant::consume_granted_path(grants, grant_id, crate::file_grant::FileIntent::Read)
 }
 
 /// Cancellation check that never fires, for headless/legacy callers.
@@ -1487,7 +1497,8 @@ pub async fn pg_dump(
 #[tauri::command]
 pub async fn pg_restore(
     connection_id: String,
-    options: RestoreOptions,
+    request: PgRestoreRequest,
+    file_grant: String,
     state: State<'_, crate::AppState>,
     app_handle: AppHandle,
 ) -> Result<String, String> {
@@ -1514,6 +1525,11 @@ pub async fn pg_restore(
         conn.database.unwrap_or_else(|| "postgres".into()),
         password,
     );
+
+    // Authorize the read last: the granted path is the only input file this
+    // command can be made to use, and a grant is not spent on a request that
+    // fails before the job starts.
+    let options = request.with_source_path(resolve_restore_input(&state.file_grants, &file_grant)?);
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
@@ -1864,7 +1880,8 @@ pub async fn mysql_dump(
 #[tauri::command]
 pub async fn mysql_restore(
     connection_id: String,
-    options: MySqlRestoreOptions,
+    request: MySqlRestoreRequest,
+    file_grant: String,
     state: State<'_, crate::AppState>,
     app_handle: AppHandle,
 ) -> Result<String, String> {
@@ -1883,6 +1900,10 @@ pub async fn mysql_restore(
         crate::commands::keychain::get_connection_password_internal(&app_handle, &connection_id)
             .unwrap_or_default()
             .unwrap_or_default();
+
+    // Authorize the read before the file is opened: the granted path is the
+    // only input this command can be made to use.
+    let options = request.with_source_path(resolve_restore_input(&state.file_grants, &file_grant)?);
 
     let (host, port, via_tunnel) = mysql_endpoint(&state, &connection_id, &conn);
 
@@ -2215,7 +2236,8 @@ pub async fn sqlite_dump(
 #[tauri::command]
 pub async fn sqlite_restore(
     connection_id: String,
-    options: SqliteRestoreOptions,
+    request: SqliteRestoreRequest,
+    file_grant: String,
     state: State<'_, crate::AppState>,
     app_handle: AppHandle,
 ) -> Result<String, String> {
@@ -2231,6 +2253,8 @@ pub async fn sqlite_restore(
     };
 
     let path = conn.host.clone();
+    // The dump input is the granted path, never a renderer string.
+    let options = request.with_source_path(resolve_restore_input(&state.file_grants, &file_grant)?);
     let in_path = options.file_path.clone();
     let clean = options.clean;
     let job_id_clone = job_id.clone();

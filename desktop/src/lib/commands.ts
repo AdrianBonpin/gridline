@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreOptions, SqliteRestoreOptions, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult, PendingSqlFile, HostKeyFingerprint, SshHostTrustState } from "./types";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, PgRestoreRequest, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreRequest, SqliteRestoreRequest, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult, PendingSqlFile, HostKeyFingerprint, SshHostTrustState, ImportSource } from "./types";
 import type { FileGrant, FileGrantRequest } from "./fileGrant";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 import type { ChangePayload } from "./changePayload";
@@ -219,8 +219,19 @@ export async function pgDump(
   return invoke<string>("pg_dump", { connectionId, options, fileGrant });
 }
 
-export async function pgRestore(connectionId: string, options: RestoreOptions): Promise<string> {
-  return invoke<string>("pg_restore", { connectionId, options });
+/**
+ * Start a PostgreSQL restore.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (read intent) and is
+ * consumed by this call, so the next restore needs its own selection. The
+ * request carries no path: the file is whatever the grant authorized.
+ */
+export async function pgRestore(
+  connectionId: string,
+  request: PgRestoreRequest,
+  fileGrant: string,
+): Promise<string> {
+  return invoke<string>("pg_restore", { connectionId, request, fileGrant });
 }
 
 export async function dbSync(options: SyncOptions): Promise<string> {
@@ -257,8 +268,13 @@ export async function mysqlDump(
   return invoke<string>("mysql_dump", { connectionId, options, fileGrant });
 }
 
-export async function mysqlRestore(connectionId: string, options: MySqlRestoreOptions): Promise<string> {
-  return invoke<string>("mysql_restore", { connectionId, options });
+/** Start a MySQL restore. `fileGrant` is consumed by this call. */
+export async function mysqlRestore(
+  connectionId: string,
+  request: MySqlRestoreRequest,
+  fileGrant: string,
+): Promise<string> {
+  return invoke<string>("mysql_restore", { connectionId, request, fileGrant });
 }
 
 export async function mysqlSync(options: SyncOptions): Promise<string> {
@@ -270,8 +286,13 @@ export async function sqliteDump(connectionId: string, fileGrant: string): Promi
   return invoke<string>("sqlite_dump", { connectionId, fileGrant });
 }
 
-export async function sqliteRestore(connectionId: string, options: SqliteRestoreOptions): Promise<string> {
-  return invoke<string>("sqlite_restore", { connectionId, options });
+/** Start a SQLite restore. `fileGrant` is consumed by this call. */
+export async function sqliteRestore(
+  connectionId: string,
+  request: SqliteRestoreRequest,
+  fileGrant: string,
+): Promise<string> {
+  return invoke<string>("sqlite_restore", { connectionId, request, fileGrant });
 }
 
 export async function sqliteSync(options: SyncOptions): Promise<string> {
@@ -382,13 +403,31 @@ export async function takePendingSqlFiles(): Promise<PendingSqlFile[]> {
   return invoke<PendingSqlFile[]>("take_pending_sql_files");
 }
 
+/**
+ * Stream a full query result to disk.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (write intent) and is
+ * consumed by this call: the destination is whatever the grant authorized, and
+ * the backend publishes a temporary sibling atomically, so a failed export
+ * never damages an existing file.
+ */
 export async function exportQueryToFile(
   connectionId: string,
   sql: string,
   format: string,
-  path: string,
+  fileGrant: string,
 ): Promise<{ rows_written: number; path: string }> {
-  return invoke("export_query_to_file", { connectionId, sql, format, path });
+  return invoke("export_query_to_file", { connectionId, sql, format, fileGrant });
+}
+
+/**
+ * Read a data-import source (CSV/JSON) named by a `read` File Grant.
+ *
+ * `fileGrant` is consumed by this call. The backend enforces the 100 MB limit
+ * before reading, so an oversized file is never buffered.
+ */
+export async function readImportFile(fileGrant: string): Promise<ImportSource> {
+  return invoke<ImportSource>("read_import_file", { fileGrant });
 }
 
 export async function getQueryHistory(
