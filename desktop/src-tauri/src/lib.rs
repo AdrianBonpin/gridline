@@ -98,11 +98,14 @@ pub fn run() {
 
             // Cold-start "open with": the path arrived as a process argument
             // before the webview existed, so queue it here. macOS uses
-            // RunEvent::Opened instead.
-            for arg in std::env::args().skip(1) {
-                let pending = app.state::<crate::commands::open_files::PendingOpenFiles>();
-                let _ = crate::commands::open_files::accept_path(&pending, &arg);
-            }
+            // RunEvent::Opened instead. `args_os`, never `args`: a Unix argv
+            // element is arbitrary bytes, and `args()` panics on a non-UTF-8
+            // one — before the UI exists, so the app would never start.
+            let pending_files = app.state::<crate::commands::open_files::PendingOpenFiles>();
+            let _ = crate::commands::open_files::accept_process_args(
+                &pending_files,
+                std::env::args_os().skip(1),
+            );
 
             app.manage(AppState {
                 db_store: store.clone(),
@@ -255,11 +258,11 @@ pub fn run() {
                 let pending = app_handle.state::<crate::commands::open_files::PendingOpenFiles>();
                 let mut accepted = false;
                 for url in urls {
+                    // The file URL carries an OS path, not necessarily valid
+                    // UTF-8: hand the path itself to validation instead of a
+                    // lossy string that could name a different file.
                     if let Ok(path) = url.to_file_path() {
-                        if crate::commands::open_files::accept_path(
-                            &pending,
-                            &path.to_string_lossy(),
-                        ) {
+                        if crate::commands::open_files::accept_os_path(&pending, &path) {
                             accepted = true;
                         }
                     }
