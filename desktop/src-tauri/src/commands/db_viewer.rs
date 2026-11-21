@@ -1248,11 +1248,10 @@ pub(crate) async fn run_mysql_connect(
 /// Validates the TLS mode, opens a private SSH tunnel when configured (the
 /// tunnel is only the TCP endpoint: verification stays verification and is
 /// checked against the real host), and only publishes the pool handle, tunnel
-/// and cancel token
-/// once the server handshake succeeds. A failure returns the error and releases
-/// just what the attempt opened, so a reconnect that cannot be verified leaves
-/// the previously working session — pool handle, tunnel, listener, cancel
-/// token — intact.
+/// and cancel token once the server handshake succeeds. A failure returns the
+/// error and releases just what the attempt opened, so a reconnect that cannot
+/// be verified leaves the previously working session — pool handle, tunnel,
+/// listener, cancel token — intact.
 pub(crate) async fn run_pg_connect(
     connection_id: &str,
     config: &DbConfig,
