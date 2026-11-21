@@ -139,6 +139,58 @@ export class WebDriverClient {
     );
   }
 
+  /** Clear an element's value (`POST /element/{id}/clear`). */
+  async clear(element) {
+    await this.#request(
+      "POST",
+      this.#sessionPath(`/element/${element.elementId}/clear`),
+      {},
+    );
+  }
+
+  /**
+   * Double-click an element the way the grid's cell editor opens: a single
+   * pointer-move + two down/up pairs through the W3C actions endpoint. A CSS
+   * `click` twice is not a double-click.
+   *
+   * @param {{elementId: string}} element
+   */
+  async doubleClick(element) {
+    const origin = { [ELEMENT_KEY]: element.elementId };
+    await this.#request("POST", this.#sessionPath("/actions"), {
+      actions: [
+        {
+          type: "pointer",
+          id: "mouse",
+          parameters: { pointerType: "mouse" },
+          actions: [
+            { type: "pointerMove", duration: 0, origin, x: 0, y: 0 },
+            { type: "pointerDown", button: 0 },
+            { type: "pointerUp", button: 0 },
+            { type: "pointerDown", button: 0 },
+            { type: "pointerUp", button: 0 },
+          ],
+        },
+      ],
+    });
+  }
+
+  /** Keyboard "Enter" via the actions endpoint (commits a cell edit). */
+  async pressEnter() {
+    await this.#request("POST", this.#sessionPath("/actions"), {
+      actions: [
+        {
+          type: "key",
+          id: "keyboard",
+          actions: [
+            { type: "keyDown", value: "\uE007" },
+            { type: "keyUp", value: "\uE007" },
+          ],
+        },
+      ],
+    });
+  }
+
   /** @param {{elementId: string}} element */
   async elementText(element) {
     const value = await this.#request(

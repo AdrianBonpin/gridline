@@ -213,3 +213,56 @@ describe("WebDriverClient", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+describe("WebDriverClient interaction surface", () => {
+  it("sends keystrokes as both text and per-character values", async () => {
+    const { calls, fetchImpl } = fakeDriver([{ status: 200, body: { value: null } }]);
+    const client = clientFor(fetchImpl);
+    client.sessionId = "s1";
+    await client.sendKeys({ elementId: "e7" }, "97");
+    expect(calls[0]).toEqual({
+      method: "POST",
+      url: `${BASE}/session/s1/element/e7/value`,
+      body: { text: "97", value: ["9", "7"] },
+    });
+  });
+
+  it("clears an element before typing", async () => {
+    const { calls, fetchImpl } = fakeDriver([{ status: 200, body: { value: null } }]);
+    const client = clientFor(fetchImpl);
+    client.sessionId = "s1";
+    await client.clear({ elementId: "e7" });
+    expect(calls[0].url).toBe(`${BASE}/session/s1/element/e7/clear`);
+  });
+
+  it("double-clicks through the W3C actions endpoint, not two clicks", async () => {
+    const { calls, fetchImpl } = fakeDriver([{ status: 200, body: { value: null } }]);
+    const client = clientFor(fetchImpl);
+    client.sessionId = "s1";
+    await client.doubleClick({ elementId: "e9" });
+    expect(calls[0].url).toBe(`${BASE}/session/s1/actions`);
+    const body = calls[0].body as any;
+    const pointer = body.actions[0];
+    expect(pointer.type).toBe("pointer");
+    expect(pointer.actions.filter((a: any) => a.type === "pointerDown")).toHaveLength(2);
+    expect(pointer.actions[0]).toEqual({
+      type: "pointerMove",
+      duration: 0,
+      origin: { [ELEMENT_KEY]: "e9" },
+      x: 0,
+      y: 0,
+    });
+  });
+
+  it("presses Enter as the W3C Return key code", async () => {
+    const { calls, fetchImpl } = fakeDriver([{ status: 200, body: { value: null } }]);
+    const client = clientFor(fetchImpl);
+    client.sessionId = "s1";
+    await client.pressEnter();
+    const body = calls[0].body as any;
+    expect(body.actions[0].actions).toEqual([
+      { type: "keyDown", value: "\uE007" },
+      { type: "keyUp", value: "\uE007" },
+    ]);
+  });
+});

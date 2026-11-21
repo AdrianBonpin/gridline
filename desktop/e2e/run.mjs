@@ -15,6 +15,7 @@ import { createRunArtifacts } from "./artifacts.mjs";
 import { errorMessage } from "./errors.mjs";
 import { describeMatchedValues, describeRenderedCells } from "./gridContent.mjs";
 import { FLOWS, planRun } from "./preflight.mjs";
+import { runCompositeEditFlow } from "./compositeEditFlow.mjs";
 import { runDemoSmokeFlow } from "./smokeFlow.mjs";
 import { runDestructiveRerunFlow } from "./destructiveFlow.mjs";
 import { buildCapabilities, startTauriDriver } from "./tauriDriver.mjs";
@@ -24,6 +25,7 @@ import { WebDriverClient } from "./webdriverClient.mjs";
 export const FLOW_RUNNERS = {
   "demo-smoke": runDemoSmokeFlow,
   "destructive-rerun": runDestructiveRerunFlow,
+  "composite-edit": runCompositeEditFlow,
 };
 
 export function reexecCommand({ argv, execPath, scriptPath }) {
@@ -91,6 +93,13 @@ export async function executeRun(plan, dependencies = {}) {
       ...evidence,
       "PASS",
     ]);
+    if (result.edited) {
+      // The observation the composite-key assertion rests on.
+      log(
+        `e2e: edited ${result.edited.column} ${JSON.stringify(result.edited.from)} -> ` +
+          `${JSON.stringify(result.edited.to)} and only that rendered cell changed`,
+      );
+    }
     log(`e2e: PASS ${result.passMessage ?? FLOWS[plan.flow] ?? plan.flow}`);
     return { exitCode: 0, steps: result.steps };
   } catch (error) {

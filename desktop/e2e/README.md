@@ -46,7 +46,7 @@ setup is needed on a headless Linux box. Useful flags (`bun run e2e:desktop --
 | Flag | Default | Purpose |
 | :--- | :--- | :--- |
 | `--binary <path>` | `src-tauri/target/release/gridline` | binary to launch (`GRIDLINE_E2E_BINARY` also works) |
-| `--flow <name>` | `demo-smoke` | which registered flow to run |
+| `--flow <name>` | `demo-smoke` | which registered flow to run (`demo-smoke`, `destructive-rerun`, `composite-edit`) |
 | `--artifacts <dir>` | `e2e-artifacts` | where logs/screenshots are written |
 | `--timeout-ms <ms>` | `30000` | per-step budget |
 | `--port` / `--native-port` | `4444` / `4445` | driver ports |
@@ -55,10 +55,32 @@ setup is needed on a headless Linux box. Useful flags (`bun run e2e:desktop --
 
 `--flow <name>` selects one; `demo-smoke` is the default.
 
-| Flow | What it proves |
-| :--- | :--- |
-| `demo-smoke` | the built app opens the seeded demo database and paints real rows |
-| `destructive-rerun` | a destructive script is confirmed from **both** the initial Run button and the toolbar re-run control — the built-product proof that the entry point cannot bypass the guard |
+| Flow | Command | What it proves |
+| :--- | :--- | :--- |
+| `demo-smoke` (default) | `bun run e2e:desktop` | the built app opens the seeded demo database and paints real rows |
+| `destructive-rerun` | `bun run e2e:desktop -- --flow destructive-rerun` | a destructive script is confirmed from **both** the initial Run button and the toolbar re-run control — the built-product proof that the entry point cannot bypass the guard |
+| `composite-edit` | `bun run e2e:desktop -- --flow composite-edit` | editing one row of a composite-primary-key table changes exactly that row |
+
+### `composite-edit` — Row Identity
+
+`order_items` is keyed by `(order_id, product_id)`, and its first two rendered
+rows share `order_id`. The flow therefore proves the thing a single-column key
+would break:
+
+1. open the demo database and `order_items`;
+2. assert the precondition that the first two rendered rows share the first key
+   column (without a sibling row the run would prove nothing and fails);
+3. snapshot every rendered cell;
+4. double-click the `quantity` cell of the first row, clear it, type the next
+   value, press Enter (a real cell edit, staged in the changes queue);
+5. open the changes queue and click **Commit All** (the real commit path —
+   `[data-testid="changes-queue-toggle"]` → `[data-testid="commit-all"]`);
+6. re-snapshot the grid and require **exactly one rendered cell to have
+   changed**, and that cell to be the edited one.
+
+A commit that also rewrote the sibling row that shares `order_id` changes two
+cells, so step 6 fails with both diffs named. A commit that changed nothing, or
+changed the wrong cell, fails too.
 
 ## What the smoke flow asserts
 

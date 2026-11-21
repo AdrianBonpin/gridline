@@ -183,6 +183,95 @@ describe("DbViewerScreen", () => {
         expect(screen.queryByText("Alicia")).toBeNull();
     });
 
+    it("stages a composite-key edit with every key column, not just the first", async () => {
+        // order_items — the demo composite-PK table: two rows share order_id and
+        // differ by product_id, so a single-column key would hit both.
+        const store = useDbViewerStore.getState();
+        store.openTab("main", "order_items");
+        const tabId = useDbViewerStore.getState().activeTabId!;
+        store.setTabData(tabId, {
+            columns: [
+                { name: "order_id", data_type: "INTEGER", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+                { name: "product_id", data_type: "INTEGER", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+                { name: "quantity", data_type: "INTEGER", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+            ],
+            rows: [
+                [1, 1, 2],
+                [1, 3, 1],
+            ],
+            total_rows: 2,
+            page: 1,
+            page_size: 50,
+        } as any);
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        const cells = await waitFor(() => screen.getAllByText("1"));
+        // The second row's quantity cell (order 1, product 3).
+        const target = cells[cells.length - 1]!;
+        fireEvent.click(target);
+        fireEvent.keyDown(target, { key: "Enter" });
+        // quantity is an INTEGER cell: the editor renders a number input, which
+        // has no "textbox" role — read the editor's own control.
+        const editor = await waitFor(() => screen.getByTestId("cell-editor"));
+        const input = editor.querySelector("input, textarea") as HTMLElement;
+        fireEvent.change(input, { target: { value: "9" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+
+        const staged = useDbViewerStore.getState().changesQueue[0];
+        expect(staged?.type).toBe("update");
+        expect(staged?.primaryKey).toEqual({ order_id: 1, product_id: 3 });
+        // the sibling row (order 1, product 1) is not addressed by this change
+        expect(staged?.primaryKey).not.toEqual({ order_id: 1 });
+    });
+
+    it("stages a no-PK edit against the backend row locator, never a displayed cell", async () => {
+        useConnectionStore.setState({
+            connections: [
+                { id: "c1", name: "demo", db_type: "sqlite", host: "", port: null, username: null, folder_id: null, keychain_ref: null, tag_ids: [], favorite: false, created_at: "", updated_at: "" },
+            ] as Connection[],
+        });
+        const store = useDbViewerStore.getState();
+        store.openTab("main", "page_views");
+        const tabId = useDbViewerStore.getState().activeTabId!;
+        store.setTabData(tabId, {
+            columns: [
+                { name: "url", data_type: "TEXT", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+                { name: "session_id", data_type: "TEXT", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+            ],
+            // page_views has no primary key: the backend appends `rowid` as a
+            // trailing cell that is not a declared column.
+            rows: [["/products", "sess-001", 17]],
+            total_rows: 1,
+            page: 1,
+            page_size: 50,
+        } as any);
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        const cell = await waitFor(() => screen.getByText("/products"));
+        // The locator is never a rendered column…
+        expect(screen.queryByText("rowid")).toBeNull();
+        expect(screen.queryByText("17")).toBeNull();
+        fireEvent.click(cell);
+        fireEvent.keyDown(cell, { key: "Enter" });
+        const editor = await waitFor(() => screen.getByTestId("cell-editor"));
+        const input = editor.querySelector("input, textarea") as HTMLElement;
+        fireEvent.change(input, { target: { value: "/products/2" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+
+        const staged = useDbViewerStore.getState().changesQueue[0];
+        expect(staged?.primaryKey).toEqual({ rowid: 17 });
+    });
+
     it("deriveStagedValues maps queue updates to optimistic cell values", () => {
         const queue = [
             {

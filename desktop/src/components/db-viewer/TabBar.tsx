@@ -265,6 +265,7 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
               if (changesQueue.length > 0) toggleChangesPanel();
             }}
             aria-label="Changes queue"
+            data-testid="changes-queue-toggle"
             className={[
               "flex items-center gap-1.5 rounded-md border bg-surface px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer",
               pendingCount > 0

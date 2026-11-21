@@ -86,3 +86,21 @@ describe("desktop E2E wiring", () => {
     expect(read(".gitignore")).toMatch(/e2e-artifacts/);
   });
 });
+
+describe("registered flows", () => {
+  it("registers every flow in both the preflight list and the runner table", async () => {
+    const { FLOWS } = await import("./preflight.mjs");
+    const { FLOW_RUNNERS } = await import("./run.mjs");
+    // A flow that exists in only one registry is unrunnable: preflight rejects
+    // it as unknown, or the runner throws "no runner registered".
+    expect(Object.keys(FLOW_RUNNERS).sort()).toEqual(Object.keys(FLOWS).sort());
+    expect(FLOWS["composite-edit"]).toContain("composite-primary-key");
+    expect(typeof FLOW_RUNNERS["composite-edit"]).toBe("function");
+  });
+
+  it("documents the composite-key edit flow in the harness README", () => {
+    const readme = read("desktop/e2e/README.md");
+    expect(readme).toContain("composite-edit");
+    expect(readme).toContain("sibling");
+  });
+});

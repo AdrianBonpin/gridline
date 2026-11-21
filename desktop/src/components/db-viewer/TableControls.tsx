@@ -8,6 +8,7 @@ import { useDbViewerStore, type FilterRule, type SortRule } from "../../stores/d
 import { useNotificationStore } from "../../stores/notificationStore";
 import { Tooltip } from "../ui/Tooltip";
 import { exportData } from "../../lib/exportData";
+import { projectDeclaredCells, rowIdentityFor } from "../../lib/rowIdentity";
 import type { ColumnInfo } from "../../lib/types";
 
 const AUTO_REFRESH_OPTIONS = [
@@ -320,17 +321,20 @@ function BulkActionsDropdown({
   selectedRows,
   schema,
   table,
+  dbType,
   onClearSelection,
 }: {
   columns: ColumnInfo[];
   selectedRows: unknown[][];
   schema: string;
   table: string;
+  dbType: string;
   onClearSelection: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const addChange = useDbViewerStore((s) => s.addChange);
+  const notify = useNotificationStore((s) => s.notify);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text).catch(() => {});
@@ -351,7 +355,7 @@ function BulkActionsDropdown({
     const csvRows = [headers.map((h) => `"${h.replace(/"/g, '""')}"`).join(",")];
     for (const row of selectedRows) {
       csvRows.push(
-        row.map((cell) => {
+        projectDeclaredCells(row, columns).map((cell) => {
           const s = cell === null || cell === undefined ? "" : String(cell);
           return `"${s.replace(/"/g, '""')}"`;
         }).join(","),
@@ -364,7 +368,7 @@ function BulkActionsDropdown({
     const headers = columns.map((c) => c.name);
     const lines: string[] = [];
     for (const row of selectedRows) {
-      const vals = row.map((cell) =>
+      const vals = projectDeclaredCells(row, columns).map((cell) =>
         cell === null ? "NULL"
         : typeof cell === "number" ? String(cell)
         : `'${String(cell).replace(/'/g, "''")}'`,
@@ -375,21 +379,33 @@ function BulkActionsDropdown({
   };
 
   const handleDeleteSelected = () => {
-    const pkCol = columns.find((c) => c.is_pk);
+    // One staged delete per selected row, each carrying the row's complete Row
+    // Identity: every primary-key column, or the backend locator when the table
+    // has no primary key. A row without a complete identity is never deleted
+    // through a partial or positional predicate.
+    let unaddressable = 0;
     for (const row of selectedRows) {
-      const pk: Record<string, unknown> = {};
-      if (pkCol) {
-        const ci = columns.findIndex((c) => c.name === pkCol.name);
-        if (ci >= 0) pk[pkCol.name] = row[ci] ?? null;
+      const identity = rowIdentityFor(columns, row, dbType);
+      if (!identity) {
+        unaddressable += 1;
+        continue;
       }
       addChange({
         type: "delete",
         schema,
         table,
-        primaryKey: pk,
-        oldData: Object.fromEntries(columns.map((c, i) => [c.name, row[i] ?? null])),
+        primaryKey: identity.values,
+        oldData: Object.fromEntries(
+          projectDeclaredCells(row, columns).map((cell, i) => [columns[i].name, cell]),
+        ),
         description: `Delete row from ${table}`,
       });
+    }
+    if (unaddressable > 0) {
+      notify(
+        `Cannot delete ${unaddressable} row${unaddressable === 1 ? "" : "s"}: no primary key or row locator to address them`,
+        "error",
+      );
     }
     setOpen(false);
     onClearSelection();
@@ -463,6 +479,8 @@ interface TableControlsProps {
   selectedRows: unknown[][];
   onClearSelection: () => void;
   defaultRefreshRate?: number;
+  /** Engine of the active connection (decides the no-PK row locator). */
+  dbType?: string;
   /** Hide data-modifying affordances (e.g. for materialized views). */
   isMatview?: boolean;
   /** "table" = full table toolbar; "query" = export/refresh/columns + timing */
@@ -494,6 +512,7 @@ export function TableControls({
   selectedRows,
   onClearSelection,
   defaultRefreshRate = 0,
+  dbType = "postgresql",
   isMatview = false,
   variant = "table",
   onExportToFile,
@@ -892,6 +911,7 @@ export function TableControls({
               selectedRows={selectedRows}
               schema={schema}
               table={table}
+              dbType={dbType}
               onClearSelection={onClearSelection}
             />
             <button

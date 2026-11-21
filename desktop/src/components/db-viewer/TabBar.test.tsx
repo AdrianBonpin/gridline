@@ -14,7 +14,8 @@ describe("TabBar", () => {
   it("renders the fixed Query and Changes actions when no tabs are open", () => {
     render(<TabBar />);
     expect(screen.getByRole("button", { name: /new query/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Changes queue" })).toBeInTheDocument();
+    // stable anchor for the desktop E2E harness (composite-key edit flow)
+    expect(screen.getByTestId("changes-queue-toggle")).toBeInTheDocument();
   });
 
   it("renders open tab names", () => {

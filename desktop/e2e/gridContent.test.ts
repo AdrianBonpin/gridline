@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HarnessError } from "./errors.mjs";
 import {
+  cellDiff,
   describeMatchedValues,
   describeRenderedCells,
   gridCellSelector,
@@ -204,5 +205,26 @@ describe("grid rendered-cell assertions", () => {
     );
     expect(rendered.cellCount).toBe(2);
     expect(polls).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("cellDiff", () => {
+  it("reports the single position that changed", () => {
+    expect(
+      cellDiff({ cells: ["a", "b", "c"] }, { cells: ["a", "B", "c"] }),
+    ).toEqual([{ index: 1, before: "b", after: "B" }]);
+  });
+
+  it("reports every changed position (a composite-key bug changes siblings)", () => {
+    expect(
+      cellDiff({ cells: ["1", "2", "1", "2"] }, { cells: ["1", "97", "1", "97"] }),
+    ).toEqual([
+      { index: 1, before: "2", after: "97" },
+      { index: 3, before: "2", after: "97" },
+    ]);
+  });
+
+  it("returns nothing when the observation is unchanged", () => {
+    expect(cellDiff({ cells: ["a"] }, { cells: ["a"] })).toEqual([]);
   });
 });

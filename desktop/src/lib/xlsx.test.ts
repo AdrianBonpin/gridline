@@ -50,3 +50,19 @@ describe("buildXlsx", () => {
     expect(xml).toContain("inlineStr");
   });
 });
+describe("buildXlsx declared columns", () => {
+  // A no-PK table row carries a trailing backend locator cell (rowid); it is not
+  // a declared column and must never become a spreadsheet column.
+  const noPkCols: ColumnInfo[] = [
+    { name: "url", data_type: "text", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    { name: "session_id", data_type: "text", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+  ];
+
+  it("drops a trailing row-locator cell", () => {
+    const xml = sheetXML(buildXlsx([["/products", "sess-001", 17]], noPkCols));
+    expect(xml).not.toContain(">17<");
+    // header + data row each hold exactly the two declared columns
+    const dataRow = xml.split("<row r=\"2\">")[1].split("</row>")[0];
+    expect((dataRow.match(/<c /g) ?? []).length).toBe(2);
+  });
+});

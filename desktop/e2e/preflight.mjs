@@ -14,6 +14,8 @@ export const FLOWS = {
     "open the seeded demo SQLite database and assert that a demo table's rows are rendered",
   "destructive-rerun":
     "prove a destructive script is confirmed from both the initial Run button and the toolbar re-run control",
+  "composite-edit":
+    "edit one cell of the demo's composite-primary-key table and assert that only that row changed",
 };
 
 const USAGE = `usage: bun run e2e [options]

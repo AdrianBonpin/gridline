@@ -71,6 +71,29 @@ export async function observeGridCells(driver, gridSelectorValue) {
   return { cellCount: elements.length, cells };
 }
 
+/**
+ * Positional difference between two rendered-cell observations.
+ *
+ * Positions are cell indices in the flattened, header-free cell list, so a
+ * change at one position means exactly one rendered cell moved. Rows that
+ * appear or disappear show up as a length mismatch, which the caller must treat
+ * as a failure rather than as "one cell changed".
+ *
+ * @param {{cells: string[]}} before
+ * @param {{cells: string[]}} after
+ * @returns {Array<{index: number, before: string, after: string}>}
+ */
+export function cellDiff(before, after) {
+  const length = Math.min(before.cells.length, after.cells.length);
+  const diff = [];
+  for (let index = 0; index < length; index += 1) {
+    if (before.cells[index] !== after.cells[index]) {
+      diff.push({ index, before: before.cells[index], after: after.cells[index] });
+    }
+  }
+  return diff;
+}
+
 /** Fixture values a rendered-cell observation does not show. */
 export function missingValues(cells, expected) {
   return expected.filter((needle) => !cells.some((cell) => cell.includes(needle)));
