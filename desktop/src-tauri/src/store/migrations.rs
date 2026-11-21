@@ -563,10 +563,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(
-            count, 9,
-            "versions 2..=10 are recorded exactly once each"
-        );
+        assert_eq!(count, 9, "versions 2..=10 are recorded exactly once each");
     }
 
     #[test]

@@ -534,9 +534,10 @@ pub fn run_db_sync(
 // SQLite dump / restore / sync (headless-testable core)
 // ---------------------------------------------------------------------------
 
-/// Quote a SQLite identifier with double quotes (preserving the spec's no-injection rule).
+/// Quote a SQLite identifier with double quotes (preserving the spec's
+/// no-injection rule). Delegates to `db::ident` — one implementation per engine.
 fn sqlite_quote_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
+    crate::db::ident::quote(crate::db::ident::Engine::Sqlite, name)
 }
 
 /// SQL literal for a rusqlite value (mirrors sqlite3 .dump output).
@@ -607,8 +608,8 @@ pub fn dump_sqlite_to_cancellable<W: Write, F: FnMut(&str)>(
         // Columns excluding generated/hidden (hidden != 0) via pragma_table_xinfo.
         let xinfo: Vec<(String, i64)> = conn
             .prepare(&format!(
-                "SELECT name, hidden FROM pragma_table_xinfo(\"{}\")",
-                name.replace('"', "\"\"")
+                "SELECT name, hidden FROM pragma_table_xinfo({})",
+                sqlite_quote_ident(name)
             ))
             .map_err(|e| e.to_string())?
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
@@ -627,13 +628,13 @@ pub fn dump_sqlite_to_cancellable<W: Write, F: FnMut(&str)>(
             .join(", ");
         // Emit one INSERT per row (faithful to .dump).
         let select = format!(
-            "SELECT {} FROM \"{}\"",
+            "SELECT {} FROM {}",
             emitted
                 .iter()
                 .map(|n| sqlite_quote_ident(n))
                 .collect::<Vec<_>>()
                 .join(", "),
-            name.replace('"', "\"\"")
+            sqlite_quote_ident(name)
         );
         let mut stmt = conn.prepare(&select).map_err(|e| e.to_string())?;
         let nrows = stmt
@@ -790,7 +791,7 @@ fn drop_sqlite_user_objects(conn: &Connection) -> Result<(), String> {
             _ => "TABLE",
         };
         conn.execute(
-            &format!("DROP {keyword} IF EXISTS \"{}\"", name.replace('"', "\"\"")),
+            &format!("DROP {keyword} IF EXISTS {}", sqlite_quote_ident(&name)),
             [],
         )
         .map_err(|e| format!("drop {kind} \"{name}\": {e}"))?;

@@ -2,6 +2,7 @@
 //! (never string-concatenated); values are bound via `?` placeholders at the
 //! call site. Mirrors the PG builders in `commands/db_viewer.rs` but with
 //! MySQL quoting and `LIMIT 1` on single-row UPDATE/DELETE.
+use crate::db::ident::{self, Engine};
 use crate::models::db_viewer::{FilterRule, SortRule};
 use sqlx::Row;
 
@@ -16,8 +17,11 @@ pub const MYSQL_SYSTEM_DBS: [&str; 4] =
     ["information_schema", "mysql", "performance_schema", "sys"];
 
 /// Quote a MySQL identifier with backticks, doubling any embedded backticks.
+///
+/// Delegates to the one shared quoting implementation (`db::ident`) so MySQL
+/// names have exactly one tested implementation in this crate.
 pub fn mysql_quote_ident(name: &str) -> String {
-    format!("`{}`", name.replace('`', "``"))
+    ident::quote(Engine::MySql, name)
 }
 
 /// Decode a MySQL row cell as a String. `information_schema` / `SHOW`
@@ -33,44 +37,63 @@ pub fn mysql_row_string(row: &sqlx::mysql::MySqlRow, i: usize) -> String {
     String::new()
 }
 
-/// information_schema.columns query for a table — returns column metadata in
-/// the column order the grid expects (name, data_type, is_nullable, column_key,
-/// default, extra). Caller maps these into `ColumnInfo`.
-pub fn mysql_columns_query(schema: &str, table: &str) -> String {
-    format!(
-        "SELECT column_name, data_type, is_nullable, column_key, column_default, extra \
-         FROM information_schema.columns \
-         WHERE table_schema = '{}' AND table_name = '{}' \
-         ORDER BY ordinal_position",
-        schema.replace('\'', "''"),
-        table.replace('\'', "''")
-    )
+/// information_schema.columns query for one table — `?` holds the schema and
+/// `?` the table (bound by the caller, in that order).
+///
+/// The names are **bound parameters**, not literals: MySQL string literals
+/// interpret backslash escapes, so a legal name containing `'` or `\` cannot be
+/// spliced in without risking a different (or broken) filter.
+/// Returns column metadata in the order the grid expects (name, data_type,
+/// is_nullable, column_key, default, extra). Caller maps these into
+/// `ColumnInfo`.
+pub fn mysql_columns_query() -> String {
+    "SELECT column_name, data_type, is_nullable, column_key, column_default, extra \
+     FROM information_schema.columns \
+     WHERE table_schema = ? AND table_name = ? \
+     ORDER BY ordinal_position"
+        .to_string()
 }
 
 /// Build a `SELECT ... FROM \`schema\`.\`table\` [WHERE ...] [ORDER BY ...] LIMIT ? OFFSET ?`.
 /// `filters` produce `?` placeholders (values bound by the caller); `sorts`
 /// are quoted identifiers. `default_sort` is used when `sorts` is empty.
+///
+/// Fails closed: a column that cannot be represented, an operator this builder
+/// does not implement, or an unknown sort direction is an error naming the
+/// offending rule. Dropping such a rule would return unfiltered or unsorted
+/// rows to a grid whose filter controls look active.
 pub fn mysql_select_data_query(
     schema: &str,
     table: &str,
     filters: &[FilterRule],
     sorts: &[SortRule],
     default_sort: &str,
-) -> String {
+) -> Result<String, String> {
+    ident::validate(schema)
+        .map_err(|e| format!("MySQL: schema {schema:?} cannot be represented: {e}"))?;
+    ident::validate(table)
+        .map_err(|e| format!("MySQL: table {table:?} cannot be represented: {e}"))?;
+
     let mut where_parts: Vec<String> = Vec::new();
     for f in filters {
-        let col = mysql_quote_ident(&f.column);
+        let col = ident::quote_checked(Engine::MySql, &f.column)
+            .map_err(|e| format!("cannot apply filter on column {:?}: {e}", f.column))?;
         let op = match f.operator.as_str() {
-            "eq" => format!("{} = ?", col),
-            "neq" => format!("{} <> ?", col),
-            "contains" => format!("{} LIKE CONCAT('%', ?, '%')", col),
-            "starts" => format!("{} LIKE CONCAT(?, '%')", col),
-            "ends" => format!("{} LIKE CONCAT('%', ?)", col),
-            "gt" => format!("{} > ?", col),
-            "lt" => format!("{} < ?", col),
-            "null" => format!("{} IS NULL", col),
-            "notnull" => format!("{} IS NOT NULL", col),
-            _ => format!("{} = ?", col),
+            "eq" => format!("{col} = ?"),
+            "neq" => format!("{col} <> ?"),
+            "contains" => format!("{col} LIKE CONCAT('%', ?, '%')"),
+            "starts" => format!("{col} LIKE CONCAT(?, '%')"),
+            "ends" => format!("{col} LIKE CONCAT('%', ?)"),
+            "gt" => format!("{col} > ?"),
+            "lt" => format!("{col} < ?"),
+            "null" => format!("{col} IS NULL"),
+            "notnull" => format!("{col} IS NOT NULL"),
+            other => {
+                return Err(format!(
+                    "cannot apply filter on column {:?}: unsupported operator {other:?}",
+                    f.column
+                ))
+            }
         };
         where_parts.push(op);
     }
@@ -80,36 +103,41 @@ pub fn mysql_select_data_query(
         format!(" WHERE {}", where_parts.join(" AND "))
     };
 
-    let order_cols: Vec<String> = sorts
-        .iter()
-        .map(|s| {
-            format!(
-                "{} {}",
-                mysql_quote_ident(&s.column),
-                if s.order.eq_ignore_ascii_case("desc") {
-                    "DESC"
-                } else {
-                    "ASC"
-                }
-            )
-        })
-        .collect();
+    let mut order_cols: Vec<String> = Vec::new();
+    for s in sorts {
+        let col = ident::quote_checked(Engine::MySql, &s.column)
+            .map_err(|e| format!("cannot apply sort on column {:?}: {e}", s.column))?;
+        let dir = if s.order.eq_ignore_ascii_case("desc") {
+            "DESC"
+        } else if s.order.eq_ignore_ascii_case("asc") {
+            "ASC"
+        } else {
+            return Err(format!(
+                "cannot apply sort on column {:?}: unsupported direction {:?}",
+                s.column, s.order
+            ));
+        };
+        order_cols.push(format!("{col} {dir}"));
+    }
     let order_clause = if order_cols.is_empty() {
         if default_sort.is_empty() {
             String::new()
         } else {
-            format!(" ORDER BY {}", mysql_quote_ident(default_sort))
+            let col = ident::quote_checked(Engine::MySql, default_sort).map_err(|e| {
+                format!("cannot apply default sort on column {default_sort:?}: {e}")
+            })?;
+            format!(" ORDER BY {col}")
         }
     } else {
         format!(" ORDER BY {}", order_cols.join(", "))
     };
 
-    format!(
+    Ok(format!(
         "SELECT * FROM {}{}{} LIMIT ? OFFSET ?",
         qualified(schema, table),
         where_clause,
         order_clause
-    )
+    ))
 }
 
 pub fn mysql_count_query(schema: &str, table: &str) -> String {
@@ -120,15 +148,13 @@ pub fn mysql_ddl_query(schema: &str, table: &str) -> String {
     format!("SHOW CREATE TABLE {}", qualified(schema, table))
 }
 
-/// Foreign-key columns for a table (referenced table/column).
-pub fn mysql_fk_query(schema: &str, table: &str) -> String {
-    format!(
-        "SELECT column_name, referenced_table_schema, referenced_table_name, referenced_column_name \
-         FROM information_schema.key_column_usage \
-         WHERE table_schema = '{}' AND table_name = '{}' AND referenced_table_name IS NOT NULL",
-        schema.replace('\'', "''"),
-        table.replace('\'', "''")
-    )
+/// Foreign-key columns for a table (referenced table/column). The schema and
+/// table are bound (`?`), for the same reason as [`mysql_columns_query`].
+pub fn mysql_fk_query() -> String {
+    "SELECT column_name, referenced_table_schema, referenced_table_name, referenced_column_name \
+     FROM information_schema.key_column_usage \
+     WHERE table_schema = ? AND table_name = ? AND referenced_table_name IS NOT NULL"
+        .to_string()
 }
 
 /// Choose a default sort column: prefer an `id`-like column, else the first.
@@ -250,7 +276,7 @@ pub fn mysql_build_empty_sql(schema: &str, table: &str) -> String {
 }
 
 fn qualified(schema: &str, table: &str) -> String {
-    format!("{}.{}", mysql_quote_ident(schema), mysql_quote_ident(table))
+    ident::qualified_unchecked(Engine::MySql, schema, table)
 }
 
 #[cfg(test)]
@@ -267,16 +293,22 @@ mod tests {
 
     #[test]
     fn columns_query_targets_information_schema() {
-        let q = mysql_columns_query("shop", "orders");
+        let q = mysql_columns_query();
         assert!(q.contains("FROM information_schema.columns"));
-        assert!(q.contains("table_schema = 'shop'"));
-        assert!(q.contains("table_name = 'orders'"));
+        // The schema/table are bound, never spliced in as literals: MySQL string
+        // literals interpret backslash escapes, so a legal name containing `'`
+        // or `\` cannot be embedded without risking a different filter.
+        assert!(
+            q.contains("table_schema = ? AND table_name = ?"),
+            "got: {q}"
+        );
+        assert!(!q.contains('\''), "no name may be a literal: {q}");
         assert!(q.contains("ORDER BY ordinal_position"));
     }
 
     #[test]
     fn select_data_quotes_schema_table_and_applies_limit_offset() {
-        let q = mysql_select_data_query("shop", "orders", &[], &[], "id");
+        let q = mysql_select_data_query("shop", "orders", &[], &[], "id").unwrap();
         assert!(q.contains("SELECT * FROM `shop`.`orders`"));
         assert!(q.contains("ORDER BY `id`"));
         assert!(q.contains("LIMIT ? OFFSET ?"));
@@ -290,9 +322,94 @@ mod tests {
             operator: "eq".into(),
             value: "paid".into(),
         }];
-        let q = mysql_select_data_query("shop", "orders", &filters, &[], "id");
+        let q = mysql_select_data_query("shop", "orders", &filters, &[], "id").unwrap();
         assert!(q.contains("WHERE `status` = ?"));
         assert!(q.contains("LIMIT ? OFFSET ?"));
+    }
+
+    /// Legal-but-awkward column names are quoted, never skipped: skipping would
+    /// return unfiltered rows under a filter that looks active.
+    #[test]
+    fn select_data_quotes_legal_but_awkward_column_names() {
+        let filters = vec![
+            FilterRule {
+                id: "f1".into(),
+                column: "we ird".into(),
+                operator: "eq".into(),
+                value: "x".into(),
+            },
+            FilterRule {
+                id: "f2".into(),
+                column: "o`brien".into(),
+                operator: "contains".into(),
+                value: "y".into(),
+            },
+            FilterRule {
+                id: "f3".into(),
+                column: "select".into(),
+                operator: "gt".into(),
+                value: "1".into(),
+            },
+            FilterRule {
+                id: "f4".into(),
+                column: "o'brien".into(),
+                operator: "null".into(),
+                value: String::new(),
+            },
+        ];
+        let sorts = vec![SortRule {
+            id: "s1".into(),
+            column: "Mixed Case".into(),
+            order: "desc".into(),
+        }];
+        let q = mysql_select_data_query("my schema", "we `ird\"tbl", &filters, &sorts, "id")
+            .expect("legal names must be representable");
+        assert!(q.contains("FROM `my schema`.`we ``ird\"tbl`"), "got: {q}");
+        assert!(q.contains("`we ird` = ?"), "got: {q}");
+        assert!(
+            q.contains("`o``brien` LIKE CONCAT('%', ?, '%')"),
+            "got: {q}"
+        );
+        assert!(q.contains("`select` > ?"), "got: {q}");
+        assert!(q.contains("`o'brien` IS NULL"), "got: {q}");
+        assert!(q.contains("ORDER BY `Mixed Case` DESC"), "got: {q}");
+    }
+
+    /// An unknown operator must fail rather than silently becoming `=` (which
+    /// would filter on the wrong predicate) or being dropped (unfiltered rows).
+    #[test]
+    fn select_data_rejects_unknown_operator() {
+        let filters = vec![FilterRule {
+            id: "f1".into(),
+            column: "status".into(),
+            operator: "matches_regex".into(),
+            value: "x".into(),
+        }];
+        let err = mysql_select_data_query("shop", "orders", &filters, &[], "id")
+            .expect_err("unknown operator must fail");
+        assert!(err.contains("matches_regex"), "got: {err}");
+    }
+
+    #[test]
+    fn select_data_rejects_unrepresentable_column_and_direction() {
+        let empty_column = vec![FilterRule {
+            id: "f1".into(),
+            column: String::new(),
+            operator: "eq".into(),
+            value: "x".into(),
+        }];
+        let err = mysql_select_data_query("shop", "orders", &empty_column, &[], "id")
+            .expect_err("empty column must fail");
+        assert!(err.contains("empty"), "got: {err}");
+
+        let bad_sort = vec![SortRule {
+            id: "s1".into(),
+            column: "id".into(),
+            order: "sideways".into(),
+        }];
+        let err = mysql_select_data_query("shop", "orders", &[], &bad_sort, "id")
+            .expect_err("unknown direction must fail");
+        assert!(err.contains("sideways"), "got: {err}");
     }
 
     #[test]
@@ -309,9 +426,14 @@ mod tests {
 
     #[test]
     fn fk_query_targets_key_column_usage() {
-        let q = mysql_fk_query("shop", "orders");
+        let q = mysql_fk_query();
         assert!(q.contains("FROM information_schema.key_column_usage"));
         assert!(q.contains("referenced_table_name IS NOT NULL"));
+        assert!(
+            q.contains("table_schema = ? AND table_name = ?"),
+            "got: {q}"
+        );
+        assert!(!q.contains("'shop'"), "schema must be bound: {q}");
     }
 
     #[test]
