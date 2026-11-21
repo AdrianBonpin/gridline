@@ -200,6 +200,7 @@ pub fn run() {
             keychain::delete_connection_password,
             ssh::ssh_host_trust_state,
             ssh::ssh_host_trust_enroll,
+            ssh::ssh_host_trust_reenroll,
             keychain::save_connection_ssh_password,
             keychain::get_connection_ssh_password,
             keychain::delete_connection_ssh_password,

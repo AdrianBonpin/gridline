@@ -111,6 +111,27 @@ export async function sshHostTrustEnroll(
   });
 }
 
+/**
+ * Deliberately replace stale host trust for an endpoint (ADR 0001).
+ *
+ * Only reachable from the connection's trust state: the connect path has no
+ * way to call it, so a changed host key stays a dead end during authentication.
+ * Carries the endpoint and the fingerprint the user confirmed — never a
+ * credential.
+ */
+export async function sshHostTrustReenroll(
+  host: string,
+  port: number,
+  confirmed: HostKeyFingerprint,
+): Promise<SshHostTrustState> {
+  return invoke<SshHostTrustState>("ssh_host_trust_reenroll", {
+    host,
+    port,
+    keyType: confirmed.key_type,
+    fingerprint: confirmed.fingerprint,
+  });
+}
+
 // ─── DB Viewer Lifecycle ────────────────────────────────────────
 
 export async function dbConnect(connectionId: string, input: ConnectionInput): Promise<void> {

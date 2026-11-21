@@ -7,9 +7,9 @@
 **Seams:** Connection trust seam: catches the re-enrollment action and its effect on later connections; misses operating-system trust-store presentation details.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/98
-**Status:** ready
+**Status:** done
 
-- [ ] Re-enrollment is reachable from the connection's trust state, not from the authentication error path.
-- [ ] Completing re-enrollment lets later connections verify the new key.
-- [ ] Normal authentication offers no path to ignore a mismatch.
-- [ ] Trust records contain no credentials.
+- [x] Re-enrollment is reachable from the connection's trust state, not from the authentication error path.
+- [x] Completing re-enrollment lets later connections verify the new key.
+- [x] Normal authentication offers no path to ignore a mismatch.
+- [x] Trust records contain no credentials.

@@ -7,6 +7,7 @@ import type { SshHostTrustState } from "../lib/types";
 vi.mock("../lib/commands", () => ({
   sshHostTrustState: vi.fn(),
   sshHostTrustEnroll: vi.fn(),
+  sshHostTrustReenroll: vi.fn(),
 }));
 
 const mockCommands = vi.mocked(commands);
@@ -146,5 +147,21 @@ describe("useSshHostTrust", () => {
 
     expect(retry).toBe(false);
     expect(mockCommands.sshHostTrustEnroll).not.toHaveBeenCalled();
+  });
+
+  it("offers the connect path no way to replace a trusted host key", () => {
+    // The boundary of ticket 22: replacing trust belongs to the connection's
+    // trust state (`useSshHostTrustState`), so the authentication path has no
+    // re-enrollment capability at all — a mismatch here stays a dead end.
+    const { result } = renderHook(() => useSshHostTrust());
+    expect(Object.keys(result.current).sort()).toEqual([
+      "accept",
+      "busy",
+      "check",
+      "dismiss",
+      "error",
+      "trustState",
+    ]);
+    expect(mockCommands.sshHostTrustReenroll).not.toHaveBeenCalled();
   });
 });
