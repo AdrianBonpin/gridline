@@ -1484,15 +1484,15 @@ pub fn dump_sqlite_to_path_cancellable<F: FnMut(&str)>(
 ) -> Result<(), String> {
     let source = Path::new(source_path);
     let destination = Path::new(out_path);
+    if !source.is_file() {
+        return Err(format!(
+            "the SQLite database to dump is not an existing file: {}",
+            source.display()
+        ));
+    }
     refuse_source_as_dump_destination(source, destination)?;
     if is_cancelled() {
         return Err(CANCEL_MESSAGE.to_string());
-    }
-    if !source.is_file() {
-        return Err(format!(
-            "the SQLite database file does not exist: {}",
-            source.display()
-        ));
     }
 
     // Opening the source first means a database that cannot be read creates no

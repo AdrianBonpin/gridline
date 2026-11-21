@@ -1119,6 +1119,30 @@ fn sqlite_dump_preserves_an_autoincrement_sequence_that_outlived_its_rows() {
     assert_eq!(id, 4, "the next insert continues the original sequence");
 }
 
+/// A dump of a path that is not a database must not create one: `Connection::open`
+/// would happily turn a mistyped path into an empty database, and the dump would
+/// then look like a valid empty backup.
+#[test]
+fn sqlite_dump_refuses_a_missing_database_instead_of_creating_one() {
+    let dir = job_temp_dir("sqlite_dump_missing");
+    let db = dir.join("missing.db");
+    let dest = dir.join("backup.sql");
+    std::fs::write(&dest, b"PRIOR BACKUP\n").unwrap();
+
+    let err = dump_sqlite_to_path(db.to_str().unwrap(), dest.to_str().unwrap()).unwrap_err();
+    assert!(
+        err.to_lowercase().contains("not an existing file"),
+        "got: {err}"
+    );
+    assert!(
+        !db.exists(),
+        "the dump must not create the database it reads"
+    );
+    assert_eq!(b"PRIOR BACKUP\n".to_vec(), std::fs::read(&dest).unwrap());
+    assert!(partial_siblings(&dir).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn sqlite_restore_clean_drops_existing() {
     let src = seed_sqlite();
