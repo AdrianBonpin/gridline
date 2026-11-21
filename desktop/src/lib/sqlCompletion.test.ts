@@ -6,6 +6,7 @@ import {
   buildColumnSuggestions,
   getColumnsForTable,
   getCachedColumns,
+  invalidateColumnCache,
 } from "./sqlCompletion";
 import type { TableInfo } from "./types";
 import { getSchemaGraph } from "./commands";
@@ -57,9 +58,14 @@ describe("buildColumnSuggestions", () => {
   });
 });
 
+const appdb = { connectionId: "c1", database: "appdb" };
+const analytics = { connectionId: "c1", database: "analytics" };
+const otherConnection = { connectionId: "c2", database: "appdb" };
+
 describe("getColumnsForTable", () => {
   beforeEach(() => {
     mockGetSchemaGraph.mockReset();
+    invalidateColumnCache();
   });
 
   it("fetches columns from the schema graph and caches them", async () => {
@@ -75,18 +81,18 @@ describe("getColumnsForTable", () => {
       relationships: [],
     } as never);
 
-    const cols = await getColumnsForTable("c1", "public", "users");
+    const cols = await getColumnsForTable(appdb, "public", "users");
     expect(cols.map((c) => c.name)).toEqual(["id"]);
     expect(mockGetSchemaGraph).toHaveBeenCalledTimes(1);
 
     // cached: a second lookup does not refetch
-    await getColumnsForTable("c1", "public", "users");
+    await getColumnsForTable(appdb, "public", "users");
     expect(mockGetSchemaGraph).toHaveBeenCalledTimes(1);
   });
 
   it("returns an empty list when the fetch fails", async () => {
     mockGetSchemaGraph.mockRejectedValue(new Error("boom"));
-    const cols = await getColumnsForTable("c1", "public", "orders");
+    const cols = await getColumnsForTable(appdb, "public", "orders");
     expect(cols).toEqual([]);
   });
 
@@ -102,11 +108,72 @@ describe("getColumnsForTable", () => {
       ],
       relationships: [],
     } as never);
-    await getColumnsForTable("c1", "public", "users");
-    expect(getCachedColumns("public", "users")?.map((c) => c.name)).toEqual([
+    await getColumnsForTable(appdb, "public", "users");
+    expect(getCachedColumns(appdb, "public", "users")?.map((c) => c.name)).toEqual([
       "id",
     ]);
-    expect(getCachedColumns("public", "missing")).toBeUndefined();
+    expect(getCachedColumns(appdb, "public", "missing")).toBeUndefined();
+  });
+
+  it("never hands one origin's columns to another", async () => {
+    mockGetSchemaGraph.mockResolvedValue({
+      tables: [
+        {
+          name: "users",
+          schema: "public",
+          table_type: "TABLE",
+          columns: [{ name: "appdb_column" } as never],
+        },
+      ],
+      relationships: [],
+    } as never);
+    await getColumnsForTable(appdb, "public", "users");
+
+    // The same table name in another database is a different table: the cache
+    // must not answer for it before its own introspection has run.
+    expect(getCachedColumns(analytics, "public", "users")).toBeUndefined();
+    expect(getCachedColumns(otherConnection, "public", "users")).toBeUndefined();
+
+    mockGetSchemaGraph.mockResolvedValue({
+      tables: [
+        {
+          name: "users",
+          schema: "public",
+          table_type: "TABLE",
+          columns: [{ name: "analytics_column" } as never],
+        },
+      ],
+      relationships: [],
+    } as never);
+    const cols = await getColumnsForTable(analytics, "public", "users");
+    expect(cols.map((c) => c.name)).toEqual(["analytics_column"]);
+    // appdb's entry is untouched
+    expect(getCachedColumns(appdb, "public", "users")?.map((c) => c.name)).toEqual([
+      "appdb_column",
+    ]);
+  });
+
+  it("drops every cached origin's columns when metadata is invalidated", async () => {
+    mockGetSchemaGraph.mockResolvedValue({
+      tables: [
+        {
+          name: "users",
+          schema: "public",
+          table_type: "TABLE",
+          columns: [{ name: "id" } as never],
+        },
+      ],
+      relationships: [],
+    } as never);
+    await getColumnsForTable(appdb, "public", "users");
+    expect(getCachedColumns(appdb, "public", "users")).toHaveLength(1);
+
+    // Relevant DDL / a reconnect invalidates the mapping, so the next lookup
+    // re-introspects instead of suggesting columns that may no longer exist.
+    invalidateColumnCache();
+    expect(getCachedColumns(appdb, "public", "users")).toBeUndefined();
+    await getColumnsForTable(appdb, "public", "users");
+    expect(mockGetSchemaGraph).toHaveBeenCalledTimes(2);
   });
 });
 

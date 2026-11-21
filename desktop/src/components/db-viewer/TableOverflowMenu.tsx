@@ -183,7 +183,36 @@ export function TableOverflowMenu({
         setOpen(false);
         break;
       case "edit_table": {
-        const columnMeta = (columns ?? []).map((c) => ({
+        // Always read the live column snapshot: the tree row that opened this
+        // menu may be unexpanded (no columns), and even an expanded row's
+        // cached list can predate DDL. Editing an empty or stale schema
+        // snapshot is the failure this avoids.
+        if (!connectionId) {
+          notify("Cannot edit table: no active connection", "error");
+          setOpen(false);
+          break;
+        }
+        setOpen(false);
+        let liveColumns: ColumnInfo[];
+        try {
+          // page size 0 = metadata only (no rows are fetched)
+          const result = await cmd.getTableData(
+            connectionId,
+            schema,
+            table,
+            1,
+            0,
+          );
+          liveColumns = result.columns;
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          notify(
+            `Could not load the live columns for ${schema}.${table}: ${message}`,
+            "error",
+          );
+          break;
+        }
+        const columnMeta = liveColumns.map((c) => ({
           name: c.name,
           type: c.data_type,
           nullable: c.is_nullable,
@@ -207,7 +236,6 @@ export function TableOverflowMenu({
             },
           },
         });
-        setOpen(false);
         break;
       }
       case "create_index":
