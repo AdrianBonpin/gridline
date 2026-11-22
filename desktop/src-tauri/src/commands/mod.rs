@@ -20,3 +20,7 @@ pub mod ssh;
 pub mod ssh_trust;
 pub mod tags;
 pub mod test_connection;
+
+#[cfg(test)]
+#[path = "concurrency.test.rs"]
+mod concurrency_tests;

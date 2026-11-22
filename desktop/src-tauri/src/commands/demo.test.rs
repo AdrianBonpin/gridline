@@ -435,7 +435,7 @@ async fn demo_regeneration_leaves_no_stale_pool_or_cancel_state() {
         .pool_manager
         .lock()
         .await
-        .register(&demo_id, crate::db::pool::DbHandle::Sqlite(demo_conn));
+        .register(&demo_id, crate::db::pool::DbHandle::sqlite(demo_conn));
     state
         .cancel_registry
         .set_sqlite(&demo_id, crate::cancel::SqliteCancel::new(interrupt));

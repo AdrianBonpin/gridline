@@ -743,15 +743,66 @@ pub(crate) async fn run_export_query(
     progress: &mut (dyn FnMut(u64) + Send),
 ) -> Result<ExportSummary, String> {
     match handle {
-        DbHandle::Sqlite(conn) => run_sqlite_export(conn, sql, format, path, progress).await,
-        DbHandle::Postgresql(client, _) => run_pg_export(client, sql, format, path, progress).await,
+        DbHandle::Sqlite(conn) => {
+            let mut conn = conn.lock().await;
+            run_sqlite_export(&mut conn, sql, format, path, progress).await
+        }
+        DbHandle::Postgresql(client, _) => {
+            let mut client = client.lock().await;
+            run_pg_export(&mut client, sql, format, path, progress).await
+        }
         DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
             let mut conn = pool
+                .clone()
                 .acquire()
                 .await
                 .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
             run_mysql_export(&mut conn, sql, format, path, progress).await
         }
+    }
+}
+
+/// Headless export core: resolve the connection, run the streaming export and
+/// return the summary. The Tauri command keeps grant resolution and progress
+/// events; everything else lives here so the tool-job seam is testable.
+///
+/// The pool registry is locked only long enough to clone the connection
+/// handle, so a long export on one connection never blocks another connection's
+/// commands (ticket 25). The handle itself is *not* cloned from a guard that
+/// outlives the call.
+pub(crate) async fn export_query_inner(
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    cancel_registry: &crate::cancel::CancelRegistry,
+    connection_id: &str,
+    sql: &str,
+    format: ExportFormat,
+    path: &PathBuf,
+    progress: &mut (dyn FnMut(u64) + Send),
+) -> Result<ExportSummary, String> {
+    let handle = crate::db::pool::acquire_handle(pool_manager, connection_id).await?;
+
+    // MySQL: the STREAMING connection must be the one registered for
+    // KILL QUERY cancellation — acquire it once here, register its id,
+    // stream through it, then clear the registration.
+    match handle {
+        DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
+            let mut conn = pool
+                .clone()
+                .acquire()
+                .await
+                .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
+            let conn_id: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap_or(-1);
+            cancel_registry.set_mysql_conn_id(connection_id, Some(conn_id));
+            let r = run_mysql_export(&mut conn, sql, format, path, progress).await;
+            cancel_registry.set_mysql_conn_id(connection_id, None);
+            r
+        }
+        mut other => run_export_query(&mut other, sql, format, path, progress).await,
     }
 }
 
@@ -791,35 +842,16 @@ pub async fn export_query_to_file(
         }
     };
 
-    let mut pm = state.pool_manager.lock().await;
-    let handle = pm
-        .get(&connection_id)
-        .ok_or_else(|| "Connection not found".to_string())?;
-
-    // MySQL: the STREAMING connection must be the one registered for
-    // KILL QUERY cancellation — acquire it once here, register its id,
-    // stream through it, then clear the registration.
-    let result = match handle {
-        DbHandle::MySql(pool) => {
-            let mut conn = pool
-                .acquire()
-                .await
-                .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
-            let conn_id: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
-                .fetch_one(&mut *conn)
-                .await
-                .unwrap_or(-1);
-            state
-                .cancel_registry
-                .set_mysql_conn_id(&connection_id, Some(conn_id));
-            let r = run_mysql_export(&mut conn, &sql, fmt, &path_buf, &mut progress_cb).await;
-            state
-                .cancel_registry
-                .set_mysql_conn_id(&connection_id, None);
-            r
-        }
-        other => run_export_query(other, &sql, fmt, &path_buf, &mut progress_cb).await,
-    };
+    let result = export_query_inner(
+        &state.pool_manager,
+        &state.cancel_registry,
+        &connection_id,
+        &sql,
+        fmt,
+        &path_buf,
+        &mut progress_cb,
+    )
+    .await;
 
     match result {
         Ok(summary) => {
