@@ -26,6 +26,12 @@
 #      credentials stops before it builds, the built .app and .dmg are verified
 #      (codesign/stapler/spctl) after signing and stapling, and only verified
 #      artifacts are uploaded (ticket 45, "macOS signing fails closed").
+#   9. Dependency automation and cross-platform coverage: Dependabot is
+#      configured for every graph Gridline resolves (both Bun lockfiles + cargo),
+#      the advisory and lockfile gates are wired into the pull-request pipeline
+#      and cannot be swallowed, and the CI platform matrix covers every target
+#      release.yml builds (ticket 48, "Dependency automation and cross-platform
+#      checks").
 #
 # Ref protection, immutable releases and required checks are REPOSITORY
 # SETTINGS, not files; they cannot be asserted here. See AGENTS.md
@@ -983,6 +989,135 @@ if [ $? -eq 0 ]; then
 else
   fail "scripts/verify-macos-artifacts.sh no longer fails closed (run it by hand to debug)"
 fi
+
+# --------------------------------------------------------------------------
+# 9. Dependency automation and cross-platform coverage (ticket 48).
+# --------------------------------------------------------------------------
+# Dependency updates are only automated if Dependabot is told about every graph
+# Gridline resolves. Those entries are not otherwise observable (a missing one
+# just means silent staleness), so they are asserted here: one entry per
+# lockfile — the workspace `bun.lock`, the standalone `www/bun.lock` the website
+# deploy resolves, and `desktop/src-tauri/Cargo.lock`.
+dep_ok=1
+dependabot=".github/dependabot.yml"
+lockfile_script="scripts/check-lockfiles.sh"
+ci_wf=".github/workflows/ci.yml"
+
+if [ ! -f "$dependabot" ]; then
+  fail "missing $dependabot: dependency updates are not automated"
+  dep_ok=0
+else
+  grep -q '^version:[[:space:]]*2' "$dependabot" ||
+    { fail "$dependabot is not a version 2 Dependabot configuration"; dep_ok=0; }
+
+  # Normalised "<ecosystem> <directory>" pairs, one per `updates:` entry.
+  dep_pairs="$(awk '
+    /^[[:space:]]*-[[:space:]]*package-ecosystem:/ {
+      eco = $0
+      sub(/.*package-ecosystem:[[:space:]]*/, "", eco)
+      gsub(/["\047]/, "", eco)
+    }
+    /^[[:space:]]*directory:/ {
+      dir = $0
+      sub(/.*directory:[[:space:]]*/, "", dir)
+      gsub(/["\047]/, "", dir)
+      if (eco != "") print eco " " dir
+    }
+  ' "$dependabot")"
+
+  for pair in "bun /" "bun /www" "cargo /desktop/src-tauri"; do
+    if printf '%s\n' "$dep_pairs" | grep -qxF -- "$pair"; then
+      :
+    else
+      fail "$dependabot has no entry for '${pair}' (package-ecosystem + directory), so that lockfile is not updated automatically"
+      dep_ok=0
+    fi
+  done
+
+  # Dependabot only updates the text `bun.lock`; a legacy binary lockfile would
+  # silently drop the coverage asserted above.
+  for lockfile in bun.lock www/bun.lock; do
+    [ -f "$lockfile" ] ||
+      { fail "missing $lockfile, so its Dependabot entry covers nothing"; dep_ok=0; }
+  done
+  for legacy in bun.lockb www/bun.lockb; do
+    if [ -e "$legacy" ]; then
+      fail "$legacy is a legacy binary Bun lockfile; Dependabot cannot update it"
+      dep_ok=0
+    fi
+  done
+fi
+
+# The gates must be RUN, not reimplemented: the advisory audit and the lockfile
+# check are single scripts that CI calls.
+if [ ! -f "$ci_wf" ]; then
+  fail "missing $ci_wf, so no gate is wired into pull requests"
+  dep_ok=0
+else
+  grep -qE '^[[:space:]]*run:[[:space:]]*\./scripts/check-advisories\.py' "$ci_wf" ||
+    { fail "ci.yml does not run scripts/check-advisories.py, so advisories are not gated"; dep_ok=0; }
+  grep -qE '^[[:space:]]*run:[[:space:]]*\./scripts/check-lockfiles\.sh' "$ci_wf" ||
+    { fail "ci.yml does not run scripts/check-lockfiles.sh, so the lockfile procedure is unverified"; dep_ok=0; }
+  if grep -q 'continue-on-error' "$ci_wf"; then
+    fail "ci.yml uses continue-on-error, so a failing gate (advisories, lockfiles, tests) could still pass"
+    dep_ok=0
+  fi
+  # Nightly coverage: an advisory published after a run, or platform divergence,
+  # has to surface during the cycle rather than at tag time.
+  grep -qE '^[[:space:]]*schedule:' "$ci_wf" ||
+    { fail "ci.yml has no schedule trigger, so advisories published after a run are never re-checked"; dep_ok=0; }
+fi
+
+if [ ! -f "$lockfile_script" ]; then
+  fail "missing $lockfile_script (neither Bun lockfile would be verified)"
+  dep_ok=0
+else
+  [ -x "$lockfile_script" ] || { fail "$lockfile_script is not executable"; dep_ok=0; }
+  bash -n "$lockfile_script" 2>/dev/null || { fail "$lockfile_script has a syntax error"; dep_ok=0; }
+fi
+
+# The platform matrix has to cover exactly the targets the release builds: a
+# platform release.yml ships but CI never compiles is discovered at tag time.
+platform_job=""
+if [ -f "$ci_wf" ]; then
+  platform_job="$(awk '
+    /^  platform:[[:space:]]*$/ { injob = 1 }
+    injob && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ && $0 !~ /^  platform:[[:space:]]*$/ { injob = 0 }
+    injob { print }
+  ' "$ci_wf")"
+fi
+
+if [ -z "$platform_job" ]; then
+  fail "ci.yml has no 'platform' job, so nothing proves the release targets compile and their tests pass"
+  dep_ok=0
+else
+  release_platforms="$(grep -E '^[[:space:]]*-[[:space:]]*platform:[[:space:]]*[^[:space:]]+' "$release_wf" 2>/dev/null |
+    sed 's/.*platform:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//') "
+  ci_platforms="$(printf '%s\n' "$platform_job" |
+    grep -E '^[[:space:]]*-[[:space:]]*platform:[[:space:]]*[^[:space:]]+' |
+    sed 's/.*platform:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')"
+  if [ -z "$release_platforms" ]; then
+    fail "could not read the release matrix platforms from ${release_wf}"
+    dep_ok=0
+  else
+    for p in $release_platforms; do
+      if printf '%s\n' "$ci_platforms" | grep -qxF -- "$p"; then
+        :
+      else
+        fail "release.yml builds '${p}' but the ci.yml 'platform' matrix never checks it"
+        dep_ok=0
+      fi
+    done
+  fi
+  for needle in 'cargo test' 'bun run test' 'bun run --filter gridline-desktop build'; do
+    printf '%s\n' "$platform_job" | grep -qF -- "$needle" ||
+      { fail "the ci.yml 'platform' job does not run '${needle}' on every target"; dep_ok=0; }
+  done
+  printf '%s\n' "$platform_job" | grep -qF -- 'runs-on: ${{ matrix.platform }}' ||
+    { fail "the ci.yml 'platform' job is not a matrix over platforms"; dep_ok=0; }
+fi
+
+[ "$dep_ok" = "1" ] && pass "dependency automation covers both Bun lockfiles and cargo, the advisory + lockfile gates are wired, and CI builds every release platform"
 
 if [ "$status" -eq 0 ]; then
   printf '\ncheck-workflows: all checks passed\n'

@@ -1,17 +1,26 @@
 name: CI
 
 # Pull-request validation for the Tauri desktop app: dependency advisories,
-# Rust formatting + unit tests, frontend unit tests, the frontend production
-# build, and a gated built-product desktop E2E smoke flow. Deliberately separate
-# from release.yml — no secrets, no bundling, read-only permissions.
+# both Bun lockfiles, Rust formatting + unit tests, frontend unit tests, the
+# desktop and website production builds, and a gated built-product desktop E2E
+# smoke flow. Deliberately separate from release.yml — no secrets, no bundling,
+# read-only permissions.
 #
 # `pull_request` (never `pull_request_target`) so a fork PR cannot reach a
 # write-scoped token.
+#
+# A nightly `schedule` run executes the same jobs and is how the seams of
+# ticket 48 are covered: advisories published after a run (the audit gate is a
+# point-in-time check, not a subscription) and cross-platform divergence (the
+# `platform` matrix) surface during normal work instead of at tag time.
 
 on:
   pull_request:
     branches: [prod]
   workflow_dispatch:
+  schedule:
+    # Nightly, off the release-window hours.
+    - cron: '0 4 * * *'
 
 # Default-deny: each job below grants only the scope it uses.
 permissions: {}
@@ -109,6 +118,15 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      # Both Bun lockfiles must describe their manifests: the workspace
+      # `bun.lock` (root + desktop + www) and the standalone `www/bun.lock` that
+      # the Railpack/Dokploy website build resolves. Dependabot updates each of
+      # them from its own `.github/dependabot.yml` entry, so a manifest edited
+      # without its lockfile has to fail here rather than at release/deploy time
+      # (ticket 48). See scripts/check-lockfiles.sh.
+      - name: Verify both Bun lockfiles are in sync with their manifests
+        run: ./scripts/check-lockfiles.sh
+
       # Dependency advisories are a gate, not a report: scripts/check-advisories.py
       # audits both Bun lockfiles (workspace + the standalone website install) and
       # the Rust lockfile, and fails on any advisory that is not either fixed or
@@ -123,6 +141,80 @@ jobs:
       - name: Check Rust formatting
         working-directory: desktop/src-tauri
         run: cargo fmt --all --check
+
+      - name: Run Rust tests
+        working-directory: desktop/src-tauri
+        run: cargo test
+
+      - name: Run frontend tests
+        run: bun run test
+
+      - name: Build the desktop frontend
+        run: bun run --filter gridline-desktop build
+
+      # The website is a workspace member with its own production build (Astro +
+      # the OG-image prebuild). It is not covered by the desktop build, and the
+      # deployed artifact is built from it, so it joins the gate here.
+      - name: Build the website (production)
+        run: bun run build:www
+
+  # Cross-platform compile + test matrix (ticket 48). The release ships four
+  # targets — macOS arm64, macOS x64, Windows x64 and Linux x86_64 — so each one
+  # has to compile and pass the test suites BEFORE a release instead of being
+  # discovered at tag time. Deliberately not on every pull request: four full
+  # Rust builds per PR would dominate the feedback loop, and `checks` already
+  # covers Linux on every PR. This job is the pre-release path (dispatch CI on
+  # `prod` before tagging — AGENTS.md "Before tagging") and also runs nightly.
+  # scripts/check-workflows.sh asserts its matrix covers every platform
+  # release.yml actually builds.
+  platform:
+    name: platform compile + tests (${{ matrix.platform }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest      # Apple Silicon (aarch64-apple-darwin)
+          - platform: macos-15-intel    # Intel Macs (x86_64-apple-darwin)
+          - platform: ubuntu-22.04      # Linux x86_64
+          - platform: windows-latest    # Windows x86_64
+    runs-on: ${{ matrix.platform }}
+    # Bounded: a hung test binary cannot burn a runner for hours.
+    timeout-minutes: 45
+    # Read-only: this job only checks out and tests.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Tauri v2 needs these to compile the crate on Linux (same list as
+      # release.yml). macOS and Windows runners already carry their toolchains.
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
+        with:
+          toolchain: stable
+
+      # rust-cache keys on the OS/arch it runs on, so one step serves all four
+      # legs; the extra key keeps these caches apart from checks/e2e.
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: './desktop/src-tauri -> target'
+          key: platform-matrix
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
 
       - name: Run Rust tests
         working-directory: desktop/src-tauri

@@ -19,6 +19,23 @@ their raw output is what the check compares against. An entry below means "a hum
 looked at this specific advisory for this specific package and decided the risk is
 acceptable for a stated reason, until a stated date".
 
+## How updates arrive
+
+[`.github/dependabot.yml`](../../.github/dependabot.yml) opens weekly update pull requests
+against `prod`, one entry per graph above (minor/patch grouped, majors individually), so a
+fix upstream reaches the repository as a reviewed change rather than as a tag-time
+surprise. Two gaps are deliberate and handled elsewhere:
+
+- **`overrides` are not updated by Dependabot.** The root `dompurify` / `fflate` floors and
+the website's `fflate` floor are bumped by hand when a review or this gate says so.
+- **A legacy binary `bun.lockb` cannot be updated at all.** `scripts/check-lockfiles.sh`, in
+the same required `checks` job, fails if either JavaScript lockfile stops being a text
+`bun.lock` or stops describing its manifest.
+
+Independently of Dependabot, this check also runs on the nightly CI schedule: an advisory
+published after a green pull request still fails the next run, which is why a night on the
+schedule is part of the release gate rather than a report.
+
 ## Exception discipline
 
 - Every entry names an **owner** (a GitHub handle) and a **review date** no more than
