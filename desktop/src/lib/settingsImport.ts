@@ -16,8 +16,11 @@ const WORD_WRAPS = ["off", "on"];
  * `commands/db_viewer.rs` (`MAX_TABLE_PAGE_SIZE`) rejects a page size outside
  * `1..=500` instead of clamping it, because the page window reaches the generated
  * `LIMIT`/`OFFSET`. An imported settings file is untrusted input on its own, so
- * it is clamped into that range here: otherwise one import would leave the app in
- * a state where every table browse fails with "page size out of range".
+ * it is clamped into that range here — and the clamped document is what gets
+ * imported (`GeneralSettingsTab` sends `r.settings`, never the raw file).
+ * `commands/settings.rs` (`validate_imported_settings`) enforces the same range
+ * again at the IPC boundary, so a renderer that skips this cannot store a page
+ * size that breaks every browse.
  */
 const TABLE_PAGE_SIZE_MIN = 1;
 const TABLE_PAGE_SIZE_MAX = 500;
