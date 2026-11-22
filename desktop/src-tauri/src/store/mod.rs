@@ -71,13 +71,10 @@ impl Store {
     /// Referential enforcement is part of the store contract, so it is enabled
     /// here as well as in [`Store::open`]: SQLite applies `foreign_keys` per
     /// connection and its default depends on how the library was built, which
-    /// is exactly how Connection-owned Data used to become unreachable.
-    pub fn from_connection(conn: SqliteConnection) -> Self {
-        Self::try_from_connection(conn)
-            .expect("failed to enable referential enforcement on the local store")
-    }
-
-    fn try_from_connection(conn: SqliteConnection) -> Result<Self, String> {
+    /// is exactly how Connection-owned Data used to become unreachable. Failure
+    /// is reported to the caller, never swallowed: a store without enforcement
+    /// would let dangling rows accumulate silently.
+    pub fn from_connection(conn: SqliteConnection) -> Result<Self, String> {
         Self::enforce_referential_integrity(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -111,7 +108,7 @@ impl Store {
         let conn = SqliteConnection::open(db_path).map_err(|e| e.to_string())?;
         permissions::secure_store_files(db_path)?;
         migrations::run_migrations(&conn).map_err(|e| e.to_string())?;
-        Self::try_from_connection(conn)
+        Self::from_connection(conn)
     }
 
     fn now() -> String {
@@ -1026,7 +1023,7 @@ mod tests {
     fn fresh_store() -> Store {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
-        Store::from_connection(conn)
+        Store::from_connection(conn).expect("test store")
     }
 
     /// A unique on-disk store directory (the production shape) plus its store
@@ -1128,7 +1125,7 @@ mod tests {
             .unwrap();
         assert_eq!(before, 0, "precondition: enforcement starts disabled");
 
-        let store = Store::from_connection(conn);
+        let store = Store::from_connection(conn).expect("referential enforcement");
         let guard = store.conn.lock().unwrap();
         let after: i64 = guard
             .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
@@ -1894,7 +1891,7 @@ mod tests {
     fn editor_settings_defaults_when_unset() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
-        let store = Store::from_connection(conn);
+        let store = Store::from_connection(conn).expect("test store");
         let s = store.get_settings().unwrap();
         assert_eq!(s.editor_font_size, 13);
         assert_eq!(s.editor_font_family, "Space Mono");
@@ -1907,7 +1904,7 @@ mod tests {
     fn editor_settings_clamp_out_of_range() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
-        let store = Store::from_connection(conn);
+        let store = Store::from_connection(conn).expect("test store");
         store.update_setting("editor_font_size", "999").unwrap();
         store.update_setting("editor_tab_size", "1").unwrap();
         store.update_setting("editor_minimap", "true").unwrap();
@@ -1921,7 +1918,7 @@ mod tests {
     fn editor_settings_garbage_and_disallowed_fall_back() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
-        let store = Store::from_connection(conn);
+        let store = Store::from_connection(conn).expect("test store");
         store.update_setting("editor_font_size", "abc").unwrap();
         store
             .update_setting("editor_font_family", "Comic Sans")

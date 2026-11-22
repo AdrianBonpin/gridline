@@ -412,7 +412,9 @@ fn loopback_reachable(port: u16) -> bool {
 async fn demo_regeneration_leaves_no_stale_pool_or_cancel_state() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::store::migrations::run_migrations(&conn).unwrap();
-    let store = std::sync::Arc::new(std::sync::Mutex::new(Store::from_connection(conn)));
+    let store = std::sync::Arc::new(std::sync::Mutex::new(
+        Store::from_connection(conn).expect("test store"),
+    ));
 
     // The demo connection is registered exactly as startup registers it.
     ensure_demo_connection(&store, std::path::Path::new("/tmp/gridline-demo-test.db")).unwrap();

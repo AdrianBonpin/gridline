@@ -230,7 +230,7 @@ mod tests {
     fn state() -> std::sync::Mutex<Store> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
-        std::sync::Mutex::new(Store::from_connection(conn))
+        std::sync::Mutex::new(Store::from_connection(conn).expect("test store"))
     }
 
     #[test]
@@ -464,7 +464,9 @@ mod lifecycle_tests {
     async fn delete_connection_closes_resources_and_purges_secrets() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
-        let store = Arc::new(Mutex::new(Store::from_connection(conn)));
+        let store = Arc::new(Mutex::new(
+            Store::from_connection(conn).expect("test store"),
+        ));
         let created = create_connection_inner(&store, input("Client A")).unwrap();
 
         let state = app_state(store);
@@ -552,7 +554,9 @@ mod lifecycle_tests {
     async fn delete_connection_without_a_live_session_still_succeeds() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
-        let store = Arc::new(Mutex::new(Store::from_connection(conn)));
+        let store = Arc::new(Mutex::new(
+            Store::from_connection(conn).expect("test store"),
+        ));
         let created = create_connection_inner(&store, input("Client B")).unwrap();
         let state = app_state(store);
 

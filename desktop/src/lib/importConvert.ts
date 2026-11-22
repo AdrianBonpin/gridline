@@ -1,3 +1,4 @@
+import { baseDeclaredType } from "./declaredType";
 import { sourceColumnLabel, type ImportCell } from "./importNormalize";
 
 /**
@@ -64,11 +65,7 @@ export function importColumnKind(dataType: string | null | undefined): ImportCol
   if (raw === "") return "text";
   if (raw.endsWith("]") || raw === "array") return "text";
 
-  const base = raw
-    .replace(/\(.*$/, "")
-    .replace(/\b(unsigned|zerofill)\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const base = baseDeclaredType(raw);
 
   if (INTEGER_TYPES.has(base)) return "integer";
   if (DECIMAL_TYPES.has(base)) return "decimal";

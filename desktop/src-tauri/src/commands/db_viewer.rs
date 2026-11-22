@@ -1468,9 +1468,9 @@ pub async fn get_databases(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<String>, String> {
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let rows = client
                 .query(
@@ -1481,11 +1481,11 @@ pub async fn get_databases(
                 .map_err(|e| e.to_string())?;
             Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
         }
-        Some(crate::db::pool::DbHandle::Sqlite(_)) => {
+        crate::db::pool::DbHandle::Sqlite(_) => {
             // SQLite has a single database per file; expose the catalog name.
             Ok(vec!["main".to_string()])
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+        crate::db::pool::DbHandle::MySql(pool) => {
             let pool = pool.lock().await;
             let pool = &*pool; // Executor is implemented for &Pool, not for the guard
             let rows = sqlx::query(sqlx::AssertSqlSafe(
@@ -1501,7 +1501,6 @@ pub async fn get_databases(
             dbs.retain(|d| !crate::db::mysql::MYSQL_SYSTEM_DBS.contains(&d.as_str()));
             Ok(dbs)
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -1510,9 +1509,9 @@ pub async fn get_schemas(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<String>, String> {
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let rows = client
                 .query(
@@ -1523,12 +1522,12 @@ pub async fn get_schemas(
                 .map_err(|e| e.to_string())?;
             Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
             let conn = conn.lock().await;
             // One operation at a time on this connection: `rusqlite::Connection`
-            // is not `Sync`, so the driver needs this. The pool registry guard
-            // was dropped when `db_handle` was bound, before this match, so no
-            // other connection waits on this one.
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             let mut stmt = conn
                 .prepare("SELECT DISTINCT 'main' AS schema")
                 .map_err(|e| e.to_string())?;
@@ -1537,7 +1536,7 @@ pub async fn get_schemas(
                 .map_err(|e| e.to_string())?;
             Ok(rows.filter_map(|r| r.ok()).collect())
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+        crate::db::pool::DbHandle::MySql(pool) => {
             let pool = pool.lock().await;
             let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // MySQL has no separate schema layer — databases play the role of
@@ -1555,7 +1554,6 @@ pub async fn get_schemas(
             dbs.retain(|d| !crate::db::mysql::MYSQL_SYSTEM_DBS.contains(&d.as_str()));
             Ok(dbs)
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -1566,9 +1564,9 @@ pub(crate) async fn get_tables_inner(
     connection_id: &str,
     schema: Option<&str>,
 ) -> Result<Vec<TableInfo>, String> {
-    let db_handle = pool_manager.lock().await.acquire(connection_id);
+    let db_handle = crate::db::pool::acquire_handle(pool_manager, connection_id).await?;
     match db_handle {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let schema_filter = schema.unwrap_or("public").to_string();
             let rows = client
@@ -1587,12 +1585,12 @@ pub(crate) async fn get_tables_inner(
                 })
                 .collect())
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
             let conn = conn.lock().await;
             // One operation at a time on this connection: `rusqlite::Connection`
-            // is not `Sync`, so the driver needs this. The pool registry guard
-            // was dropped when `db_handle` was bound, before this match, so no
-            // other connection waits on this one.
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             let mut stmt = conn
                 .prepare(
                     "SELECT name, 'main', type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -1610,7 +1608,7 @@ pub(crate) async fn get_tables_inner(
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+        crate::db::pool::DbHandle::MySql(pool) => {
             let pool = pool.lock().await;
             let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // 2 columns (name, type) when a schema is given; 3 (+ schema)
@@ -1647,7 +1645,6 @@ pub(crate) async fn get_tables_inner(
                 })
                 .collect())
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -1784,9 +1781,9 @@ pub(crate) async fn get_table_data_inner(
     let filters = filters.unwrap_or_default();
     let sorts = sorts.unwrap_or_default();
 
-    let db_handle = pool_manager.lock().await.acquire(connection_id);
+    let db_handle = crate::db::pool::acquire_handle(pool_manager, connection_id).await?;
     match db_handle {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let qualified = ident::qualified(Engine::PostgreSql, schema, table)?;
             // Build filter clause (shared by COUNT and data queries)
@@ -1934,12 +1931,12 @@ pub(crate) async fn get_table_data_inner(
                 execution_time_ms: None,
             })
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
             let conn = conn.lock().await;
             // One operation at a time on this connection: `rusqlite::Connection`
-            // is not `Sync`, so the driver needs this. The pool registry guard
-            // was dropped when `db_handle` was bound, before this match, so no
-            // other connection waits on this one.
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             // Build filter clause (shared by COUNT and data queries)
             let (filter_clause, filter_vals) = build_sqlite_filter_clause(&filters)?;
             let order_clause = build_order_clause(Engine::Sqlite, &sorts)?;
@@ -2024,7 +2021,7 @@ pub(crate) async fn get_table_data_inner(
                 execution_time_ms: None,
             })
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+        crate::db::pool::DbHandle::MySql(pool) => {
             let pool = pool.lock().await;
             let pool = &*pool; // Executor is implemented for &Pool, not for the guard
             let read_only_relation = mysql_relation_is_read_only(&pool, schema, table).await;
@@ -2090,7 +2087,6 @@ pub(crate) async fn get_table_data_inner(
                 execution_time_ms: None,
             })
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -2241,9 +2237,9 @@ pub(crate) async fn get_table_columns_inner(
     schema: &str,
     table: &str,
 ) -> Result<Vec<crate::models::ColumnInfo>, String> {
-    let db_handle = pm.lock().await.acquire(connection_id);
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
     match db_handle {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let read_only = pg_relation_is_read_only(&client, schema, table).await;
             let rows = client
@@ -2255,20 +2251,19 @@ pub(crate) async fn get_table_columns_inner(
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
             pg_columns_from_rows(schema, &rows, read_only)
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
             let conn = conn.lock().await;
             // One operation at a time on this connection: `rusqlite::Connection`
-            // is not `Sync`, so the driver needs this. The pool registry guard
-            // was dropped when `db_handle` was bound, before this match, so no
-            // other connection waits on this one.
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             sqlite_column_metadata(&conn, table).map(|(columns, _)| columns)
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+        crate::db::pool::DbHandle::MySql(pool) => {
             let pool = pool.lock().await;
             let read_only = mysql_relation_is_read_only(&pool, schema, table).await;
             mysql_load_columns(&pool, schema, table, read_only).await
         }
-        None => Err("Connection not found".into()),
     }
 }
 
@@ -2509,9 +2504,9 @@ pub(crate) async fn get_fk_preview_inner(
     column: &str,
     value: &str,
 ) -> Result<QueryResult, String> {
-    let db_handle = pm.lock().await.acquire(connection_id);
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
     match db_handle {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let target = resolve_fk_target(&client, schema, table, column).await?;
             // Column metadata describes the *referenced* table.
@@ -2544,12 +2539,12 @@ pub(crate) async fn get_fk_preview_inner(
                 execution_time_ms: None,
             })
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
             let conn = conn.lock().await;
             // One operation at a time on this connection: `rusqlite::Connection`
-            // is not `Sync`, so the driver needs this. The pool registry guard
-            // was dropped when `db_handle` was bound, before this match, so no
-            // other connection waits on this one.
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             let target = resolve_fk_target_sqlite(&conn, table, column)?;
             let columns = sqlite_table_columns(&conn, &target)?;
             let data_query = crate::db::fk::preview_sql(Engine::Sqlite, &target)?;
@@ -2577,7 +2572,7 @@ pub(crate) async fn get_fk_preview_inner(
                 execution_time_ms: None,
             })
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+        crate::db::pool::DbHandle::MySql(pool) => {
             let pool = pool.lock().await;
             let pool = &*pool; // Executor is implemented for &Pool, not for the guard
             let target = resolve_fk_target_mysql(pool, schema, table, column).await?;
@@ -2607,7 +2602,6 @@ pub(crate) async fn get_fk_preview_inner(
                 execution_time_ms: None,
             })
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -2707,9 +2701,9 @@ pub(crate) async fn search_fk_options_inner(
         .checked_mul(page_size)
         .ok_or_else(|| "foreign-key option search page is too large".to_string())?;
 
-    let db_handle = pm.lock().await.acquire(connection_id);
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
     match db_handle {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let target = resolve_fk_target(&client, schema, table, column).await?;
             let col_rows = client
@@ -2759,12 +2753,12 @@ pub(crate) async fn search_fk_options_inner(
                 execution_time_ms: None,
             })
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
             let conn = conn.lock().await;
             // One operation at a time on this connection: `rusqlite::Connection`
-            // is not `Sync`, so the driver needs this. The pool registry guard
-            // was dropped when `db_handle` was bound, before this match, so no
-            // other connection waits on this one.
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             let target = resolve_fk_target_sqlite(&conn, table, column)?;
             let columns = sqlite_table_columns(&conn, &target)?;
             let pairs: Vec<(String, String)> = columns
@@ -2810,7 +2804,7 @@ pub(crate) async fn search_fk_options_inner(
                 execution_time_ms: None,
             })
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+        crate::db::pool::DbHandle::MySql(pool) => {
             let pool = pool.lock().await;
             let pool = &*pool;
             let target = resolve_fk_target_mysql(pool, schema, table, column).await?;
@@ -2866,7 +2860,6 @@ pub(crate) async fn search_fk_options_inner(
                 execution_time_ms: None,
             })
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -3088,9 +3081,9 @@ pub(crate) async fn execute_change_inner(
     connection_id: &str,
     change: Change,
 ) -> Result<(), String> {
-    let db_handle = pm.lock().await.acquire(connection_id);
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
     match db_handle {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
             let mut client = client.lock().await;
             match &change {
                 Change::Update {
@@ -3206,12 +3199,12 @@ pub(crate) async fn execute_change_inner(
                 }
             }
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
             let mut conn = conn.lock().await;
             // One operation at a time on this connection: `rusqlite::Connection`
-            // is not `Sync`, so the driver needs this. The pool registry guard
-            // was dropped when `db_handle` was bound, before this match, so no
-            // other connection waits on this one.
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             match &change {
                 Change::Update {
                     schema,
@@ -3320,7 +3313,7 @@ pub(crate) async fn execute_change_inner(
                 }
             }
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+        crate::db::pool::DbHandle::MySql(pool) => {
             let pool = pool.lock().await;
             let pool = &*pool; // Executor is implemented for &Pool, not for the guard
             match &change {
@@ -3440,7 +3433,6 @@ pub(crate) async fn execute_change_inner(
                 }
             }
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -3499,9 +3491,9 @@ pub async fn refresh_connection(
     // Verify the connection is still alive by running a trivial query. The
     // frontend re-issues getDatabases/getSchemas/getTables separately after
     // this returns, so we only need to confirm reachability here.
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             client
                 .query_one("SELECT 1", &[])
@@ -3509,17 +3501,17 @@ pub async fn refresh_connection(
                 .map_err(|e| e.to_string())?;
             Ok(())
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
             let conn = conn.lock().await;
             // One operation at a time on this connection: `rusqlite::Connection`
-            // is not `Sync`, so the driver needs this. The pool registry guard
-            // was dropped when `db_handle` was bound, before this match, so no
-            // other connection waits on this one.
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
                 .map_err(|e| e.to_string())?;
             Ok(())
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
+        crate::db::pool::DbHandle::MySql(pool) => {
             let pool = pool.lock().await;
             let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // Verify reachability (the sqlx pool reconnects transparently); the
@@ -3530,7 +3522,6 @@ pub async fn refresh_connection(
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
             Ok(())
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -3540,9 +3531,9 @@ pub async fn get_functions(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<FunctionInfo>, String> {
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_functions_query(&schema);
@@ -3565,9 +3556,8 @@ pub async fn get_functions(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL functions not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL functions not yet supported".to_string()),
     }
 }
 
@@ -3577,9 +3567,9 @@ pub async fn get_hypertables(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<HypertableListResponse, String> {
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let detected: bool = client
                 .query_one(&crate::db::introspection::pg_timescale_detect_query(), &[])
@@ -3615,12 +3605,11 @@ pub async fn get_hypertables(
                     .collect(),
             })
         }
-        Some(DbHandle::Sqlite(_)) | Some(DbHandle::MySql(_)) => Ok(HypertableListResponse {
+        DbHandle::Sqlite(_) | DbHandle::MySql(_) => Ok(HypertableListResponse {
             available: false,
             reason: Some("Hypertables are a TimescaleDB (PostgreSQL) feature".into()),
             items: vec![],
         }),
-        None => Err("Connection not found".into()),
     }
 }
 
@@ -3630,9 +3619,9 @@ pub async fn get_indexes(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<IndexInfo>, String> {
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_indexes_query(&schema);
@@ -3655,9 +3644,8 @@ pub async fn get_indexes(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL indexes not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL indexes not yet supported".to_string()),
     }
 }
 
@@ -3667,9 +3655,9 @@ pub async fn get_constraints(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<ConstraintInfo>, String> {
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_constraints_query(&schema);
@@ -3704,9 +3692,8 @@ pub async fn get_constraints(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL constraints not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL constraints not yet supported".to_string()),
     }
 }
 
@@ -3716,9 +3703,9 @@ pub async fn get_triggers(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<TriggerInfo>, String> {
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_triggers_query(&schema);
@@ -3741,9 +3728,8 @@ pub async fn get_triggers(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL triggers not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL triggers not yet supported".to_string()),
     }
 }
 
@@ -3753,9 +3739,9 @@ pub async fn get_sequences(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<SequenceInfo>, String> {
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_sequences_query(&schema);
@@ -3780,9 +3766,8 @@ pub async fn get_sequences(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL sequences not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL sequences not yet supported".to_string()),
     }
 }
 
@@ -3792,9 +3777,9 @@ pub async fn get_enums(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<EnumInfo>, String> {
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_enums_query(&schema);
@@ -3811,9 +3796,8 @@ pub async fn get_enums(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL enums not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL enums not yet supported".to_string()),
     }
 }
 
@@ -3822,9 +3806,9 @@ pub async fn get_extensions(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<ExtensionInfo>, String> {
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let query = crate::db::introspection::pg_extensions_query();
             let rows = client.query(&query, &[]).await.map_err(|e| e.to_string())?;
@@ -3838,9 +3822,8 @@ pub async fn get_extensions(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL extensions not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL extensions not yet supported".to_string()),
     }
 }
 
@@ -3857,13 +3840,13 @@ pub async fn get_table_ddl(
     state: State<'_, crate::AppState>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(DbHandle::Sqlite(conn)) => {
+        DbHandle::Sqlite(conn) => {
             let conn = conn.lock().await;
             get_sqlite_ddl(&conn, &table)
         }
-        Some(DbHandle::MySql(pool)) => {
+        DbHandle::MySql(pool) => {
             let pool = pool.lock().await;
             let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // SHOW CREATE TABLE returns (Table, Create Table); take the DDL.
@@ -3875,7 +3858,7 @@ pub async fn get_table_ddl(
             .map_err(|e| sanitize_error(&format!("{e}")))?;
             Ok(crate::db::mysql::mysql_row_string(&row, 1))
         }
-        Some(DbHandle::Postgresql(_client, _)) => {
+        DbHandle::Postgresql(_client, _) => {
             // Pull connection metadata so pg_dump reaches the same server the
             // pool is connected to (host/port/user/dbname + keychain password).
             let conn_row = lock_recovering_poison(&state.db_store)
@@ -3932,7 +3915,6 @@ pub async fn get_table_ddl(
             // The DDL is payload, not an error: it is returned verbatim.
             Ok(ddl)
         }
-        None => Err("Connection not found".into()),
     }
 }
 

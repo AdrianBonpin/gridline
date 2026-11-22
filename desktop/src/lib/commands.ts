@@ -502,7 +502,7 @@ export async function exportQueryToFile(
   format: string,
   fileGrant: string,
 ): Promise<{ rows_written: number; path: string }> {
-  return invoke("export_query_to_file", { connectionId, sql, format, fileGrant });
+  return invoke<{ rows_written: number; path: string }>("export_query_to_file", { connectionId, sql, format, fileGrant });
 }
 
 /**

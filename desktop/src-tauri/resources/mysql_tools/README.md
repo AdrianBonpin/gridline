@@ -12,5 +12,8 @@ uploaded. The app resolves tools system-first and falls back to these bundled
 binaries (see `backup::resolve_mysql_tool`).
 
 In `tauri dev`, this dir is usually empty — the app falls back to any
-`mariadb-dump`/`mariadb` on `PATH` (system-first resolution). MySQL
-backup/restore degrades with a clear error if neither is present.
+`mariadb-dump`/`mariadb` on `PATH` (system-first resolution). The client is
+needed for **backup** and **DB Sync** only: each degrades with a clear error if
+neither a system nor a bundled binary is present. **MySQL restore needs no
+client at all** — since v0.8.2 it runs in-process over the sqlx driver
+(`run_mysql_restore_on`: no CLI, no subprocess).

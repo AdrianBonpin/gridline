@@ -61,10 +61,41 @@ fn redact_truncates_at_a_character_boundary() {
 #[test]
 fn truncate_handles_edges() {
     let emoji = "😀😀😀"; // 4 bytes each
-    assert!(truncate(emoji, 4).is_char_boundary(0) || truncate(emoji, 4).len() <= 4);
+
+    // A cap that cannot hold even one character keeps only the ellipsis: it
+    // never splits 😀 and never exceeds the cap.
+    let out = truncate(emoji, 4);
+    assert!(out.len() <= 4, "capped: {} bytes ({out:?})", out.len());
+    assert_eq!(out, "...", "no character fits under the cap: {out:?}");
+
     for cap in 0..12 {
         let out = truncate(emoji, cap);
-        assert!(out.is_char_boundary(out.len()));
+        let body = out.trim_end_matches('.');
+        // The truncation marker is itself 3 bytes, so a cap below that yields
+        // the marker alone: the result never exceeds the larger of the two.
+        assert!(
+            out.len() <= cap.max(3),
+            "cap {cap}: produced {} bytes ({out:?})",
+            out.len()
+        );
+        assert!(
+            emoji.starts_with(body),
+            "cap {cap}: the kept bytes are a prefix of the input: {out:?}"
+        );
+        assert_eq!(
+            body.len() % 4,
+            0,
+            "cap {cap}: the cut never splits a 4-byte character: {out:?}"
+        );
+        assert!(
+            out.len() == emoji.len() || out.ends_with("..."),
+            "cap {cap}: a truncated result is marked: {out:?}"
+        );
+    }
+
+    // A cap at or above the input length returns it untouched.
+    for cap in [emoji.len(), emoji.len() + 1, MAX_ERROR_BYTES] {
+        assert_eq!(truncate(emoji, cap), emoji, "cap {cap}: no ellipsis");
     }
     assert_eq!(truncate("short", MAX_ERROR_BYTES), "short", "no ellipsis");
 }
