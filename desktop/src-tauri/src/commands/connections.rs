@@ -133,8 +133,9 @@ where
 /// Deleting a connection is a teardown: the pool handle, the SSH tunnel (and
 /// its loopback listener) and the cancellation handles go through the same
 /// single path as `db_disconnect`, so a deleted connection cannot keep a live
-/// session — or a reachable proxy — behind it. Secrets are purged by
-/// [`delete_connection_and_secrets`], which owns the keyring write.
+/// session — or a reachable proxy — behind it. Its in-memory session credential
+/// goes too: no secret may still be addressable by a connection that no longer
+/// exists. Keychain secrets are purged by [`delete_connection_and_secrets`].
 pub(crate) async fn delete_connection_with_resources(
     state: &crate::AppState,
     id: &str,
@@ -147,6 +148,7 @@ pub(crate) async fn delete_connection_with_resources(
         &state.cancel_registry,
     )
     .await;
+    state.session_credentials.forget(id);
     Ok(())
 }
 
@@ -448,6 +450,7 @@ mod lifecycle_tests {
             cancel_registry: crate::cancel::CancelRegistry::new(),
             jobs: Arc::new(crate::job::JobRegistry::new()),
             file_grants: Arc::new(crate::file_grant::FileGrantStore::new()),
+            session_credentials: Arc::new(crate::session_credential::SessionCredentialStore::new()),
         }
     }
 
@@ -476,6 +479,11 @@ mod lifecycle_tests {
             .cancel_registry
             .set_sqlite(&created.id, crate::cancel::SqliteCancel::new(interrupt));
         state.cancel_registry.mark_cancelled(&created.id);
+        // A keychain-off connection's password lives in backend memory for this
+        // session; deleting the connection must not leave it addressable.
+        state
+            .session_credentials
+            .set(&created.id, "session-only-password");
         let tunnel_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = tunnel_closed.clone();
         state.ssh_manager.lock().unwrap().insert_tunnel(
@@ -505,6 +513,10 @@ mod lifecycle_tests {
             purged,
             crate::commands::keychain::connection_secret_accounts(&created.id),
             "every connection-owned secret is purged, so none survives the delete"
+        );
+        assert!(
+            state.session_credentials.get(&created.id).is_none(),
+            "the deleted connection's in-memory session credential is forgotten"
         );
         assert!(
             purged.contains(&created.id)

@@ -394,6 +394,9 @@ fn app_state(store: std::sync::Arc<std::sync::Mutex<Store>>) -> crate::AppState 
         cancel_registry: crate::cancel::CancelRegistry::new(),
         jobs: std::sync::Arc::new(crate::job::JobRegistry::new()),
         file_grants: std::sync::Arc::new(crate::file_grant::FileGrantStore::new()),
+        session_credentials: std::sync::Arc::new(
+            crate::session_credential::SessionCredentialStore::new(),
+        ),
     }
 }
 
