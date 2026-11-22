@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Least-privilege capability for the main window. Every entry is a call the renderer actually makes; see docs/adr/0002-production-csp-and-webview-capabilities.md before adding one. Plaintext keyring export (keyring-store) and opener powers are deliberately absent: passwords go through Rust commands, and no renderer code opens URLs or paths.",
+  "description": "Least-privilege capability for the main window. Every entry is a call the renderer actually makes; see docs/adr/0002-production-csp-and-webview-capabilities.md before adding one. Plaintext keyring export (keyring-store), opener, and every filesystem power are deliberately absent: passwords go through Rust commands, no renderer code opens URLs or reads/writes files, and each file flow consumes a backend-issued File Grant instead of a renderer-supplied path.",
   "windows": ["main"],
   "permissions": [
     "core:event:allow-listen",
@@ -12,22 +12,6 @@
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     "dialog:allow-open",
-    "dialog:allow-save",
-    "fs:allow-read-text-file",
-    "fs:allow-write-text-file",
-    "fs:allow-write-file",
-    {
-      "identifier": "fs:scope",
-      "deny": [
-        "$HOME/.ssh",
-        "$HOME/.ssh/**",
-        "$HOME/.aws",
-        "$HOME/.aws/**",
-        "$HOME/.gnupg",
-        "$HOME/.gnupg/**",
-        "$HOME/Library/Keychains",
-        "$HOME/Library/Keychains/**"
-      ]
-    }
+    "dialog:allow-save"
   ]
 }

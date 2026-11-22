@@ -2,7 +2,19 @@ import { describe, it, expect } from "vitest";
 import tauriConf from "../../src-tauri/tauri.conf.json";
 import capabilityFile from "../../src-tauri/capabilities/default.json";
 import sourceIndexHtml from "../../index.html?raw";
+import tauriLibRs from "../../src-tauri/src/lib.rs?raw";
 import policyAdr from "../../../docs/adr/0002-production-csp-and-webview-capabilities.md?raw";
+
+/**
+ * Every renderer source file, as text. The capability file says what the webview
+ * may call; this says what the code actually imports, so "no filesystem power"
+ * is asserted on both sides of the boundary.
+ */
+const rendererSources = import.meta.glob("../**/*.{ts,tsx}", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
 
 /**
  * The packaged build's security policy is a configuration contract, so it is
@@ -66,33 +78,17 @@ const EXPECTED_PERMISSIONS = [
   "core:window:allow-set-background-color",
   "core:window:allow-start-dragging",
   "core:window:allow-internal-toggle-maximize",
-  // @tauri-apps/plugin-dialog — native file pickers only.
+  // @tauri-apps/plugin-dialog — the renderer asks the *backend* to show the
+  // native picker; the chosen path never comes back as authorization.
   "dialog:allow-open",
   "dialog:allow-save",
-  // @tauri-apps/plugin-fs — connection JSON import+export (src/lib/importExport.ts)
-  // and the schema-visualizer image export (SchemaVisualizerPage.tsx). Paths are
-  // authorized by the native picker, which is the only thing that extends the fs
-  // scope at runtime. Settings import/export no longer uses this plugin: it goes
-  // through a Rust File Grant (settings::export_settings_to_file /
-  // read_settings_file), so a renderer-supplied path authorizes nothing there.
-  "fs:allow-read-text-file",
-  "fs:allow-write-text-file",
-  "fs:allow-write-file",
-  // Deny (not allow) scope: credential material stays out of renderer reach
-  // even if a save dialog is pointed at it.
-  "fs:scope",
-];
-
-/** Credential stores the renderer must not be able to read or overwrite. */
-const EXPECTED_DENIED_PATHS = [
-  "$HOME/.ssh",
-  "$HOME/.ssh/**",
-  "$HOME/.aws",
-  "$HOME/.aws/**",
-  "$HOME/.gnupg",
-  "$HOME/.gnupg/**",
-  "$HOME/Library/Keychains",
-  "$HOME/Library/Keychains/**",
+  // No `fs:` permission of any kind. Every file read and write is a Rust command
+  // that consumes a File Grant (backend-issued, intent-scoped, single-use, five
+  // minutes): backup, restore, DB sync, data import, streamed export, settings,
+  // connection transfer and the schema image. A deny list was never the right
+  // boundary — it enumerated the credential stores it could think of while the
+  // renderer kept a general "read/write this path" power (`~/.kube/config`,
+  // `~/.npmrc`, … were readable) — so the power itself is gone.
 ];
 
 type SecurityConfig = { csp?: string | null; devCsp?: string | null };
@@ -286,25 +282,35 @@ describe("webview capabilities", () => {
     }
   });
 
-  it("limits filesystem access to the three renderer file commands in use", () => {
-    const fsPermissions = permissionRefs.filter((p) => p.startsWith("fs:"));
-    expect(fsPermissions).toEqual([
-      "fs:allow-read-text-file",
-      "fs:allow-write-text-file",
-      "fs:allow-write-file",
-      "fs:scope",
-    ]);
+  it("grants no filesystem power at all", () => {
+    // File Grants replaced the renderer's `plugin-fs` commands, so there is no
+    // fs IPC surface left to scope and no deny list to fall short of.
+    expect(permissionRefs.filter((p) => p.startsWith("fs:"))).toEqual([]);
+    expect(
+      permissionEntries.filter(
+        (entry) => typeof entry !== "string" && entry.identifier.startsWith("fs:"),
+      ),
+    ).toEqual([]);
   });
 
-  it("denies credential stores in the fs scope", () => {
-    const scope = permissionEntries.find(
-      (entry): entry is { identifier: string; allow?: string[]; deny?: string[] } =>
-        typeof entry !== "string" && entry.identifier === "fs:scope",
-    );
-    expect(scope, "fs:scope must be declared with a deny list").toBeDefined();
-    expect(scope?.deny).toEqual(EXPECTED_DENIED_PATHS);
-    // Allow nothing statically: the native picker is the only path grant.
-    expect(scope?.allow).toBeUndefined();
+  it("registers no filesystem plugin on the Rust builder", () => {
+    // A permission without a plugin is inert; a plugin without a permission is
+    // inert too. Both halves are removed so neither can be re-enabled by
+    // editing only one of them.
+    expect(tauriLibRs).not.toContain("tauri_plugin_fs");
+  });
+
+  it("has no renderer source that imports the fs plugin", () => {
+    // Guard the guard: an empty or mis-rooted glob would make the assertion
+    // below vacuous.
+    expect(Object.keys(rendererSources).length).toBeGreaterThan(50);
+    const FS_PLUGIN = "@tauri-apps/plugin-" + "fs";
+    const offenders = Object.entries(rendererSources)
+      .filter(([, text]) => text.includes(FS_PLUGIN))
+      .map(([path]) => path);
+    // Adding a file flow back through the plugin would re-open the raw-path
+    // power this policy exists to deny; it belongs behind a File Grant.
+    expect(offenders).toEqual([]);
   });
 });
 

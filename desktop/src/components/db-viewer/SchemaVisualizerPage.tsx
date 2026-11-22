@@ -16,13 +16,12 @@ import "@xyflow/react/dist/style.css";
 import dagre from "dagre";
 import { RotateCcw, ChevronUp, ChevronDown, Download, Loader2 } from "lucide-react";
 import { toPng, toJpeg, toSvg } from "html-to-image";
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeFile } from "@tauri-apps/plugin-fs";
+import { isTauri } from "@tauri-apps/api/core";
 import { CrowsFootEdge } from "./CrowsFootEdge";
 import { SchemaVisualizerNode } from "./SchemaVisualizerNode";
 import { LEGEND_ITEMS } from "./legendHelpers";
 import { SelectDropdown } from "../ui/SelectDropdown";
-import { getSchemaGraph } from "../../lib/commands";
+import { getSchemaGraph, saveGrantedBytes, selectFileForGrant } from "../../lib/commands";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import type { SchemaGraph, TableNode as TableNodeType } from "../../lib/types";
@@ -39,8 +38,9 @@ const EXPORT_WIDTH = 1600;
 const EXPORT_HEIGHT = 1000;
 
 /**
- * Decode an html-to-image data URL (base64 or URL-encoded) into bytes so it
- * can be written to disk via the Tauri fs plugin.
+ * Decode an html-to-image data URL (base64 or URL-encoded) into bytes. The
+ * bytes are handed to the backend, which publishes them to the file a File
+ * Grant authorized.
  */
 function dataUrlToBytes(dataUrl: string): Uint8Array {
   const [meta, payload] = dataUrl.split(",");
@@ -265,27 +265,30 @@ export function SchemaVisualizerPage({
         const filename = `${dbName}-${timestamp}.${ext}`;
 
         const bytes = dataUrlToBytes(dataUrl);
-        let savedPath: string | null = null;
-        try {
-          const path = await save({
-            defaultPath: filename,
-            filters: [
-              { name: format.toUpperCase(), extensions: [ext] },
-            ],
-          });
-          if (path) {
-            await writeFile(path, bytes);
-            savedPath = path;
-          }
-        } catch {
-          // Not running in Tauri (e.g. plain browser dev): fall back to the
-          // webview's default download handler.
+        if (!isTauri()) {
+          // Not running under Tauri (e.g. plain browser dev): the webview's own
+          // download handler is the only destination, and no path crosses the
+          // app boundary.
           const a = document.createElement("a");
           a.href = dataUrl;
           a.download = filename;
           a.click();
+          return;
         }
-        if (savedPath) {
+        // The destination is authorized by a Rust File Grant, not by a path the
+        // renderer names: the picker runs in the backend (`selectFileForGrant`)
+        // and `saveGrantedBytes` consumes the grant to publish these bytes to
+        // the file it authorized. A rejection (unselected, wrong intent,
+        // expired, already used) surfaces as a visible export error below — it
+        // never falls back to writing a renderer-chosen path.
+        const grant = await selectFileForGrant({
+          intent: "write",
+          title: "Export schema as",
+          defaultName: filename,
+          filters: [{ name: format.toUpperCase(), extensions: [ext] }],
+        });
+        if (grant) {
+          const savedPath = await saveGrantedBytes(grant.id, bytes);
           notify(`Schema exported to ${savedPath}`, "success");
         }
       } catch (e) {

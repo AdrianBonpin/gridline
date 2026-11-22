@@ -307,10 +307,9 @@ pub fn import_connections(
     import_connections_inner(&state.db_store, json)
 }
 
-#[tauri::command]
-pub fn export_connections(state: tauri::State<crate::AppState>) -> Result<String, String> {
-    export_connections_inner(&state.db_store)
-}
+// The transfer document is published through a File Grant instead of being
+// handed to the renderer to write (`commands::file_io::export_connections_to_file`).
+// `export_connections_inner` stays the one place the envelope is built.
 
 #[cfg(test)]
 #[path = "import_export.test.rs"]

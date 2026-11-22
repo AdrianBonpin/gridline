@@ -26,13 +26,12 @@ vi.mock("../../lib/commands", () => ({
   createFolder: vi.fn(),
   updateFolder: vi.fn(),
   importConnections: vi.fn(),
-  exportConnections: vi.fn(),
-}));
-
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
-vi.mock("@tauri-apps/plugin-fs", () => ({
-  readTextFile: vi.fn(),
-  writeTextFile: vi.fn(),
+  // Connection transfer files are authorized by Rust File Grants: the renderer
+  // asks for a grant and hands the id back, so these two are the whole file
+  // boundary (no path, no fs plugin).
+  selectFileForGrant: vi.fn(),
+  readConnectionsFile: vi.fn(),
+  exportConnectionsToFile: vi.fn(),
 }));
 
 describe("HomeScreen", () => {
@@ -260,11 +259,15 @@ describe("HomeScreen", () => {
 
   it("reports imported, skipped, and dropped-link counts after an import", async () => {
     const user = userEvent.setup();
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const { readTextFile } = await import("@tauri-apps/plugin-fs");
     const commands = await import("../../lib/commands");
-    (open as any).mockResolvedValue("/tmp/connections.json");
-    (readTextFile as any).mockResolvedValue("[]");
+    (commands.selectFileForGrant as any).mockResolvedValue({
+      id: "grant-import",
+      path: "/tmp/connections.json",
+      displayName: "connections.json",
+      intent: "read",
+      expiresInSeconds: 300,
+    });
+    (commands.readConnectionsFile as any).mockResolvedValue("[]");
     (commands.importConnections as any).mockResolvedValue({
       imported: 1,
       skipped: 1,
@@ -295,11 +298,15 @@ describe("HomeScreen", () => {
 
   it("reports a rejected import instead of failing silently", async () => {
     const user = userEvent.setup();
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const { readTextFile } = await import("@tauri-apps/plugin-fs");
     const commands = await import("../../lib/commands");
-    (open as any).mockResolvedValue("/tmp/broken.json");
-    (readTextFile as any).mockResolvedValue("{ not json");
+    (commands.selectFileForGrant as any).mockResolvedValue({
+      id: "grant-broken",
+      path: "/tmp/broken.json",
+      displayName: "broken.json",
+      intent: "read",
+      expiresInSeconds: 300,
+    });
+    (commands.readConnectionsFile as any).mockResolvedValue("{ not json");
     (commands.importConnections as any).mockRejectedValue(
       "invalid connection file: expected value at line 1 column 1",
     );
@@ -317,6 +324,35 @@ describe("HomeScreen", () => {
       );
     });
     expect(commands.importConnections).toHaveBeenCalledWith("{ not json");
+  });
+
+  it("exports through a write-intent File Grant and reports the granted path", async () => {
+    const user = userEvent.setup();
+    const commands = await import("../../lib/commands");
+    (commands.selectFileForGrant as any).mockClear();
+    (commands.selectFileForGrant as any).mockResolvedValue({
+      id: "grant-export",
+      path: "/tmp/connections-export.json",
+      displayName: "connections-export.json",
+      intent: "write",
+      expiresInSeconds: 300,
+    });
+    (commands.exportConnectionsToFile as any).mockResolvedValue(
+      "/tmp/connections-export.json",
+    );
+    render(<HomeScreen />);
+
+    await user.click(screen.getByRole("button", { name: /import \/ export/i }));
+    await user.click(screen.getByText("Export Connections"));
+
+    await waitFor(() =>
+      expect(commands.exportConnectionsToFile).toHaveBeenCalledWith("grant-export"),
+    );
+    // A write intent, and no path in the request: the destination lives in the
+    // grant, so a renderer-supplied path can never direct this write.
+    const request = (commands.selectFileForGrant as any).mock.calls[0][0];
+    expect(request.intent).toBe("write");
+    expect(request).not.toHaveProperty("path");
   });
 
   /**
