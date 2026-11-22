@@ -91,6 +91,187 @@ pub fn plan_clean_drops<S: AsRef<str>>(default_schema: &str, statements: &[S]) -
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Confinement: the replay may only act inside the selected database
+// ---------------------------------------------------------------------------
+
+/// Keywords that name an object a dump can recreate or drop.
+const OBJECT_KINDS: &[&str] = &["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "EVENT"];
+/// Keywords that name a schema (a database) rather than an object inside one.
+const SCHEMA_KINDS: &[&str] = &["DATABASE", "SCHEMA"];
+/// Tokens that may sit between the object keyword and the object name.
+const SKIPPABLE: &[&str] = &["IF", "NOT", "EXISTS", "TEMPORARY", "ONLINE", "OFFLINE"];
+/// Trailing options of a `DROP` list that are not object names.
+const DROP_OPTIONS: &[&str] = &["RESTRICT", "CASCADE"];
+
+/// Refuse a restore script that would act outside `target`.
+///
+/// The replay executes every statement verbatim after `USE <target>`, so a dump
+/// carrying `USE otherdb` (what `mysqldump --databases` emits) or a
+/// schema-qualified `CREATE TABLE otherdb.t` writes into a database the user did
+/// not select. That also made the clean phase disagree with the replay: the
+/// clean plan derives its DROP list from the same `CREATE` statements and
+/// qualifies an *unqualified* name with the target, so a dump whose `USE` pointed
+/// elsewhere was replayed into `otherdb` while the clean phase dropped
+/// `target.t` — data loss in the target plus a restore that restored nothing.
+///
+/// Confining the replay fixes both ends at once: once every `USE` and every
+/// write target names the target schema, an unqualified name in
+/// [`plan_clean_drops`] really is an object of the target, so the plan and the
+/// replay cannot describe different objects.
+///
+/// Deliberately fail-closed rather than a rewrite: silently redirecting
+/// `otherdb.t` to `target.t` would change which objects a dump creates, and the
+/// user can always select the database the dump names as the target.
+///
+/// The statement text is never echoed (SQL must not be logged); the message names
+/// the position and the offending schema only.
+pub fn check_confined<S: AsRef<str>>(target: &str, statements: &[S]) -> Result<(), String> {
+    for (index, stmt) in statements.iter().enumerate() {
+        for schema in escape_schemas(stmt.as_ref()) {
+            if !schema.eq_ignore_ascii_case(target) {
+                return Err(format!(
+                    "Statement {} targets schema `{}`, but this restore is confined to `{}`. \
+                     Select `{}` as the target database, or restore a dump that does not \
+                     create or drop objects in another schema.",
+                    index + 1,
+                    schema,
+                    target,
+                    schema
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Schemas a statement names in a position that *writes* (never a column
+/// reference inside a view body, an alias, or a string literal).
+fn escape_schemas(stmt: &str) -> Vec<String> {
+    if may_be(stmt, "USE") {
+        return qualified_parts(stmt, "USE").into_iter().take(1).collect();
+    }
+    if may_create(stmt) {
+        // `plan_clean_drops` reads exactly these statements, so this half of the
+        // check is what keeps the DROP plan schema-accurate.
+        let mut out = qualified_parts(stmt, "CREATE");
+        if let Some((_, name)) = parse_create_target(stmt) {
+            out.extend(schema_of(&name));
+        }
+        return out;
+    }
+    if may_be(stmt, "DROP") {
+        return qualified_parts(stmt, "DROP");
+    }
+    if may_be(stmt, "ALTER") {
+        return qualified_parts(stmt, "ALTER");
+    }
+    Vec::new()
+}
+
+/// Schema qualifiers of the names a `USE` / `CREATE` / `DROP` / `ALTER` statement
+/// acts on.
+///
+/// Only the leading object-name positions of a recognised statement are read, so
+/// a `SELECT` alias (`o.id`), a string literal (`'a.b'`) or a column reference in
+/// a view body is never mistaken for a schema.
+fn qualified_parts(stmt: &str, keyword: &str) -> Vec<String> {
+    let unwrapped = unwrap_version_comments(stmt);
+    let tokens = tokenize(&unwrapped);
+    let mut out = Vec::new();
+    let Some(start) = tokens.iter().position(|t| t.eq_ignore_ascii_case(keyword)) else {
+        return out;
+    };
+
+    // `USE <schema>`: the very next token is the database.
+    if keyword.eq_ignore_ascii_case("USE") {
+        if let Some(name) = tokens.get(start + 1) {
+            let name = unquote_identifier(name.trim_end_matches(','));
+            if !name.is_empty() {
+                out.push(name);
+            }
+        }
+        return out;
+    }
+
+    // Walk to the object (or schema) keyword, skipping the modifiers a dump puts
+    // in between (`CREATE OR REPLACE`, `ALGORITHM=…`, `DEFINER=…`, `SQL
+    // SECURITY …`, `DROP TEMPORARY`).
+    let mut i = start + 1;
+    while i < tokens.len() {
+        let upper = tokens[i].to_ascii_uppercase();
+        if OBJECT_KINDS.contains(&upper.as_str()) {
+            i += 1;
+            break;
+        }
+        if SCHEMA_KINDS.contains(&upper.as_str()) {
+            // `CREATE DATABASE d` / `DROP DATABASE d`: the next name is a schema.
+            let mut j = i + 1;
+            while j < tokens.len()
+                && (SKIPPABLE.contains(&tokens[j].to_ascii_uppercase().as_str())
+                    || tokens[j].contains('='))
+            {
+                j += 1;
+            }
+            if let Some(name) = tokens.get(j) {
+                let name = unquote_identifier(name.trim_end_matches(','));
+                if !name.is_empty() {
+                    out.push(name);
+                }
+            }
+            return out;
+        }
+        if tokens[i].contains('=') || MODIFIERS.contains(&upper.as_str()) {
+            i += 1;
+            continue;
+        }
+        // Not an object statement this check can read (`DROP USER`, `ALTER
+        // DATABASE`, …): confinement is not silently assumed, the caller's
+        // statement is simply not judged by this branch.
+        return out;
+    }
+
+    // The object name(s) follow, comma separated for a `DROP` list.
+    while i < tokens.len() {
+        let upper = tokens[i].to_ascii_uppercase();
+        if SKIPPABLE.contains(&upper.as_str()) || DROP_OPTIONS.contains(&upper.as_str()) {
+            i += 1;
+            continue;
+        }
+        let trailing_comma = tokens[i].ends_with(',');
+        let candidate = tokens[i].strip_suffix("()").unwrap_or(&tokens[i]);
+        // The qualifier is read off the raw token: unquoting the whole token
+        // first would eat the leading backtick of `` `db`.`t` `` and hide the dot
+        // that separates the two names.
+        let candidate = candidate.trim_end_matches(',');
+        if candidate.is_empty() || !is_plausible_identifier(candidate) {
+            break;
+        }
+        out.extend(schema_of(candidate));
+        i += 1;
+        if !trailing_comma {
+            break;
+        }
+    }
+    out
+}
+
+/// The schema part of a possibly-qualified object name.
+///
+/// `name` keeps its quoting: the split happens outside backticks, so
+/// `` `db`.`t` `` is two names while `` `db.t` `` is one.
+fn schema_of(name: &str) -> Option<String> {
+    let parts = split_qualified(name);
+    if parts.len() == 2 {
+        let schema = unquote_identifier(&parts[0]);
+        if schema.is_empty() {
+            return None;
+        }
+        return Some(schema);
+    }
+    None
+}
+
 /// Extract `(kind, raw name)` from a `CREATE …` statement, or `None`.
 fn parse_create_target(stmt: &str) -> Option<(ObjectKind, String)> {
     // A dump is mostly `INSERT`s. Rejecting them on a zero-allocation scan keeps
@@ -150,11 +331,11 @@ fn parse_create_target(stmt: &str) -> Option<(ObjectKind, String)> {
     None
 }
 
-/// True when the statement's first significant token is `CREATE`. Skipping
+/// True when the statement's first significant token is `word`. Skipping
 /// whitespace and comments costs no allocation; an executable `/*! … */`
 /// comment (mysqldump's wrapper for routines and triggers) hides the keyword,
 /// so it opts into the full parse instead of guessing.
-fn may_create(stmt: &str) -> bool {
+fn may_be(stmt: &str, word: &str) -> bool {
     let bytes = stmt.as_bytes();
     let mut i = 0usize;
     loop {
@@ -184,11 +365,16 @@ fn may_create(stmt: &str) -> bool {
         }
         break;
     }
-    let word: String = stmt[i..]
+    let found: String = stmt[i..]
         .chars()
         .take_while(|c| c.is_ascii_alphabetic())
         .collect();
-    word.eq_ignore_ascii_case("CREATE")
+    found.eq_ignore_ascii_case(word)
+}
+
+/// True when the statement's first significant token is `CREATE`.
+fn may_create(stmt: &str) -> bool {
+    may_be(stmt, "CREATE")
 }
 
 /// Reject candidates that are clearly not object names. A `(`, `)`, `,` or `;`

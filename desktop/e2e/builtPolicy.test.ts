@@ -9,16 +9,32 @@ import { fileURLToPath } from "node:url";
  * real `desktop/dist` output (`bun run --filter gridline-desktop build`), which
  * is what Tauri embeds into the app.
  *
- * CI runs `bun run test` *before* the frontend build, so a missing `dist` skips
- * this file instead of failing; any flow that builds first (the desktop build,
- * the release pipeline, `bun run build && bun run test`) runs it.
+ * A missing `dist` used to skip this file silently, which made "verified in a
+ * production build" hollow: CI ran the tests *before* the build, so the file was
+ * skipped on every run and could never fail. The skip is now only for a local
+ * `bun run test` that has not built yet — any flow that must check the built
+ * output sets `GRIDLINE_REQUIRE_BUILT_POLICY=1` (ci.yml does, on a test step that
+ * runs after the frontend build), and then a missing artifact is a failure with
+ * the command to run.
  */
+const required = process.env.GRIDLINE_REQUIRE_BUILT_POLICY === "1";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = join(here, "..", "dist");
 const builtIndexPath = join(dist, "index.html");
 const built = existsSync(builtIndexPath);
 const builtIndexHtml = built ? readFileSync(builtIndexPath, "utf8") : "";
+
+const BUILD_HINT =
+  "the production bundle is missing — run `bun run --filter gridline-desktop build` " +
+  "before the tests (this file must check the built output, not the source template)";
+
+/** Asset file names in the built bundle (empty when it was never built). */
+function assetNames(): string[] {
+  const assets = join(dist, "assets");
+  if (!existsSync(assets)) return [];
+  return readdirSync(assets);
+}
 
 const stripComments = (html: string) => html.replace(/<!--[\s\S]*?-->/g, "");
 
@@ -31,7 +47,11 @@ function cssBundle(): string {
     .join("\n");
 }
 
-describe.skipIf(!built)("built index.html stays compatible with the policy", () => {
+describe.skipIf(!built && !required)("built index.html stays compatible with the policy", () => {
+  it("the production build exists", () => {
+    expect(built, `${builtIndexPath} is missing: ${BUILD_HINT}`).toBe(true);
+  });
+
   it("has no inline style element", () => {
     // Tauri rewrites packaged <style> blocks with a nonce and adds `'nonce-…'`
     // to style-src; a nonce source suppresses `'unsafe-inline'`, which the SQL
@@ -61,7 +81,7 @@ describe.skipIf(!built)("built index.html stays compatible with the policy", () 
 
   it("emits the editor worker as a same-origin chunk", () => {
     // worker-src 'self' is only sufficient if the worker is not remote.
-    const assets = readdirSync(join(dist, "assets"));
+    const assets = assetNames();
     expect(assets.some((name) => name.startsWith("editor.worker-"))).toBe(true);
     const bundle = assets
       .filter((name) => /^index-.*\.js$/.test(name))
