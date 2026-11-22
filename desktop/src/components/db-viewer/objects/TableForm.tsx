@@ -323,7 +323,9 @@ export function TableForm({
     // so a rebuild genuinely cannot carry a rename there — the edit path can
     // (`ALTER TABLE ... RENAME COLUMN`), and it refuses a swap with a reason
     // when one pass cannot express it. SQLite's rebuild DOES carry renames (it
-    // maps each new column to its `renamed_from` source), so it keeps the path.
+    // copies each new column from its `renamed_from` source and rewrites the
+    // stored index/trigger text), so it keeps the path — provided the payload is
+    // converted (see `rebuildColumns`).
     const rebuildCanCarryThis = dbType === "sqlite" || !carriesRename;
 
     const isRebuild =
@@ -332,6 +334,20 @@ export function TableForm({
         rebuildCanCarryThis &&
         sameColumnNames(action.columns, action.old_columns) &&
         namesInOrder(action.columns) !== namesInOrder(action.old_columns);
+
+    // The column model a rebuild must be asked with.
+    //
+    // The form's own rows carry rename intent as `original_name`; the backend
+    // structs read `renamed_from`, and only `toSqlColumn` produces it. Sending
+    // the raw rows is what made a SQLite permutation rename a silent no-op: the
+    // script builder received `renamed_from: null` for every column, so its copy
+    // fell back to an identity `SELECT` and the renames were never applied. The
+    // readiness check below already converts this way, and so does the edit
+    // path — the rebuild call was the one place that did not.
+    const rebuildColumns = useMemo(
+        () => action.columns.map((c) => toSqlColumn(c, "edit", dbType)),
+        [action.columns, dbType],
+    );
 
     const [view, setView] = useState<"visual" | "sql">("visual");
     const [preview, setPreview] = useState("");
@@ -458,7 +474,7 @@ export function TableForm({
                   connectionId,
                   params.schema,
                   params.name,
-                  action.columns,
+                  rebuildColumns,
               )
             : cmd.buildObjectDdl(
                   connectionId,
@@ -492,6 +508,8 @@ export function TableForm({
         params.schema,
         params.name,
         createFks,
+        // Stable per column list (`useMemo`), so this cannot loop.
+        rebuildColumns,
     ]);
 
     const patchColumns = (cols: TableFormColumn[]) =>
@@ -565,7 +583,7 @@ export function TableForm({
                     connectionId,
                     params.schema,
                     params.name,
-                    action.columns,
+                    rebuildColumns,
                 );
                 useDbViewerStore.getState().addChange({
                     type: "rebuild_table",

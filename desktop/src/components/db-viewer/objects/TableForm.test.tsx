@@ -368,9 +368,17 @@ describe("TableForm", () => {
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
   });
 
-  it("a SQLite permutation rename keeps the rebuild path, which carries renames", async () => {
-    // SQLite's rebuild maps every new column to its `renamed_from` source, so it
-    // applies a swap atomically; it must not be routed away from the rebuild.
+  it("asks a SQLite rebuild with the rename intent the backend reads, not the form's marker", async () => {
+    // SQLite's rebuild copies every new column from its `renamed_from` source
+    // (`sqlite_rebuild_copy`) and rewrites the stored index/trigger text, so it
+    // can apply a permutation rename atomically — it must not be routed away
+    // from the rebuild. But the backend structs read `renamed_from`, and the raw
+    // form rows only carry `original_name`: sending them made the copy an
+    // identity `SELECT` that dropped both renames while looking like a plain
+    // reorder. This pins the payload the script builder is given; that a rebuild
+    // built from that shape really swaps names AND values is proven against a
+    // real SQLite by
+    // `commands::objects::tests::sqlite_rebuild_applies_a_permutation_rename_to_names_and_values`.
     useConnectionStore.setState({
       connections: [
         {
@@ -400,13 +408,49 @@ describe("TableForm", () => {
     await screen.findByLabelText(/SQL/i);
     await waitFor(() => expect(cmd.buildRebuildScript).toHaveBeenCalled());
     const [args] = (cmd.buildRebuildScript as any).mock.calls.slice(-1);
-    // The script builder receives every column with its rename intent intact.
-    expect(args[3]).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: "name", original_name: "id" }),
-        expect.objectContaining({ name: "id", original_name: "name" }),
-      ]),
+    // Exactly the model the edit path sends (and the one the backend
+    // deserializes): every field emitted, rename intent as `renamed_from`, and
+    // the swapped order preserved.
+    expect(args[3]).toEqual([
+      {
+        name: "name",
+        type: "text",
+        nullable: true,
+        default: null,
+        is_pk: false,
+        unique: false,
+        auto_increment: false,
+        renamed_from: "id",
+      },
+      {
+        name: "id",
+        type: "integer",
+        nullable: false,
+        default: null,
+        is_pk: true,
+        unique: false,
+        auto_increment: false,
+        renamed_from: "name",
+      },
+    ]);
+    // The form's own marker is not a backend field; it must not be the only
+    // thing telling the rebuild about a rename.
+    expect(args[3].every((c: any) => c.original_name === undefined)).toBe(true);
+
+    // Staging goes through the same converted payload (the preview and Stage
+    // are two call sites, and neither may hand the builder the raw rows), and
+    // what it queues really is the rebuild script.
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    await waitFor(() =>
+      expect(useDbViewerStore.getState().changesQueue).toHaveLength(1),
     );
+    for (const call of (cmd.buildRebuildScript as any).mock.calls) {
+      expect(call[3]).toEqual(args[3]);
+    }
+    expect((cmd.buildRebuildScript as any).mock.calls.length).toBeGreaterThan(1);
+    const queued = useDbViewerStore.getState().changesQueue[0];
+    expect(queued.type).toBe("rebuild_table");
+    expect(queued.sql).toContain('SELECT "id", "name"');
   });
 
   it("stale guard blocks staging when live columns differ", async () => {
