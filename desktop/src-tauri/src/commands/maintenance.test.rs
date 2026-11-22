@@ -29,11 +29,42 @@ async fn pool() -> (tokio::sync::Mutex<ConnectionPoolManager>, String) {
 #[ignore]
 async fn run_maintenance_analyze_succeeds() {
     let (pm, id) = pool().await;
+    // A table this test owns, not a system catalog: ANALYZE on `pg_type` needs
+    // superuser rights, so the test only passed when the live matrix ran as
+    // `postgres` and failed for any ordinary role.
+    {
+        let handle = pm.lock().await.acquire(&id).unwrap();
+        if let crate::db::pool::DbHandle::Postgresql(c, _) = handle {
+            c.lock()
+                .await
+                .batch_execute(
+                    "DROP TABLE IF EXISTS maintenance_analyze_t; \
+                     CREATE TABLE maintenance_analyze_t (id int, note text); \
+                     INSERT INTO maintenance_analyze_t VALUES (1, 'x');",
+                )
+                .await
+                .unwrap();
+        }
+    }
     let res = crate::commands::maintenance::run_maintenance_inner(
-        &pm, &id, "public", "pg_type", "analyze",
+        &pm,
+        &id,
+        "public",
+        "maintenance_analyze_t",
+        "analyze",
     )
     .await
     .unwrap();
     assert!(res.duration_ms >= 0);
     assert!(res.message.to_lowercase().contains("analyze"));
+    {
+        let handle = pm.lock().await.acquire(&id).unwrap();
+        if let crate::db::pool::DbHandle::Postgresql(c, _) = handle {
+            c.lock()
+                .await
+                .batch_execute("DROP TABLE IF EXISTS maintenance_analyze_t;")
+                .await
+                .unwrap();
+        }
+    }
 }

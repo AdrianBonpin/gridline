@@ -292,6 +292,14 @@ fn env(name: &str) -> String {
 // when cargo runs them in parallel.
 static INTEGRATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Reset a target database to an empty `public` schema, so a live restore test
+/// starts from a known state whatever the previous test left behind. The live
+/// matrix role owns its target database (PostgreSQL 15+ makes `public` owned by
+/// `pg_database_owner`), so it may recreate the schema.
+const TARGET_SCHEMA_RESET: &str = "DROP SCHEMA IF EXISTS public CASCADE; \
+     CREATE SCHEMA public; \
+     GRANT ALL ON SCHEMA public TO CURRENT_USER;";
+
 fn conn_from_env(prefix: &str) -> PgConnParams {
     PgConnParams::new(
         env(&format!("{prefix}_HOST")),
@@ -351,6 +359,10 @@ fn integration_dump_restore_sync() {
     let _guard = INTEGRATION_LOCK.lock().unwrap();
     let src = conn_from_env("GRIDLINE_TEST_SRC");
     let tgt = conn_from_env("GRIDLINE_TEST_TGT");
+
+    // The target is reused by every live restore test, so start from a known
+    // state instead of inheriting whatever the previous test restored.
+    psql_exec(&tgt, TARGET_SCHEMA_RESET);
 
     // Unique temp file per run to avoid collisions.
     let dump_path = std::env::temp_dir().join(format!(
@@ -449,11 +461,12 @@ fn integration_plain_dump_restore() {
     let src = conn_from_env("GRIDLINE_TEST_SRC");
     let tgt = conn_from_env("GRIDLINE_TEST_TGT");
 
-    // psql can't DROP-before-CREATE, so start from a clean target.
-    psql_exec(
-        &tgt,
-        "DROP TABLE IF EXISTS public.orders, public.products CASCADE;",
-    );
+    // psql can't DROP-before-CREATE, so start from a clean target. Reset the
+    // whole schema rather than naming the source's tables one by one: the source
+    // also carries an enum and functions (see scripts/seed-pg-test.sql), and a
+    // named-list cleanup leaves whatever the previous live test restored — which
+    // made this test fail on its second run with "type already exists".
+    psql_exec(&tgt, TARGET_SCHEMA_RESET);
 
     let dump_path = std::env::temp_dir().join(format!(
         "gridline_it_plain_{}_{}.sql",
@@ -2342,6 +2355,55 @@ fn plain_dump_that_manages_its_own_transactions_is_non_atomic() {
         .to_string();
     assert!(reason.contains("BEGIN"), "got: {reason}");
     assert!(reason.contains("COMMIT"), "got: {reason}");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A continuation line is part of the statement above it, never a statement of
+/// its own. pg_dump writes a non-default sequence start value on its own line:
+///
+/// ```text
+/// CREATE SEQUENCE public.s
+///     START WITH 100
+///     INCREMENT BY 1
+///     NO MINVALUE
+///     NO MAXVALUE
+///     CACHE 1;
+/// ```
+///
+/// Read line-by-line, `START WITH 100` looks like transaction control, so every
+/// plain dump touching such a sequence was reported *non-atomic* and its restore
+/// was refused unless the user accepted a risk that did not exist (found in the
+/// live matrix against PostgreSQL 18).
+#[test]
+fn plain_dump_continuation_lines_are_not_statements() {
+    let path = temp_plain_dump(
+        "continuation",
+        "CREATE SEQUENCE public.s\n    START WITH 100\n    INCREMENT BY 1\n    NO MINVALUE\n    NO MAXVALUE\n    CACHE 1;\n\nALTER SEQUENCE public.s OWNER TO app;\n",
+    );
+    assert_eq!(
+        pg_restore_atomicity("plain", &path).unwrap(),
+        PgRestoreAtomicity::Atomic,
+        "a multi-line CREATE SEQUENCE is atomic"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The statement-boundary rule must not blunt the hazard it protects: a script
+/// that really opens its own transaction still counts, including the
+/// `START TRANSACTION` spelling that made the false positive possible.
+#[test]
+fn plain_dump_start_transaction_is_still_a_statement() {
+    let path = temp_plain_dump(
+        "start-transaction",
+        "CREATE TABLE public.t (id integer);\nSTART TRANSACTION;\nCOMMIT;\n",
+    );
+    let reason = pg_restore_atomicity("plain", &path)
+        .unwrap()
+        .reason()
+        .expect("must be non-atomic")
+        .to_string();
+    assert!(reason.contains("START"), "got: {reason}");
+    assert!(reason.contains("line 2"), "got: {reason}");
     let _ = std::fs::remove_file(&path);
 }
 
