@@ -495,18 +495,18 @@ async fn live_mysql_filtered_browse_reports_the_filtered_total() {
             Some(DbHandle::MySql(p)) => p.clone(),
             _ => panic!("expected a mysql handle"),
         };
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE TABLE `{}`.`{}` (id INT PRIMARY KEY, status VARCHAR(16))",
             db, table
-        ))
+        )))
         .execute(&pool)
         .await
         .expect("create scratch table");
         for (i, status) in (1..=6).map(|i| (i, if i <= 2 { "paid" } else { "pending" })) {
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "INSERT INTO `{}`.`{}` (id, status) VALUES (?, ?)",
                 db, table
-            ))
+            )))
             .bind(i)
             .bind(status)
             .execute(&pool)
@@ -553,9 +553,12 @@ async fn live_mysql_filtered_browse_reports_the_filtered_total() {
     // Cleanup: drop the scratch table so a reused server stays clean.
     let mut guard = pm.lock().await;
     if let Some(DbHandle::MySql(pool)) = guard.get(&id) {
-        let _ = sqlx::query(&format!("DROP TABLE `{}`.`{}`", db, table))
-            .execute(&*pool)
-            .await;
+        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP TABLE `{}`.`{}`",
+            db, table
+        )))
+        .execute(&*pool)
+        .await;
     }
 }
 

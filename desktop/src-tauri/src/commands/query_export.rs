@@ -654,7 +654,7 @@ async fn mysql_export_body(
     progress: &mut (dyn FnMut(u64) + Send),
 ) -> Result<ExportSummary, String> {
     use futures_util::TryStreamExt;
-    let mut stream = sqlx::query(request.sql()).fetch(&mut *conn);
+    let mut stream = sqlx::query(sqlx::AssertSqlSafe(request.sql())).fetch(&mut *conn);
     let mut columns: Vec<ColumnInfo> = Vec::new();
     let mut rows_written: u64 = 0;
     let mut first = true;

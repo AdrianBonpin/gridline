@@ -248,6 +248,12 @@ TMP=$(mktemp -d) && cp www/package.json "$TMP/package.json" && cd "$TMP" && bun 
 
 (Adjust the `../../` relative path to point back at `www/` from the temp dir.) Commit both `bun.lock` and `www/bun.lock` together.
 
+### Dependency advisories are gated
+
+`scripts/check-advisories.py` (run by the required `checks` CI job) audits **all three** resolved graphs — the workspace `bun.lock`, the standalone `www/bun.lock`, and `desktop/src-tauri/Cargo.lock` — and fails when an advisory is neither fixed nor covered by a reviewed entry in [`docs/security/dependency-exceptions.md`](./docs/security/dependency-exceptions.md). It also fails on an **expired** entry (past its `review_by` date) and on an entry that no longer matches any finding.
+
+When the check fails: upgrade to a patched version first (that is the only real fix). Only when no fixed version exists — or the dependency cannot move without an upstream release — add an exception with an owner, a rationale tied to Gridline's graph, and a review date no more than six months out. Never suppress an advisory in the audit itself. The three dependency lines that matter for upgrades are `desktop/src-tauri/Cargo.toml`, `desktop/package.json`, and `www/package.json` (plus the root `package.json` `overrides` block, used to force a transitive patched version past a parent that pins a vulnerable one).
+
 ### Testing Strategy
 
 - **Rust:** Unit tests for database logic, connection pool management, and command handlers. Use `sqlx::test` with a test PostgreSQL instance for integration tests.

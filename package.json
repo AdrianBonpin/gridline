@@ -11,5 +11,9 @@
     "test": "bun run --filter gridline-desktop test",
     "e2e:desktop:build": "bun run --filter gridline-desktop e2e:build",
     "e2e:desktop": "bun run --filter gridline-desktop e2e"
+  },
+  "overrides": {
+    "dompurify": "^3.4.18",
+    "fflate": "^0.8.3"
   }
 }

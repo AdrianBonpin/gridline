@@ -1367,24 +1367,26 @@ async fn live_mysql_single_row_writes_are_atomic_and_conflict_aware() {
     let q_table =
         crate::db::ident::qualified(crate::db::ident::Engine::MySql, &schema, &table).unwrap();
 
-    sqlx::query(&format!("DROP TABLE IF EXISTS {q_table}"))
-        .execute(&pool)
-        .await
-        .expect("drop leftovers");
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP TABLE IF EXISTS {q_table}"
+    )))
+    .execute(&pool)
+    .await
+    .expect("drop leftovers");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE TABLE {q_table} (
              `order_id` int NOT NULL,
              `product_id` int NOT NULL,
              `quantity` int NOT NULL,
              PRIMARY KEY (`order_id`, `product_id`)
          ) ENGINE = InnoDB"
-    ))
+    )))
     .execute(&pool)
     .await
     .expect("create fixture table");
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO {q_table} (`order_id`, `product_id`, `quantity`) VALUES (1, 1, 2), (1, 3, 1), (2, 1, 4)"
-    ))
+    )))
     .execute(&pool)
     .await
     .expect("seed rows");
@@ -1411,7 +1413,7 @@ async fn live_mysql_single_row_writes_are_atomic_and_conflict_aware() {
             "SELECT `order_id`, `product_id`, `quantity` FROM {q_table} ORDER BY `order_id`, `product_id`"
         );
         async move {
-            let rows = sqlx::query(&q)
+            let rows = sqlx::query(sqlx::AssertSqlSafe(q.to_owned()))
                 .fetch_all(&pool)
                 .await
                 .expect("read back rows");
@@ -1476,9 +1478,9 @@ async fn live_mysql_single_row_writes_are_atomic_and_conflict_aware() {
     );
 
     // ── concurrent change: conflict, nothing written ─────────────────────
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE {q_table} SET `quantity` = 5 WHERE `order_id` = 1 AND `product_id` = 1"
-    ))
+    )))
     .execute(&pool)
     .await
     .expect("simulate another session");
@@ -1534,7 +1536,7 @@ async fn live_mysql_single_row_writes_are_atomic_and_conflict_aware() {
         ]
     );
 
-    sqlx::query(&format!("DROP TABLE {q_table}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE {q_table}")))
         .execute(&pool)
         .await
         .expect("cleanup");

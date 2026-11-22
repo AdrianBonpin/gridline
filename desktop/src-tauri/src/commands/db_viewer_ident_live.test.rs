@@ -583,11 +583,13 @@ async fn mysql_legal_names_browse_filter_sort_edit_and_introspect() {
     let q_table =
         crate::db::ident::qualified(crate::db::ident::Engine::MySql, &schema, table).unwrap();
 
-    sqlx::query(&format!("DROP TABLE IF EXISTS {q_table}"))
-        .execute(&pool)
-        .await
-        .expect("drop leftovers");
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP TABLE IF EXISTS {q_table}"
+    )))
+    .execute(&pool)
+    .await
+    .expect("drop leftovers");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE TABLE {q_table} (
              `id` int PRIMARY KEY,
              `a\"b` text,
@@ -595,16 +597,16 @@ async fn mysql_legal_names_browse_filter_sort_edit_and_introspect() {
              `select` int,
              `Mixed Case` text
          )"
-    ))
+    )))
     .execute(&pool)
     .await
     .expect("create awkward table");
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO {q_table} (`id`, `a\"b`, `o'brien`, `select`, `Mixed Case`) VALUES
              (1, 'x', 'one', 30, 'mixed'),
              (2, 'y', 'two', 10, 'case'),
              (3, 'x', 'three', 20, 'keys')"
-    ))
+    )))
     .execute(&pool)
     .await
     .expect("seed rows");
@@ -703,10 +705,12 @@ async fn mysql_legal_names_browse_filter_sort_edit_and_introspect() {
     assert_eq!(names, vec!["id", "a\"b", "o'brien", "select", "Mixed Case"]);
 
     // DDL copy (`SHOW CREATE TABLE` with quoted identifiers).
-    let ddl_row = sqlx::query(&crate::db::mysql::mysql_ddl_query(&schema, table))
-        .fetch_one(&pool)
-        .await
-        .expect("show create table");
+    let ddl_row = sqlx::query(sqlx::AssertSqlSafe(crate::db::mysql::mysql_ddl_query(
+        &schema, table,
+    )))
+    .fetch_one(&pool)
+    .await
+    .expect("show create table");
     // `SHOW CREATE TABLE` returns (Table, Create Table).
     let ddl: String = sqlx::Row::get(&ddl_row, 1);
     let quoted_table = crate::db::ident::quote(crate::db::ident::Engine::MySql, table);
@@ -724,7 +728,7 @@ async fn mysql_legal_names_browse_filter_sort_edit_and_introspect() {
         &[],
     )
     .expect("build mysql update");
-    let mut q = sqlx::query(&sql);
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.to_owned()));
     for p in &params {
         q = match p {
             serde_json::Value::String(s) => q.bind(s.clone()),
@@ -734,7 +738,7 @@ async fn mysql_legal_names_browse_filter_sort_edit_and_introspect() {
     let done = q.execute(&pool).await.expect("update must run");
     assert_eq!(done.rows_affected(), 1);
 
-    sqlx::query(&format!("DROP TABLE {q_table}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE {q_table}")))
         .execute(&pool)
         .await
         .expect("drop scratch table");
