@@ -1583,6 +1583,12 @@ describe("execution entry points", () => {
     });
 
     it("never arms an auto-refresh timer on an ad-hoc query tab", async () => {
+        // Resolve the lazy editor first. A dynamic import cannot settle while
+        // fake timers are installed, so the Suspense boundary that hosts the
+        // query workspace (and the toolbar in it) would never commit and this
+        // test would assert against an empty tree — passing even with the
+        // guards deleted. Preloading keeps the fake clock and real mounting.
+        await import("../editor/QueryEditor");
         vi.useFakeTimers();
         try {
             const executeQuery = vi
@@ -1601,7 +1607,14 @@ describe("execution entry points", () => {
             await act(async () => {
                 vi.advanceTimersByTime(60_000);
             });
+            // The workspace must really be mounted, otherwise "no refresh
+            // happened" proves nothing: an auto-refresh on this tab would
+            // re-run `SELECT 1` through the guard and hit the spy.
+            expect(screen.getByTestId("query-workspace")).toBeInTheDocument();
+            expect(screen.getByTestId("query-results")).toBeInTheDocument();
             expect(executeQuery).not.toHaveBeenCalled();
+            // A query tab's toolbar carries no auto-refresh control at all: the
+            // screen hands it no rate and no table-variant toolbar.
             expect(screen.queryByLabelText(/auto-refresh/i)).toBeNull();
         } finally {
             vi.useRealTimers();

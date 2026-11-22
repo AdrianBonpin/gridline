@@ -8,5 +8,9 @@ the repo; the build writes `checksums.txt` here and
 `scripts/verify-bundled-tools.sh` re-checks that manifest before anything is
 uploaded.
 
-In `tauri dev`, this dir is usually empty — the app falls back to any `pg_dump`/`pg_restore`
-on `PATH` (system-first resolution). Admin features degrade with a clear error if neither is present.
+In `tauri dev`, this dir is usually empty — the app falls back to any
+`pg_dump`/`pg_restore`/`psql` on `PATH` (system-first resolution). Admin features
+degrade with a clear error if neither is present. All three are resolved: dump
+and custom/tar/directory restore use `pg_dump`/`pg_restore`, while a
+**plain-format** restore is replayed through `psql -f` (a plain `.sql` script is
+not a `pg_restore` input).
