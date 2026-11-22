@@ -397,6 +397,12 @@ fn app_state(store: std::sync::Arc<std::sync::Mutex<Store>>) -> crate::AppState 
     }
 }
 
+/// True when the loopback endpoint `port` accepts a TCP connection.
+fn loopback_reachable(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1)).is_ok()
+}
+
 /// Criterion: regenerating the demo database leaves no stale pool or
 /// cancellation state (and no tunnel, since the demo session owns one too).
 #[tokio::test]
@@ -431,13 +437,20 @@ async fn demo_regeneration_leaves_no_stale_pool_or_cancel_state() {
         .cancel_registry
         .set_sqlite(&demo_id, crate::cancel::SqliteCancel::new(interrupt));
     state.cancel_registry.mark_cancelled(&demo_id);
-    let tunnel_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = tunnel_closed.clone();
+    // A real loopback listener owned by the tunnel handle, so "the tunnel is
+    // closed" means the port refuses connections rather than "a flag was set".
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let tunnel_port = listener.local_addr().unwrap().port();
+    assert!(
+        loopback_reachable(tunnel_port),
+        "the demo session's loopback listener is reachable before regeneration"
+    );
     state.ssh_manager.lock().unwrap().insert_tunnel(
         demo_id.clone(),
         crate::commands::ssh::Tunnel::with_closer(
-            1,
-            Box::new(move || flag.store(true, std::sync::atomic::Ordering::SeqCst)),
+            tunnel_port,
+            // Dropping the handle drops the listener: the port stops accepting.
+            Box::new(move || drop(listener)),
         ),
     );
 
@@ -461,8 +474,9 @@ async fn demo_regeneration_leaves_no_stale_pool_or_cancel_state() {
         "no tunnel survives demo regeneration"
     );
     assert!(
-        tunnel_closed.load(std::sync::atomic::Ordering::SeqCst),
-        "the tunnel was actually closed, not just forgotten"
+        !loopback_reachable(tunnel_port),
+        "no loopback listener of the demo session remains reachable after \
+         regeneration (port {tunnel_port})"
     );
 
     // Regeneration keeps the connection itself: only its live resources go.

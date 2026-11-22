@@ -40,6 +40,96 @@ impl LoopbackBackend {
             .last()
             .expect("a tunnel was opened")
     }
+
+    fn record_port(&self, port: u16) {
+        self.ports.lock().unwrap().push(port);
+    }
+}
+
+/// A tunnel backend that opens the first tunnel normally, then hands out
+/// listeners that accept a connection and answer the database handshake with
+/// garbage before hanging up.
+///
+/// That is what a reconnect into a database that stopped answering looks like:
+/// the SSH hop comes up, the loopback listener exists, and the database
+/// handshake fails fast.
+#[derive(Default)]
+struct BrokenHandshakeBackend {
+    inner: Arc<LoopbackBackend>,
+    opens: std::sync::atomic::AtomicUsize,
+}
+
+impl TunnelBackend for BrokenHandshakeBackend {
+    fn open(
+        &self,
+        key: &str,
+        cfg: &SshConfig,
+        remote_host: &str,
+        remote_port: u16,
+        password: Option<&str>,
+        passphrase: Option<&str>,
+    ) -> Result<Tunnel, SshTunnelError> {
+        // The first tunnel belongs to the already-working session.
+        if self.opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            return self
+                .inner
+                .open(key, cfg, remote_host, remote_port, password, passphrase);
+        }
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| SshTunnelError::Failed(format!("bind: {e}")))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| SshTunnelError::Failed(format!("addr: {e}")))?
+            .port();
+        self.inner.record_port(port);
+        let (worker, closer) = shutdown_pair();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = listener.set_nonblocking(true);
+            while !worker.requested() {
+                match listener.accept() {
+                    // A byte no PostgreSQL client accepts as an SSL response,
+                    // followed by a close: the handshake cannot complete.
+                    Ok((mut stream, _)) => {
+                        let _ = stream.write_all(&[0xFF, 0xFF, 0xFF, 0xFF]);
+                        let _ = stream.flush();
+                        drop(stream);
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(1)),
+                }
+            }
+            drop(listener);
+            worker.complete();
+        });
+        Ok(Tunnel::with_closer(
+            port,
+            Box::new(move || {
+                closer.close();
+            }),
+        ))
+    }
+
+    fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
+        self.inner.probe_host_trust(host, port)
+    }
+
+    fn enroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String> {
+        self.inner.enroll_host_trust(host, port, accepted)
+    }
+
+    fn reenroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String> {
+        self.inner.reenroll_host_trust(host, port, accepted)
+    }
 }
 
 impl TunnelBackend for LoopbackBackend {
@@ -124,11 +214,21 @@ struct Rig {
 impl Rig {
     fn new(id: &str) -> Self {
         let backend = Arc::new(LoopbackBackend::default());
+        Self::with_backend(id, backend.clone(), backend)
+    }
+
+    /// A rig whose tunnel backend is `tunnel_backend`; `loopback` records the
+    /// ports opened for the assertions.
+    fn with_backend(
+        id: &str,
+        loopback: Arc<LoopbackBackend>,
+        tunnel_backend: Arc<dyn TunnelBackend>,
+    ) -> Self {
         Self {
             id: id.to_string(),
-            backend: backend.clone(),
+            backend: loopback,
             pool: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
-            ssh: StdMutex::new(SshTunnelManager::new(backend)),
+            ssh: StdMutex::new(SshTunnelManager::new(tunnel_backend)),
             cancel: CancelRegistry::new(),
         }
     }
@@ -305,6 +405,76 @@ async fn failed_reconnect_keeps_the_working_session_and_its_listener() {
     assert!(
         !reachable(new_port),
         "the failed attempt's listener was released, so it cannot linger as a proxy"
+    );
+}
+
+/// Criterion: a failed reconnect preserves the previously working session and
+/// reports the failure — driven through the real connect entry point.
+///
+/// `run_pg_connect` opens the attempt's tunnel, the database handshake fails,
+/// and the caller must get the failure back while the session that was working
+/// when the reconnect started is still complete: pool handle, tunnel, reachable
+/// loopback listener and cancellation handle. The attempt's own listener must be
+/// gone, so a failed reconnect cannot leave a second proxy behind.
+#[tokio::test]
+async fn failed_reconnect_through_the_connect_path_reports_and_preserves_the_session() {
+    let loopback = Arc::new(LoopbackBackend::default());
+    let backend = Arc::new(BrokenHandshakeBackend {
+        inner: loopback.clone(),
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let mut rig = Rig::with_backend("conn-9", loopback.clone(), backend);
+    let old_port = rig.live_session().await;
+    assert!(
+        reachable(old_port),
+        "the session works before the reconnect"
+    );
+
+    let err = crate::commands::db_viewer::run_pg_connect(
+        &rig.id,
+        &tunneled_config(),
+        &rig.ssh,
+        &rig.pool,
+        &rig.cancel,
+    )
+    .await
+    .expect_err("a reconnect the database cannot complete must fail");
+
+    assert!(
+        err.starts_with("Connection failed"),
+        "the failure is reported to the caller: {err}"
+    );
+    assert!(
+        err.len() > "Connection failed: ".len(),
+        "the reported failure carries a reason: {err}"
+    );
+    assert!(
+        rig.pool_handle_is_live().await,
+        "the previously working session still answers queries after a failed reconnect"
+    );
+    assert_eq!(
+        rig.tunnel_port(),
+        Some(old_port),
+        "the working session keeps its own tunnel"
+    );
+    assert!(
+        reachable(old_port),
+        "the working session's loopback listener is still reachable (port {old_port})"
+    );
+    assert!(
+        rig.cancel_handle_present(),
+        "the working session keeps its cancellation handle"
+    );
+    assert_eq!(
+        rig.ssh.lock().unwrap().active_count(),
+        1,
+        "the failed attempt published no tunnel of its own"
+    );
+    let failed_attempt_port = rig.backend.last_port();
+    assert_ne!(failed_attempt_port, old_port);
+    assert!(
+        !reachable(failed_attempt_port),
+        "the failed attempt's listener was released (port {failed_attempt_port})"
     );
 }
 

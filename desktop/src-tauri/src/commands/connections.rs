@@ -100,13 +100,30 @@ pub async fn delete_connection(
     id: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    delete_connection_with_resources(&state, &id).await?;
+    delete_connection_and_secrets(&state, &id, |account| {
+        crate::commands::keychain::delete_account_internal(&app, account)
+    })
+    .await
+}
+
+/// Delete a connection: forget it, close everything its live session owns, and
+/// purge every secret it stored.
+///
+/// `delete_secret` is the keychain write, injected so this whole delete path —
+/// resources *and* secrets — is testable without an OS keyring.
+pub(crate) async fn delete_connection_and_secrets<F>(
+    state: &crate::AppState,
+    id: &str,
+    delete_secret: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    delete_connection_with_resources(state, id).await?;
     // Purge every keychain secret the connection owned (missing entries are
     // no-ops): a deleted connection must not leave its database password, SSH
     // password, or key passphrase behind.
-    crate::commands::keychain::purge_connection_secrets(&id, |account| {
-        crate::commands::keychain::delete_account_internal(&app, account)
-    });
+    crate::commands::keychain::purge_connection_secrets(id, delete_secret);
     Ok(())
 }
 
@@ -116,8 +133,8 @@ pub async fn delete_connection(
 /// Deleting a connection is a teardown: the pool handle, the SSH tunnel (and
 /// its loopback listener) and the cancellation handles go through the same
 /// single path as `db_disconnect`, so a deleted connection cannot keep a live
-/// session — or a reachable proxy — behind it. Secrets are purged by the
-/// command, which owns the keyring handle.
+/// session — or a reachable proxy — behind it. Secrets are purged by
+/// [`delete_connection_and_secrets`], which owns the keyring write.
 pub(crate) async fn delete_connection_with_resources(
     state: &crate::AppState,
     id: &str,
@@ -434,12 +451,14 @@ mod lifecycle_tests {
         }
     }
 
-    /// Criterion: deleting a connection closes its resources.
+    /// Criterion: deleting a connection closes its resources *and* removes its
+    /// secrets.
     ///
     /// The connection is deleted while it has a live pool handle, a tunnel and
-    /// a cancellation handle; nothing may outlive it.
+    /// a cancellation handle; nothing may outlive it. The same delete path must
+    /// purge every secret it owns — the database password and both SSH secrets.
     #[tokio::test]
-    async fn delete_connection_closes_pool_tunnel_and_cancel_handles() {
+    async fn delete_connection_closes_resources_and_purges_secrets() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
         let store = Arc::new(Mutex::new(Store::from_connection(conn)));
@@ -467,14 +486,31 @@ mod lifecycle_tests {
             ),
         );
 
-        delete_connection_with_resources(&state, &created.id)
-            .await
-            .unwrap();
+        // The keychain write is injected: this asserts the secrets the delete
+        // path asks the keyring to remove, without an OS keyring.
+        let mut purged: Vec<String> = Vec::new();
+        delete_connection_and_secrets(&state, &created.id, |account| {
+            purged.push(account.to_string());
+            Ok(())
+        })
+        .await
+        .unwrap();
 
         assert_eq!(
             get_connections_inner(&state.db_store).unwrap().len(),
             0,
             "the connection is gone from the local store"
+        );
+        assert_eq!(
+            purged,
+            crate::commands::keychain::connection_secret_accounts(&created.id),
+            "every connection-owned secret is purged, so none survives the delete"
+        );
+        assert!(
+            purged.contains(&created.id)
+                && purged.contains(&format!("ssh_password:{}", created.id))
+                && purged.contains(&format!("ssh_passphrase:{}", created.id)),
+            "the database password, SSH password and key passphrase all go: {purged:?}"
         );
         assert!(
             state.pool_manager.lock().await.get(&created.id).is_none(),
@@ -508,10 +544,19 @@ mod lifecycle_tests {
         let created = create_connection_inner(&store, input("Client B")).unwrap();
         let state = app_state(store);
 
-        delete_connection_with_resources(&state, &created.id)
-            .await
-            .unwrap();
+        let mut purged = 0usize;
+        delete_connection_and_secrets(&state, &created.id, |_account| {
+            purged += 1;
+            Ok(())
+        })
+        .await
+        .unwrap();
 
         assert_eq!(get_connections_inner(&state.db_store).unwrap().len(), 0);
+        assert_eq!(
+            purged,
+            crate::commands::keychain::connection_secret_accounts(&created.id).len(),
+            "secrets are purged even for a connection that was never opened"
+        );
     }
 }
