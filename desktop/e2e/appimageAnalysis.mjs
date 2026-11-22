@@ -6,10 +6,26 @@ import { HarnessError } from "./errors.mjs";
  * Gridline is dark-themed (#0A0A0B canvas), so "the window is mostly black"
  * is the *expected* healthy state — a naive black-pixel check would fail every
  * correct build (and would also miss a window that painted a black rectangle).
- * What separates "painted" from "empty" here is therefore colour diversity
- * plus a bright-content floor: real chrome, text and accents put many distinct
- * colours and a small but non-trivial share of bright pixels into the frame,
- * while an unpainted window is one flat colour.
+ * What separates "painted" from "empty" here is therefore the *content* in the
+ * frame — colour diversity plus ink measured against the dominant background —
+ * never how much of the window the background occupies.
+ *
+ * That last point is load-bearing. The first version of this module gated on
+ * "no single colour may cover more than 90% of the window", which is wrong for
+ * a theme that follows the OS: the real v0.9.2 AppImage on a light-preference
+ * runner renders the complete Gridline home screen (search bar, tags/filters,
+ * connection cards, accent button) and still has #fafafa covering 97.64% of an
+ * empty workspace. Measured on that genuinely painted frame and on decoys:
+ *
+ *   frame                    distinct  ink ratio  ink rows
+ *   real Gridline UI              120      2.36%        75
+ *   flat white / flat dark          1         0%         0
+ *   1px window border only          2      0.62%       267
+ *   one full-width stripe           2      1.12%         3
+ *   solid corner logo block         2      2.04%        33
+ *
+ * The gate is distinct colours + ink share + ink rows, which accepts the real
+ * UI and rejects every one of those frames.
  *
  * Everything in this module is a pure function so the verdict can be unit
  * tested against synthetic frames — including a genuinely blank/dark-empty one
@@ -26,13 +42,23 @@ export const BRIGHT_LUMINANCE = 0.35;
 export const QUANTISE_BITS = 5;
 
 /**
- * Thresholds for a painted window. They are deliberately loose enough to
- * accept a sparse-but-real dark UI (Gridline shows a sidebar, a toolbar, tree
- * labels and a grid of text) and still reject a flat or near-flat frame.
+ * Thresholds for a painted window. They accept a sparse UI — dark *or* light,
+ * because the app follows the OS theme — and still reject a flat or near-flat
+ * frame. The numbers come from the measured table above.
+ *
+ * `minInkPixelRatio` is the share of sampled pixels that differ from the
+ * dominant background: a real UI puts at least a couple of percent of text,
+ * chrome and accents into the frame (2.36% for the real one), while a flat
+ * window is 0%. `minInkRows` exists because a single full-width stripe (a
+ * loading bar, a titlebar rule) covers many pixels but only a few rows — 3
+ * against 75 for a real UI.
+ *
+ * There is deliberately no "max dominant share": see the module comment.
  */
 export const DEFAULT_PAINT_THRESHOLDS = {
   minDistinctColours: 8,
-  maxDominantColourShare: 0.9,
+  minInkPixelRatio: 0.004,
+  minInkRows: 8,
   minBrightPixelRatio: 0.0015,
 };
 
@@ -56,8 +82,9 @@ function toHex(r, g, b) {
 }
 
 /**
- * Summarise a raw RGB frame: distinct colours, dominant-colour share, bright
- * pixel ratio and mean luminance.
+ * Summarise a raw RGB frame: distinct colours, dominant-colour share, "ink"
+ * (pixels that differ from that dominant background, and the rows they occupy),
+ * bright pixel ratio and mean luminance.
  *
  * @param {{pixels: Uint8Array|Buffer, width: number, height: number,
  *          sampleStep?: number}} frame
@@ -80,6 +107,12 @@ export function analyseFrame({ pixels, width, height, sampleStep = DEFAULT_SAMPL
   }
 
   const counts = new Map();
+  const sampleColumns = Math.ceil(width / sampleStep);
+  const sampleRows = Math.ceil(height / sampleStep);
+  // Keys are kept so "ink" can be measured against the dominant background,
+  // which is only known after the tally — one buffer instead of a second pass
+  // over hundreds of megabytes of pixels.
+  const keys = new Int32Array(sampleRows * sampleColumns);
   let sampledPixels = 0;
   let brightPixels = 0;
   let luminanceSum = 0;
@@ -93,6 +126,7 @@ export function analyseFrame({ pixels, width, height, sampleStep = DEFAULT_SAMPL
       const g = pixels[offset + 1];
       const b = pixels[offset + 2];
       const key = quantiseColour(r, g, b);
+      keys[sampledPixels] = key;
       const seen = counts.get(key);
       if (seen) {
         seen.count += 1;
@@ -109,8 +143,37 @@ export function analyseFrame({ pixels, width, height, sampleStep = DEFAULT_SAMPL
   }
 
   let dominant = { count: 0, hex: "#000000" };
-  for (const entry of counts.values()) {
-    if (entry.count > dominant.count) dominant = entry;
+  let dominantKey = 0;
+  for (const [key, entry] of counts) {
+    if (entry.count > dominant.count) {
+      dominant = entry;
+      dominantKey = key;
+    }
+  }
+
+  // "Ink" is everything that is not the dominant background: text, chrome,
+  // accents, borders. Counting the rows it occupies is what separates a real UI
+  // from a single stripe or a solid block that happens to cover as many pixels.
+  let inkPixels = 0;
+  let inkRows = 0;
+  let inkBands = 0;
+  let insideBand = false;
+  for (let row = 0; row < sampleRows; row += 1) {
+    let rowInk = 0;
+    const rowStart = row * sampleColumns;
+    for (let column = 0; column < sampleColumns; column += 1) {
+      if (keys[rowStart + column] !== dominantKey) rowInk += 1;
+    }
+    inkPixels += rowInk;
+    if (rowInk > 0) {
+      inkRows += 1;
+      if (!insideBand) {
+        inkBands += 1;
+        insideBand = true;
+      }
+    } else {
+      insideBand = false;
+    }
   }
 
   return {
@@ -121,6 +184,11 @@ export function analyseFrame({ pixels, width, height, sampleStep = DEFAULT_SAMPL
     distinctColours: counts.size,
     dominantColour: dominant.hex,
     dominantColourShare: sampledPixels === 0 ? 1 : dominant.count / sampledPixels,
+    inkPixels,
+    inkPixelRatio: sampledPixels === 0 ? 0 : inkPixels / sampledPixels,
+    inkRows,
+    sampleRows,
+    inkBands,
     brightPixels,
     brightPixelRatio: sampledPixels === 0 ? 0 : brightPixels / sampledPixels,
     meanLuminance: sampledPixels === 0 ? 0 : luminanceSum / sampledPixels,
@@ -134,9 +202,9 @@ function percent(value) {
 }
 
 /**
- * Decide whether a frame shows painted content. A blank (or flat dark) window
- * fails: it has almost no distinct colours, one colour covering everything,
- * and no bright pixels.
+ * Decide whether a frame shows painted content: enough distinct colours, enough
+ * content (ink) on the background, spread over enough rows, and some bright
+ * pixels. A blank or flat window fails every one of those.
  */
 export function judgePaint(frame, thresholds = DEFAULT_PAINT_THRESHOLDS) {
   const reasons = [];
@@ -149,10 +217,20 @@ export function judgePaint(frame, thresholds = DEFAULT_PAINT_THRESHOLDS) {
         `(need ${thresholds.minDistinctColours})`,
     );
   }
-  if (frame.dominantColourShare > thresholds.maxDominantColourShare) {
+  // Deliberately no "dominant colour share" ceiling. The theme follows the OS,
+  // so a real light-theme window is 97%+ one background colour while a blank
+  // window is a single flat colour — the share does not separate them, content
+  // does (see the measured table in the module comment).
+  if (frame.inkPixelRatio < thresholds.minInkPixelRatio) {
     reasons.push(
-      `the single colour ${frame.dominantColour} covers ${percent(frame.dominantColourShare)} of the ` +
-        `window (max ${percent(thresholds.maxDominantColourShare)})`,
+      `only ${percent(frame.inkPixelRatio)} of the window is content on the ` +
+        `${frame.dominantColour} background (need ${percent(thresholds.minInkPixelRatio)})`,
+    );
+  }
+  if (frame.inkRows < thresholds.minInkRows) {
+    reasons.push(
+      `content appears on only ${frame.inkRows} of ${frame.sampleRows} sampled rows ` +
+        `(need ${thresholds.minInkRows}) — a flat, striped or single-block frame is not a UI`,
     );
   }
   if (frame.brightPixelRatio < thresholds.minBrightPixelRatio) {
@@ -169,6 +247,8 @@ export function describeFrame(frame) {
   return (
     `${frame.width}x${frame.height}: ${frame.distinctColours} distinct colour(s), ` +
     `dominant ${frame.dominantColour} at ${percent(frame.dominantColourShare)}, ` +
+    `content ${percent(frame.inkPixelRatio)} over ${frame.inkRows}/${frame.sampleRows} rows ` +
+    `(${frame.inkBands} band(s)), ` +
     `bright ${percent(frame.brightPixelRatio)}, mean luminance ${frame.meanLuminance.toFixed(3)}`
   );
 }

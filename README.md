@@ -472,6 +472,7 @@ chmod +x Gridline_0.9.2_amd64.AppImage
 ```
 
 - A FUSE / `libfuse.so.2` / "failed to mount" error is an **AppImage mount** problem, not a graphics problem — install `libfuse2` (or keep using `--appimage-extract-and-run`) and it may simply start.
+- An `error while loading shared libraries` line — commonly `libEGL.so.1` — is a **missing host library**, not a Gridline bug: the image bundles GTK3 and WebKitGTK but not the driver-provided GL stack, on purpose, so your distribution supplies it. Install the graphics runtime for your distribution (Debian/Ubuntu: `libegl1 libgles2 libgl1`; Fedora: `libglvnd-egl libglvnd-gles mesa-dri-drivers`) and it will start. A minimal or server install is where this happens; a normal desktop install already has them.
 - A window that opens and paints nothing is a **rendering** problem; continue to step 6.
 
 **6. The graphics workaround ladder** — set these for one launch only, one at a time, in this order, and record which one changes the result. They are diagnostics, not fixes Gridline ships: no environment variable is set by the app or baked into the package.

@@ -78,11 +78,25 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          tag="${REQUESTED_TAG:-}"
+          downloaded=0
+
           if [ "${EVENT_NAME}" = "workflow_run" ] && [ -n "${RELEASE_RUN_ID:-}" ]; then
             echo "Taking the AppImage artifact built by Release run ${RELEASE_RUN_ID}"
-            gh run download "${RELEASE_RUN_ID}" -n appimage-linux-x86_64 -D dist
-          else
-            tag="${REQUESTED_TAG:-}"
+            if gh run download "${RELEASE_RUN_ID}" -n appimage-linux-x86_64 -D dist; then
+              downloaded=1
+            else
+              # release.yml also runs on the `release: published` event, where its
+              # gate and publish jobs are skipped and no artifact is produced. The
+              # published asset for that run's tag is the same packaged image, so
+              # fall back to it instead of failing the lane on an empty download.
+              rm -rf dist && mkdir -p dist
+              tag="$(gh run view "${RELEASE_RUN_ID}" --json headBranch --jq '.headBranch' 2>/dev/null || true)"
+              echo "::warning::Release run ${RELEASE_RUN_ID} produced no appimage artifact; falling back to the published release${tag:+ ${tag}}"
+            fi
+          fi
+
+          if [ "${downloaded}" -eq 0 ]; then
             if [ -z "${tag}" ]; then
               tag="$(gh release view --json tagName --jq '.tagName')"
             fi
@@ -122,10 +136,18 @@ jobs:
 
       # FUSE to launch the image the normal way, xvfb for the display, xdotool +
       # x11-utils to find/measure the window, imagemagick to read its pixels.
+      #
+      # The GL/EGL runtime is the host's job: the packaged image bundles GTK3 and
+      # WebKitGTK but not libEGL/libGL, because linuxdeploy excludes
+      # driver-provided GL libraries on purpose (its .deb counterpart gets the
+      # stack through libgtk-3-0 / libwebkit2gtk-4.1-0). Without it the app dies
+      # at startup with "libEGL.so.1: cannot open shared object file", which is
+      # what a runner image — unlike a desktop install — does not provide.
       - name: Install the smoke's host tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2
+          sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2 \
+            libegl1 libgles2 libgl1
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -145,7 +167,10 @@ jobs:
       - name: Run the packaged AppImage smoke
         run: |
           set -euo pipefail
-          appimage="$(ls dist/*.AppImage | head -n 1)"
+          # Absolute: `bun run --filter gridline-desktop` runs the smoke with its
+          # cwd set to desktop/, so a repo-root-relative path would resolve to
+          # desktop/dist and find nothing.
+          appimage="$PWD/$(ls dist/*.AppImage | head -n 1)"
           chmod +x "$appimage"
           bun run --filter gridline-desktop e2e:appimage -- \
             --appimage "$appimage" \
@@ -176,10 +201,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      # Same host runtime as the blocking lane: see the note there about libEGL.
       - name: Install the smoke's host tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2
+          sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2 \
+            libegl1 libgles2 libgl1
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -196,7 +223,10 @@ jobs:
       - name: Run the packaged AppImage smoke with no graphics flags
         run: |
           set -euo pipefail
-          appimage="$(ls dist/*.AppImage | head -n 1)"
+          # Absolute: `bun run --filter gridline-desktop` runs the smoke with its
+          # cwd set to desktop/, so a repo-root-relative path would resolve to
+          # desktop/dist and find nothing.
+          appimage="$PWD/$(ls dist/*.AppImage | head -n 1)"
           chmod +x "$appimage"
           bun run --filter gridline-desktop e2e:appimage -- \
             --appimage "$appimage" \
@@ -235,18 +265,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-
+      # Tooling first: a bare fedora:latest has no unzip, and oven-sh/setup-bun
+      # unpacks its download with it — setting Bun up first failed this job
+      # before the smoke ever ran.
       - name: Install the smoke's host tools
         run: |
           set -euo pipefail
           dnf install -y \
             gtk3 webkit2gtk4.1 libappindicator-gtk3 \
-            xorg-x11-server-Xvfb xdotool xorg-x11-utils \
-            ImageMagick fuse fuse-libs mesa-dri-drivers libglvnd-glx \
-            tar gzip git
+            xorg-x11-server-Xvfb xdotool xwininfo \
+            ImageMagick fuse fuse-libs mesa-dri-drivers \
+            libglvnd-glx libglvnd-egl libglvnd-gles \
+            tar gzip git unzip which findutils
           dnf clean all
+          # Distro packaging churns (Fedora retired the xorg-x11-utils
+          # metapackage that used to carry xwininfo), so assert the tools the
+          # smoke actually calls instead of assuming a package list implies them.
+          for tool in xvfb-run xdotool xwininfo import unzip; do
+            command -v "${tool}" >/dev/null 2>&1 || {
+              echo "missing required tool in the Fedora container: ${tool}" >&2
+              exit 1
+            }
+          done
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -260,7 +303,10 @@ jobs:
       - name: Run the packaged AppImage smoke on Fedora
         run: |
           set -euo pipefail
-          appimage="$(ls dist/*.AppImage | head -n 1)"
+          # Absolute: `bun run --filter gridline-desktop` runs the smoke with its
+          # cwd set to desktop/, so a repo-root-relative path would resolve to
+          # desktop/dist and find nothing.
+          appimage="$PWD/$(ls dist/*.AppImage | head -n 1)"
           chmod +x "$appimage"
           bun run --filter gridline-desktop e2e:appimage -- \
             --appimage "$appimage" \
