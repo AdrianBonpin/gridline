@@ -6,9 +6,19 @@ vi.mock("../../lib/commands", () => ({
   getSchemas: vi.fn().mockResolvedValue(["public"]),
   getDatabases: vi.fn().mockResolvedValue(["app"]),
 }));
+const { connectionsFixture } = vi.hoisted(() => ({
+  connectionsFixture: {
+    current: [{ id: "src1", name: "Source PG", db_type: "postgresql" }] as Array<{
+      id: string;
+      name: string;
+      db_type: string;
+    }>,
+  },
+}));
+
 vi.mock("../../stores/connectionStore", () => ({
   useConnectionStore: (sel: (s: unknown) => unknown) =>
-    sel({ connections: [{ id: "src1", name: "Source PG", db_type: "postgresql" }] }),
+    sel({ connections: connectionsFixture.current }),
 }));
 
 import { SchemaDiffPage } from "./SchemaDiffPage";
@@ -35,6 +45,9 @@ const report: DiffReport = {
 describe("SchemaDiffPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    connectionsFixture.current = [
+      { id: "src1", name: "Source PG", db_type: "postgresql" },
+    ];
     useDbViewerStore.getState().clearChanges();
     (compareSchemas as ReturnType<typeof vi.fn>).mockResolvedValue(report);
   });
@@ -65,5 +78,23 @@ describe("SchemaDiffPage", () => {
     render(<SchemaDiffPage connectionId="tgt" />);
     fireEvent.click(screen.getByRole("button", { name: /run diff/i }));
     await waitFor(() => expect(screen.getByText(/identical/i)).toBeTruthy());
+  });
+
+  it("pairs a MySQL target with a MariaDB source and hides other engines", () => {
+    // MySQL and MariaDB are one engine family, and `isMysqlFamily` is the one
+    // place that knows it: an inline copy here drifts the moment the capability
+    // matrix changes. Only same-family connections may be diffed.
+    connectionsFixture.current = [
+      { id: "tgt", name: "MySQL target", db_type: "mysql" },
+      { id: "maria", name: "MariaDB source", db_type: "mariadb" },
+      { id: "pg", name: "Postgres source", db_type: "postgresql" },
+    ];
+    render(<SchemaDiffPage connectionId="tgt" />);
+
+    const source = screen.getByLabelText("Source connection") as HTMLSelectElement;
+    const options = Array.from(source.options).map((o) => o.textContent);
+    expect(options).toContain("MariaDB source");
+    expect(options).not.toContain("Postgres source");
+    expect(options).not.toContain("MySQL target");
   });
 });

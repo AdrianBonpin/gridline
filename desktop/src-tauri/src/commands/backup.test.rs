@@ -2224,6 +2224,149 @@ fn plain_dump_with_a_connect_meta_command_is_non_atomic() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// The scan reads an untrusted dump file, so no line may reach a panic.
+///
+/// Each fixture is a lexing shape that breaks naive scanners: a comment marker
+/// inside a line comment, an unterminated block comment, `$1` parameters (not
+/// dollar quotes), a comment marker inside a quoted body, an unclosed opener,
+/// and raw invalid UTF-8. The expectations are the *decision* (is this payload
+/// or code?) not just "it did not crash", so a scanner that got the boundary
+/// wrong still fails.
+#[test]
+fn plain_dump_scan_decides_adversarial_lexing_without_panicking() {
+    // (label, bytes, expected hazards with the line they are on)
+    let cases: Vec<(&str, Vec<u8>, Vec<(&str, usize)>)> = vec![
+        (
+            // `$$` and `/*` inside a line comment are text, not lexing state.
+            "comment-markers",
+            b"-- $$ /* opened in a line comment\nVACUUM public.t;\n".to_vec(),
+            vec![("VACUUM", 2)],
+        ),
+        (
+            // The block comment closes on the same line, so the code after it counts.
+            "closed-block",
+            b"/* note */ VACUUM public.t;\n".to_vec(),
+            vec![("VACUUM", 1)],
+        ),
+        (
+            // An unclosed block comment swallows the rest of the file.
+            "unclosed-block",
+            b"/* never closed\nVACUUM public.t;\nCREATE DATABASE evil;\n".to_vec(),
+            vec![],
+        ),
+        (
+            // `$1` has no closing `$`, so it is a parameter and the line is code.
+            "positional-params",
+            b"SELECT $1, $2 FROM t;\nVACUUM public.t;\n".to_vec(),
+            vec![("VACUUM", 2)],
+        ),
+        (
+            // A quoted body hides both comment markers and statements.
+            "dollar-body",
+            b"CREATE FUNCTION f() RETURNS void AS $fn$ VACUUM; /* */ $fn$;\nVACUUM public.t;\n"
+                .to_vec(),
+            vec![("VACUUM", 2)],
+        ),
+        (
+            // An unclosed opener hides the next line too — no panic, no guess.
+            "unclosed-dollar",
+            b"SELECT $body$ unterminated\nVACUUM public.t;\n".to_vec(),
+            vec![],
+        ),
+        (
+            // A lone `$` (and `$,` / `$;`) has no closing `$`, so it is not an
+            // opener and the line stays code.
+            "stray-dollar",
+            b"SELECT 1 $ 2, $, $;\nVACUUM public.t;\n".to_vec(),
+            vec![("VACUUM", 2)],
+        ),
+        (
+            // `$ $$` is one `$$` opener that this line never closes, so the body
+            // runs on. Guessing instead of carrying the state is the bug class;
+            // the scan hides the payload rather than flagging code it cannot see.
+            "unbalanced-dollar-run",
+            b"$ $$\nVACUUM public.t;\n".to_vec(),
+            vec![],
+        ),
+        (
+            // Invalid UTF-8 is decoded lossily; the hazard after it still parses.
+            "invalid-utf8",
+            {
+                let mut raw = b"-- \xff\xfe broken encoding\n".to_vec();
+                raw.extend_from_slice(b"\xff\xfe VACUUM public.t;\n");
+                raw
+            },
+            vec![("VACUUM", 2)],
+        ),
+    ];
+
+    for (label, bytes, expected) in cases {
+        let path = std::env::temp_dir().join(format!("gridline-r1-{label}.sql"));
+        std::fs::write(&path, &bytes).unwrap();
+        let hazards = scan_plain_dump(path.to_string_lossy().as_ref())
+            .unwrap_or_else(|e| panic!("{label}: the scan must not fail: {e}"));
+        let _ = std::fs::remove_file(&path);
+        let found: Vec<(&str, usize)> =
+            hazards.iter().map(|h| (h.found.as_str(), h.line)).collect();
+        assert_eq!(found, expected, "{label}: decided the wrong way");
+    }
+}
+
+/// One malformed file that exercises every lexer state at once, including a
+/// multi-megabyte single line: the scan must return, not abort the app.
+#[test]
+fn plain_dump_scan_survives_a_malformed_file_end_to_end() {
+    let mut raw = Vec::new();
+    raw.extend_from_slice(b"$$ -- /* $tag$ $$ $1 $$$$\n");
+    raw.extend_from_slice(b"/* $");
+    raw.extend_from_slice(&[0xc3, 0x28]); // invalid UTF-8 continuation
+    raw.extend_from_slice(b"\n--");
+    raw.extend_from_slice(&[b'$'; 4096]);
+    raw.extend_from_slice(b"\n/*/\n");
+    raw.extend_from_slice(b"\x00\x00\x00\n");
+
+    let path = std::env::temp_dir().join("gridline-r1-malformed.sql");
+    std::fs::write(&path, &raw).unwrap();
+    let result = scan_plain_dump(path.to_string_lossy().as_ref());
+    let _ = std::fs::remove_file(&path);
+    // Whatever it decides, it decides without panicking: this call returning at
+    // all is the assertion (the pre-fix shape had an `expect` on this path).
+    assert!(result.is_ok(), "scan returned an error: {result:?}");
+}
+
+/// [`FragmentToken::earliest`] hands back the position *and* the payload, so no
+/// caller has to re-derive the token and unwrap "the second lookup disagrees".
+#[test]
+fn earliest_fragment_token_carries_its_own_payload() {
+    assert_eq!(FragmentToken::earliest("SELECT 1"), None);
+    assert_eq!(
+        FragmentToken::earliest("-- $$ /*"),
+        Some(FragmentToken::LineComment(0)),
+        "a line comment at index 0 is still the earliest token"
+    );
+    assert_eq!(
+        FragmentToken::earliest("SELECT /* x */ 1"),
+        Some(FragmentToken::BlockComment(7))
+    );
+    assert_eq!(
+        FragmentToken::earliest("AS $body$ VACUUM"),
+        Some(FragmentToken::DollarOpener {
+            at: 3,
+            tag: "$body$".to_string()
+        })
+    );
+    assert_eq!(
+        FragmentToken::earliest("$$ -- /*"),
+        Some(FragmentToken::DollarOpener {
+            at: 0,
+            tag: "$$".to_string()
+        }),
+        "the opener is earliest, so the comment markers after it are payload"
+    );
+    // `$1` is a parameter (no closing `$`), and a lone `$` is not an opener.
+    assert_eq!(FragmentToken::earliest("SELECT $1, $ FROM t"), None);
+}
+
 #[test]
 fn directory_dump_is_identified_as_transactional() {
     assert_eq!(
