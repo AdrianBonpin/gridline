@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// Configuration for establishing a database connection.
@@ -80,21 +81,65 @@ impl DbConfig {
     }
 }
 
+/// A shareable SQLite connection.
+///
+/// `rusqlite::Connection` is `Send` but **not** `Sync`: the C handle must not be
+/// entered from two threads at once. That mutex is the whole reason this type
+/// exists, and it is per connection — two SQLite connections in the same pool
+/// never wait on each other. Everything else a pool entry holds is already
+/// shareable, so a `DbHandle` clone is cheap and independent of the registry.
+pub type SqliteConnection = Arc<tokio::sync::Mutex<rusqlite::Connection>>;
+
 /// A handle to an active database connection.
 ///
 /// Supports `Sqlite` (synchronous via `rusqlite`), `Postgresql` (async via
 /// `tokio-postgres`), and `MySql` (async via `sqlx`). Redis has no DB-viewer
 /// support. Eviction relies on each variant's `Drop`: `MySqlPool` closes its
 /// connections when dropped (mirroring `Postgresql`'s `JoinHandle` abort).
-#[derive(Debug)]
+///
+/// The variants hold *shared* handles, so `clone()` produces an owned handle a
+/// command can use **after** releasing the pool registry lock (see
+/// [`ConnectionPoolManager::acquire`]). Holding the registry for the duration of
+/// a query or export is what used to make one connection stall every other
+/// connection and tab in the app.
+#[derive(Debug, Clone)]
 pub enum DbHandle {
     /// A synchronous SQLite connection via `rusqlite`.
-    Sqlite(rusqlite::Connection),
+    Sqlite(SqliteConnection),
     /// An asynchronous PostgreSQL connection via `tokio-postgres`.
     /// Stores the client handle and the background connection task.
-    Postgresql(tokio_postgres::Client, tokio::task::JoinHandle<()>),
+    ///
+    /// `tokio-postgres` pipelines requests on one connection, so a cloned
+    /// client needs no extra lock.
+    Postgresql(Arc<tokio_postgres::Client>, Arc<tokio::task::JoinHandle<()>>),
     /// An asynchronous MySQL connection pool via `sqlx`.
     MySql(sqlx::MySqlPool),
+}
+
+impl DbHandle {
+    /// Wrap a `rusqlite` connection as a shareable handle.
+    pub fn sqlite(conn: rusqlite::Connection) -> Self {
+        DbHandle::Sqlite(Arc::new(tokio::sync::Mutex::new(conn)))
+    }
+
+    /// Wrap a `tokio-postgres` client and its connection task.
+    pub fn postgresql(client: tokio_postgres::Client, task: tokio::task::JoinHandle<()>) -> Self {
+        DbHandle::Postgresql(Arc::new(client), Arc::new(task))
+    }
+
+    /// Borrow the SQLite connection for the rest of the current scope.
+    ///
+    /// Only for synchronous callers (tests and sync helpers). Async code awaits
+    /// the connection's own mutex, which is the same lock, so both paths
+    /// exclude each other and neither can be entered twice.
+    pub fn sqlite_guard(&self) -> tokio::sync::MutexGuard<'_, rusqlite::Connection> {
+        match self {
+            DbHandle::Sqlite(conn) => conn
+                .try_lock()
+                .expect("sqlite connection is already in use by another operation"),
+            _ => panic!("handle is not a SQLite connection"),
+        }
+    }
 }
 
 /// Internal entry stored in the pool manager.
@@ -180,10 +225,34 @@ impl ConnectionPoolManager {
         }
     }
 
+    /// Take a shareable handle for `id`, or `None` if it is not connected.
+    ///
+    /// Marks the entry most-recently-used, then **returns an owned clone**. The
+    /// registry is not involved in anything the caller does next: a long query,
+    /// export, or schema read on this connection must be started after the
+    /// caller's registry guard has been dropped, so it cannot block commands on
+    /// any other connection.
+    pub fn acquire(&mut self, id: &str) -> Option<DbHandle> {
+        if let Some((key, mut entry)) = self.pools.shift_remove_entry(id) {
+            entry.last_accessed = Instant::now();
+            let handle = entry.handle.clone();
+            self.pools.insert(key, entry);
+            // The re-inserted entry is at the end (MRU position).
+            Some(handle)
+        } else {
+            None
+        }
+    }
+
     /// Get a mutable reference to the handle for `id`, or `None`.
     ///
     /// Updates the last-accessed timestamp and re-orders the entry to
     /// mark it as most-recently-used.
+    ///
+    /// **Commands must use [`Self::acquire`] instead**: a `&mut DbHandle` keeps
+    /// the caller's registry guard alive, which is exactly the head-of-line
+    /// blocking ticket 25 removes. This accessor remains for short, synchronous
+    /// registry work (and tests).
     pub fn get(&mut self, id: &str) -> Option<&mut DbHandle> {
         if let Some((key, mut entry)) = self.pools.shift_remove_entry(id) {
             entry.last_accessed = Instant::now();
@@ -209,6 +278,25 @@ impl ConnectionPoolManager {
     pub fn contains(&self, id: &str) -> bool {
         self.pools.contains_key(id)
     }
+}
+
+/// Take a connection handle out of the pool registry.
+///
+/// The registry lock lives only for the `acquire` call: the guard is a
+/// temporary inside this function, dropped before it returns. Callers await
+/// their real work with an owned handle, so a slow query or export on one
+/// connection cannot delay another connection's commands.
+///
+/// Cancellation is deliberately **not** routed through here: `cancel_query`
+/// reads the separate [`crate::cancel::CancelRegistry`], so it stays available
+/// while a long operation holds this connection.
+pub async fn acquire_handle(
+    pool_manager: &tokio::sync::Mutex<ConnectionPoolManager>,
+    id: &str,
+) -> Result<DbHandle, String> {
+    pool_manager.lock().await.acquire(id).ok_or_else(||
+        // Same message the commands used before this helper existed.
+        "Connection not found".to_string())
 }
 
 #[cfg(test)]
@@ -324,9 +412,9 @@ mod tests {
         let conn_c = rusqlite::Connection::open_in_memory().unwrap();
 
         // Register A, B, then C with max=2 -- A should be evicted (LRU)
-        manager.register("a", DbHandle::Sqlite(conn_a));
-        manager.register("b", DbHandle::Sqlite(conn_b));
-        manager.register("c", DbHandle::Sqlite(conn_c));
+        manager.register("a", DbHandle::sqlite(conn_a));
+        manager.register("b", DbHandle::sqlite(conn_b));
+        manager.register("c", DbHandle::sqlite(conn_c));
 
         assert_eq!(manager.pools().len(), 2);
         assert!(!manager.contains("a"), "'a' should have been evicted (LRU)");
@@ -339,7 +427,7 @@ mod tests {
         let mut manager = ConnectionPoolManager::new();
 
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        manager.register("tmp", DbHandle::Sqlite(conn));
+        manager.register("tmp", DbHandle::sqlite(conn));
         assert!(manager.contains("tmp"));
 
         manager.remove("tmp");
@@ -356,16 +444,16 @@ mod tests {
         let conn_b = rusqlite::Connection::open_in_memory().unwrap();
         let conn_c = rusqlite::Connection::open_in_memory().unwrap();
 
-        manager.register("a", DbHandle::Sqlite(conn_a));
-        manager.register("b", DbHandle::Sqlite(conn_b));
-        manager.register("c", DbHandle::Sqlite(conn_c));
+        manager.register("a", DbHandle::sqlite(conn_a));
+        manager.register("b", DbHandle::sqlite(conn_b));
+        manager.register("c", DbHandle::sqlite(conn_c));
 
         // Access "a" -- makes it MRU
         let _handle = manager.get("a").unwrap();
 
         // Register "d" with max=3 -- "b" (now LRU) should be evicted, not "a"
         let conn_d = rusqlite::Connection::open_in_memory().unwrap();
-        manager.register("d", DbHandle::Sqlite(conn_d));
+        manager.register("d", DbHandle::sqlite(conn_d));
 
         assert_eq!(manager.pools().len(), 3);
         assert!(
@@ -388,11 +476,11 @@ mod tests {
         }));
         manager.register(
             "a",
-            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+            DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
         );
         manager.register(
             "b",
-            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+            DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
         );
         assert_eq!(evicted.lock().unwrap().as_slice(), ["a".to_string()]);
     }
@@ -407,11 +495,11 @@ mod tests {
         }));
         manager.register(
             "a",
-            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+            DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
         );
         manager.register(
             "b",
-            DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+            DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
         );
         // Shrinking max_pools below the current count evicts oldest first.
         manager.set_max_pools(1);
@@ -433,7 +521,7 @@ mod tests {
         ));
         // Registering a second connection evicts the first (max_pools=1).
         let sqlite = rusqlite::Connection::open_in_memory().unwrap();
-        manager.register("sqlite-conn", DbHandle::Sqlite(sqlite));
+        manager.register("sqlite-conn", DbHandle::sqlite(sqlite));
         assert!(manager.get("mysql-conn").is_none());
         assert!(matches!(
             manager.get("sqlite-conn"),

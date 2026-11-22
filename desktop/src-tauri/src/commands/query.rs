@@ -263,7 +263,7 @@ impl From<crate::store::SavedQueryRow> for SavedQueryCommand {
 /// Returns `(QueryResult, Option<QueryHistoryEntry>)` so the caller can
 /// write the history record through the store.
 pub(crate) async fn execute_query_inner(
-    pool_manager: &mut crate::db::pool::ConnectionPoolManager,
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
     db_store: &std::sync::Mutex<crate::store::Store>,
     cancel_registry: &crate::cancel::CancelRegistry,
     connection_id: &str,
@@ -274,13 +274,37 @@ pub(crate) async fn execute_query_inner(
     let start = Instant::now();
     let history_id = Uuid::new_v4().to_string();
 
-    // Try subquery-wrapped execution first; fall back to raw on failure.
-    let mut result = match pool_manager.get(connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
-            execute_pg_query(client, query, page, page_size).await
+    // Take a shareable handle and RELEASE the pool registry before running
+    // anything: a slow statement here must not stall another connection.
+    let handle = match crate::db::pool::acquire_handle(pool_manager, connection_id).await {
+        Ok(handle) => handle,
+        Err(err) => {
+            let elapsed = start.elapsed().as_millis() as i64;
+            insert_history(
+                db_store,
+                &history_id,
+                connection_id,
+                query,
+                Some(elapsed),
+                None,
+                "error",
+                Some(&err),
+            );
+            return Err(err);
         }
-        Some(DbHandle::Sqlite(conn)) => execute_sqlite_query(conn, query, page, page_size),
-        Some(DbHandle::MySql(pool)) => {
+    };
+
+    // Try subquery-wrapped execution first; fall back to raw on failure.
+    let mut result = match handle {
+        DbHandle::Postgresql(client, _) => {
+            execute_pg_query(&client, query, page, page_size).await
+        }
+        DbHandle::Sqlite(conn) => {
+            // One statement at a time on this connection (rusqlite requirement).
+            let conn = conn.lock().await;
+            execute_sqlite_query(&conn, query, page, page_size)
+        }
+        DbHandle::MySql(pool) => {
             // Run on a dedicated pooled connection so the query's MySQL
             // CONNECTION_ID can be tracked for cancellation (`KILL QUERY ?`).
             let mut conn = pool
@@ -298,21 +322,6 @@ pub(crate) async fn execute_query_inner(
             let result = execute_mysql_query_on(&mut *conn, query, page, page_size).await;
             cancel_registry.set_mysql_conn_id(connection_id, None);
             result
-        }
-        None => {
-            let elapsed = start.elapsed().as_millis() as i64;
-            let err = "Connection not found".to_string();
-            insert_history(
-                db_store,
-                &history_id,
-                connection_id,
-                query,
-                Some(elapsed),
-                None,
-                "error",
-                Some(&err),
-            );
-            return Err(err);
         }
     };
 
