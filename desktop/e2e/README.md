@@ -1,15 +1,22 @@
 # Desktop end-to-end harness
 
-Built-product coverage for Gridline: the harness launches the **real, built
-(non-AppImage) desktop binary**, drives its webview through the supported Tauri
-WebDriver path (`tauri-driver` → `WebKitWebDriver`), opens the demo database the
-app seeds on first launch, and asserts that demo rows are actually rendered in
-the data grid.
+Built-product coverage for Gridline. There are two lanes, because they answer
+different questions:
 
-It is deliberately not a browser-only mock: the app process, its Tauri commands,
-its local store, and the seeded SQLite demo file are all the production code
-paths. What it cannot see is packaged-artifact behavior (AppImage) and real
-hardware — those stay in the packaged-smoke lane.
+- **WebDriver lane** ([`run.mjs`](./run.mjs), this README's main subject) launches
+the **real, built (non-AppImage) desktop binary** and drives its webview through
+the supported Tauri WebDriver path (`tauri-driver` → `WebKitWebDriver`), opening
+the demo database the app seeds on first launch and asserting that demo rows are
+actually rendered in the data grid.
+- **AppImage lane** ([`appimageSmoke.mjs`](./appimageSmoke.mjs)) launches the
+**packaged `Gridline_*.AppImage`** through its normal launcher on a headless X
+display and asserts a mapped, painted window. See
+[Packaged AppImage smoke](#packaged-appimage-smoke-separate-lane).
+
+Both are deliberately not browser-only mocks: the app process, its Tauri
+commands, its local store, and the seeded SQLite demo file are all the production
+code paths. What neither can see is the reporter's hardware, session compositor,
+or vendor drivers — those stay open in issue #62.
 
 ## Platform support
 
@@ -192,7 +199,103 @@ The expected connection name, table and cell values live in
 (`commands/demo.rs`, `commands/demo_schema.sql`) by `expectations.test.ts`, so a
 fixture rename cannot silently turn the assertion into a no-op.
 
-## Failure evidence
+## Packaged AppImage smoke (separate lane)
+
+A packaged AppImage is not a WebDriver target, so this lane is its own entry
+point: [`appimageSmoke.mjs`](./appimageSmoke.mjs). It launches the **real
+`Gridline_*.AppImage` through its normal launcher** — `./Gridline_*.AppImage`, or
+AppImage's documented `--appimage-extract-and-run` path on hosts without FUSE —
+and never an inner binary extracted from it
+(`assertPackagedLauncher` refuses a `squashfs-root/…` or non-`.AppImage` path,
+which is exactly the failure mode where "it starts" would otherwise mean
+nothing).
+
+```bash
+# from the repo root, against a downloaded release artifact
+bun run e2e:appimage -- --appimage ./Gridline_0.8.4_amd64.AppImage
+
+# what it needs on Linux
+sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2
+```
+
+It is **not** registered in `FLOWS`/`FLOW_RUNNERS` — that registry is the
+WebDriver flows, driven by `tauri-driver` and a WebDriver session. Adding this
+lane there would make `preflight` claim a driver it never uses.
+
+### What it asserts
+
+1. **A mapped window at the configured size.** The window is found through
+   `xdotool search --name <title>` and measured with `xwininfo`; the expected
+   title and size come from `desktop/src-tauri/tauri.conf.json` (±48px, so a
+   decoration difference does not fail a correct build). A window that never
+   appears, never becomes `IsViewable`, or is the wrong size fails.
+2. **Painted content, by colour diversity and bright pixels.** Gridline is
+   dark-themed (`#0A0A0B` canvas), so "mostly black" is the healthy state and a
+   naive black-pixel check would false-fail every correct build. A frame passes
+   only when it has at least 8 distinct colour buckets, no single colour covering
+   more than 90% of the window, and at least 0.15% bright pixels. A uniform dark
+   frame and a pure-black frame both fail — with the measured numbers in the
+   failure message.
+3. **No known-fatal renderer/web-process diagnostics.** A crashed or
+   unstartable `WebKitWebProcess`, a WebKit sandbox (`bwrap`) failure, a GTK/X
+   fatal, a Rust panic, a signal death, or a missing shared library fails the
+   run even if a window painted. GBM/EGL noise is reported as a warning and left
+   to the paint assertion.
+4. **A FUSE/container mount problem is reported separately.** If the image could
+   not mount, the lane fails with `MOUNT` and exit code **2** instead of being
+   recorded as a rendering bug; a rendering failure exits **1**.
+
+### Flags
+
+| Flag | Default | Purpose |
+| :--- | :--- | :--- |
+| `--appimage <path>` | `GRIDLINE_APPIMAGE` | the packaged `.AppImage` to launch |
+| `--artifacts <dir>` | `e2e-artifacts/appimage` | where logs/screenshot/summary go |
+| `--timeout-ms <ms>` | `90000` | budget for the window to appear |
+| `--paint-timeout-ms <ms>` | `30000` | extra budget for it to paint |
+| `--interval-ms <ms>` | `500` | poll interval |
+| `--extract-and-run` | auto (FUSE probe) | force AppImage's documented no-FUSE path |
+| `--pristine` | off | add **no** graphics flags (informational lane) |
+
+Without `DISPLAY` the smoke re-executes itself under `xvfb-run` with a
+`1440x900x24` screen. The blocking run adds `WEBKIT_DISABLE_DMABUF_RENDERER=1`,
+`LIBGL_ALWAYS_SOFTWARE=1` and `GDK_BACKEND=x11` **inside the harness only** (a CI
+runner has no GPU); `--pristine` is the same check with none of them, which is
+closer to a user session and is therefore informational rather than blocking.
+
+### Where it runs
+
+`.github/workflows/appimage-smoke.yml` runs it three ways:
+
+| Trigger | Artifact | Blocking |
+| :--- | :--- | :--- |
+| nightly `schedule` | latest **published** release's AppImage | yes |
+| `workflow_dispatch` | a named release tag, or the latest published release | yes |
+| `workflow_run` after **Release** | the `appimage-linux-x86_64` artifact that run built | yes |
+
+Each trigger also runs the pristine (informational) variant and a Fedora
+container variant. **The Fedora run is cross-distribution compatibility coverage,
+not a reproduction of issue #62**: it is a container on a GitHub runner, with no
+FUSE (`--extract-and-run`), no compositor and no GPU, so it can never stand in
+for the reporter's Fedora session. It is labelled that way in the workflow and is
+`continue-on-error`.
+
+**This lane can never close issue #62.** It is a built-product seam: it catches a
+packaged artifact that fails to map or paint under a headless software-rendered
+display, and it misses the reporter's hardware, session type, compositor and
+vendor drivers. A green run — including a green Fedora run — is not evidence
+that #62 is resolved; only the reporter or an equivalent Fedora environment can
+confirm that.
+
+### Artifacts and exit codes
+
+Every run writes `launch.log` (the app's own stdout/stderr), and then either
+`summary.txt` (with the frame statistics the verdict rested on) or `failure.txt`
+(classification, reasons, and the app's last words) plus `window.png`. Exit code
+`0` = painted window, `1` = no window / wrong size / unpainted / fatal
+diagnostic, `2` = mount/FUSE problem.
+
+## Failure evidence (WebDriver lane)
 
 Every run gets a fresh app-data directory inside the artifacts folder
 (`XDG_DATA_HOME=<artifacts>/app-data` on Linux), so the demo database and local
@@ -228,6 +331,10 @@ job fails. CI uploads the folder with `if: failure()`.
    use `waitForRenderedCells` ([`gridContent.mjs`](./gridContent.mjs)) instead of
    `elementText`. The driver is injected, so the flow itself is unit-testable
    with a fake.
+
+> A packaged-artifact check is **not** a flow: it has no WebDriver session, so it
+> belongs in [`appimageSmoke.mjs`](./appimageSmoke.mjs) (or a sibling entry point)
+> rather than in the `FLOWS`/`FLOW_RUNNERS` registry.
 2. Register a short description in `FLOWS` ([`preflight.mjs`](./preflight.mjs))
    and the runner in `FLOW_RUNNERS` ([`run.mjs`](./run.mjs)).
 3. If the flow needs a stable DOM anchor, add a `data-testid`/`data-*` attribute
@@ -247,3 +354,12 @@ cd desktop && bunx vitest run e2e
 No test fakes a passing browser run: what is unit-tested is the orchestration
 around the driver, and the real browser leg only ever runs on a supported
 platform.
+
+The AppImage lane is covered the same way, without a display: the frame analysis
+(`appimageAnalysis.test.ts` — colour diversity, bright-pixel ratio, fatal-log
+signatures, mount-vs-render classification), the X11 parsing
+(`appimageWindow.test.ts`), the launch plan and orchestration
+(`appimageSmoke.test.ts`, with fake X tools and a fake app process) and its CI
+wiring (`appimageWiring.test.ts`). The blank-window cases are assertions, not
+comments: a uniform dark frame, a pure-black frame and a dark frame with a
+handful of stray bright pixels must all fail.

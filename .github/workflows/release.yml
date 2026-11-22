@@ -552,6 +552,19 @@ jobs:
           # README download tables link to them statically per release —
           # remember to update both README tables when cutting a new version.
 
+      # Hand the packaged AppImage to the smoke lane (appimage-smoke.yml), which
+      # starts it through its normal launcher and asserts a mapped, painted
+      # window. Uploading the artifact keeps the check on the exact bytes this
+      # run built, without depending on the draft release being downloadable.
+      - name: Upload the AppImage for the packaged smoke lane
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-linux-x86_64
+          path: desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+          retention-days: 14
+          if-no-files-found: error
+
       # ---- macOS: build, verify, then upload -------------------------------
       # The macOS bundle is built WITHOUT uploading (no tagName/releaseName), so
       # no macOS asset can reach the release before it has been verified. The
