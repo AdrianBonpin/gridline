@@ -738,7 +738,7 @@ describe("TableForm SQLite mode", () => {
     (cmd.getTableRebuildReadiness as any).mockResolvedValue({
       ok: false,
       reasons: [
-        "the table declares a CHECK constraint, which a rebuild would drop",
+        'index "idx_order_items_product_id" uses column "product_id", which this rebuild drops',
       ],
     });
     const live = [
@@ -777,7 +777,7 @@ describe("TableForm SQLite mode", () => {
 
     // The refusal is legible in the editor itself, not only as a queue error.
     const banner = await screen.findByTestId("rebuild-refusal");
-    expect(banner.textContent).toContain("CHECK constraint");
+    expect(banner.textContent).toContain("idx_order_items_product_id");
     expect(screen.getByRole("button", { name: "Stage" })).toBeDisabled();
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
 

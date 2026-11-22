@@ -1,5 +1,8 @@
 //! Pure builders for schema DDL, cross-object search, pg_depend lookups,
 //! and synthesized object DDL. No DB I/O — deterministic string builders.
+use crate::db::sqlite_ddl::{
+    rewrite_identifiers, ClauseKind, ConstraintKind, ParsedColumn, PreservedTable,
+};
 use crate::models::db_viewer::{ConstraintInfo, EnumInfo, ExtensionInfo, SequenceInfo};
 use serde::{Deserialize, Serialize};
 
@@ -395,6 +398,7 @@ pub fn sqlite_column_diff_sql(
     table: &str,
     old: &[SqliteColumn],
     new: &[SqliteColumn],
+    preserved: &PreservedTable,
 ) -> Result<Vec<String>, String> {
     validate_object_name(table)?;
     if new.is_empty() {
@@ -420,7 +424,7 @@ pub fn sqlite_column_diff_sql(
         }
     }
     if sqlite_edit_requires_rebuild(old, new)? {
-        return sqlite_rebuild_script(table, old, new);
+        return sqlite_rebuild_script(table, old, new, preserved);
     }
 
     // Renames first (each one the user asked for), then the adds.
@@ -451,11 +455,13 @@ pub fn sqlite_column_diff_sql(
 /// column order is positionally identical to the live columns it draws from.
 /// Once a rename or a reorder makes that untrue, the source list is spelled out
 /// so a value can never land in a column it did not come from. Added columns are
-/// left out of the copy and take their declared default.
+/// left out of the copy and take their declared default, and a generated column
+/// is never copied into — SQLite recomputes it.
 pub fn sqlite_rebuild_copy(
     table: &str,
     old: &[SqliteColumn],
     new: &[SqliteColumn],
+    preserved: &PreservedTable,
 ) -> Result<String, String> {
     let mut targets: Vec<String> = Vec::new();
     let mut sources: Vec<&str> = Vec::new();
@@ -465,10 +471,18 @@ pub fn sqlite_rebuild_copy(
             .as_deref()
             .filter(|f| *f != c.name)
             .unwrap_or(c.name.as_str());
-        if old.iter().any(|o| o.name == src) {
-            targets.push(quote_ident(&c.name));
-            sources.push(src);
+        if !old.iter().any(|o| o.name == src) {
+            continue;
         }
+        if preserved
+            .parsed
+            .column(src)
+            .is_some_and(|p| p.is_generated())
+        {
+            continue;
+        }
+        targets.push(quote_ident(&c.name));
+        sources.push(src);
     }
     if targets.is_empty() {
         return Err(
@@ -505,24 +519,294 @@ pub fn sqlite_rebuild_copy(
     ))
 }
 
+/// The explicit renames an edit carries: `(live name, new name)` for every entry
+/// whose `renamed_from` names a different column (see GLOSSARY.md — Column
+/// Identity).
+fn sqlite_renames(old: &[SqliteColumn], new: &[SqliteColumn]) -> Vec<(String, String)> {
+    new.iter()
+        .filter_map(|c| {
+            let from = c.renamed_from.as_deref().filter(|f| *f != c.name)?;
+            old.iter()
+                .any(|o| o.name == from)
+                .then(|| (from.to_string(), c.name.clone()))
+        })
+        .collect()
+}
+
+/// Swap the leading identifier of a stored definition for a new quoted name.
+///
+/// Used for a generated column, whose whole definition is carried verbatim: the
+/// editor does not model the expression, so only its name may change.
+fn replace_leading_identifier(definition: &str, new_name: &str) -> String {
+    let tokens = crate::db::sqlite_ddl::tokenize(definition);
+    let mut out = String::new();
+    let mut replaced = false;
+    for t in &tokens {
+        if !replaced && t.ident_value().is_some() {
+            out.push_str(&quote_ident(new_name));
+            replaced = true;
+        } else {
+            out.push_str(&t.text);
+        }
+    }
+    out
+}
+
+/// One column definition for a rebuild.
+///
+/// The column editor owns the name, the declared type, nullability, the default,
+/// primary-key membership, and uniqueness. Everything else the stored definition
+/// declared — `CHECK`, `COLLATE`, `REFERENCES`, a generated-column expression —
+/// is carried verbatim, because re-emitting text we do not model is the only
+/// faithful way to keep it.
+fn sqlite_rebuild_column_def(
+    table: &str,
+    c: &SqliteColumn,
+    live: Option<&SqliteColumn>,
+    parsed: Option<&ParsedColumn>,
+    renames: &[(String, String)],
+) -> Result<String, String> {
+    validate_object_name(&c.name)?;
+    validate_type_fragment(&c.type_)?;
+    let rewrite = |text: &str| rewrite_identifiers(text, renames, table);
+
+    if let Some(p) = parsed {
+        if p.is_generated() {
+            // A generated column cannot take a default or a primary key, and its
+            // expression is not editable here: keep the whole definition.
+            return Ok(replace_leading_identifier(&rewrite(&p.definition), &c.name));
+        }
+    }
+
+    let auto_increment =
+        c.auto_increment && c.is_pk && c.type_.trim().eq_ignore_ascii_case("INTEGER");
+    let mut d = if auto_increment {
+        // AUTOINCREMENT is only legal on an INTEGER PRIMARY KEY, and the declared
+        // nullability rides along with it: a rowid alias is non-null either way,
+        // but a column the table declared NOT NULL must stay declared.
+        format!(
+            "{} INTEGER PRIMARY KEY AUTOINCREMENT{}",
+            quote_ident(&c.name),
+            if c.nullable { "" } else { " NOT NULL" }
+        )
+    } else {
+        format!("{} {}", quote_ident(&c.name), c.type_.trim())
+    };
+
+    if !auto_increment {
+        // Nullability: carry the original clause (its conflict action included)
+        // when the edit did not change it.
+        let carried = parsed
+            .and_then(|p| p.clause(ClauseKind::NotNull))
+            .filter(|_| live.map(|l| l.nullable) == Some(c.nullable));
+        match carried {
+            Some(clause) => {
+                d.push(' ');
+                d.push_str(&clause.text);
+            }
+            None if !c.nullable => d.push_str(" NOT NULL"),
+            None => {}
+        }
+
+        // Default: an unchanged default keeps its original text, which is the
+        // only way an expression default (`DEFAULT (datetime('now'))`) survives
+        // — `PRAGMA table_info` reports it without the parentheses that make it
+        // parse.
+        let carried = parsed
+            .and_then(|p| p.clause(ClauseKind::Default))
+            .filter(|_| live.and_then(|l| l.default.clone()) == c.default);
+        match carried {
+            Some(clause) => {
+                d.push(' ');
+                d.push_str(&clause.text);
+            }
+            None => {
+                if let Some(value) = &c.default {
+                    if !crate::db::sqlite_rebuild::default_round_trips(value) {
+                        return Err(format!(
+                            "column \"{}\" has a DEFAULT ({value}) that cannot be re-emitted \
+                             faithfully; write it as a parenthesised expression",
+                            c.name
+                        ));
+                    }
+                    d.push_str(&format!(" DEFAULT {value}"));
+                }
+            }
+        }
+
+        if c.unique && !c.is_pk {
+            d.push_str(" UNIQUE");
+        }
+    }
+
+    if let Some(p) = parsed {
+        for clause in p.preserved_clauses() {
+            d.push(' ');
+            d.push_str(&rewrite(&clause.text));
+        }
+    }
+    Ok(d)
+}
+
+/// `CREATE TABLE` for a rebuild: the submitted column list plus every piece of
+/// the live table the editor does not model.
+///
+/// The table-level constraints are re-emitted from the live definition, so a
+/// composite primary key, a multi-column unique key, a `CHECK`, and a foreign key
+/// with its `ON DELETE` / `ON UPDATE` actions survive the rebuild exactly as they
+/// were written. A single-column `UNIQUE` constraint is left to the column
+/// editor (it is the per-column `unique` flag), and primary-key membership is
+/// likewise the editor's, so neither is emitted twice.
+pub fn sqlite_rebuild_create_sql(
+    tmp: &str,
+    old: &[SqliteColumn],
+    new: &[SqliteColumn],
+    preserved: &PreservedTable,
+) -> Result<String, String> {
+    validate_object_name(tmp)?;
+    let parsed = &preserved.parsed;
+    let renames = sqlite_renames(old, new);
+
+    // Columns the edit carries (by name or by explicit rename) versus the live
+    // columns it drops. A preserved object that names a dropped column cannot be
+    // reproduced, which is the edit's refusal to raise — before any mutation.
+    let mut carried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for c in new {
+        carried.insert(c.name.to_ascii_lowercase());
+        if let Some(from) = c.renamed_from.as_deref().filter(|f| *f != c.name) {
+            carried.insert(from.to_ascii_lowercase());
+        }
+    }
+    let dropped: Vec<&str> = old
+        .iter()
+        .map(|c| c.name.as_str())
+        .filter(|n| !carried.contains(&n.to_ascii_lowercase()))
+        .collect();
+
+    let mut defs: Vec<String> = Vec::new();
+    let mut pk_cols: Vec<String> = Vec::new();
+    for c in new {
+        let live = old.iter().find(|o| {
+            c.renamed_from
+                .as_deref()
+                .filter(|f| *f != c.name)
+                .map_or(o.name == c.name, |f| o.name == f)
+        });
+        let parsed_col = live.and_then(|l| parsed.column(&l.name));
+        defs.push(sqlite_rebuild_column_def(
+            tmp, c, live, parsed_col, &renames,
+        )?);
+        if c.is_pk && !(c.auto_increment && c.type_.trim().eq_ignore_ascii_case("INTEGER")) {
+            pk_cols.push(quote_ident(&c.name));
+        }
+        // A generated column keeps the hidden flag it had; nothing to check here.
+    }
+    // Table-level primary key, from the editor's membership.
+    if !pk_cols.is_empty() {
+        defs.push(format!("PRIMARY KEY ({})", pk_cols.join(", ")));
+    }
+
+    for constraint in &parsed.constraints {
+        let preserved_text = match constraint.kind {
+            // Primary-key membership and a single-column UNIQUE are the column
+            // editor's own attributes; re-emitting them here would duplicate the
+            // constraint the column list already declares.
+            ConstraintKind::PrimaryKey => continue,
+            ConstraintKind::Unique if constraint.columns.len() <= 1 => continue,
+            ConstraintKind::Unique => constraint.text.clone(),
+            ConstraintKind::Check => constraint.text.clone(),
+            ConstraintKind::ForeignKey => constraint.text.clone(),
+        };
+        for column in constraint.dependent_columns() {
+            if let Some(dropped) = dropped.iter().find(|d| d.eq_ignore_ascii_case(&column)) {
+                return Err(format!(
+                    "the {} \"{}\" names column \"{dropped}\", which this rebuild drops",
+                    match constraint.kind {
+                        ConstraintKind::Check => "CHECK constraint",
+                        ConstraintKind::Unique => "UNIQUE constraint",
+                        ConstraintKind::ForeignKey => "FOREIGN KEY constraint",
+                        ConstraintKind::PrimaryKey => "PRIMARY KEY constraint",
+                    },
+                    constraint
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| constraint.text.clone()),
+                ));
+            }
+        }
+        defs.push(rewrite_identifiers(&preserved_text, &renames, tmp));
+    }
+
+    let mut sql = format!(
+        "CREATE TABLE \"main\".{} ({})",
+        quote_ident(tmp),
+        defs.join(", ")
+    );
+    if !parsed.options.is_empty() {
+        sql.push(' ');
+        sql.push_str(&parsed.options.join(", "));
+    }
+    Ok(sql)
+}
+
+/// Restore an AUTOINCREMENT table's `sqlite_sequence` row.
+///
+/// Copying rows into the temporary table moves the sequence to the largest rowid
+/// copied, and `DROP TABLE` deletes the original row — so a table whose newest
+/// rows were deleted would restart its ids at the surviving maximum. Two
+/// statements put the original value back, including for a table that is empty
+/// now but has handed out ids before.
+pub fn sqlite_sequence_restore_sql(table: &str, seq: i64) -> Vec<String> {
+    let literal = table.replace('\'', "''");
+    vec![
+        format!(
+            "INSERT INTO \"main\".\"sqlite_sequence\" (\"name\", \"seq\") SELECT '{literal}', {seq} \
+             WHERE NOT EXISTS (SELECT 1 FROM \"main\".\"sqlite_sequence\" WHERE \"name\" = '{literal}')"
+        ),
+        format!(
+            "UPDATE \"main\".\"sqlite_sequence\" SET \"seq\" = {seq} WHERE \"name\" = '{literal}'"
+        ),
+    ]
+}
+
 pub fn sqlite_rebuild_script(
     table: &str,
     old: &[SqliteColumn],
     new: &[SqliteColumn],
+    preserved: &PreservedTable,
 ) -> Result<Vec<String>, String> {
     validate_object_name(table)?;
     let tmp = format!("_gl_{}_tmp", table);
-    let create = sqlite_create_table_sql(&tmp, new, &[])?;
-    Ok(vec![
-        create,
-        sqlite_rebuild_copy(table, old, new)?,
+    let renames = sqlite_renames(old, new);
+    let mut out = vec![
+        sqlite_rebuild_create_sql(&tmp, old, new, preserved)?,
+        sqlite_rebuild_copy(table, old, new, preserved)?,
         format!("DROP TABLE \"main\".{}", quote_ident(table)),
         format!(
             "ALTER TABLE \"main\".{} RENAME TO {}",
             quote_ident(&tmp),
             quote_ident(table)
         ),
-    ])
+    ];
+    // Indexes and triggers are recreated from the text SQLite stored for them,
+    // after the rename, so their definitions (partial `WHERE` clauses, expression
+    // indexes, trigger bodies) come back byte for byte.
+    for (_, sql) in preserved
+        .index_sql
+        .iter()
+        .chain(preserved.trigger_sql.iter())
+    {
+        out.push(rewrite_identifiers(sql, &renames, table));
+    }
+    let auto_increment = new
+        .iter()
+        .any(|c| c.auto_increment && c.is_pk && c.type_.trim().eq_ignore_ascii_case("INTEGER"));
+    if let Some(seq) = preserved.sequence {
+        if auto_increment {
+            out.extend(sqlite_sequence_restore_sql(table, seq));
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -782,7 +1066,8 @@ mod tests {
                 renamed_from: None,
             },
         ];
-        let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
+        let stmts =
+            sqlite_column_diff_sql("users", &old, &new, &PreservedTable::default()).unwrap();
         assert_eq!(stmts.len(), 1);
         assert!(stmts[0].contains("ALTER TABLE \"main\".\"users\" ADD COLUMN \"email\" TEXT"));
     }
@@ -813,7 +1098,7 @@ mod tests {
     fn sqlite_edit_rename_column() {
         let old = vec![col("id", "INTEGER")];
         let new = vec![renamed("id2", "INTEGER", "id")];
-        let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
+        let stmts = sqlite_column_diff_sql("t", &old, &new, &PreservedTable::default()).unwrap();
         assert_eq!(
             stmts,
             vec!["ALTER TABLE \"main\".\"t\" RENAME COLUMN \"id\" TO \"id2\""]
@@ -827,7 +1112,7 @@ mod tests {
         // value of `name` must not be carried into `label`.
         let old = vec![col("id", "INTEGER"), col("name", "TEXT")];
         let new = vec![col("id", "INTEGER"), col("label", "TEXT")];
-        let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
+        let stmts = sqlite_column_diff_sql("t", &old, &new, &PreservedTable::default()).unwrap();
         assert!(
             !stmts.iter().any(|s| s.contains("RENAME COLUMN")),
             "no rename may be inferred; got {stmts:?}"
@@ -857,7 +1142,8 @@ mod tests {
             col("name", "TEXT"),
             col("age", "INTEGER"),
         ];
-        let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
+        let stmts =
+            sqlite_column_diff_sql("users", &old, &new, &PreservedTable::default()).unwrap();
         assert!(
             !stmts.iter().any(|s| s.contains("RENAME")),
             "an inserted column is not a rename; got {stmts:?}"
@@ -878,7 +1164,7 @@ mod tests {
     fn sqlite_edit_two_added_columns_are_both_staged() {
         let old = vec![col("id", "INTEGER")];
         let new = vec![col("id", "INTEGER"), col("a", "TEXT"), col("b", "TEXT")];
-        let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
+        let stmts = sqlite_column_diff_sql("t", &old, &new, &PreservedTable::default()).unwrap();
         assert_eq!(
             stmts.len(),
             2,
@@ -892,7 +1178,7 @@ mod tests {
     fn sqlite_edit_reorder_never_emits_rename() {
         let old = vec![col("a", "TEXT"), col("b", "TEXT")];
         let new = vec![col("b", "TEXT"), col("a", "TEXT")];
-        let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
+        let stmts = sqlite_column_diff_sql("t", &old, &new, &PreservedTable::default()).unwrap();
         assert!(
             !stmts.iter().any(|s| s.contains("RENAME COLUMN")),
             "a reorder is not a rename; got {stmts:?}"
@@ -907,7 +1193,8 @@ mod tests {
             renamed("label", "TEXT", "name"),
             col("email", "TEXT"),
         ];
-        let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
+        let stmts =
+            sqlite_column_diff_sql("users", &old, &new, &PreservedTable::default()).unwrap();
         assert_eq!(
             stmts,
             vec![
@@ -924,7 +1211,8 @@ mod tests {
         // rebuild whose copy step reads each value from the column it came from.
         let old = vec![col("id", "INTEGER"), col("name", "TEXT")];
         let new = vec![col("id", "INTEGER"), renamed("label", "INTEGER", "name")];
-        let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
+        let stmts =
+            sqlite_column_diff_sql("users", &old, &new, &PreservedTable::default()).unwrap();
         let insert = stmts
             .iter()
             .find(|s| s.starts_with("INSERT INTO"))
@@ -943,7 +1231,8 @@ mod tests {
     fn sqlite_edit_rename_quotes_legal_identifiers() {
         let old = vec![col("select", "TEXT")];
         let new = vec![renamed("we ird name", "TEXT", "select")];
-        let stmts = sqlite_column_diff_sql("users", &old, &new).unwrap();
+        let stmts =
+            sqlite_column_diff_sql("users", &old, &new, &PreservedTable::default()).unwrap();
         assert_eq!(
             stmts,
             vec!["ALTER TABLE \"main\".\"users\" RENAME COLUMN \"select\" TO \"we ird name\""]
@@ -954,7 +1243,7 @@ mod tests {
     fn sqlite_edit_rename_of_unknown_column_is_rejected() {
         let old = vec![col("id", "INTEGER")];
         let new = vec![renamed("label", "TEXT", "nope")];
-        let err = sqlite_column_diff_sql("t", &old, &new).unwrap_err();
+        let err = sqlite_column_diff_sql("t", &old, &new, &PreservedTable::default()).unwrap_err();
         assert!(
             err.contains("nope"),
             "expected the unknown source named; got {err}"
@@ -965,7 +1254,7 @@ mod tests {
     fn sqlite_edit_swapped_renames_are_rejected() {
         let old = vec![col("a", "TEXT"), col("b", "TEXT")];
         let new = vec![renamed("b", "TEXT", "a"), renamed("a", "TEXT", "b")];
-        let err = sqlite_column_diff_sql("t", &old, &new).unwrap_err();
+        let err = sqlite_column_diff_sql("t", &old, &new, &PreservedTable::default()).unwrap_err();
         assert!(
             err.contains("source of another rename"),
             "expected a swap refusal; got {err}"
@@ -978,7 +1267,7 @@ mod tests {
         // rebuild cannot be expressed as a copy step.
         let old = vec![col("a", "TEXT")];
         let new = vec![col("b", "TEXT")];
-        let err = sqlite_rebuild_script("t", &old, &new).unwrap_err();
+        let err = sqlite_rebuild_script("t", &old, &new, &PreservedTable::default()).unwrap_err();
         assert!(
             err.contains("at least one column carried over"),
             "expected a refusal naming the copy step; got {err}"
@@ -989,7 +1278,7 @@ mod tests {
     fn sqlite_edit_typechange_requires_rebuild() {
         let old = vec![col("v", "TEXT")];
         let new = vec![col("v", "INTEGER")];
-        let stmts = sqlite_column_diff_sql("t", &old, &new).unwrap();
+        let stmts = sqlite_column_diff_sql("t", &old, &new, &PreservedTable::default()).unwrap();
         assert!(
             stmts
                 .iter()

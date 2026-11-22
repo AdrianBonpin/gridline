@@ -163,6 +163,15 @@ export interface ColumnInfo {
   default_value: string | null;
   editable: boolean;
   is_generated: boolean;
+  /**
+   * Whether a single-column unique index covers this column (SQLite).
+   *
+   * The table editor submits it back, so a rebuild cannot silently drop the
+   * constraint the form never showed.
+   */
+  is_unique?: boolean;
+  /** Whether this column is an `INTEGER PRIMARY KEY AUTOINCREMENT` (SQLite). */
+  is_auto_increment?: boolean;
 }
 
 export interface IndexInfo {

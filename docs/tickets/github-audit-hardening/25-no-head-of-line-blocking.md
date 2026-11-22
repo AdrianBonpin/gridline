@@ -7,9 +7,9 @@
 **Seams:** Tool-job seam and change-application seam: catch concurrent operations; misses some driver-specific concurrency limits.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/75
-**Status:** ready
+**Status:** done
 
-- [ ] A long-running export on one connection does not block browsing or editing on another.
-- [ ] A slow query on one connection does not block another connection's commands.
-- [ ] Cancellation remains available while a long operation runs.
-- [ ] Any remaining same-connection serialization is limited to what the driver requires.
+- [x] A long-running export on one connection does not block browsing or editing on another.
+- [x] A slow query on one connection does not block another connection's commands.
+- [x] Cancellation remains available while a long operation runs.
+- [x] Any remaining same-connection serialization is limited to what the driver requires.

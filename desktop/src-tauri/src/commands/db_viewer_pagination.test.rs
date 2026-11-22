@@ -50,7 +50,7 @@ fn seeded_conn() -> rusqlite::Connection {
 
 fn pooled(conn: rusqlite::Connection) -> tokio::sync::Mutex<ConnectionPoolManager> {
     let mut pm = ConnectionPoolManager::new();
-    pm.register("sqlite-09", DbHandle::Sqlite(conn));
+    pm.register("sqlite-09", DbHandle::sqlite(conn));
     tokio::sync::Mutex::new(pm)
 }
 
@@ -404,11 +404,11 @@ async fn inserting_a_row_with_every_field_at_its_default_succeeds() {
         .await
         .expect("an empty default-values insert must be valid SQLite");
 
-    let mut guard = pm.lock().await;
-    let conn = match guard.get("sqlite-09") {
-        Some(DbHandle::Sqlite(c)) => c,
-        _ => panic!("expected a sqlite handle"),
+    let handle = pm.lock().await.acquire("sqlite-09").expect("handle");
+    let DbHandle::Sqlite(shared) = handle else {
+        panic!("expected a sqlite handle")
     };
+    let conn = shared.lock().await;
     let rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM guests", [], |r| r.get(0))
         .expect("count the inserted row");
@@ -490,16 +490,16 @@ async fn live_mysql_filtered_browse_reports_the_filtered_total() {
 
     let table = format!("gridline_browse_{}", uuid::Uuid::new_v4().simple());
     {
-        let mut guard = pm.lock().await;
-        let pool = match guard.get(&id) {
-            Some(DbHandle::MySql(p)) => p.clone(),
-            _ => panic!("expected a mysql handle"),
+        let handle = pm.lock().await.acquire(&id).expect("handle");
+        let DbHandle::MySql(shared) = handle else {
+            panic!("expected a mysql handle")
         };
+        let pool = shared.lock().await;
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE TABLE `{}`.`{}` (id INT PRIMARY KEY, status VARCHAR(16))",
             db, table
         )))
-        .execute(&pool)
+        .execute(&*pool)
         .await
         .expect("create scratch table");
         for (i, status) in (1..=6).map(|i| (i, if i <= 2 { "paid" } else { "pending" })) {
@@ -509,7 +509,7 @@ async fn live_mysql_filtered_browse_reports_the_filtered_total() {
             )))
             .bind(i)
             .bind(status)
-            .execute(&pool)
+            .execute(&*pool)
             .await
             .expect("seed row");
         }
@@ -551,8 +551,9 @@ async fn live_mysql_filtered_browse_reports_the_filtered_total() {
     assert!(!page2.has_more, "the filtered result ends after two rows");
 
     // Cleanup: drop the scratch table so a reused server stays clean.
-    let mut guard = pm.lock().await;
-    if let Some(DbHandle::MySql(pool)) = guard.get(&id) {
+    let handle = pm.lock().await.acquire(&id).expect("handle");
+    if let DbHandle::MySql(pool) = handle {
+        let pool = pool.lock().await;
         let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
             "DROP TABLE `{}`.`{}`",
             db, table
@@ -610,7 +611,7 @@ async fn live_pg_views_and_matviews_are_browsable_and_read_only() {
         .expect("create view fixture");
 
     let mut pm = ConnectionPoolManager::new();
-    pm.register("pg-09", DbHandle::Postgresql(client, handle));
+    pm.register("pg-09", DbHandle::postgresql(client, handle));
     let pm = tokio::sync::Mutex::new(pm);
 
     for (relation, expected_total) in [("paid_orders", 2_i64), ("pending_orders", 1)] {
@@ -643,7 +644,8 @@ async fn live_pg_views_and_matviews_are_browsable_and_read_only() {
     }
 
     let mut guard = pm.lock().await;
-    if let Some(DbHandle::Postgresql(client, _)) = guard.get("pg-09") {
+    if let Some(DbHandle::Postgresql(client, _)) = guard.acquire("pg-09") {
+        let client = client.lock().await;
         client
             .batch_execute(&format!("DROP SCHEMA {q_schema} CASCADE"))
             .await

@@ -21,7 +21,7 @@ async fn pool() -> (tokio::sync::Mutex<ConnectionPoolManager>, String) {
     });
     let mut pm = ConnectionPoolManager::new();
     let id = "test-conn".to_string();
-    pm.register(&id, DbHandle::Postgresql(client, handle));
+    pm.register(&id, DbHandle::postgresql(client, handle));
     (tokio::sync::Mutex::new(pm), id)
 }
 

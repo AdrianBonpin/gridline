@@ -59,7 +59,7 @@ fn seeded_conn() -> rusqlite::Connection {
 
 fn pooled(conn: rusqlite::Connection) -> tokio::sync::Mutex<ConnectionPoolManager> {
     let mut pm = ConnectionPoolManager::new();
-    pm.register("sqlite-fk", DbHandle::Sqlite(conn));
+    pm.register("sqlite-fk", DbHandle::sqlite(conn));
     tokio::sync::Mutex::new(pm)
 }
 
@@ -370,7 +370,7 @@ async fn pg_cross_schema_fk_preview_and_search_use_the_referenced_schema() {
         .expect("seed cross-schema fixture");
 
     let mut pm = ConnectionPoolManager::new();
-    pm.register("pg-fk", DbHandle::Postgresql(client, handle));
+    pm.register("pg-fk", DbHandle::postgresql(client, handle));
     let pm = tokio::sync::Mutex::new(pm);
 
     // Column metadata reports the referenced schema.
@@ -443,7 +443,8 @@ async fn pg_cross_schema_fk_preview_and_search_use_the_referenced_schema() {
     );
 
     let mut guard = pm.lock().await;
-    if let Some(DbHandle::Postgresql(client, _)) = guard.get("pg-fk") {
+    if let Some(DbHandle::Postgresql(client, _)) = guard.acquire("pg-fk") {
+        let client = client.lock().await;
         client
             .batch_execute(&format!(
                 "DROP SCHEMA {q_reporting} CASCADE; DROP SCHEMA {q_public} CASCADE"

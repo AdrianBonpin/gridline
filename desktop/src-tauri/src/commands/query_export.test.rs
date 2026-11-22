@@ -62,6 +62,8 @@ fn csv_line_bom_is_written_by_header_only() {
             default_value: None,
             editable: true,
             is_generated: false,
+            is_unique: false,
+            is_auto_increment: false,
         },
         crate::models::db_viewer::ColumnInfo {
             name: "b".into(),
@@ -73,6 +75,8 @@ fn csv_line_bom_is_written_by_header_only() {
             default_value: None,
             editable: true,
             is_generated: false,
+            is_unique: false,
+            is_auto_increment: false,
         },
     ];
     let line = csv_line(&cols, &[serde_json::json!("1"), serde_json::Value::Null]);
@@ -91,6 +95,8 @@ fn jsonl_line_encodes_row_object() {
         default_value: None,
         editable: true,
         is_generated: false,
+        is_unique: false,
+        is_auto_increment: false,
     }];
     let line = jsonl_line(&cols, &[serde_json::json!("x\"y")]);
     assert_eq!(line, "{\"a\":\"x\\\"y\"}");
@@ -427,7 +433,7 @@ async fn dispatcher_rejects_writes_and_accepts_reads_without_any_frontend_help()
          INSERT INTO t VALUES (1, 'only');",
     )
     .unwrap();
-    let mut handle = crate::db::pool::DbHandle::Sqlite(conn);
+    let mut handle = crate::db::pool::DbHandle::sqlite(conn);
 
     let path = temp_path("dispatcher");
     for sql in [
@@ -466,9 +472,10 @@ async fn dispatcher_rejects_writes_and_accepts_reads_without_any_frontend_help()
     assert!(text.contains("only"), "got: {text}");
     let _ = std::fs::remove_file(&path);
 
-    let crate::db::pool::DbHandle::Sqlite(conn) = &mut handle else {
+    let crate::db::pool::DbHandle::Sqlite(shared) = &handle else {
         unreachable!("handle is SQLite")
     };
+    let conn = shared.try_lock().expect("sqlite connection is free");
     let rows: i64 = conn
         .query_row("SELECT count(*) FROM t", [], |row| row.get(0))
         .unwrap();

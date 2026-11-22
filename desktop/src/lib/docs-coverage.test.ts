@@ -8,7 +8,10 @@ import landingPage from "../../../www/src/pages/index.astro?raw";
 import roadmap from "../../../ROADMAP.md?raw";
 import security from "../../../SECURITY.md?raw";
 
-describe("v0.8.4 docs coverage", () => {
+// Version numbers in the README, the landing page and the changelog are
+// asserted once, in version.test.ts, and against the release version rather
+// than a literal — this suite covers what the docs say beyond the number.
+describe("docs coverage", () => {
   it("AGENTS.md marks inline cell editing complete", () => {
     expect(agents).toContain("Inline cell editing");
     expect(agents).toMatch(/Inline cell editing \| ✅/);
@@ -27,9 +30,6 @@ describe("v0.8.4 docs coverage", () => {
     expect(agents).toMatch(/Favorites \/ Recent connections \| ✅/);
     expect(agents).toMatch(/Connection status indicator on cards \| ✅/);
     expect(agents).toMatch(/Move-to-folder bulk action \| ✅/);
-  });
-  it("README declares v0.8.4", () => {
-    expect(readme).toContain("0.8.4");
   });
   it("AGENTS.md marks schema CRUD complete", () => {
     expect(agents).toMatch(/Schema CRUD \| ✅/);
@@ -68,13 +68,13 @@ describe("v0.8.4 docs coverage", () => {
     expect(agents).toMatch(/Cancel long-running queries \| ✅/);
     expect(agents).toMatch(/Settings export\/import \| ✅/);
   });
-  it("README links to v0.8.4 assets in both download tables", () => {
-    expect(readme).toContain("releases/download/v0.8.4/");
-    expect(readme).toContain("Gridline_0.8.4_aarch64.dmg");
-    expect(readme).toContain("Gridline-0.8.4-1.x86_64.rpm");
+  it("README download tables name the versioned assets", () => {
+    expect(readme).toContain("releases/download/v");
+    expect(readme).toContain("_aarch64.dmg");
+    expect(readme).toContain("-1.x86_64.rpm");
   });
-  it("landing.js platform download links point to v0.8.4", () => {
-    expect(landing).toContain('const version = "0.8.4"');
+  it("landing.js builds its download links from a version const", () => {
+    expect(landing).toContain("const version =");
   });
   it("AGENTS.md documents the native MySQL restore and the .sql association", () => {
     // These claims would actively mislead the next contributor if they were

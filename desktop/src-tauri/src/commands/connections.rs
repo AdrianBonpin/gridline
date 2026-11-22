@@ -474,7 +474,7 @@ mod lifecycle_tests {
             .pool_manager
             .lock()
             .await
-            .register(&created.id, crate::db::pool::DbHandle::Sqlite(session));
+            .register(&created.id, crate::db::pool::DbHandle::sqlite(session));
         state
             .cancel_registry
             .set_sqlite(&created.id, crate::cancel::SqliteCancel::new(interrupt));

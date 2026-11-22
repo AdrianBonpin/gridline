@@ -64,7 +64,7 @@ fn sort(column: &str, order: &str) -> SortRule {
 
 fn pooled(conn: rusqlite::Connection) -> tokio::sync::Mutex<ConnectionPoolManager> {
     let mut pm = ConnectionPoolManager::new();
-    pm.register("sqlite-awkward", DbHandle::Sqlite(conn));
+    pm.register("sqlite-awkward", DbHandle::sqlite(conn));
     tokio::sync::Mutex::new(pm)
 }
 
@@ -449,7 +449,7 @@ async fn pg_legal_names_browse_filter_sort_edit_and_introspect() {
         .expect("create awkward schema/table");
 
     let mut pm = ConnectionPoolManager::new();
-    pm.register("pg-awkward", DbHandle::Postgresql(client, handle));
+    pm.register("pg-awkward", DbHandle::postgresql(client, handle));
     let pm = tokio::sync::Mutex::new(pm);
 
     // Browse.
@@ -536,11 +536,14 @@ async fn pg_legal_names_browse_filter_sort_edit_and_introspect() {
     .expect("build pg update");
     let changed = {
         let mut guard = pm.lock().await;
-        match guard.get("pg-awkward") {
-            Some(DbHandle::Postgresql(client, _)) => client
-                .execute(&sql, &[&"edited", &2i32])
-                .await
-                .expect("update must run"),
+        match guard.acquire("pg-awkward") {
+            Some(DbHandle::Postgresql(client, _)) => {
+                let client = client.lock().await;
+                client
+                    .execute(&sql, &[&"edited", &2i32])
+                    .await
+                    .expect("update must run")
+            }
             _ => panic!("expected a postgresql handle"),
         }
     };
@@ -548,7 +551,8 @@ async fn pg_legal_names_browse_filter_sort_edit_and_introspect() {
 
     // Cleanup: the schema drop is the whole point of a scratch name.
     let mut guard = pm.lock().await;
-    if let Some(DbHandle::Postgresql(client, _)) = guard.get("pg-awkward") {
+    if let Some(DbHandle::Postgresql(client, _)) = guard.acquire("pg-awkward") {
+        let client = client.lock().await;
         client
             .batch_execute(&format!("DROP SCHEMA {q_schema} CASCADE"))
             .await
@@ -612,7 +616,7 @@ async fn mysql_legal_names_browse_filter_sort_edit_and_introspect() {
     .expect("seed rows");
 
     let mut pm = ConnectionPoolManager::new();
-    pm.register("mysql-awkward", DbHandle::MySql(pool.clone()));
+    pm.register("mysql-awkward", DbHandle::mysql(pool.clone()));
     let pm = tokio::sync::Mutex::new(pm);
 
     // Table list for the schema: the schema filter is a bound `?`, so the same

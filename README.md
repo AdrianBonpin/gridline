@@ -346,9 +346,9 @@ Gridline's macOS builds are **Developer-ID signed and notarized by GitHub Action
    | `APPLE_API_ISSUER`           | App Store Connect **Issuer ID**                                                                     |
    | `APPLE_API_KEY_CONTENT`      | contents of the downloaded `AuthKey_<KeyID>.p8`                                                     |
 
-   When these secrets are absent the macOS jobs still build, but the DMGs are ad-hoc signed and **not** notarized (users get the “Open Anyway” prompt). The CI re-signs the bundled PostgreSQL/MariaDB client binaries with the same Developer ID identity, because Apple rejects ad-hoc-signed nested executables during notarization.
+   **All seven secrets are required.** A macOS release fails — before it builds anything — when any of them is missing or the notarization key is rejected, because Gridline does not publish a macOS build unless it carries a real Developer ID signature and Apple's notarization ticket. Nothing is uploaded until the built artifacts have been verified: the `.app` must carry a `Developer ID Application` signature with the hardened runtime and a secure timestamp, pass `codesign --verify`, `xcrun stapler validate` and `spctl --assess --type execute`; and the `.dmg` is notarized, stapled, `stapler validate`d and `spctl --assess`ed before it is uploaded (`scripts/verify-macos-artifacts.sh`, which also notarizes the DMG that the app bundle is shipped in). The CI re-signs the bundled PostgreSQL/MariaDB client binaries with the same Developer ID identity, because Apple rejects locally signed nested executables during notarization.
 
-`scripts/release-mac.sh` is the **local fallback** path (handy for a signed build without burning CI minutes, or when Actions is unavailable). It auto-detects the Developer ID identity from your keychain, reads notarization credentials from `~/.config/gridline/notarize.env` (`APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_PATH`), signs both architectures, notarizes + staples them, verifies the result, then uploads the DMGs to the **GitHub** release for the tag (`gh release upload --clobber`, so a locally signed pair supersedes the CI-built ones — publish the draft afterwards). If the certificate or credentials are missing it fails with instructions (set `GRIDLINE_SKIP_NOTARIZE=1` to build signed-but-unnotarized for testing only).
+`scripts/release-mac.sh` is the **local fallback** path (handy for a signed build without burning CI minutes, or when Actions is unavailable). It makes the same checks in the same order: it needs the Developer ID identity in your keychain plus notarization credentials in `~/.config/gridline/notarize.env` (`APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_PATH`) — validated **before** the build starts — builds both architectures, runs the same verifier, and uploads only the verified artifacts to the **GitHub** release for the tag (`gh release upload --clobber`, so a locally signed pair supersedes the CI-built ones — publish the draft afterwards). It has no switch to skip notarization: an unnotarized build is not a release artifact.
 
 **Windows** still shows a SmartScreen prompt (no Windows signing cert yet); **Linux** installs without a warning.
 
@@ -377,7 +377,7 @@ git tag v0.8.4
 git push github v0.8.4        # GitHub is the only release remote
 ```
 
-The version bump itself lands through a pull request first — `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/tauri.conf.json`, `www/src/pages/index.astro`, `www/public/landing.js`, `www/src/data/changelog.ts` and both README download tables all carry it, and the docs-coverage tests fail if one is missed.
+The version bump itself lands through a pull request first — the root `package.json`, `desktop/package.json`, `desktop/src-tauri/Cargo.toml` and its `gridline` `Cargo.lock` entry, `desktop/src-tauri/tauri.conf.json`, `www/src/pages/index.astro`, `www/public/landing.js`, `www/src/data/changelog.ts`, `ROADMAP.md` and both README download tables all carry it, and `desktop/src/lib/version.test.ts` fails if any one of them is missed.
 
 GitHub Actions (`.github/workflows/release.yml`) builds the **macOS (Apple Silicon + Intel), Windows, and Linux** installers in parallel and opens a **draft release** on the [Releases](https://github.com/AdrianBonpin/gridline/releases) page. Paste the new version's entry from [`www/src/data/changelog.ts`](./www/src/data/changelog.ts) into the draft's description (`gh release edit v0.8.4 --notes-file notes.md`), review the draft, then hit **Publish release** — publishing triggers a follow-up job that bumps the Homebrew cask in [`AdrianBonpin/homebrew-gridline`](https://github.com/AdrianBonpin/homebrew-gridline) (pushed via a write-enabled deploy key on the tap, `HOMEBREW_TAP_DEPLOY_KEY`; skipped when unset).
 
@@ -385,7 +385,7 @@ GitHub Actions is the **only** release pipeline: the self-hosted Gitea mirror is
 
 Release tags are protected and immutable, and a release can only be built from a tag reachable through reviewed `prod` history — see [AGENTS.md](./AGENTS.md#release-ref-protection-owner-applied-repository-settings) for the exact repository settings (an owner applies those; they are not files in this repo).
 
-Before tagging, make sure the version number is in sync across `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, and `desktop/src-tauri/tauri.conf.json`, and update the **README download tables** (Download + Which file should I download?) to the new version's asset names.
+Before tagging, run `bun run test` — it checks every place the version is stated (the root and desktop `package.json`, `desktop/src-tauri/Cargo.toml`, the `gridline` `Cargo.lock` entry, `tauri.conf.json`, the landing page, the changelog, `ROADMAP.md` and both README download tables) against `desktop/package.json` and fails on any mismatch.
 
 ### Build from source
 

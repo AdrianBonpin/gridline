@@ -263,7 +263,7 @@ impl From<crate::store::SavedQueryRow> for SavedQueryCommand {
 /// Returns `(QueryResult, Option<QueryHistoryEntry>)` so the caller can
 /// write the history record through the store.
 pub(crate) async fn execute_query_inner(
-    pool_manager: &mut crate::db::pool::ConnectionPoolManager,
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
     db_store: &std::sync::Mutex<crate::store::Store>,
     cancel_registry: &crate::cancel::CancelRegistry,
     connection_id: &str,
@@ -274,13 +274,39 @@ pub(crate) async fn execute_query_inner(
     let start = Instant::now();
     let history_id = Uuid::new_v4().to_string();
 
-    // Try subquery-wrapped execution first; fall back to raw on failure.
-    let mut result = match pool_manager.get(connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
-            execute_pg_query(client, query, page, page_size).await
+    // Take a shareable handle and RELEASE the pool registry before running
+    // anything: a slow statement here must not stall another connection.
+    let handle = match crate::db::pool::acquire_handle(pool_manager, connection_id).await {
+        Ok(handle) => handle,
+        Err(err) => {
+            let elapsed = start.elapsed().as_millis() as i64;
+            insert_history(
+                db_store,
+                &history_id,
+                connection_id,
+                query,
+                Some(elapsed),
+                None,
+                "error",
+                Some(&err),
+            );
+            return Err(err);
         }
-        Some(DbHandle::Sqlite(conn)) => execute_sqlite_query(conn, query, page, page_size),
-        Some(DbHandle::MySql(pool)) => {
+    };
+
+    // Try subquery-wrapped execution first; fall back to raw on failure.
+    let mut result = match handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
+            execute_pg_query(&client, query, page, page_size).await
+        }
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            // One statement at a time on this connection (rusqlite requirement).
+            execute_sqlite_query(&conn, query, page, page_size)
+        }
+        DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
             // Run on a dedicated pooled connection so the query's MySQL
             // CONNECTION_ID can be tracked for cancellation (`KILL QUERY ?`).
             let mut conn = pool
@@ -298,21 +324,6 @@ pub(crate) async fn execute_query_inner(
             let result = execute_mysql_query_on(&mut *conn, query, page, page_size).await;
             cancel_registry.set_mysql_conn_id(connection_id, None);
             result
-        }
-        None => {
-            let elapsed = start.elapsed().as_millis() as i64;
-            let err = "Connection not found".to_string();
-            insert_history(
-                db_store,
-                &history_id,
-                connection_id,
-                query,
-                Some(elapsed),
-                None,
-                "error",
-                Some(&err),
-            );
-            return Err(err);
         }
     };
 
@@ -403,6 +414,8 @@ fn pg_column_info(c: &tokio_postgres::Column) -> ColumnInfo {
         default_value: None,
         editable: true,
         is_generated: false,
+        is_unique: false,
+        is_auto_increment: false,
     }
 }
 
@@ -517,6 +530,8 @@ async fn pg_verbatim_rows(
                             default_value: None,
                             editable: true,
                             is_generated: false,
+                            is_unique: false,
+                            is_auto_increment: false,
                         })
                         .collect();
                 }
@@ -626,6 +641,8 @@ fn collect_sqlite_rows(
                 default_value: None,
                 editable: true,
                 is_generated: false,
+                is_unique: false,
+                is_auto_increment: false,
             }
         })
         .collect();
@@ -940,6 +957,8 @@ fn mysql_column_info(c: &sqlx::mysql::MySqlColumn) -> ColumnInfo {
         default_value: None,
         editable: true,
         is_generated: false,
+        is_unique: false,
+        is_auto_increment: false,
     }
 }
 
@@ -1228,6 +1247,8 @@ pub(crate) async fn execute_pg_statement(
                                     default_value: None,
                                     editable: true,
                                     is_generated: false,
+                                    is_unique: false,
+                                    is_auto_increment: false,
                                 })
                                 .collect();
                         }
@@ -1388,11 +1409,34 @@ pub async fn execute_query_multi(
     page_size: Option<i64>,
     state: State<'_, crate::AppState>,
 ) -> Result<MultiQueryResult, String> {
+    execute_query_multi_inner(
+        &state.pool_manager,
+        &state.db_store,
+        &state.cancel_registry,
+        &connection_id,
+        &query,
+        page,
+        page_size,
+    )
+    .await
+}
+
+/// Headless core of `execute_query_multi` (thin-command principle — no Tauri
+/// `State`), so the tool-job seam tests can drive it directly.
+pub(crate) async fn execute_query_multi_inner(
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    db_store: &std::sync::Mutex<crate::store::Store>,
+    cancel_registry: &crate::cancel::CancelRegistry,
+    connection_id: &str,
+    query: &str,
+    page: Option<i64>,
+    page_size: Option<i64>,
+) -> Result<MultiQueryResult, String> {
     let start = Instant::now();
     let p = page.unwrap_or(1);
     let ps = page_size.unwrap_or(50);
 
-    let statements = crate::db::sql_split::split_statements(&query);
+    let statements = crate::db::sql_split::split_statements(query);
     if statements.is_empty() {
         return Err("Query cannot be empty".to_string());
     }
@@ -1401,18 +1445,25 @@ pub async fn execute_query_multi(
     let mut result_sets: Vec<QueryResult> = Vec::new();
     let mut notices: Vec<StatementNotice> = Vec::new();
 
+    // The registry guard is a temporary of the `let` below: it is gone before
+    // this function awaits anything, so a long script on one connection cannot
+    // block another connection's commands.
+    let db_handle = pool_manager.lock().await.acquire(connection_id);
     let err_text: Option<String>;
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             err_text =
-                run_pg_statements(client, &statements, p, ps, &mut result_sets, &mut notices).await;
+                run_pg_statements(&client, &statements, p, ps, &mut result_sets, &mut notices)
+                    .await;
         }
         Some(DbHandle::Sqlite(conn)) => {
+            let conn = conn.lock().await;
             err_text =
-                run_sqlite_statements(conn, &statements, p, ps, &mut result_sets, &mut notices);
+                run_sqlite_statements(&conn, &statements, p, ps, &mut result_sets, &mut notices);
         }
         Some(DbHandle::MySql(pool)) => {
+            let pool = pool.lock().await;
             let mut conn = pool
                 .acquire()
                 .await
@@ -1424,8 +1475,8 @@ pub async fn execute_query_multi(
                 ps,
                 &mut result_sets,
                 &mut notices,
-                &state.cancel_registry,
-                &connection_id,
+                cancel_registry,
+                connection_id,
             )
             .await;
         }
@@ -1440,10 +1491,10 @@ pub async fn execute_query_multi(
     let history_id = Uuid::new_v4().to_string();
     if let Some(e) = &err_text {
         insert_history(
-            &state.db_store,
+            db_store,
             &history_id,
-            &connection_id,
-            &query,
+            connection_id,
+            query,
             Some(elapsed),
             Some(row_count),
             "error",
@@ -1451,10 +1502,10 @@ pub async fn execute_query_multi(
         );
     } else {
         insert_history(
-            &state.db_store,
+            db_store,
             &history_id,
-            &connection_id,
-            &query,
+            connection_id,
+            query,
             Some(elapsed),
             Some(row_count),
             "success",
@@ -1561,9 +1612,8 @@ pub async fn execute_query(
 ) -> Result<QueryResult, String> {
     let p = page.unwrap_or(1);
     let ps = page_size.unwrap_or(50);
-    let mut pm = state.pool_manager.lock().await;
     execute_query_inner(
-        &mut pm,
+        &state.pool_manager,
         &state.db_store,
         &state.cancel_registry,
         &connection_id,
@@ -1587,8 +1637,21 @@ pub async fn cancel_query(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
+    cancel_query_inner(&state.cancel_registry, &connection_id).await
+}
+
+/// Headless cancellation dispatch.
+///
+/// It reads the process-wide [`crate::cancel::CancelRegistry`] and nothing else:
+/// no pool registry lock, no per-connection handle. Cancellation therefore stays
+/// deliverable while a long query or export holds its connection, which is why
+/// neither of those may ever be part of this path.
+pub(crate) async fn cancel_query_inner(
+    cancel_registry: &crate::cancel::CancelRegistry,
+    connection_id: &str,
+) -> Result<(), String> {
     use sqlx::ConnectOptions;
-    match state.cancel_registry.get(&connection_id) {
+    match cancel_registry.get(connection_id) {
         Some(crate::cancel::CancelHandle::Pg(pg)) => {
             // A Verify/Require decision always carries a built rustls config,
             // so the unwrap on the non-Disable branch is safe by construction.
@@ -1609,7 +1672,7 @@ pub async fn cancel_query(
             // Record the request before the KILL lands: the in-process restore
             // engine polls this flag between statements, and the killed
             // statement's error is the only other signal.
-            state.cancel_registry.mark_cancelled(&connection_id);
+            cancel_registry.mark_cancelled(connection_id);
             let id = m
                 .conn_id
                 .ok_or_else(|| "No active query on this connection".to_string())?;
@@ -1746,7 +1809,7 @@ mod tests {
              INSERT INTO users VALUES (3, 'Charlie', 'charlie@example.com');",
         )
         .unwrap();
-        DbHandle::Sqlite(conn)
+        DbHandle::sqlite(conn)
     }
 
     /// Open an in‑memory SQLite database for CTE testing.
@@ -1761,7 +1824,7 @@ mod tests {
              INSERT INTO items VALUES (5, 50);",
         )
         .unwrap();
-        DbHandle::Sqlite(conn)
+        DbHandle::sqlite(conn)
     }
 
     // ------------------------------------------------------------------
@@ -2005,9 +2068,9 @@ mod tests {
     // Helper: unwrap a DbHandle::Sqlite to get the connection reference
     // ------------------------------------------------------------------
 
-    fn unwrap_sqlite(handle: &DbHandle) -> &SqliteConnection {
+    fn unwrap_sqlite(handle: &DbHandle) -> tokio::sync::MutexGuard<'_, SqliteConnection> {
         match handle {
-            DbHandle::Sqlite(conn) => conn,
+            DbHandle::Sqlite(conn) => conn.try_lock().expect("sqlite connection is free"),
             _ => panic!("Expected Sqlite handle"),
         }
     }

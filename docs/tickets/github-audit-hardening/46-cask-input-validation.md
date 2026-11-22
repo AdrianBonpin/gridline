@@ -7,9 +7,9 @@
 **Seams:** Built-product seam: catches rendering with hostile and valid inputs; the tap repository publish is verified separately.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/89
-**Status:** ready
+**Status:** done
 
-- [ ] Version and checksum inputs are validated before rendering.
-- [ ] A malformed version or checksum fails rendering with a clear error.
-- [ ] Rendered cask structure is unaffected by metadata content.
-- [ ] The published cask version and checksums match the published artifacts.
+- [x] Version and checksum inputs are validated before rendering.
+- [x] A malformed version or checksum fails rendering with a clear error.
+- [x] Rendered cask structure is unaffected by metadata content.
+- [x] The published cask version and checksums match the published artifacts.

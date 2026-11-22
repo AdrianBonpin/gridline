@@ -51,22 +51,33 @@ pub async fn compare_schemas(
         .map_err(|e| format!("Target connection failed: {e}"))?;
     validate_same_family(&source_db_type, &target_db_type)?;
 
-    let mut pm = state.pool_manager.lock().await;
-
+    // Each connection is acquired (registry lock released immediately) and
+    // captured one at a time: comparing schemas must not hold the registry
+    // while it reads two databases, and must never hold two connection handles
+    // at once (two diffs in opposite directions would deadlock).
     let source = {
-        let handle = pm.get(&source_connection_id).ok_or_else(|| {
-            "Source connection failed: not connected (open it in the DB viewer first)".to_string()
-        })?;
-        crate::db::schema_diff::capture_snapshot(handle, &source_db_type, &source_schema)
+        let mut handle = state
+            .pool_manager
+            .lock()
+            .await
+            .acquire(&source_connection_id)
+            .ok_or_else(|| {
+                "Source connection failed: not connected (open it in the DB viewer first)"
+                    .to_string()
+            })?;
+        crate::db::schema_diff::capture_snapshot(&mut handle, &source_db_type, &source_schema)
             .await
             .map_err(|e| format!("Source connection failed: {e}"))?
     };
 
     let target = {
-        let handle = pm
-            .get(&target_connection_id)
+        let mut handle = state
+            .pool_manager
+            .lock()
+            .await
+            .acquire(&target_connection_id)
             .ok_or_else(|| "Target connection failed: not connected".to_string())?;
-        crate::db::schema_diff::capture_snapshot(handle, &target_db_type, &target_schema)
+        crate::db::schema_diff::capture_snapshot(&mut handle, &target_db_type, &target_schema)
             .await
             .map_err(|e| format!("Target connection failed: {e}"))?
     };

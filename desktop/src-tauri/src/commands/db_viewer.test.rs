@@ -52,20 +52,20 @@ async fn hypertables_unavailable_on_plain_pg() {
     });
     let mut pm = ConnectionPoolManager::new();
     let id = "test-pg".to_string();
-    pm.register(&id, DbHandle::Postgresql(client, handle));
+    pm.register(&id, DbHandle::postgresql(client, handle));
     let pm = tokio::sync::Mutex::new(pm);
 
     // Exercise the detection helper directly (the command needs `State`, which
     // is not constructible in tests).
     let detected = {
-        let mut g = pm.lock().await;
-        match g.get(&id) {
-            Some(DbHandle::Postgresql(c, _)) => {
-                c.query_one(&crate::db::introspection::pg_timescale_detect_query(), &[])
-                    .await
-            }
+        let (client, _task) = match pm.lock().await.acquire(&id) {
+            Some(DbHandle::Postgresql(c, t)) => (c, t),
             _ => panic!("expected a postgresql handle"),
-        }
+        };
+        let client = client.lock().await;
+        client
+            .query_one(&crate::db::introspection::pg_timescale_detect_query(), &[])
+            .await
     };
     assert!(detected.is_ok(), "detection query must run on plain PG");
     let available: bool = detected.unwrap().get(0);
@@ -120,13 +120,14 @@ fn sqlite_pool(setup_sql: &str) -> (tokio::sync::Mutex<ConnectionPoolManager>, S
     conn.execute_batch(setup_sql)
         .expect("fixture schema + seed");
     let mut pm = ConnectionPoolManager::new();
-    pm.register("sqlite-change", DbHandle::Sqlite(conn));
+    pm.register("sqlite-change", DbHandle::sqlite(conn));
     (tokio::sync::Mutex::new(pm), "sqlite-change".to_string())
 }
 
 fn sqlite_query(pm: &mut ConnectionPoolManager, id: &str, sql: &str) -> Vec<Vec<Value>> {
     match pm.get(id) {
         Some(DbHandle::Sqlite(conn)) => {
+            let conn = conn.try_lock().expect("sqlite connection free");
             let mut stmt = conn.prepare(sql).expect("prepare");
             let width = stmt.column_count();
             let mut rows = stmt.query([]).expect("query");
@@ -457,8 +458,46 @@ async fn sqlite_change_failure_mid_rebuild_changes_nothing() {
     );
 }
 
+/// The editor form is built from this metadata, so a flag it cannot see is a
+/// constraint a rebuild would silently drop.
 #[tokio::test]
-async fn sqlite_rebuild_change_refuses_an_unsupported_shape_before_mutating() {
+async fn sqlite_column_metadata_reports_what_a_rebuild_must_reproduce() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE t (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            email   TEXT NOT NULL UNIQUE,
+            plain   TEXT,
+            doubled INTEGER GENERATED ALWAYS AS (id * 2) STORED
+        );",
+    )
+    .unwrap();
+    let (columns, is_view) =
+        crate::commands::db_viewer::sqlite_column_metadata(&conn, "t").unwrap();
+    assert!(!is_view);
+    let by_name = |name: &str| {
+        columns
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("{name} is missing from {columns:?}"))
+    };
+    assert!(
+        by_name("id").is_auto_increment,
+        "the rowid sequence is visible"
+    );
+    assert!(by_name("id").is_pk);
+    assert!(by_name("email").is_unique, "the unique key is visible");
+    assert!(!by_name("plain").is_unique);
+    // A generated column is a real column of the table: it is listed, marked,
+    // and not offered for editing.
+    let doubled = by_name("doubled");
+    assert!(doubled.is_generated);
+    assert!(!doubled.editable);
+    assert_eq!(doubled.data_type, "INTEGER");
+}
+
+#[tokio::test]
+async fn sqlite_rebuild_change_refuses_a_script_that_drops_preserved_metadata_before_mutating() {
     let (pm, id) = sqlite_pool(REBUILD_FIXTURE_WITH_TRIGGER);
     let before = {
         let mut guard = pm.lock().await;
@@ -477,11 +516,12 @@ async fn sqlite_rebuild_change_refuses_an_unsupported_shape_before_mutating() {
               ALTER TABLE \"main\".\"_gl_t_tmp\" RENAME TO \"t\""
             .into(),
     };
-    // A trigger staged *after* the script was built must refuse the rebuild, not
-    // be silently dropped by it.
+    // The round-trip check reads the script back and proves it reproduces the
+    // live trigger. This one does not, so the rebuild is refused before its
+    // first statement instead of dropping the trigger.
     let err = execute_change_inner(&pm, &id, change)
         .await
-        .expect_err("a table with a trigger cannot be rebuilt faithfully");
+        .expect_err("a script that omits the trigger must be refused");
     assert!(
         err.contains("trg_t_late") && err.contains("Cannot rebuild"),
         "the refusal names the blocker: {err}"
@@ -532,6 +572,7 @@ async fn sqlite_rebuild_change_without_a_table_name_is_refused() {
 fn sqlite_exec(pm: &mut ConnectionPoolManager, id: &str, sql: &str) {
     match pm.get(id) {
         Some(DbHandle::Sqlite(conn)) => {
+            let conn = conn.try_lock().expect("sqlite connection free");
             conn.execute_batch(sql).expect("raw sql");
         }
         _ => panic!("expected a sqlite handle"),
@@ -945,7 +986,7 @@ async fn live_pg_pool() -> (tokio::sync::Mutex<ConnectionPoolManager>, String) {
         let _ = conn.await;
     });
     let mut pm = ConnectionPoolManager::new();
-    pm.register("test-pg-row-identity", DbHandle::Postgresql(client, handle));
+    pm.register("test-pg-row-identity", DbHandle::postgresql(client, handle));
     (
         tokio::sync::Mutex::new(pm),
         "test-pg-row-identity".to_string(),
@@ -958,13 +999,15 @@ async fn pg_execute(
     id: &str,
     sql: &str,
 ) -> Result<(), String> {
-    let mut guard = pm.lock().await;
-    match guard.get(id) {
-        Some(DbHandle::Postgresql(c, _)) => {
-            c.batch_execute(sql).await.map_err(|e| format!("{e:?}"))
-        }
+    let (client, _task) = match pm.lock().await.acquire(id) {
+        Some(DbHandle::Postgresql(c, t)) => (c, t),
         _ => panic!("expected a postgresql handle"),
-    }
+    };
+    let client = client.lock().await;
+    client
+        .batch_execute(sql)
+        .await
+        .map_err(|e| format!("{e:?}"))
 }
 
 async fn pg_rows(
@@ -974,25 +1017,24 @@ async fn pg_rows(
 ) -> Vec<Vec<String>> {
     // Raw SQL kept simple by casting every cell to text: the assertions only
     // compare values, not PostgreSQL types.
-    let mut guard = pm.lock().await;
-    match guard.get(id) {
-        Some(DbHandle::Postgresql(c, _)) => {
-            let rows = c.query(sql, &[]).await.expect("query");
-            rows.iter()
-                .map(|r| {
-                    (0..r.len())
-                        .map(|i| {
-                            r.try_get::<_, Option<String>>(i)
-                                .ok()
-                                .flatten()
-                                .unwrap_or_else(|| "<non-text>".into())
-                        })
-                        .collect()
+    let (client, _task) = match pm.lock().await.acquire(id) {
+        Some(DbHandle::Postgresql(c, t)) => (c, t),
+        _ => panic!("expected a postgresql handle"),
+    };
+    let client = client.lock().await;
+    let rows = client.query(sql, &[]).await.expect("query");
+    rows.iter()
+        .map(|r| {
+            (0..r.len())
+                .map(|i| {
+                    r.try_get::<_, Option<String>>(i)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| "<non-text>".into())
                 })
                 .collect()
-        }
-        _ => panic!("expected a postgresql handle"),
-    }
+        })
+        .collect()
 }
 
 /// Live test (opt-in): a composite-key update addresses exactly one row, and a
@@ -1392,7 +1434,7 @@ async fn live_mysql_single_row_writes_are_atomic_and_conflict_aware() {
     .expect("seed rows");
 
     let mut manager = ConnectionPoolManager::new();
-    manager.register("mysql-t03", DbHandle::MySql(pool.clone()));
+    manager.register("mysql-t03", DbHandle::mysql(pool.clone()));
     let pm = tokio::sync::Mutex::new(manager);
 
     let snapshot = |rows: Vec<sqlx::mysql::MySqlRow>| -> Vec<String> {

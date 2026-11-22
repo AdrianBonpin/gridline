@@ -255,7 +255,7 @@ impl Rig {
         self.pool
             .lock()
             .await
-            .register(&self.id, DbHandle::Sqlite(conn));
+            .register(&self.id, DbHandle::sqlite(conn));
         self.cancel
             .set_sqlite(&self.id, SqliteCancel::new(interrupt));
         self.cancel.mark_cancelled(&self.id);
@@ -267,11 +267,12 @@ impl Rig {
     }
 
     async fn pool_handle_is_live(&mut self) -> bool {
-        let mut guard = self.pool.lock().await;
-        match guard.get(&self.id) {
-            Some(DbHandle::Sqlite(conn)) => conn
-                .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
-                .is_ok(),
+        match self.pool.lock().await.acquire(&self.id) {
+            Some(DbHandle::Sqlite(conn)) => {
+                let conn = conn.try_lock().expect("sqlite connection free");
+                conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                    .is_ok()
+            }
             _ => false,
         }
     }
@@ -489,7 +490,7 @@ async fn commit_replaces_the_session_and_closes_the_superseded_listener() {
         .await
         .unwrap();
     let new_port = rig.backend.last_port();
-    let handle = DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+    let handle = DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap());
     attempt
         .commit(handle, None, &rig.pool, &rig.ssh, &rig.cancel)
         .await;
@@ -531,7 +532,7 @@ async fn commit_without_a_tunnel_closes_the_previous_one() {
         .await
         .unwrap();
     assert!(!attempt.via_tunnel());
-    let handle = DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+    let handle = DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap());
     attempt
         .commit(handle, None, &rig.pool, &rig.ssh, &rig.cancel)
         .await;
@@ -610,7 +611,7 @@ async fn commit_installs_the_cancellation_handle_it_was_given() {
     let cancel = CancelHandle::Sqlite(SqliteCancel::new(conn.get_interrupt_handle()));
     attempt
         .commit(
-            DbHandle::Sqlite(conn),
+            DbHandle::sqlite(conn),
             Some(cancel),
             &rig.pool,
             &rig.ssh,

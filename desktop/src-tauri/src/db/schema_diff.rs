@@ -246,15 +246,22 @@ pub(crate) async fn capture_snapshot(
     schema: &str,
 ) -> Result<SchemaSnapshot, String> {
     match handle {
-        DbHandle::Postgresql(client, _) => capture_pg(client, engine, schema).await,
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
+            capture_pg(&client, engine, schema).await
+        }
         DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
             let mut conn = pool
                 .acquire()
                 .await
                 .map_err(|e| format!("source/target connection failed: {e}"))?;
             capture_mysql(&mut *conn, engine, schema).await
         }
-        DbHandle::Sqlite(conn) => capture_sqlite(conn),
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            capture_sqlite(&conn)
+        }
     }
 }
 
