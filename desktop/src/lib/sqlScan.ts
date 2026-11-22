@@ -22,6 +22,35 @@
 
 type Chars = string[];
 
+// --- work accounting ---------------------------------------------------------
+//
+// The destructive-query guard runs synchronously on every Run, so it must stay
+// linear in the script. A wall-clock budget cannot prove that: on a contended
+// machine a linear scan blows an arbitrary millisecond ceiling (observed
+// 343 ms for a ~1 MB script while `cargo test` was compiling), so the test
+// would fail on load instead of on a regression. This counter is the
+// deterministic substitute.
+//
+// Each scanner is a single pass that only advances an index, so the property
+// that can break is *how much text the scanners are handed*: re-splitting the
+// script or a suffix per statement turns this count into statements × length.
+// Cost in production is one integer add per scanner entry.
+let scanWork = 0;
+
+/** Reset the scanner work counter (tests and benchmarks). */
+export function resetScanWork(): void {
+  scanWork = 0;
+}
+
+/** Input characters handed to the splitter and the word scanner so far. */
+export function scanWorkUnits(): number {
+  return scanWork;
+}
+
+function chargeWork(characters: number): void {
+  scanWork += characters;
+}
+
 /** Read a quoted region starting at `chars[i] === quote`. Doubled quotes escape. */
 function readQuoted(chars: Chars, i: number, quote: string): { text: string; next: number } {
   let out = quote;
@@ -108,6 +137,7 @@ function findDollarClose(chars: Chars, from: number, tag: string): number | null
 
 /** True if the fragment contains anything other than whitespace and comments. */
 export function hasExecutableText(stmt: string): boolean {
+  chargeWork(stmt.length);
   const chars: Chars = Array.from(stmt);
   let i = 0;
   while (i < chars.length) {
@@ -156,6 +186,7 @@ function matchDelimiterDirective(chars: Chars, i: number): { end: number; token:
 
 /** Split `sql` into ordered statement texts. Comment-only fragments are dropped. */
 export function splitStatements(sql: string): string[] {
+  chargeWork(sql.length);
   const chars: Chars = Array.from(sql);
   const statements: string[] = [];
   let current = "";
@@ -274,6 +305,7 @@ export interface ScriptAnalysis {
  * immune to `SELECT 'DROP TABLE t'`.
  */
 export function scanWords(sql: string): string[] {
+  chargeWork(sql.length);
   const chars: Chars = Array.from(sql);
   const words: string[] = [];
   let i = 0;

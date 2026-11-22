@@ -3999,9 +3999,65 @@ fn a_cancelled_sqlite_dump_reports_a_cancellation() {
     src.execute_batch("CREATE TABLE a (id INTEGER); CREATE TABLE b (id INTEGER);")
         .unwrap();
     let mut out: Vec<u8> = Vec::new();
-    let result =
-        dump_sqlite_to_cancellable(&src, &mut std::io::Cursor::new(&mut out), |_| {}, &|| true);
+    // A real flag, not `|| true`: the first poll (before the schema is read)
+    // passes, so the cancellation below is the one the per-table check takes.
+    let polls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = polls.clone();
+    let is_cancelled = move || counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1;
+    let result = dump_sqlite_to_cancellable(
+        &src,
+        &mut std::io::Cursor::new(&mut out),
+        |_| {},
+        &is_cancelled,
+    );
     assert_eq!(result.unwrap_err(), CANCEL_MESSAGE);
+    assert!(
+        polls.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+        "the cancellation must come from a poll inside the dump, not from the argument"
+    );
+    drop(src);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A cancel must take effect inside one large table, not only between tables.
+/// The dump is one unbounded step per table otherwise: a table with millions of
+/// rows would have to finish before the cancellation was even noticed.
+#[cfg(unix)]
+#[test]
+fn a_cancelled_sqlite_dump_stops_inside_one_large_table() {
+    const ROWS: usize = 200;
+    let dir = job_temp_dir("sqlite_dump_cancel_rows");
+    let src_path = dir.join("source.db");
+    let src = Connection::open(&src_path).unwrap();
+    src.execute_batch("CREATE TABLE big (id INTEGER);").unwrap();
+    {
+        let tx = src.unchecked_transaction().unwrap();
+        for id in 0..ROWS {
+            tx.execute("INSERT INTO big (id) VALUES (?1)", [id as i64])
+                .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    // One table, so the only per-table poll is the one before its rows.
+    let mut out: Vec<u8> = Vec::new();
+    let polls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = polls.clone();
+    let is_cancelled = move || counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 4;
+    let result = dump_sqlite_to_cancellable(
+        &src,
+        &mut std::io::Cursor::new(&mut out),
+        |_| {},
+        &is_cancelled,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        CANCEL_MESSAGE,
+        "a dump of one large table must still be cancellable"
+    );
+    assert!(
+        polls.load(std::sync::atomic::Ordering::SeqCst) > 4,
+        "the cancellation must be noticed while rows are being written"
+    );
     drop(src);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -4559,4 +4615,174 @@ fn a_session_credential_sync_keeps_both_passwords_out_of_argv() {
             "the {side} credential must never be a process argument: {argv}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Restore lock bound (ticket 31: no wait may be unbounded)
+// ---------------------------------------------------------------------------
+
+/// The restore child must connect as *this job's* backend. Without the per-job
+/// `application_name` the lock watchdog cannot find the backend it is allowed to
+/// stop, and would have to guess among the app's other sessions.
+#[cfg(unix)]
+#[test]
+fn a_restore_connects_with_its_own_job_application_name() {
+    // Both formats: an archive runs `pg_restore`, a plain dump runs `psql`, and
+    // the watchdog has to be able to find the backend in either.
+    for (label, binary, format) in [
+        ("archive", "pg_restore", "custom"),
+        ("plain", "psql", "plain"),
+    ] {
+        let dir = job_temp_dir(&format!("restore_app_name_{label}"));
+        let seen = dir.join("appname.txt");
+        let fake = write_executable_script(
+            &format!("{binary}_appname"),
+            &format!(
+                "#!/bin/sh\nprintf '%s' \"$PGAPPNAME\" > '{}'\nexit 0\n",
+                seen.display()
+            ),
+        );
+        let path = fake.to_string_lossy().into_owned();
+        let tools = PgToolPaths {
+            pg_dump: String::new(),
+            pg_restore: if binary == "pg_restore" {
+                path.clone()
+            } else {
+                String::new()
+            },
+            psql: if binary == "psql" {
+                path.clone()
+            } else {
+                String::new()
+            },
+        };
+        let options = RestoreOptions {
+            format: format.into(),
+            file_path: dir.join("dump").to_string_lossy().to_string(),
+            clean: false,
+            schema: None,
+        };
+
+        let job = crate::job::JobRegistry::new().begin("restore-job-1");
+        run_pg_restore_managed(
+            &job,
+            &pg_params(),
+            &options,
+            PgRestoreTxn::OneTransaction,
+            &tools,
+        )
+        .unwrap_or_else(|e| panic!("the fake {label} restore must succeed: {e}"));
+
+        assert_eq!(
+            std::fs::read_to_string(&seen).unwrap(),
+            crate::db::restore_watch::restore_application_name("restore-job-1"),
+            "the {label} restore's child must announce itself as this job's backend"
+        );
+        let _ = std::fs::remove_file(fake);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A restore the lock watchdog stopped must report the wait it hit, not the
+/// tool's symptom ("terminating connection due to administrator command"), which
+/// tells the user nothing about the lock that is blocking them.
+#[cfg(unix)]
+#[test]
+fn a_restore_stopped_by_the_lock_watchdog_reports_the_wait() {
+    let dir = job_temp_dir("restore_lock_stop");
+    let pg_restore = write_executable_script(
+        "pg_restore_lock_stop",
+        "#!/bin/sh\necho 'pg_restore: error: could not execute query: FATAL:  terminating connection due to administrator command' >&2\nexit 1\n",
+    );
+    let tools = PgToolPaths {
+        pg_dump: String::new(),
+        pg_restore: pg_restore.to_string_lossy().into_owned(),
+        psql: String::new(),
+    };
+    let options = RestoreOptions {
+        format: "custom".into(),
+        file_path: dir.join("dump").to_string_lossy().to_string(),
+        clean: false,
+        schema: None,
+    };
+    let waited = std::time::Duration::from_secs(60);
+    let job = crate::job::JobRegistry::new().begin("restore-job-2");
+    job.note_stop_reason(crate::db::restore_watch::lock_wait_stop_message(waited));
+
+    let failure = run_pg_restore_managed(
+        &job,
+        &pg_params(),
+        &options,
+        PgRestoreTxn::OneTransaction,
+        &tools,
+    )
+    .expect_err("the fake restore fails");
+    let _ = std::fs::remove_file(pg_restore);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(
+        failure.message,
+        crate::db::restore_watch::lock_wait_stop_message(waited),
+        "the watchdog's reason must be reported, not the tool's symptom"
+    );
+    assert!(!failure.cancelled, "a lock stop is a failure, not a cancel");
+    assert!(
+        !failure.message.contains("administrator command"),
+        "the raw tool error must not be what the user sees: {}",
+        failure.message
+    );
+}
+
+/// Without a recorded reason the tool's own message is still what is reported.
+#[cfg(unix)]
+#[test]
+fn a_restore_without_a_watchdog_reason_reports_the_tool_error() {
+    let dir = job_temp_dir("restore_no_reason");
+    let pg_restore = write_executable_script(
+        "pg_restore_no_reason",
+        "#!/bin/sh\necho 'pg_restore: error: could not open input file' >&2\nexit 1\n",
+    );
+    let tools = PgToolPaths {
+        pg_dump: String::new(),
+        pg_restore: pg_restore.to_string_lossy().into_owned(),
+        psql: String::new(),
+    };
+    let options = RestoreOptions {
+        format: "custom".into(),
+        file_path: dir.join("dump").to_string_lossy().to_string(),
+        clean: false,
+        schema: None,
+    };
+    let job = crate::job::JobRegistry::new().begin("restore-job-3");
+    let failure = run_pg_restore_managed(
+        &job,
+        &pg_params(),
+        &options,
+        PgRestoreTxn::OneTransaction,
+        &tools,
+    )
+    .expect_err("the fake restore fails");
+    let _ = std::fs::remove_file(pg_restore);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        failure.message.contains("could not open input file"),
+        "the tool's own failure must reach the user: {}",
+        failure.message
+    );
+}
+
+/// The in-process MySQL restore bounds its metadata-lock wait: the server default
+/// is one year, so a restore queued behind another session's transaction would
+/// wait effectively forever.
+#[test]
+fn the_mysql_restore_bounds_its_metadata_lock_wait() {
+    assert_eq!(
+        mysql_lock_wait_bound_statement(60),
+        "SET SESSION lock_wait_timeout = 60"
+    );
+    assert!(
+        (30..=300).contains(&MYSQL_RESTORE_LOCK_WAIT_SECONDS),
+        "the bound must be generous but finite, got {MYSQL_RESTORE_LOCK_WAIT_SECONDS}"
+    );
 }

@@ -391,6 +391,33 @@ fn the_registry_tracks_begin_finish_and_unknown_jobs() {
     assert!(registry.active().is_empty());
 }
 
+/// An in-process job (SQLite dump/restore/sync, MySQL restore) owns no child
+/// process, so "did it have a child" must not double as "was there a job".
+/// Returning false here made `cancel_tool_job` answer "not running" and the UI
+/// skip its cancelled state while the job kept going.
+#[test]
+fn a_cancel_accepts_a_job_that_owns_no_child_process() {
+    let registry = JobRegistry::new();
+    let job = registry.begin("in-process");
+    assert!(
+        job.child_pids().is_empty(),
+        "this job must own no child to reproduce the in-process case"
+    );
+
+    assert!(
+        registry.cancel("in-process"),
+        "a registered in-process job must be reported as cancellable"
+    );
+    assert!(
+        job.is_cancelled(),
+        "the cancellation flag the in-process engine polls must be set"
+    );
+
+    // Once it finished, the id no longer names a running job.
+    registry.finish("in-process");
+    assert!(!registry.cancel("in-process"));
+}
+
 #[cfg(unix)]
 #[test]
 fn cancelling_one_job_leaves_another_running() {

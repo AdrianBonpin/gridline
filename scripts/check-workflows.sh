@@ -240,10 +240,48 @@ else
   pass "no workflow uses pull_request_target"
 fi
 
-if grep -q 'scripts/check-workflows\.sh' .github/workflows/ci.yml 2>/dev/null; then
+# The check must be EXECUTED by ci.yml, not mentioned by it. A plain grep over the
+# file is satisfied by a comment ("see scripts/check-workflows.sh"), which is how
+# deleting the real step could still pass this check. So the assertion matches an
+# actual *invocation*: a command line inside a `run:` value (single-line or a
+# `run: |` block) whose command is the script itself — optionally behind
+# `bash`/`sh`, `./`, or leading `VAR=value` assignments. Comment text is stripped
+# first, and a `run: echo '…check-workflows.sh'` is not an invocation.
+ci_runs_checker="$(awk '
+  function code(s) { sub(/#.*/, "", s); return s }
+  function indent(s,  n) { n = 0; while (substr(s, n + 1, 1) == " ") n++; return n }
+  function invokes(s,  t) {
+    t = code(s)
+    sub(/^[[:space:]]+/, "", t)
+    # Leading environment assignments do not change which command runs.
+    while (t ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/) {
+      sub(/^[^[:space:]]+[[:space:]]+/, "", t)
+    }
+    sub(/^(bash|sh|zsh)[[:space:]]+/, "", t)
+    return t ~ /^(\.\/)?scripts\/check-workflows\.sh([[:space:]]|$)/
+  }
+  {
+    line = $0
+    if (inrun) {
+      if (indent(line) > run_indent) {
+        if (invokes(line)) found = 1
+        next
+      }
+      inrun = 0
+    }
+    if (line ~ /^[[:space:]]*(-[[:space:]]+)?run:/) {
+      value = line
+      sub(/^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*/, "", value)
+      if (invokes(value)) found = 1
+      if (code(value) ~ /^[|>]/) { inrun = 1; run_indent = indent(line) }
+    }
+  }
+  END { if (found) print "yes" }
+' .github/workflows/ci.yml 2>/dev/null)"
+if [ -n "$ci_runs_checker" ]; then
   pass "ci.yml runs scripts/check-workflows.sh"
 else
-  fail "ci.yml does not run scripts/check-workflows.sh, so these checks are not enforced"
+  fail "ci.yml does not RUN scripts/check-workflows.sh (a comment or an echo that mentions it does not enforce these checks)"
 fi
 
 # Documentation must not advertise a release path that no longer exists (a
@@ -1118,6 +1156,51 @@ else
 fi
 
 [ "$dep_ok" = "1" ] && pass "dependency automation covers both Bun lockfiles and cargo, the advisory + lockfile gates are wired, and CI builds every release platform"
+
+# --------------------------------------------------------------------------
+# 10. The release pipeline is GATED by the checks before it builds (ticket 50).
+# --------------------------------------------------------------------------
+# A tag names a release candidate, so the checks have to run on that exact commit
+# BEFORE anything is built or published. Without a gate job a version mismatch or
+# a failing test was only discovered after the draft release — and its
+# installers — already existed: `bump-cask` reads the published DMG names, so the
+# mismatch surfaced in the cask bump, i.e. after publication.
+gate_ok=1
+job_region() { # <workflow> <job name>
+  awk -v want="  $2:" '
+    $0 == want { injob = 1; next }
+    injob && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { injob = 0 }
+    injob { print }
+  ' "$1"
+}
+
+gate_job="$(job_region "$release_wf" gate)"
+publish_job="$(job_region "$release_wf" publish)"
+if [ -z "$gate_job" ]; then
+  fail "$release_wf has no 'gate' job, so a tag is built and published without running the checks"
+  gate_ok=0
+else
+  for needle in 'bun install --frozen-lockfile' 'cargo test' 'bun run test' \
+    'bun run --filter gridline-desktop build' 'src/lib/version.test.ts'; do
+    printf '%s\n' "$gate_job" | grep -qF -- "$needle" ||
+      { fail "the release gate does not run '${needle}', so a bad tag can still reach publication"; gate_ok=0; }
+  done
+  # The gate tests the release commit; it must not be able to publish or upload.
+  if printf '%s\n' "$gate_job" | grep -q 'contents:[[:space:]]*write'; then
+    fail "the release gate holds a write token; it only needs to test the commit"
+    gate_ok=0
+  fi
+  printf '%s\n' "$gate_job" | grep -qE '^    permissions:' ||
+    { fail "the release gate has no job-level permissions block"; gate_ok=0; }
+fi
+if [ -z "$publish_job" ]; then
+  fail "could not read the release 'publish' job from ${release_wf}"
+  gate_ok=0
+elif ! printf '%s\n' "$publish_job" | grep -qE '^    needs:[[:space:]]*\[?[[:space:]]*gate([[:space:],\]]|$)'; then
+  fail "release.yml's 'publish' job does not need the 'gate' job, so it can build and publish before the checks pass"
+  gate_ok=0
+fi
+[ "$gate_ok" = "1" ] && pass "the release pipeline is gated: the checks run on the tagged commit and 'publish' waits for them"
 
 if [ "$status" -eq 0 ]; then
   printf '\ncheck-workflows: all checks passed\n'

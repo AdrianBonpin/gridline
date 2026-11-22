@@ -897,6 +897,50 @@ struct ColumnEdit<'a> {
 ///
 /// Every requested edit produces its own statement, so a submission that
 /// combines a rename with other edits stages all of them.
+/// Why an edit that moves columns cannot be staged as `ALTER TABLE`.
+pub const TABLE_EDIT_POSITION_ERROR: &str = "PostgreSQL cannot move or insert a column with ALTER TABLE, \
+so this edit would apply only part of what was asked. Apply the rename/add/drop/type change first, \
+then move the columns in a second edit (moving columns without renaming them is staged as a table rebuild).";
+
+/// Reject an edit that REORDERS existing columns, which `ALTER TABLE` cannot
+/// express.
+///
+/// `ALTER TABLE` appends a column and drops one; it cannot move an existing one.
+/// Every other rule in [`table_diff`] is about names and attributes, so without
+/// this check a submission that renames a column *and* moves it staged the rename
+/// only and silently ignored the move — the drag looked applied and was not. The
+/// frontend routes a reorder of unchanged names to the table rebuild; a rename
+/// changes the names, so a submission combining both cannot use that path and is
+/// refused here instead.
+///
+/// A column added between two existing ones is deliberately NOT rejected: ticket
+/// 07 establishes that an entry's position is never read as its identity, so a
+/// new column is simply appended (see `table_edit_add_in_middle_stages_only_add`).
+fn ensure_position_is_expressible(
+    edits: &[ColumnEdit<'_>],
+    old: &[TableColumn],
+) -> Result<(), String> {
+    let live_position: std::collections::HashMap<&str, usize> = old
+        .iter()
+        .enumerate()
+        .map(|(index, column)| (column.name.as_str(), index))
+        .collect();
+    let mut highest: Option<usize> = None;
+    for edit in edits {
+        let Some(source) = edit.source else {
+            continue;
+        };
+        let position = *live_position
+            .get(source.name.as_str())
+            .ok_or(TABLE_EDIT_POSITION_ERROR)?;
+        if highest.is_some_and(|previous| position < previous) {
+            return Err(TABLE_EDIT_POSITION_ERROR.to_string());
+        }
+        highest = Some(position);
+    }
+    Ok(())
+}
+
 fn table_diff(q: &str, old: &[TableColumn], new: &[TableColumn]) -> Result<Vec<String>, String> {
     for c in new {
         validate_object_name(&c.name)?;
@@ -961,6 +1005,15 @@ fn table_diff(q: &str, old: &[TableColumn], new: &[TableColumn]) -> Result<Vec<S
         }
     }
     let renamed_away: HashSet<&str> = renames.iter().map(|(from, _)| *from).collect();
+
+    // 0b. Column POSITION is not expressible in `ALTER TABLE`: PostgreSQL can
+    // append a column and drop one, but it cannot move one, and it cannot insert
+    // one between two existing columns. The frontend routes a pure reorder (same
+    // names, different order) to the table rebuild; a submission that also
+    // renames, adds or drops cannot use that path, so the reorder part would be
+    // silently dropped — the rename would apply and the column order the user
+    // dragged would not. Refusing is the only honest option here.
+    ensure_position_is_expressible(&edits, old)?;
 
     // 1. RENAMEs first, so the ALTERs below can address the new name.
     let mut out: Vec<String> = renames
@@ -2159,7 +2212,11 @@ mod tests {
     }
 
     #[test]
-    fn table_edit_reorder_never_emits_rename() {
+    fn table_edit_reorder_is_refused_instead_of_staged_silently() {
+        // The frontend routes a pure reorder (unchanged names) to the rebuild
+        // path, so this shape only reaches `table_diff` when the submission is
+        // not rebuild-eligible — and then it used to stage NOTHING at all while
+        // the UI showed the dragged order.
         let p = serde_json::json!({
             "schema": "public", "name": "users",
             "action": { "op": "edit",
@@ -2175,11 +2232,36 @@ mod tests {
                 ]
             }
         });
-        let sql = build_ddl("table", p).unwrap();
+        let err = build_ddl("table", p).expect_err("a reorder must not stage silently");
+        assert_eq!(err, TABLE_EDIT_POSITION_ERROR);
         assert!(
-            sql.is_empty(),
-            "a reorder stages nothing here; got: {sql:?}"
+            !err.contains("RENAME"),
+            "a reorder must never be reported as a rename: {err}"
         );
+    }
+
+    #[test]
+    fn table_edit_rename_plus_reorder_is_refused() {
+        // The reported bug: rename `name` -> `label` AND move `age` before it.
+        // `table_diff` can express the rename but not the move, so only the
+        // rename was staged and the order the user dragged was silently lost.
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "label", "type": "text", "nullable": true, "default": null, "is_pk": false, "renamed_from": "name" }
+                ]
+            }
+        });
+        let err = build_ddl("table", p).expect_err("rename + reorder must be refused");
+        assert_eq!(err, TABLE_EDIT_POSITION_ERROR);
     }
 
     #[test]

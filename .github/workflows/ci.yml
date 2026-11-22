@@ -146,11 +146,18 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test
 
-      - name: Run frontend tests
-        run: bun run test
-
+      # The build runs BEFORE the tests so the built-product seam
+      # (desktop/e2e/builtPolicy.test.ts) actually reads `desktop/dist` instead
+      # of skipping itself. `GRIDLINE_REQUIRE_BUILT_POLICY=1` makes a missing
+      # artifact a failure, so the packaged policy cannot be green without being
+      # checked against the bundle Tauri embeds.
       - name: Build the desktop frontend
         run: bun run --filter gridline-desktop build
+
+      - name: Run frontend tests (against the built bundle)
+        env:
+          GRIDLINE_REQUIRE_BUILT_POLICY: "1"
+        run: bun run test
 
       # The website is a workspace member with its own production build (Astro +
       # the OG-image prebuild). It is not covered by the desktop build, and the
@@ -220,11 +227,15 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test
 
-      - name: Run frontend tests
-        run: bun run test
-
+      # Same ordering as the `checks` job: build first, then test against the
+      # built bundle (see desktop/e2e/builtPolicy.test.ts).
       - name: Build the desktop frontend
         run: bun run --filter gridline-desktop build
+
+      - name: Run frontend tests (against the built bundle)
+        env:
+          GRIDLINE_REQUIRE_BUILT_POLICY: "1"
+        run: bun run test
 
   # Targeted built-product coverage: launches the real (non-AppImage) desktop
   # binary through tauri-driver + WebKitWebDriver under Xvfb, opens the demo

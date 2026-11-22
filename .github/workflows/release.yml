@@ -80,10 +80,94 @@ env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  # Tag-time gate (ticket 50, "releasable"): a tag names a release candidate, so
+  # the commit it points at has to pass the checks a pull request does BEFORE
+  # anything is built or published. Without this job a version mismatch or a
+  # failing test was only discovered after the draft release (and its installers)
+  # already existed — `bump-cask` reads the published DMG names, so the mismatch
+  # surfaced in the cask bump, i.e. after publication.
+  #
+  # Deliberately Linux-only and read-only: it tests the release commit, it never
+  # builds or uploads an artifact, and it holds no write token.
+  gate:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.bump_cask != true)
+    runs-on: ubuntu-22.04
+    # Bounded: a hung test binary cannot hold the release for hours.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      # Tauri v2 needs these to compile the crate on Linux (same list as ci.yml).
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: './desktop/src-tauri -> target'
+          key: release-gate
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      # The release pipeline's own trust rules, re-asserted on the exact commit
+      # that is about to be published.
+      - name: Check release pipeline hygiene
+        run: ./scripts/check-workflows.sh
+
+      # Version consistency first: it is the failure this gate exists for, and it
+      # costs a second, so a tag whose manifests disagree fails here instead of
+      # after four platform builds.
+      - name: Verify the release version is consistent everywhere
+        working-directory: desktop
+        run: >-
+          bunx vitest run
+          src/lib/version.test.ts
+          src/lib/bundle-config.test.ts
+          src/lib/docs-coverage.test.ts
+
+      - name: Check Rust formatting
+        working-directory: desktop/src-tauri
+        run: cargo fmt --all --check
+
+      - name: Run Rust tests
+        working-directory: desktop/src-tauri
+        run: cargo test
+
+      # Build before the tests: the built-product seam
+      # (desktop/e2e/builtPolicy.test.ts) reads `desktop/dist`, and
+      # `GRIDLINE_REQUIRE_BUILT_POLICY=1` makes a missing artifact a failure
+      # instead of a silent skip.
+      - name: Build the desktop frontend
+        run: bun run --filter gridline-desktop build
+
+      - name: Run frontend tests (against the built bundle)
+        env:
+          GRIDLINE_REQUIRE_BUILT_POLICY: "1"
+        run: bun run test
+
   publish:
     # Build + draft release happen on a tag push or a dispatch that isn't a
     # cask-only run. The `release: published` event exists only to trigger the
     # cask bump below.
+    needs: gate
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.bump_cask != true)
     env:
       # Empty when the secret is unset — the tool steps below test for a
