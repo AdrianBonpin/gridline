@@ -3665,11 +3665,21 @@ fn mysql_sync_reports_a_failed_dump_even_when_restore_succeeds() {
 fn write_executable_script(name: &str, body: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
-    let path = std::env::temp_dir().join(format!("gridline_{name}_{}.sh", uuid::Uuid::new_v4()));
-    std::fs::write(&path, body).unwrap();
-    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    // Publish atomically: the body and its mode are set on a private temp file
+    // and only then renamed into the path that gets exec'ed, so the executed
+    // path is never a file that was still being written. (`exec` of a file with
+    // a live write handle fails with `ETXTBSY` on Linux — see
+    // `crate::job::spawn_tool` for the retry that covers the remaining
+    // inherited-handle window, which a rename cannot close: rename keeps the
+    // inode.)
+    let stem = format!("gridline_{name}_{}", uuid::Uuid::new_v4());
+    let tmp = std::env::temp_dir().join(format!("{stem}.sh.tmp"));
+    let path = std::env::temp_dir().join(format!("{stem}.sh"));
+    std::fs::write(&tmp, body).unwrap();
+    let mut permissions = std::fs::metadata(&tmp).unwrap().permissions();
     permissions.set_mode(0o700);
-    std::fs::set_permissions(&path, permissions).unwrap();
+    std::fs::set_permissions(&tmp, permissions).unwrap();
+    std::fs::rename(&tmp, &path).unwrap();
     path
 }
 
