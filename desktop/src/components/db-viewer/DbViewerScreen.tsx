@@ -1858,11 +1858,19 @@ const onQueriesPanelResizeStart = useCallback(
                                                                         rules,
                                                                     )
                                                                 }
-                                                                // An ad-hoc query tab never gets an
-                                                                // auto-refresh timer: its text is
-                                                                // reviewed per execution, not run on a
-                                                                // hidden schedule.
-                                                                defaultRefreshRate={0}
+                                                                // The user's auto-refresh setting is
+                                                                // handed over unchanged, exactly as the
+                                                                // table variant gets it: a query tab's
+                                                                // text is reviewed per execution, so the
+                                                                // toolbar's `isQuery` guard — not a
+                                                                // magic zero here — is what keeps a
+                                                                // hidden timer from re-running it.
+                                                                // Passing a real rate is also what makes
+                                                                // that guard testable from this screen.
+                                                                defaultRefreshRate={
+                                                                    settings?.table_refresh_rate ??
+                                                                    0
+                                                                }
                                                                 onRequestPage={
                                                                     handleQueryPageChange
                                                                 }

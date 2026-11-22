@@ -1,5 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+/// The one user-facing message for a saved connection id that is not in the
+/// store.
+///
+/// Every command that resolves a saved row (backup / restore / sync, the DB
+/// viewer's DDL and change paths, schema diff) reports a missing row through
+/// this helper, so the renderer sees one shape instead of the three that used
+/// to coexist (`Connection not found: <id>`, `connection <id> not found`).
+pub fn connection_not_found(connection_id: &str) -> String {
+    format!("Connection not found: {connection_id}")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Connection {
     pub id: String,

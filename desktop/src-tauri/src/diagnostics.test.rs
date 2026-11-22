@@ -32,9 +32,20 @@ fn truncate_cuts_at_a_character_boundary() {
     assert!(!s.is_char_boundary(397), "the fixture straddles the cut");
 
     let out = truncate(&s, MAX_ERROR_BYTES);
+    // The marker starts exactly where the kept bytes end, so `kept` is the cut
+    // index. Asserting it is a boundary of the *input* is what fails when the
+    // cut lands inside `日`: a lossy implementation would keep 399 bytes (with a
+    // replacement character), and a byte-index slice would have panicked before
+    // reaching this assertion.
+    let kept = out.len() - "...".len();
     assert!(
-        out.is_char_boundary(out.len()),
-        "the result is a valid string"
+        s.is_char_boundary(kept),
+        "the cut lands on a character boundary of the input: {kept}"
+    );
+    assert_eq!(kept, 396, "the cut backs off to the last complete byte");
+    assert!(
+        s.starts_with(&out[..kept]),
+        "the kept bytes are a prefix of the input: {out:?}"
     );
     assert!(out.len() <= MAX_ERROR_BYTES, "capped: {} bytes", out.len());
     assert!(out.ends_with("..."), "marks the truncation: {out:?}");
@@ -43,6 +54,39 @@ fn truncate_cuts_at_a_character_boundary() {
         "x".repeat(396),
         "the bytes before the cut survive untouched"
     );
+}
+
+/// Every cut position over text that mixes 1-, 3- and 4-byte characters: the
+/// kept bytes are always a complete prefix of the input (never a split
+/// character), always within the cap, and the ellipsis appears exactly when
+/// something was dropped.
+///
+/// The single-fixture test above pins one cut index only, so an implementation
+/// that steps back a fixed number of bytes, or assumes 2-byte characters, can
+/// pass it and still corrupt text elsewhere. This sweep is what fails then.
+#[test]
+fn truncate_keeps_a_complete_prefix_at_every_cut() {
+    let s = format!("{}{}{}", "x".repeat(5), "日本語", "😀😀");
+    assert_eq!(s.len(), 5 + 9 + 8, "fixture: 1-, 3- and 4-byte characters");
+
+    for cap in 0..=s.len() + 2 {
+        let out = truncate(&s, cap);
+        assert!(out.len() <= cap.max(3), "cap {cap}: {} bytes", out.len());
+        let body = out.strip_suffix("...").unwrap_or(&out);
+        assert!(
+            s.starts_with(body),
+            "cap {cap}: the kept bytes are a complete prefix of the input: {out:?}"
+        );
+        assert!(
+            s.is_char_boundary(body.len()),
+            "cap {cap}: the cut lands on a character boundary, not inside one"
+        );
+        assert_eq!(
+            out.ends_with("..."),
+            body.len() < s.len(),
+            "cap {cap}: the marker appears exactly when bytes were dropped: {out:?}"
+        );
+    }
 }
 
 /// `redact` truncates too, so it carries the same Unicode obligation.

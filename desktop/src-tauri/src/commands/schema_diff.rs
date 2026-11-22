@@ -1,6 +1,7 @@
 //! Thin `compare_schemas` command (spec §4: two pool lookups → snapshots →
 //! diff; errors name the failing side; staging never happens here).
 
+use crate::models::connection::connection_not_found;
 use crate::models::db_viewer::DiffReport;
 use tauri::State;
 
@@ -34,7 +35,7 @@ fn connection_db_type(
         .iter()
         .find(|c| c.id == connection_id)
         .map(|c| c.db_type.clone())
-        .ok_or_else(|| format!("connection {connection_id} not found"))
+        .ok_or_else(|| connection_not_found(connection_id))
 }
 
 #[tauri::command]
