@@ -6,6 +6,43 @@ import { persistDbPassword } from "../lib/keychain";
 // In-memory passwords for connections with use_keychain=false (never persisted).
 const sessionPasswords = new Map<string, string>();
 
+/**
+ * Remember a keychain-off password in backend memory so tool jobs can use it.
+ *
+ * `pg_dump`/`pg_restore`/`psql`/`mariadb-dump` and DDL copy run in Rust, where
+ * the renderer's session map is unreachable. The backend copy is memory-only;
+ * if the call fails the job simply asks for the password again (a prompt), never
+ * an empty credential.
+ */
+async function mirrorSessionPassword(connectionId: string, password: string): Promise<void> {
+  try {
+    await cmd.storeSessionCredential(connectionId, password);
+  } catch {
+    /* The tool job will prompt instead of authenticating with nothing. */
+  }
+}
+
+async function forgetMirroredSessionPassword(connectionId: string): Promise<void> {
+  try {
+    await cmd.forgetSessionCredential(connectionId);
+  } catch {
+    /* Best-effort: the session ends with the process anyway. */
+  }
+}
+
+/**
+ * The tool job that is waiting for a session password, if any.
+ *
+ * One prompt at a time: a new request resolves any earlier waiter with `null`
+ * (cancelled) so a stale answer can never satisfy another connection's job.
+ */
+let pendingSessionCredential: ((password: string | null) => void) | null = null;
+
+interface SessionCredentialPrompt {
+  connectionId: string;
+  connectionName: string;
+}
+
 interface ConnectionState {
   connections: Connection[]; folders: Folder[]; tags: Tag[];
   tagOrder: string[];
@@ -31,12 +68,22 @@ interface ConnectionState {
   moveSelectionToFolder: (selectedIds: string[], targetFolderId: string | null) => Promise<void>;
   cachePassword: (connectionId: string, password: string) => Promise<void>;
   getConnectionPassword: (connectionId: string) => Promise<string | null>;
-  setSessionPassword: (connectionId: string, password: string) => void;
-  clearSessionPassword: (connectionId: string) => void;
+  setSessionPassword: (connectionId: string, password: string) => Promise<void>;
+  clearSessionPassword: (connectionId: string) => Promise<void>;
+  /** The tool job waiting for a session password (keychain-off connection). */
+  sessionCredentialPrompt: SessionCredentialPrompt | null;
+  /**
+   * Ask for a keychain-off connection's password because a tool job needs it.
+   * Resolves to the entered password, or `null` when the user cancels.
+   */
+  requestSessionCredential: (connectionId: string) => Promise<string | null>;
+  /** Answer (or cancel) the pending prompt. */
+  resolveSessionCredential: (password: string | null) => void;
 }
 
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
   connections: [], folders: [], tags: [], tagOrder: [], recent: [], loading: false, error: null,
+  sessionCredentialPrompt: null,
   loadAll: async () => {
     set({ loading: true, error: null });
     try {
@@ -140,7 +187,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     // Remove password from keychain
     try { await cmd.deleteConnectionPassword(id); } catch { /* ignore */ }
     // Drop any session-only password for the connection
-    sessionPasswords.delete(id);
+    await get().clearSessionPassword(id);
     set((s) => ({ connections: s.connections.filter((c) => c.id !== id) }));
   },
   createFolder: async (input) => {
@@ -174,7 +221,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   cachePassword: async (connectionId, password) => {
     const conn = get().connections.find((c) => c.id === connectionId);
     if (conn && conn.use_keychain === false) {
-      sessionPasswords.set(connectionId, password);
+      await get().setSessionPassword(connectionId, password);
       return;
     }
     await cmd.saveConnectionPassword(connectionId, password);
@@ -186,11 +233,34 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     }
     return cmd.getConnectionPassword(connectionId);
   },
-  setSessionPassword: (connectionId, password) => {
+  setSessionPassword: async (connectionId, password) => {
     sessionPasswords.set(connectionId, password);
+    // The backend copy must exist before a tool job is retried, so this is
+    // awaited by `withSessionCredential`.
+    await mirrorSessionPassword(connectionId, password);
   },
-  clearSessionPassword: (connectionId) => {
+  clearSessionPassword: async (connectionId) => {
     sessionPasswords.delete(connectionId);
+    await forgetMirroredSessionPassword(connectionId);
+  },
+  requestSessionCredential: (connectionId) => {
+    pendingSessionCredential?.(null);
+    return new Promise<string | null>((resolve) => {
+      pendingSessionCredential = resolve;
+      const conn = get().connections.find((c) => c.id === connectionId);
+      set({
+        sessionCredentialPrompt: {
+          connectionId,
+          connectionName: conn?.name ?? connectionId,
+        },
+      });
+    });
+  },
+  resolveSessionCredential: (password) => {
+    const resolve = pendingSessionCredential;
+    pendingSessionCredential = null;
+    set({ sessionCredentialPrompt: null });
+    resolve?.(password);
   },
   addTagToItems: async (tagId, folderIds, connectionIds) => {
     await Promise.all([

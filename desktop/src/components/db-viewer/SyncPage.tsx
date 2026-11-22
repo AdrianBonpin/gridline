@@ -19,6 +19,7 @@ import {
 } from "../../lib/commands";
 import type { PgToolStatus, MySqlToolStatus, BackupJob, DbType } from "../../lib/types";
 import { isMysqlFamily } from "../../lib/dbCapabilities";
+import { withSessionCredential } from "../../lib/sessionCredential";
 
 export function SyncPage() {
     const [sourceConnectionId, setSourceConnectionId] = useState("");
@@ -172,11 +173,15 @@ export function SyncPage() {
             dbType,
         };
 
-        await runWithProgress("sync", () => {
-            if (isPg) return dbSync(options);
-            if (isMysql) return mysqlSync(options);
-            return sqliteSync(options);
-        });
+        // A sync resolves one credential per side. With keychain persistence off
+        // the backend asks for whichever side is missing; the prompt names it.
+        await runWithProgress("sync", () =>
+            withSessionCredential(sourceConnectionId, () => {
+                if (isPg) return dbSync(options);
+                if (isMysql) return mysqlSync(options);
+                return sqliteSync(options);
+            }),
+        );
     }, [
         sourceConnectionId,
         targetConnectionId,

@@ -333,6 +333,15 @@ export function DbViewerScreen({
     const pendingDestructiveRef = useRef<PendingConfirmation | null>(null);
     const [streamExport, setStreamExport] = useState<{ sql: string } | null>(null);
     const connections = useConnectionStore((s) => s.connections);
+    // A tool job (backup / restore / sync / DDL copy) on a keychain-off
+    // connection asks for its session password through this prompt; answering
+    // retries the same job. Cancelling leaves the job failed, never empty-passed.
+    const sessionCredentialPrompt = useConnectionStore(
+        (s) => s.sessionCredentialPrompt,
+    );
+    const resolveSessionCredential = useConnectionStore(
+        (s) => s.resolveSessionCredential,
+    );
     const currentConnection =
         connections.find((c) => c.id === connectionId) ?? null;
     const capabilities = getCapabilities(currentConnection?.db_type ?? "postgresql");
@@ -2107,6 +2116,14 @@ const onQueriesPanelResizeStart = useCallback(
                     connectionName={currentConnection?.name ?? ""}
                     onConnect={submitPassword}
                     onCancel={cancelPassword}
+                />
+                <PasswordPromptDialog
+                    open={sessionCredentialPrompt !== null}
+                    connectionName={
+                        sessionCredentialPrompt?.connectionName ?? ""
+                    }
+                    onConnect={(password) => resolveSessionCredential(password)}
+                    onCancel={() => resolveSessionCredential(null)}
                 />
                 <SshHostTrustDialog
                     state={sshHostTrustState}

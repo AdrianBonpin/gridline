@@ -7,10 +7,10 @@
 **Seams:** Tool-job seam: catches credential plumbing into subprocesses; misses real keychain prompts.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/77
-**Status:** ready
+**Status:** done
 
-- [ ] With keychain persistence off, a backup succeeds using the session credential.
-- [ ] Restore, sync, and DDL copy behave the same way.
-- [ ] A missing session credential prompts instead of failing with an empty password.
-- [ ] The credential never appears in process arguments, logs, or the local store.
-- [ ] Keychain-enabled connections keep their existing behavior.
+- [x] With keychain persistence off, a backup succeeds using the session credential.
+- [x] Restore, sync, and DDL copy behave the same way.
+- [x] A missing session credential prompts instead of failing with an empty password.
+- [x] The credential never appears in process arguments, logs, or the local store.
+- [x] Keychain-enabled connections keep their existing behavior.

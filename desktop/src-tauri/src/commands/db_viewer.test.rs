@@ -1539,3 +1539,81 @@ async fn live_mysql_single_row_writes_are_atomic_and_conflict_aware() {
         .await
         .expect("cleanup");
 }
+
+// ------------------------------------------------------------------
+// Ticket 27: DDL copy is a tool job too.
+// ------------------------------------------------------------------
+
+/// Copying a table's DDL shells out to `pg_dump`, so a keychain-off connection
+/// must authenticate with the session credential — which reaches the child
+/// through `PGPASSWORD` only, never argv — while the copied DDL is returned
+/// verbatim.
+#[cfg(unix)]
+#[test]
+fn ddl_copy_sends_the_session_password_through_the_environment_only() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = std::env::temp_dir().join(format!(
+        "gridline_ddl_copy_{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let argv_log = dir.join("argv.txt");
+    let env_log = dir.join("env.txt");
+    let pg_dump = dir.join("pg_dump");
+    std::fs::write(
+        &pg_dump,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"--version\" ]; then echo 'pg_dump (PostgreSQL) 16.4'; exit 0; fi\n\
+             printf '%s\\n' \"$@\" > '{}'\n\
+             printf '%s' \"$PGPASSWORD\" > '{}'\n\
+             test \"$PGPASSWORD\" = session-secret || exit 79\n\
+             echo 'CREATE TABLE public.t (id integer);'\n",
+            argv_log.display(),
+            env_log.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&pg_dump).unwrap().permissions();
+    perms.set_mode(0o700);
+    std::fs::set_permissions(&pg_dump, perms).unwrap();
+
+    // The credential a keychain-off connection supplied for this session.
+    let store = crate::session_credential::SessionCredentialStore::new();
+    store.set("conn-session", "session-secret");
+    let password =
+        crate::session_credential::resolve_tool_credential(&store, false, "conn-session", || {
+            panic!("a keychain-off connection must not read the OS keychain")
+        })
+        .expect("the session credential is available");
+
+    let ddl = super::get_pg_ddl_via_dump(
+        "public",
+        "t",
+        "localhost",
+        5432,
+        "u",
+        "db",
+        &password,
+        pg_dump.to_str().unwrap(),
+    );
+
+    let argv = std::fs::read_to_string(&argv_log).unwrap_or_default();
+    let env_password = std::fs::read_to_string(&env_log).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let ddl = ddl.expect("the DDL copy should succeed");
+    assert!(
+        ddl.contains("CREATE TABLE public.t (id integer);"),
+        "the DDL must be returned verbatim: {ddl}"
+    );
+    assert_eq!(
+        env_password, "session-secret",
+        "the credential must travel through PGPASSWORD"
+    );
+    assert!(
+        !argv.contains("session-secret"),
+        "the credential must never be a process argument: {argv}"
+    );
+}

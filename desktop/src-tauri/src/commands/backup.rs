@@ -2255,6 +2255,29 @@ fn emit_result(app_handle: &AppHandle, job_id: &str, result: Result<(), String>)
     emit_job_result(app_handle, job_id, result.map_err(JobFailure::from_engine));
 }
 
+/// Resolve the credential a tool job authenticates with.
+///
+/// A keychain-enabled connection keeps reading the OS keychain (existing
+/// behavior). A connection whose keychain persistence is off authenticates from
+/// the session credential held in backend memory, and refuses the job with
+/// `session-credential-required:<connection_id>` when that credential was never
+/// supplied — the UI prompts instead of letting the tool run with an empty
+/// password. The credential itself never travels through an argument list, a
+/// log line, or the local store; only the child process environment carries it.
+fn tool_password(
+    state: &crate::AppState,
+    app_handle: &AppHandle,
+    connection_id: &str,
+    use_keychain: bool,
+) -> Result<String, String> {
+    crate::session_credential::resolve_tool_credential(
+        &state.session_credentials,
+        use_keychain,
+        connection_id,
+        || crate::commands::keychain::get_connection_password_internal(app_handle, connection_id),
+    )
+}
+
 /// Build the terminal progress event for a finished job. Pure so the
 /// cancelled/failed/completed mapping is unit-testable without a Tauri handle.
 pub fn progress_event(job_id: &str, result: &Result<(), JobFailure>) -> BackupProgressEvent {
@@ -2326,11 +2349,8 @@ pub async fn pg_dump(
             .ok_or_else(|| format!("Connection not found: {connection_id}"))?
     };
 
-    // Get password from keychain
-    let password =
-        crate::commands::keychain::get_connection_password_internal(&app_handle, &connection_id)
-            .unwrap_or_default()
-            .unwrap_or_default();
+    // Keychain when enabled, otherwise the session-only credential (or a prompt).
+    let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
 
     let params = PgConnParams::new(
         conn.host.clone(),
@@ -2380,10 +2400,7 @@ pub async fn pg_restore(
             .ok_or_else(|| format!("Connection not found: {connection_id}"))?
     };
 
-    let password =
-        crate::commands::keychain::get_connection_password_internal(&app_handle, &connection_id)
-            .unwrap_or_default()
-            .unwrap_or_default();
+    let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
 
     let params = PgConnParams::new(
         conn.host.clone(),
@@ -2467,16 +2484,21 @@ pub async fn db_sync(
         (src, tgt)
     };
 
-    // Get passwords
-    let src_password =
-        crate::commands::keychain::get_connection_password_internal(&app_handle, &source_conn.id)
-            .unwrap_or_default()
-            .unwrap_or_default();
-
-    let tgt_password =
-        crate::commands::keychain::get_connection_password_internal(&app_handle, &target_conn.id)
-            .unwrap_or_default()
-            .unwrap_or_default();
+    // Resolve each side's credential independently: a sync may mix a keychain
+    // connection with a session-only one, and the refusal names whichever side
+    // still needs a password.
+    let src_password = tool_password(
+        &state,
+        &app_handle,
+        &source_conn.id,
+        source_conn.use_keychain,
+    )?;
+    let tgt_password = tool_password(
+        &state,
+        &app_handle,
+        &target_conn.id,
+        target_conn.use_keychain,
+    )?;
 
     let source = PgConnParams::new(
         source_conn.host.clone(),
@@ -2725,10 +2747,7 @@ pub async fn mysql_dump(
             .ok_or_else(|| format!("Connection not found: {connection_id}"))?
     };
 
-    let password =
-        crate::commands::keychain::get_connection_password_internal(&app_handle, &connection_id)
-            .unwrap_or_default()
-            .unwrap_or_default();
+    let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
 
     let (host, port, via_tunnel) = mysql_endpoint(&state, &connection_id, &conn);
     // Advisory client/server compatibility check — never blocks the job, and
@@ -2791,10 +2810,7 @@ pub async fn mysql_restore(
             .ok_or_else(|| format!("Connection not found: {connection_id}"))?
     };
 
-    let password =
-        crate::commands::keychain::get_connection_password_internal(&app_handle, &connection_id)
-            .unwrap_or_default()
-            .unwrap_or_default();
+    let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
 
     // Authorize the read before the file is opened: the granted path is the
     // only input this command can be made to use.
@@ -2986,14 +3002,20 @@ pub async fn mysql_sync(
         (src, tgt)
     };
 
-    let src_password =
-        crate::commands::keychain::get_connection_password_internal(&app_handle, &source_conn.id)
-            .unwrap_or_default()
-            .unwrap_or_default();
-    let tgt_password =
-        crate::commands::keychain::get_connection_password_internal(&app_handle, &target_conn.id)
-            .unwrap_or_default()
-            .unwrap_or_default();
+    // Each endpoint resolves its own credential; the refusal names the side
+    // that still needs a session password.
+    let src_password = tool_password(
+        &state,
+        &app_handle,
+        &source_conn.id,
+        source_conn.use_keychain,
+    )?;
+    let tgt_password = tool_password(
+        &state,
+        &app_handle,
+        &target_conn.id,
+        target_conn.use_keychain,
+    )?;
 
     let (src_host, src_port, src_via_tunnel) =
         mysql_endpoint(&state, &source_conn.id, &source_conn);

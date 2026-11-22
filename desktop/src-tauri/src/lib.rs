@@ -10,6 +10,7 @@ mod file_grant;
 mod job;
 mod keychain_acl;
 mod models;
+mod session_credential;
 mod store;
 
 use commands::ssh::{Ssh2Backend, SshTunnelManager};
@@ -32,11 +33,17 @@ pub struct AppState {
     /// Backend-issued File Grants. The only authorization a file-touching
     /// command accepts; a renderer-supplied path authorizes nothing.
     pub file_grants: Arc<crate::file_grant::FileGrantStore>,
+    /// Memory-only credentials for connections whose keychain persistence is
+    /// off, keyed by the saved connection (the Change Origin). Tool jobs that
+    /// cannot reach the OS keychain authenticate from here; a missing entry
+    /// prompts instead of running with an empty password.
+    pub session_credentials: Arc<crate::session_credential::SessionCredentialStore>,
 }
 
 use commands::{
-    backup, connections, db_viewer, demo, folders, import_export, import_file, keychain,
-    maintenance, objects, query, query_export, schema_diff, schema_graph, settings, ssh, tags,
+    backup, connections, credentials, db_viewer, demo, folders, import_export, import_file,
+    keychain, maintenance, objects, query, query_export, schema_diff, schema_graph, settings, ssh,
+    tags,
 };
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -117,6 +124,9 @@ pub fn run() {
                 cancel_registry: crate::cancel::CancelRegistry::default(),
                 jobs: Arc::new(crate::job::JobRegistry::new()),
                 file_grants: Arc::new(crate::file_grant::FileGrantStore::new()),
+                session_credentials: Arc::new(
+                    crate::session_credential::SessionCredentialStore::new(),
+                ),
             });
 
             let state = app.state::<AppState>();
@@ -215,6 +225,8 @@ pub fn run() {
             keychain::save_connection_password,
             keychain::get_connection_password,
             keychain::delete_connection_password,
+            credentials::store_session_credential,
+            credentials::forget_session_credential,
             ssh::ssh_host_trust_state,
             ssh::ssh_host_trust_enroll,
             ssh::ssh_host_trust_reenroll,

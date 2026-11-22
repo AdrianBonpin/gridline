@@ -8,10 +8,23 @@ import * as commands from "../../lib/commands";
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockReturnValue(Promise.resolve(() => {})) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: vi.fn().mockResolvedValue("/tmp/backup.dump") }));
 
-const mockConnections: any[] = [];
-vi.mock("../../stores/connectionStore", () => ({
-  useConnectionStore: (selector: any) => selector({ connections: mockConnections }),
+const sessionCredentialMock = vi.hoisted(() => ({
+  requestSessionCredential: vi.fn(),
+  setSessionPassword: vi.fn(),
 }));
+
+const mockConnections: any[] = [];
+vi.mock("../../stores/connectionStore", () => {
+  // The component reads connections through the hook, and only reaches
+  // `getState()` when a tool job asks for a session password.
+  const hook = ((selector: any) =>
+    selector({ connections: mockConnections })) as any;
+  hook.getState = () => ({
+    requestSessionCredential: sessionCredentialMock.requestSessionCredential,
+    setSessionPassword: sessionCredentialMock.setSessionPassword,
+  });
+  return { useConnectionStore: hook };
+});
 
 describe("BackupPage", () => {
   beforeEach(() => {
@@ -410,5 +423,80 @@ describe("BackupPage File Grant output authorization", () => {
 
     fireEvent.click(screen.getByText("Start Backup"));
     await waitFor(() => expect(dump).toHaveBeenCalledWith("s1", "grant-1"));
+  });
+});
+
+describe("BackupPage session credential prompt (ticket 27)", () => {
+  const grant = {
+    id: "grant-1",
+    path: "/tmp/granted-backup.dump",
+    displayName: "granted-backup.dump",
+    intent: "write" as const,
+    expiresInSeconds: 300,
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockConnections.length = 0;
+    // A keychain-off connection: the password is entered per session only.
+    mockConnections.push({ id: "c1", db_type: "postgresql", name: "p", use_keychain: false });
+    useBackupStore.setState({ jobs: [], activeJobId: null, progress: 0 });
+    useNotificationStore.setState({ notifications: [] });
+    vi.spyOn(commands, "getSchemas").mockResolvedValue(["public"]);
+    vi.spyOn(commands, "detectPgTools").mockResolvedValue({
+      pg_dump_found: true,
+      pg_restore_found: true,
+      pg_dump_version: "16",
+      pg_restore_version: "16",
+      pg_dump_source: "system",
+      pg_restore_source: "system",
+    });
+    sessionCredentialMock.requestSessionCredential.mockReset();
+    sessionCredentialMock.setSessionPassword.mockReset();
+    sessionCredentialMock.requestSessionCredential.mockResolvedValue("typed-password");
+    sessionCredentialMock.setSessionPassword.mockResolvedValue(undefined);
+  });
+
+  it("asks for the session password and retries the backup with the same grant", async () => {
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(grant);
+    const dump = vi
+      .spyOn(commands, "pgDump")
+      .mockRejectedValueOnce(
+        new Error("session-credential-required:c1"),
+      )
+      .mockResolvedValueOnce("job-1");
+
+    render(<BackupPage connectionId="c1" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_dump/i)).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Browse for file"));
+    await waitFor(() => expect(screen.getByTestId("backup-output-path")).toBeTruthy());
+    fireEvent.click(screen.getByText("Start Backup"));
+
+    await waitFor(() => expect(dump).toHaveBeenCalledTimes(2));
+    expect(sessionCredentialMock.requestSessionCredential).toHaveBeenCalledWith("c1");
+    expect(sessionCredentialMock.setSessionPassword).toHaveBeenCalledWith("c1", "typed-password");
+    // The retry is the same job: the credential is resolved before the grant is
+    // consumed, so the retry reuses the selection.
+    expect(dump.mock.calls[1][2]).toBe("grant-1");
+  });
+
+  it("fails visibly when the password prompt is cancelled instead of retrying empty", async () => {
+    vi.spyOn(commands, "selectFileForGrant").mockResolvedValue(grant);
+    const dump = vi
+      .spyOn(commands, "pgDump")
+      .mockRejectedValue(new Error("session-credential-required:c1"));
+    sessionCredentialMock.requestSessionCredential.mockResolvedValue(null);
+
+    render(<BackupPage connectionId="c1" />);
+    await waitFor(() => expect(screen.queryByText(/checking for pg_dump/i)).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Browse for file"));
+    await waitFor(() => expect(screen.getByTestId("backup-output-path")).toBeTruthy());
+    fireEvent.click(screen.getByText("Start Backup"));
+
+    await waitFor(() => expect(dump).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(useBackupStore.getState().jobs[0]?.error_message).toContain("session password is required"));
+    expect(sessionCredentialMock.setSessionPassword).not.toHaveBeenCalled();
   });
 });
