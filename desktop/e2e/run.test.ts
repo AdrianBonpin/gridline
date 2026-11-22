@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { HarnessError } from "./errors.mjs";
-import { executeRun, reexecCommand } from "./run.mjs";
+import { executeRun, main, reexecCommand } from "./run.mjs";
 
 function plan(overrides: Record<string, unknown> = {}) {
   return {
@@ -219,6 +219,25 @@ describe("executeRun", () => {
     expect(artifacts.captureFailure).toHaveBeenCalledWith(
       expect.objectContaining({ client: null }),
     );
+  });
+});
+
+describe("main --list-flows", () => {
+  it("prints the registry one flow per line and runs nothing", async () => {
+    const lines: string[] = [];
+    const execute = vi.fn();
+    const code = await main({
+      argv: ["--list-flows"],
+      cwd: "/repo/desktop",
+      env: {},
+      platform: "darwin",
+      execute,
+      log: (line: string) => lines.push(line),
+    });
+    // No driver, no binary, no display: CI asks this before it builds anything.
+    expect(execute).not.toHaveBeenCalled();
+    expect(code).toBe(0);
+    expect(lines).toEqual(["demo-smoke", "destructive-rerun", "composite-edit", "sqlite-rebuild"]);
   });
 });
 

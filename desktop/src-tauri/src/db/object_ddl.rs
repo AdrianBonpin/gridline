@@ -7,6 +7,15 @@ use crate::models::db_viewer::{ConstraintInfo, EnumInfo, ExtensionInfo, Sequence
 use serde::{Deserialize, Serialize};
 
 /// Column model for the SQLite table editor. Mirrors the frontend payload.
+///
+/// **Every field without a serde default is required**, so a payload that omits
+/// one is a deserialization error rather than a default value. `auto_increment`
+/// and `unique` are the two the editor used to drop for falsy columns
+/// (`TableForm.tsx` `toSqlColumn`), which made every SQLite edit answer
+/// "missing field" instead of "no rebuild refusal" — a safety guard failing
+/// open. The frontend now emits both unconditionally; the backend half of that
+/// contract is `sqlite_column_payload_requires_every_declared_field` in the
+/// tests below.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SqliteColumn {
     pub name: String,
@@ -1285,5 +1294,40 @@ mod tests {
                 .any(|s| s.contains("CREATE TABLE \"main\".\"_gl_t_tmp\"")),
             "type change must rebuild; got {stmts:?}"
         );
+    }
+
+    /// The payload contract the table editor has to satisfy.
+    ///
+    /// `auto_increment` and `unique` have no serde default, so omitting either
+    /// (as the editor did for `false`) rejects the whole payload. This test is
+    /// the backend half of the contract: if someone relaxes the struct to
+    /// `#[serde(default)]`, the frontend test that asserts the editor sends
+    /// both fields unconditionally stays the source of truth — do not delete it.
+    #[test]
+    fn sqlite_column_payload_requires_every_declared_field() {
+        let complete = serde_json::json!({
+            "name": "quantity",
+            "type": "INTEGER",
+            "nullable": false,
+            "default": null,
+            "is_pk": false,
+            "auto_increment": false,
+            "unique": false
+        });
+        let deserialized: SqliteColumn = serde_json::from_value(complete.clone())
+            .expect("the editor's complete payload deserializes");
+        assert!(!deserialized.auto_increment);
+        assert!(!deserialized.unique);
+
+        for field in ["auto_increment", "unique", "is_pk", "nullable"] {
+            let mut without = complete.clone();
+            without.as_object_mut().unwrap().remove(field);
+            let err = serde_json::from_value::<SqliteColumn>(without)
+                .expect_err(&format!("omitting {field} must be rejected, not defaulted"));
+            assert!(
+                err.to_string().contains(field),
+                "the error names the missing field: {err}"
+            );
+        }
     }
 }

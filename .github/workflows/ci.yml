@@ -227,12 +227,13 @@ jobs:
         run: bun run --filter gridline-desktop build
 
   # Targeted built-product coverage: launches the real (non-AppImage) desktop
-  # binary through tauri-driver + WebKitWebDriver under Xvfb, opens the demo
-  # database the app seeds on first launch, and asserts demo rows reach the
-  # grid. A failed launch, a missing window, or an empty grid fails the job and
-  # uploads the launch log plus a screenshot/page source of the failure.
+  # binary through tauri-driver + WebKitWebDriver under Xvfb and drives every
+  # flow in the harness registry — the demo smoke, the destructive re-run entry
+  # points, the composite-key edit, and the SQLite rebuild guard. A failed
+  # launch, a missing window, an empty grid, or a swallowed confirmation fails
+  # the job and uploads each flow's launch log plus a screenshot/page source.
   desktop-e2e:
-    name: desktop e2e (demo smoke)
+    name: desktop e2e (every registered flow)
     needs: changes
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-24.04
@@ -277,17 +278,36 @@ jobs:
       - name: Build the desktop binary
         run: bun run --filter gridline-desktop e2e:build
 
-      - name: Run the desktop E2E smoke flow
-        run: xvfb-run -a bun run --filter gridline-desktop e2e
-
-      # A second launch for the destructive-execution flow: it types SQL into an
-      # ad-hoc query tab and proves both the initial Run button and the toolbar
-      # re-run control raise the confirmation dialog. Separate artifacts dir so
-      # each flow keeps its own log/summary.
-      - name: Run the destructive re-run flow
-        run: >-
-          xvfb-run -a bun run --filter gridline-desktop e2e --
-          --flow destructive-rerun --artifacts e2e-artifacts/destructive
+      # Every *registered* flow runs — the list comes from the harness's own
+      # registry (`desktop/e2e/preflight.mjs` `FLOWS`), not a hand-written subset.
+      # A new flow is therefore exercised by CI the moment it is registered
+      # instead of silently having no lane (composite-edit and sqlite-rebuild had
+      # none when this step only named two flows). Each flow gets its own launch,
+      # its own pristine app-data directory, and its own artifacts folder; a
+      # failing flow does not hide the results of the flows after it, and the step
+      # fails if any of them did.
+      - name: Run every registered desktop E2E flow
+        run: |
+          set -euo pipefail
+          flows="$(bun desktop/e2e/run.mjs --list-flows)"
+          if [ -z "${flows}" ]; then
+            echo "the harness reported no registered flows; refusing to pass CI" >&2
+            exit 1
+          fi
+          echo "registered flows: $(printf '%s' "${flows}" | tr '\n' ' ')"
+          status=0
+          for flow in ${flows}; do
+            echo "::group::desktop e2e flow ${flow}"
+            if xvfb-run -a bun run --filter gridline-desktop e2e -- \
+              --flow "${flow}" --artifacts "e2e-artifacts/${flow}"; then
+              echo "flow ${flow}: PASS"
+            else
+              echo "flow ${flow}: FAIL"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "${status}"
 
       - name: Upload E2E failure artifacts
         if: failure()

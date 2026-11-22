@@ -1,5 +1,6 @@
 import {
   DEMO_CONNECTION_NAME,
+  READ_ONLY_SCRIPT,
   connectionCardSelector,
   destructiveDialogCancelSelector,
   destructiveDialogEscapeKey,
@@ -7,6 +8,7 @@ import {
   destructiveDialogSelector,
   newQueryTabSelector,
   queryEditorInputSelector,
+  queryEditorSurfaceSelector,
   rerunQuerySelector,
   runQuerySelector,
 } from "./expectations.mjs";
@@ -24,6 +26,37 @@ export const DEFAULT_INTERVAL_MS = 250;
  * (each run also gets a pristine app-data directory).
  */
 export const DESTRUCTIVE_SCRIPT = "DELETE FROM products;";
+
+/**
+ * Focus the query editor and type into it.
+ *
+ * Two measured facts drive this helper:
+ *
+ * 1. Monaco's real input is a 1x1 `textarea.inputarea` at `z-index:-10`, painted
+ *    *behind* `.view-lines`. An element-targeted click on it is intercepted by
+ *    `div.view-line` on every platform (W3C: "element click intercepted"), so
+ *    the harness must never click it.
+ * 2. Keys sent to that same element work — and "Element Send Keys" focuses the
+ *    element it is sent to, which is what Monaco listens on.
+ *
+ * So: click the rendered editor surface (a real hit target, and what a user
+ * clicks) to focus, then type into the input area.
+ */
+async function typeInEditor(driver, text, waitForElementFn, poll, label) {
+  const input = await waitForElementFn(driver, queryEditorInputSelector(), {
+    ...poll,
+    label: label ?? "query editor",
+  });
+  const surface = await waitForElementFn(driver, queryEditorSurfaceSelector(), {
+    ...poll,
+    label: "query editor surface",
+  });
+  await driver.click(surface);
+  await driver.sendKeys(input, text);
+  return input;
+}
+
+export { typeInEditor };
 
 function clock(options) {
   return {
@@ -75,8 +108,11 @@ export function waitForAbsent(driver, selector, options) {
  * `run.mjs` supplies the real WebDriver transport.
  */
 export async function runDestructiveRerunFlow(driver, options = {}) {
-  const { connectionName = DEMO_CONNECTION_NAME, script = DESTRUCTIVE_SCRIPT } =
-    options;
+  const {
+    connectionName = DEMO_CONNECTION_NAME,
+    script = DESTRUCTIVE_SCRIPT,
+    readScript = READ_ONLY_SCRIPT,
+  } = options;
   const time = clock(options);
   /** @type {Array<{name: string, durationMs: number}>} */
   const steps = [];
@@ -178,15 +214,39 @@ export async function runDestructiveRerunFlow(driver, options = {}) {
     );
     await driver.click(newQuery);
 
-    await step("editor: type a destructive script", async () => {
-      const input = await waitForElement(driver, queryEditorInputSelector(), {
+    // A result set has to exist before the toolbar — and with it the re-run
+    // control — mounts (`DbViewerScreen` renders `TableControls` only for a tab
+    // with data). A harmless read runs first, so the re-run assertion below is
+    // reachable instead of silently skipping over a control that is not there.
+    await step("reader: type a harmless read", () =>
+      typeInEditor(driver, readScript, waitForElement, poll),
+    );
+    await step("run: the read executes without a confirmation", async () => {
+      const run = await waitForElement(driver, runQuerySelector(), {
         ...poll,
-        label: "query editor",
+        label: "Run query button",
       });
-      // Monaco listens on its hidden input area; clicking focuses it first.
-      await driver.click(input);
-      await driver.sendKeys(input, script);
+      await driver.click(run);
+      // The re-run control only renders once the tab holds a result set, so
+      // waiting for it proves the run completed and the toolbar is mounted.
+      await waitForElement(driver, rerunQuerySelector(), {
+        ...poll,
+        label: "the result toolbar (Re-run query) after a successful read",
+      });
+      if (await driver.findElement(destructiveDialogSelector())) {
+        throw new HarnessError(
+          "a read-only script asked for destructive confirmation: only " +
+            "data-modifying statements may prompt",
+        );
+      }
     });
+
+    // The destructive statement is typed after the read, so the editor holds a
+    // script the guard must stop — and the tab keeps its result set, which is
+    // what makes the toolbar re-run reachable.
+    await step("editor: type a destructive script", () =>
+      typeInEditor(driver, ` ${script}`, waitForElement, poll),
+    );
 
     await step("run: initial Run requires confirmation", async () => {
       await confirmFor("initial Run", runQuerySelector());

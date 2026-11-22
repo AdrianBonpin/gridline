@@ -29,6 +29,7 @@ options:
   --binary <path>       desktop binary to launch (default: src-tauri/target/release/gridline)
   --artifacts <dir>     where launch logs/screenshots are written (default: e2e-artifacts)
   --flow <name>         flow to run (default: ${DEFAULT_FLOW})
+  --list-flows          print every registered flow name (one per line) and exit
   --timeout-ms <ms>     per-step budget (default: ${DEFAULT_TIMEOUT_MS})
   --interval-ms <ms>    poll interval (default: ${DEFAULT_INTERVAL_MS})
   --port <n>            tauri-driver port (default: ${DEFAULT_PORT})
@@ -79,6 +80,7 @@ export function parseArgs(argv) {
     port: DEFAULT_PORT,
     nativePort: DEFAULT_PORT + 1,
     flow: DEFAULT_FLOW,
+    listFlows: false,
     help: false,
   };
 
@@ -102,6 +104,9 @@ export function parseArgs(argv) {
         break;
       case "--flow":
         args.flow = nextValue();
+        break;
+      case "--list-flows":
+        args.listFlows = true;
         break;
       case "--timeout-ms":
         args.timeoutMs = positiveInteger(flag, nextValue());
@@ -151,6 +156,11 @@ export function planRun({
 }) {
   const args = parseArgs(argv);
   if (args.help) return { help: true, usage: USAGE };
+
+  // Listing the registry needs no platform, binary, or display: it is how CI
+  // learns which flows to run, so a newly registered flow is exercised instead
+  // of silently skipped by a hand-maintained list.
+  if (args.listFlows) return { listFlows: true, flows: Object.keys(FLOWS) };
 
   if (platform !== "linux" && platform !== "win32") {
     const name = platform === "darwin" ? "macOS" : platform;

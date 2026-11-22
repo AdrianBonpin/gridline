@@ -94,6 +94,65 @@ describe("changeOriginFor", () => {
   });
 });
 
+describe("SQLite catalog aliases are not database identity", () => {
+  function sqliteConn(overrides: Partial<Connection> = {}): Connection {
+    return conn({
+      db_type: "sqlite",
+      host: "",
+      port: null,
+      username: null,
+      database: "/tmp/app-data/demo.db",
+      ...overrides,
+    });
+  }
+
+  it("records one origin whether the catalog alias has loaded or not", () => {
+    // Measured on the built app: a query tab opened while `getDatabases` was
+    // still in flight recorded `database: ""`, and once the catalog arrived the
+    // viewer reported `database: "main"` — the same file shown as two origins,
+    // which rendered a false "these rows came from … (database default), but the
+    // viewer is now on … (database main)" banner on an empty tab.
+    const beforeCatalog = changeOriginFor(sqliteConn(), "");
+    const afterCatalog = changeOriginFor(sqliteConn(), "main");
+    expect(beforeCatalog).toEqual(afterCatalog);
+    expect(beforeCatalog.database).toBe("");
+    expect(isSameChangeOrigin(beforeCatalog, afterCatalog)).toBe(true);
+    expect(isSameChangeTarget(beforeCatalog, afterCatalog)).toBe(true);
+  });
+
+  it("still separates a different file and a different connection", () => {
+    // Normalising the alias must not make two databases look like one.
+    const demo = changeOriginFor(sqliteConn(), "main");
+    const otherFile = changeOriginFor(sqliteConn({ database: "/tmp/other.db" }), "main");
+    const otherConnection = changeOriginFor(sqliteConn({ id: "c2" }), "main");
+    // A different file is a different origin, so work staged against the old one
+    // can never be committed to it…
+    expect(isSameChangeOrigin(demo, otherFile)).toBe(false);
+    // …while it stays *grouped* under the same saved connection, which is the
+    // documented contract for a retargeted connection (`isSameChangeTarget`):
+    // the pending work stays visible and Commit All explains the retarget
+    // instead of the work vanishing.
+    expect(isSameChangeTarget(demo, otherFile)).toBe(true);
+    expect(describeRetargeting(demo, otherFile)).toContain("other.db");
+    // Another saved connection is a different origin *and* a different group.
+    expect(isSameChangeOrigin(demo, otherConnection)).toBe(false);
+    expect(isSameChangeTarget(demo, otherConnection)).toBe(false);
+  });
+
+  it("keeps the selected database as identity for engines that have one", () => {
+    // PostgreSQL/MySQL really can be pointed at another database, so that name
+    // stays part of the origin (and of `isSameChangeTarget`).
+    expect(changeOriginFor(conn(), "analytics").database).toBe("analytics");
+    expect(changeOriginFor(conn(), "main").database).toBe("main");
+    expect(
+      isSameChangeTarget(
+        changeOriginFor(conn(), ""),
+        changeOriginFor(conn(), "analytics"),
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("isSameChangeOrigin", () => {
   it("matches identical origins", () => {
     expect(

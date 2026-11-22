@@ -112,6 +112,35 @@ export function connectionTarget(connection: ConnectionTargetFields): Connection
   return { fingerprint, label };
 }
 
+/**
+ * The database a Change Origin records — an *identity*, not a display label.
+ *
+ * For PostgreSQL and MySQL the viewer's database selection is the identity: it
+ * is what the pool is connected to, and switching it reconnects, so the name is
+ * kept verbatim.
+ *
+ * SQLite has no database selection to record. The viewer's "database" is the
+ * catalog alias of the single database inside the connection's file (`main`),
+ * and the file itself is already part of the target fingerprint
+ * (`connection.database`). Recording the alias made the *same* file read as two
+ * different origins — `""` while the catalog was still loading, `"main"` once
+ * it arrived — which is the false stale-results banner
+ * ("… demo.db (database default), but the viewer is now on … demo.db (database
+ * main)") and would also split a changes queue from itself.
+ *
+ * Normalising cannot hide a genuinely different database: SQLite has exactly one
+ * per connection, so reaching another one means another file (a different
+ * `connection.database`, hence a different target fingerprint) or another saved
+ * connection (a different `connectionId`). Both still fail the comparison.
+ */
+function originDatabase(
+  connection: { id: string } & ConnectionTargetFields,
+  database: string | null | undefined,
+): string {
+  if (connection.db_type === "sqlite") return "";
+  return normalize(database);
+}
+
 /** Build the Change Origin for a saved connection + the database it is viewing. */
 export function changeOriginFor(
   connection: { id: string } & ConnectionTargetFields,
@@ -120,7 +149,7 @@ export function changeOriginFor(
   const target = connectionTarget(connection);
   return {
     connectionId: connection.id,
-    database: database ?? "",
+    database: originDatabase(connection, database),
     target: target.fingerprint,
     targetLabel: target.label,
   };

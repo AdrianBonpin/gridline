@@ -1,11 +1,13 @@
 import { HarnessError } from "./errors.mjs";
 import {
+  COMPOSITE_TABLE_COLUMNS,
   DEMO_CONNECTION_NAME,
   REBUILD_CREATED_CELLS,
   REBUILD_CREATED_TABLE,
   REBUILD_DROPPED_COLUMN,
   REBUILD_DROPPED_VALUES,
   REBUILD_REFUSAL_WORDS,
+  REBUILD_REFUSED_DROPPED_COLUMN,
   REBUILD_REFUSED_TABLE,
   changesQueueSelector,
   commitAllSelector,
@@ -15,6 +17,7 @@ import {
   gridSelector,
   newQueryTabSelector,
   queryEditorInputSelector,
+  queryEditorSurfaceSelector,
   rebuildFixtureScript,
   rebuildRefusalSelector,
   removeColumnSelector,
@@ -46,9 +49,11 @@ function clock(options) {
  * The flow drives the real built product through both halves of that promise:
  *
  * 1. **Refused before mutation.** The demo's `order_items` carries a composite
- *    key, a CHECK, foreign keys, and an index — everything the current rebuild
- *    script would drop. Dropping a column forces a rebuild, and the editor must
- *    show the blocker, keep Stage disabled, and stage nothing.
+ *    key, a CHECK, a foreign key, and an index, all of which the rebuild script
+ *    preserves. Dropping a column one of those preserved objects *names*
+ *    (`product_id`: the explicit index, and its own foreign key) cannot be
+ *    reproduced, so the editor must show the blocker, keep Stage disabled, and
+ *    stage nothing.
  * 2. **Completed atomically.** A table the flow creates itself (a shape a
  *    rebuild can reproduce) is rebuilt by dropping a column: values land in
  *    their own columns, the dropped column's values disappear, and no row is
@@ -62,6 +67,7 @@ export async function runSqliteRebuildFlow(driver, options = {}) {
   const {
     connectionName = DEMO_CONNECTION_NAME,
     refusedTable = REBUILD_REFUSED_TABLE,
+    refusedDroppedColumn = REBUILD_REFUSED_DROPPED_COLUMN,
     createdTable = REBUILD_CREATED_TABLE,
     expectedCells = REBUILD_CREATED_CELLS,
     droppedColumn = REBUILD_DROPPED_COLUMN,
@@ -110,19 +116,50 @@ export async function runSqliteRebuildFlow(driver, options = {}) {
     await driver.click(editItem);
   }
 
-  /**
-   * Drop the table's last column, which SQLite's ALTER TABLE cannot express, so
-   * the editor has to stage a rebuild (or refuse one).
-   */
-  async function removeLastColumn() {
-    const controls = await pollUntil(
+  /** Every "Remove column" control in the editor, in column order. */
+  async function removeControls() {
+    return pollUntil(
       async () => {
         const found = await driver.findElements(removeColumnSelector());
         return found.length > 0 ? found : null;
       },
       { ...waitOptions(), label: "the editor's Remove column controls" },
     );
+  }
+
+  /**
+   * Drop the table's last column, which SQLite's ALTER TABLE cannot express, so
+   * the editor has to stage a rebuild (or refuse one).
+   */
+  async function removeLastColumn() {
+    const controls = await removeControls();
     await driver.click(controls[controls.length - 1]);
+  }
+
+  /**
+   * Drop a specific column of the demo table, by its position in the seeded
+   * column order (`COMPOSITE_TABLE_COLUMNS`, asserted against the seeder in
+   * `expectations.test.ts`).
+   *
+   * The refusal half has to drop a column a *preserved object names*, so the
+   * removed column cannot simply be "the last one".
+   */
+  async function removeTableColumn(column) {
+    const index = COMPOSITE_TABLE_COLUMNS.indexOf(column);
+    if (index === -1) {
+      throw new HarnessError(
+        `the fixture column ${JSON.stringify(column)} is not one of ` +
+          `${JSON.stringify(COMPOSITE_TABLE_COLUMNS)}`,
+      );
+    }
+    const controls = await removeControls();
+    if (controls.length <= index) {
+      throw new HarnessError(
+        `the editor rendered ${controls.length} column(s), so the Remove control ` +
+          `for ${JSON.stringify(column)} (index ${index}) is not there`,
+      );
+    }
+    await driver.click(controls[index]);
   }
 
   /** Pending changes for the active origin, as the tab bar shows them. */
@@ -151,8 +188,9 @@ export async function runSqliteRebuildFlow(driver, options = {}) {
     await step(`refusal: open the editor for ${refusedTable}`, () =>
       openTableEditor(refusedTable),
     );
-    await step("refusal: drop a column to force a rebuild", () =>
-      removeLastColumn(),
+    await step(
+      `refusal: drop ${refusedDroppedColumn}, which a preserved object names`,
+      () => removeTableColumn(refusedDroppedColumn),
     );
 
     const reason = await step(
@@ -167,6 +205,15 @@ export async function runSqliteRebuildFlow(driver, options = {}) {
           throw new HarnessError(
             `the editor refused the rebuild without naming a blocker ` +
               `(expected one of ${REBUILD_REFUSAL_WORDS.join(", ")}); it showed ` +
+              `${JSON.stringify(text)}`,
+          );
+        }
+        // The refusal has to be about *this* submission: the blocker it names is
+        // the column the edit drops, not a generic property of the table.
+        if (!text.includes(refusedDroppedColumn)) {
+          throw new HarnessError(
+            `the refusal does not name the dropped column ` +
+              `${JSON.stringify(refusedDroppedColumn)}; it showed ` +
               `${JSON.stringify(text)}`,
           );
         }
@@ -200,8 +247,11 @@ export async function runSqliteRebuildFlow(driver, options = {}) {
       const newQuery = await waitFor(newQueryTabSelector(), "New query tab button");
       await driver.click(newQuery);
       const input = await waitFor(queryEditorInputSelector(), "query editor");
-      // Monaco listens on its hidden input area; clicking focuses it first.
-      await driver.click(input);
+      // Focus the rendered editor surface, not the hidden input: Monaco's
+      // `textarea.inputarea` is a 1x1 element behind `.view-lines`, so an
+      // element-targeted click on it is intercepted (see `queryEditorInputSelector`).
+      const surface = await waitFor(queryEditorSurfaceSelector(), "query editor surface");
+      await driver.click(surface);
       await driver.sendKeys(input, rebuildFixtureScript());
       const run = await waitFor(runQuerySelector(), "Run query button");
       await driver.click(run);

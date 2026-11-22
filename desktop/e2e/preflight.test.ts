@@ -36,6 +36,7 @@ describe("parseArgs", () => {
       port: DEFAULT_PORT,
       nativePort: DEFAULT_PORT + 1,
       flow: DEFAULT_FLOW,
+      listFlows: false,
       help: false,
     });
   });
@@ -168,6 +169,27 @@ describe("planRun", () => {
     expect(plan.help).toBe(true);
     expect(plan.usage).toContain("usage: bun run e2e");
     expect(plan.usage).toContain("demo-smoke");
+  });
+
+  it("lists the registered flows instead of planning a run", () => {
+    // CI learns which flows exist from this command, so a newly registered flow
+    // cannot be left out of the lane by a hand-maintained list.
+    const plan = planRun(baseOptions({ argv: ["--list-flows"] }));
+    expect(plan).toEqual({ listFlows: true, flows: Object.keys(FLOWS) });
+    expect(plan.flows).toContain("sqlite-rebuild");
+    // Listing works everywhere: no display, no binary, no Linux requirement.
+    expect(
+      planRun(
+        baseOptions({
+          argv: ["--list-flows"],
+          platform: MACOS,
+          env: {},
+          binaryExists: () => false,
+        }),
+      ),
+    ).toEqual({ listFlows: true, flows: Object.keys(FLOWS) });
+    expect(parseArgs(["--list-flows"]).listFlows).toBe(true);
+    expect(parseArgs([]).listFlows).toBe(false);
   });
 
   it("keeps default path helpers platform-aware", () => {

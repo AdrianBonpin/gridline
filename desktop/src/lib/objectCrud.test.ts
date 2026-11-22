@@ -476,9 +476,12 @@ describe("table/role crud params", () => {
     expect((p as any).action.op).toBe("edit");
     expect((p as any).action.old_columns).toEqual(item.columnMeta);
     // Each editable row remembers its live column, so a name the user edits is
-    // an explicit rename (Column Identity) rather than a positional guess.
+    // an explicit rename (Column Identity) rather than a positional guess — and
+    // the falsy column flags are sent explicitly, because the backend column
+    // models have no serde default for them (an omitted field is a
+    // deserialization error, not `false`).
     expect((p as any).action.columns).toEqual([
-      { ...item.columnMeta![0], original_name: "id" },
+      { ...item.columnMeta![0], unique: false, auto_increment: false, original_name: "id" },
     ]);
   });
   it("initialCrudParams(role, create) starts empty with options", () => {

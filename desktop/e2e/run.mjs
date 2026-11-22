@@ -138,6 +138,11 @@ export async function main({
     return 0;
   }
 
+  if (plan.listFlows) {
+    for (const flow of plan.flows) log(flow);
+    return 0;
+  }
+
   if (plan.reexecUnderXvfb) {
     const { command, args } = reexecCommand({
       argv,

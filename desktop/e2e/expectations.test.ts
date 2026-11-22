@@ -10,6 +10,8 @@ import {
   DEMO_CONNECTION_NAME,
   DEMO_TABLE,
   DEMO_TABLE_CELLS,
+  REBUILD_DROPPED_COLUMN,
+  REBUILD_REFUSED_DROPPED_COLUMN,
   cellEditorSelector,
   changesQueueSelector,
   commitAllSelector,
@@ -108,5 +110,56 @@ describe("composite-key edit flow expectations", () => {
     expect(cellEditorSelector()).toBe('[data-testid="cell-editor"] input');
     expect(changesQueueSelector()).toBe('[data-testid="changes-queue-toggle"]');
     expect(commitAllSelector()).toBe('[data-testid="commit-all"]');
+  });
+});
+
+describe("SQLite rebuild flow expectations", () => {
+  function demoTableBody(): string {
+    const schema = read("desktop/src-tauri/src/commands/demo_schema.sql");
+    const table = new RegExp(
+      `CREATE TABLE IF NOT EXISTS ${COMPOSITE_TABLE} \\(([\\s\\S]*?)\\);`,
+    ).exec(schema);
+    expect(table, `no CREATE TABLE for ${COMPOSITE_TABLE}`).not.toBeNull();
+    return table![1];
+  }
+
+  it("drops a column a preserved object actually names", () => {
+    // The refusal only fires for a dropped column that a preserved index,
+    // trigger, constraint, or generated expression uses (`blockers_for()`).
+    // A fixture that drops a column nothing names asserts a refusal that can
+    // never happen — the stale premise this constant replaced.
+    const body = demoTableBody();
+    expect(COMPOSITE_TABLE_COLUMNS).toContain(REBUILD_REFUSED_DROPPED_COLUMN);
+
+    // …it is named by an explicit index…
+    const schema = read("desktop/src-tauri/src/commands/demo_schema.sql");
+    const index = new RegExp(
+      `CREATE INDEX IF NOT EXISTS \\w+ ON ${COMPOSITE_TABLE}\\(${REBUILD_REFUSED_DROPPED_COLUMN}\\)`,
+    ).test(schema);
+    // …and by a foreign key (inline `REFERENCES` on the column, or a table-level
+    // FOREIGN KEY clause that lists it).
+    const columnLine = body
+      .split("\n")
+      .find((line) => line.trim().startsWith(`${REBUILD_REFUSED_DROPPED_COLUMN} `));
+    const inlineFk = !!columnLine && /REFERENCES/i.test(columnLine);
+    const tableFk = new RegExp(
+      `FOREIGN KEY\\s*\\([^)]*${REBUILD_REFUSED_DROPPED_COLUMN}`,
+      "i",
+    ).test(body);
+    expect(
+      index || inlineFk || tableFk,
+      `${REBUILD_REFUSED_DROPPED_COLUMN} must be named by a preserved object, ` +
+        "or the rebuild refusal cannot fire",
+    ).toBe(true);
+  });
+
+  it("keeps a column the guard does not refuse for", () => {
+    // `unit_price` is named by nothing preserved, so dropping it must NOT be
+    // expected to refuse (this is why it is no longer the refusal fixture).
+    const schema = read("desktop/src-tauri/src/commands/demo_schema.sql");
+    expect(REBUILD_REFUSED_DROPPED_COLUMN).not.toBe(REBUILD_DROPPED_COLUMN);
+    expect(
+      new RegExp(`ON ${COMPOSITE_TABLE}\\(${REBUILD_DROPPED_COLUMN}\\)`).test(schema),
+    ).toBe(false);
   });
 });
