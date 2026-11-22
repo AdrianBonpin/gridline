@@ -75,6 +75,34 @@ describe("packaged AppImage smoke wiring", () => {
     expect(workflow).toMatch(/bun run --filter gridline-desktop e2e:appimage/);
   });
 
+  it("passes every launch an absolute AppImage path", () => {
+    const workflow = read(".github/workflows/appimage-smoke.yml");
+    // `bun run --filter gridline-desktop` runs the smoke with its cwd set to
+    // `desktop/`, while the artifact is downloaded into the repo root. A
+    // repo-root-relative argument resolves to `desktop/dist/...`, which is empty
+    // — that shipped once and made every smoke job fail with "AppImage not
+    // found" before it ever launched the package. Every launch site therefore
+    // has to hand over an absolute path.
+    const launchSites = workflow.match(/appimage="\$PWD\/\$\(ls dist\/\*\.AppImage/g) ?? [];
+    expect(launchSites).toHaveLength(3);
+    expect(workflow).not.toMatch(/\n\s*appimage="\$\(ls dist\/\*\.AppImage/);
+  });
+
+  it("installs the container's tooling before anything that needs it", () => {
+    const workflow = read(".github/workflows/appimage-smoke.yml");
+    const fedora = workflow.slice(workflow.indexOf("  smoke-fedora:"));
+    // A bare `fedora:latest` has no `unzip`, and oven-sh/setup-bun unpacks its
+    // download with it: setting Bun up first failed the job before the smoke ran.
+    const tools = fedora.indexOf("dnf install");
+    // Anchored on the `uses:` line, not the word: the explanatory comment above
+    // the tools step names the action too.
+    const bun = fedora.indexOf("uses: oven-sh/setup-bun");
+    expect(tools).toBeGreaterThan(-1);
+    expect(bun).toBeGreaterThan(-1);
+    expect(tools).toBeLessThan(bun);
+    expect(fedora.slice(tools, bun)).toMatch(/\bunzip\b/);
+  });
+
   it("hands the AppImage from the release build to this lane", () => {
     const release = read(".github/workflows/release.yml");
     expect(release).toContain("name: appimage-linux-x86_64");
