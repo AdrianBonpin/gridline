@@ -163,7 +163,8 @@ pub const MAX_SETTINGS_FILE_BYTES: u64 = 1024 * 1024;
 ///
 /// Atomic publication: the document is written to a temporary sibling, flushed
 /// and synced, then renamed over the destination — a failed export leaves any
-/// existing file intact and no partial artifact behind.
+/// existing file intact and no partial artifact behind (see
+/// [`crate::commands::file_io::write_atomically`]).
 pub(crate) fn export_settings_to_granted_path(
     grants: &crate::file_grant::FileGrantStore,
     store: &Mutex<Store>,
@@ -175,35 +176,7 @@ pub(crate) fn export_settings_to_granted_path(
         crate::file_grant::FileIntent::Write,
     )?;
     let json = settings_export_json(store)?;
-
-    let destination = std::path::Path::new(&path);
-    let name = destination
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| "the settings destination does not name a file".to_string())?;
-    let dir = match destination.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => std::path::Path::new("."),
-    };
-    let partial = dir.join(format!(".{name}.gridline-partial-{}", uuid::Uuid::new_v4()));
-
-    let write = (|| -> Result<(), String> {
-        {
-            use std::io::Write as _;
-            let mut file = std::fs::File::create(&partial)
-                .map_err(|e| format!("cannot create {}: {e}", partial.display()))?;
-            file.write_all(json.as_bytes())
-                .map_err(|e| format!("settings export write failed: {e}"))?;
-            file.sync_all()
-                .map_err(|e| format!("settings export write failed: {e}"))?;
-        }
-        std::fs::rename(&partial, destination)
-            .map_err(|e| format!("cannot replace {}: {e}", destination.display()))
-    })();
-    if write.is_err() {
-        let _ = std::fs::remove_file(&partial);
-    }
-    write?;
+    crate::commands::file_io::write_atomically(std::path::Path::new(&path), json.as_bytes())?;
     Ok(path)
 }
 
@@ -220,19 +193,11 @@ pub(crate) fn read_settings_from_granted_path(
         grant_id,
         crate::file_grant::FileIntent::Read,
     )?;
-    let file = std::path::Path::new(&path);
-    let meta = std::fs::metadata(file)
-        .map_err(|e| format!("cannot read the settings file {path}: {e}"))?;
-    if !meta.is_file() {
-        return Err(format!("the settings file is not a regular file: {path}"));
-    }
-    if meta.len() > MAX_SETTINGS_FILE_BYTES {
-        return Err(format!(
-            "the settings file is too large ({} bytes; the limit is {MAX_SETTINGS_FILE_BYTES})",
-            meta.len()
-        ));
-    }
-    std::fs::read_to_string(file).map_err(|e| format!("cannot read the settings file {path}: {e}"))
+    crate::commands::file_io::read_text_capped(
+        std::path::Path::new(&path),
+        MAX_SETTINGS_FILE_BYTES,
+        "settings file",
+    )
 }
 
 /// Export settings to the file the user selected. `file_grant` is the id from

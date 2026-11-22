@@ -1,33 +1,50 @@
-import { open, save } from "@tauri-apps/plugin-dialog";
-import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { importConnections, exportConnections } from "./commands";
+import {
+  exportConnectionsToFile,
+  importConnections,
+  readConnectionsFile,
+  selectFileForGrant,
+} from "./commands";
 import { errorText } from "./utils";
 import type { ImportResult } from "./types";
 
+/**
+ * Connection transfer files are authorized by Rust File Grants, not by paths.
+ *
+ * The renderer asks the backend to show the native picker (`selectFileForGrant`)
+ * and receives a grant id plus display metadata; the grant is intent-scoped
+ * (read for import, write for export), valid for five minutes and consumed by
+ * the command that touches the file. A path typed or patched into the renderer
+ * therefore authorizes nothing: there is no code path here that could name a
+ * file for the backend to open or overwrite.
+ */
+
 export async function handleImport(): Promise<ImportResult | null> {
-  const filePath = await open({
+  const grant = await selectFileForGrant({
+    intent: "read",
+    title: "Import connections from",
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
-  if (!filePath) return null;
-  const json = await readTextFile(filePath);
+  if (!grant) return null; // cancelled: nothing was authorized
+  const json = await readConnectionsFile(grant.id);
   return importConnections(json);
 }
 
 export async function handleExport(): Promise<string | null> {
-  const filePath = await save({
-    defaultPath: "connections.json",
+  const grant = await selectFileForGrant({
+    intent: "write",
+    title: "Export connections as",
+    defaultName: "connections.json",
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
-  if (!filePath) return null;
-  const json = await exportConnections();
-  await writeTextFile(filePath, json);
-  return filePath;
+  if (!grant) return null; // cancelled: nothing was authorized
+  // Returns the path the backend published to, which is what the UI reports.
+  return exportConnectionsToFile(grant.id);
 }
 
 /**
  * A rejected import has to read like a message, whatever the boundary threw:
- * Tauri rejects a failed command with the backend's plain string, while the
- * file plugins reject with an `Error`.
+ * Tauri rejects a failed command with the backend's plain string (including the
+ * `file-grant-*` states), while a JS-level failure arrives as an `Error`.
  */
 export function importErrorMessage(error: unknown): string {
   return errorText(error);

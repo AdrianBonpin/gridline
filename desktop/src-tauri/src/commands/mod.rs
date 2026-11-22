@@ -4,6 +4,7 @@ pub mod credentials;
 pub mod db_viewer;
 pub mod demo;
 pub mod file_grant;
+pub mod file_io;
 pub mod folders;
 pub mod import_export;
 pub mod import_file;
