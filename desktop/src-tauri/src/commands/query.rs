@@ -403,6 +403,8 @@ fn pg_column_info(c: &tokio_postgres::Column) -> ColumnInfo {
         default_value: None,
         editable: true,
         is_generated: false,
+        is_unique: false,
+        is_auto_increment: false,
     }
 }
 
@@ -517,6 +519,8 @@ async fn pg_verbatim_rows(
                             default_value: None,
                             editable: true,
                             is_generated: false,
+                            is_unique: false,
+                            is_auto_increment: false,
                         })
                         .collect();
                 }
@@ -626,6 +630,8 @@ fn collect_sqlite_rows(
                 default_value: None,
                 editable: true,
                 is_generated: false,
+                is_unique: false,
+                is_auto_increment: false,
             }
         })
         .collect();
@@ -940,6 +946,8 @@ fn mysql_column_info(c: &sqlx::mysql::MySqlColumn) -> ColumnInfo {
         default_value: None,
         editable: true,
         is_generated: false,
+        is_unique: false,
+        is_auto_increment: false,
     }
 }
 
@@ -1225,6 +1233,8 @@ pub(crate) async fn execute_pg_statement(
                                     default_value: None,
                                     editable: true,
                                     is_generated: false,
+                                    is_unique: false,
+                                    is_auto_increment: false,
                                 })
                                 .collect();
                         }

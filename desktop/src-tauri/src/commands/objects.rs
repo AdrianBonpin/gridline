@@ -4,7 +4,7 @@ use crate::db::object_crud::{
 };
 use crate::db::object_ddl::*;
 use crate::db::pool::{ConnectionPoolManager, DbHandle};
-use crate::db::sqlite_rebuild::{live_columns as sqlite_live_columns, read_table_shape};
+use crate::db::sqlite_rebuild::{read_table_shape, SqliteTableShape};
 use crate::models::db_viewer::{DependencyInfo, ExtensionInfo, ObjectSearchHit};
 use tauri::State;
 
@@ -294,28 +294,21 @@ pub async fn get_object_dependencies(
     .await
 }
 
-/// Introspect the live columns of a SQLite table (for the edit/rebuild diff).
-///
-/// The one column snapshot the editor diff, the rebuild guard, and the rebuild
-/// script all share lives in `db::sqlite_rebuild`; keeping a second copy here
-/// would let the guard and the copy step disagree about the table.
-#[cfg(test)]
-fn sqlite_live_columns_for_test(
-    conn: &rusqlite::Connection,
-    table: &str,
-) -> Result<Vec<SqliteColumn>, String> {
-    sqlite_live_columns(conn, table)
-}
-
 /// Refuse a rebuild of this table before any mutation, or `Ok(())` when the
 /// rebuild script can reproduce the live shape faithfully.
 ///
-/// Ticket 08 refuses the shapes the current script would degrade (indexes,
-/// triggers, keys, checks, uniques, generated columns, collations, expression
-/// defaults, table options); ticket 10 adds preservation and lifts those
-/// refusals one by one. Until then the only honest answer is a named refusal.
-fn guard_sqlite_rebuild(conn: &rusqlite::Connection, table: &str) -> Result<(), String> {
-    read_table_shape(conn, table)?.refusal().map_or(Ok(()), Err)
+/// The shape's own blockers (a virtual table, an unreadable stored definition)
+/// are joined by the ones the edit creates (a preserved index, trigger, or
+/// constraint that names a column the submission drops), so the refusal reaches
+/// the editor as a reason instead of surfacing later as a queue error.
+fn guard_sqlite_rebuild(
+    shape: &SqliteTableShape,
+    columns: Option<&[SqliteColumn]>,
+) -> Result<(), String> {
+    match columns {
+        Some(columns) => shape.refusal_for(columns).map_or(Ok(()), Err),
+        None => shape.refusal().map_or(Ok(()), Err),
+    }
 }
 
 /// Build SQL for an object CRUD operation. The pool is resolved only to enforce
@@ -351,19 +344,19 @@ pub(crate) async fn build_object_ddl_inner(
             match op {
                 "create" => Ok(vec![sqlite_create_table_sql(&table, &cols, &[])?]),
                 "edit" => {
-                    let old = sqlite_live_columns(conn, &table)?;
+                    let shape = read_table_shape(conn, &table)?;
                     // A submission that needs a rebuild goes through the rebuild
                     // guard here, so the refusal reaches the editor as a reason
                     // instead of surfacing later as a queue error.
-                    if sqlite_edit_requires_rebuild(&old, &cols)? {
-                        guard_sqlite_rebuild(conn, &table)?;
+                    if sqlite_edit_requires_rebuild(&shape.columns, &cols)? {
+                        guard_sqlite_rebuild(&shape, Some(&cols))?;
                     }
-                    sqlite_column_diff_sql(&table, &old, &cols)
+                    sqlite_column_diff_sql(&table, &shape.columns, &cols, &shape.preserved)
                 }
                 "rebuild" => {
-                    guard_sqlite_rebuild(conn, &table)?;
-                    let old = sqlite_live_columns(conn, &table)?;
-                    sqlite_rebuild_script(&table, &old, &cols)
+                    let shape = read_table_shape(conn, &table)?;
+                    guard_sqlite_rebuild(&shape, Some(&cols))?;
+                    sqlite_rebuild_script(&table, &shape.columns, &cols, &shape.preserved)
                 }
                 _ => Err(format!("unknown op {op}")),
             }
@@ -439,9 +432,12 @@ pub(crate) async fn build_rebuild_script_inner(
         Some(DbHandle::Sqlite(conn)) => {
             let new_cols: Vec<SqliteColumn> =
                 serde_json::from_value(new_columns).map_err(|e| e.to_string())?;
-            guard_sqlite_rebuild(conn, table)?;
-            let live = sqlite_live_columns(conn, table)?;
-            return Ok(sqlite_rebuild_script(table, &live, &new_cols)?.join(";\n"));
+            let shape = read_table_shape(conn, table)?;
+            guard_sqlite_rebuild(&shape, Some(&new_cols))?;
+            return Ok(
+                sqlite_rebuild_script(table, &shape.columns, &new_cols, &shape.preserved)?
+                    .join(";\n"),
+            );
         }
         Some(DbHandle::Postgresql(client, _)) => {
             let new_cols: Vec<TableColumn> =
@@ -820,13 +816,13 @@ pub(crate) async fn get_table_rebuild_readiness_inner(
     let mut pm = pm.lock().await;
     match pm.get(connection_id) {
         Some(DbHandle::Sqlite(conn)) => {
-            let needs_rebuild = match columns {
-                Some(value) => {
-                    let proposed: Vec<SqliteColumn> =
-                        serde_json::from_value(value).map_err(|e| e.to_string())?;
-                    let live = sqlite_live_columns(conn, table)?;
-                    sqlite_edit_requires_rebuild(&live, &proposed)?
-                }
+            let shape = read_table_shape(conn, table)?;
+            let proposed: Option<Vec<SqliteColumn>> = match columns {
+                Some(value) => Some(serde_json::from_value(value).map_err(|e| e.to_string())?),
+                None => None,
+            };
+            let needs_rebuild = match &proposed {
+                Some(proposed) => sqlite_edit_requires_rebuild(&shape.columns, proposed)?,
                 None => true,
             };
             if !needs_rebuild {
@@ -835,16 +831,13 @@ pub(crate) async fn get_table_rebuild_readiness_inner(
                     reasons: vec![],
                 });
             }
-            let shape = read_table_shape(conn, table)?;
-            Ok(match shape.refusal() {
-                Some(_) => crate::models::RebuildReadiness {
-                    ok: false,
-                    reasons: shape.blockers(),
-                },
-                None => crate::models::RebuildReadiness {
-                    ok: true,
-                    reasons: vec![],
-                },
+            let reasons = match &proposed {
+                Some(proposed) => shape.blockers_for(proposed),
+                None => shape.blockers(),
+            };
+            Ok(crate::models::RebuildReadiness {
+                ok: reasons.is_empty(),
+                reasons,
             })
         }
         Some(DbHandle::Postgresql(client, _)) => {

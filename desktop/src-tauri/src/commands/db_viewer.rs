@@ -1655,6 +1655,8 @@ pub(crate) async fn mysql_load_columns(
                 default_value,
                 editable: !is_pk && !is_generated && !read_only_relation,
                 is_generated,
+                is_unique: false,
+                is_auto_increment: false,
             }
         })
         .collect();
@@ -2106,6 +2108,8 @@ pub(crate) fn pg_columns_from_rows(
                 default_value: r.get::<_, Option<String>>(6),
                 editable: editable_from_att(&attgenerated, &attidentity) && !is_pk && !is_view,
                 is_generated: !attgenerated.is_empty(),
+                is_unique: false,
+                is_auto_increment: false,
             })
         })
         .collect()
@@ -2153,6 +2157,8 @@ pub(crate) fn sqlite_columns_from_rows(
                 default_value: default_val.clone(),
                 editable: !*is_pk && !read_only_view,
                 is_generated: false,
+                is_unique: false,
+                is_auto_increment: false,
             })
         })
         .collect()
@@ -2262,8 +2268,12 @@ pub(crate) fn sqlite_column_metadata(
         )
         .unwrap_or(false);
 
-    let pragma_query = crate::db::introspection::sqlite_columns_query(table);
+    // `table_xinfo` rather than `table_info`: a generated column is a real column
+    // of the table, and a metadata reader that cannot see it hands the table
+    // editor a column list a rebuild would drop it from.
+    let pragma_query = crate::db::introspection::sqlite_columns_xinfo_query(table);
     let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
+    let mut generated: std::collections::HashSet<String> = std::collections::HashSet::new();
     let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
         .query_map([], |row| {
             Ok((
@@ -2272,10 +2282,20 @@ pub(crate) fn sqlite_column_metadata(
                 row.get::<_, bool>(3)?,           // notnull
                 row.get::<_, bool>(5)?,           // pk
                 row.get::<_, Option<String>>(4)?, // dflt_value
+                row.get::<_, i64>(6)?,            // hidden
             ))
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
+        // `hidden` 1 is a virtual table's own hidden column, which is not part of
+        // the row; 2 and 3 are VIRTUAL and STORED generated columns.
+        .filter(|(name, .., hidden)| {
+            if *hidden == 2 || *hidden == 3 {
+                generated.insert(name.clone());
+            }
+            *hidden != 1
+        })
+        .map(|(name, ty, notnull, pk, default, _)| (name, ty, notnull, pk, default))
         .collect();
 
     let fk_query = crate::db::introspection::sqlite_foreign_keys_query(table);
@@ -2297,7 +2317,27 @@ pub(crate) fn sqlite_column_metadata(
         HashMap::new()
     };
 
-    let columns = sqlite_columns_from_rows(&col_meta, &fk_map, is_view)?;
+    let mut columns = sqlite_columns_from_rows(&col_meta, &fk_map, is_view)?;
+    // The editor submits these back. Without them a rebuild would silently drop
+    // the column's unique key (or the table's AUTOINCREMENT sequence) because the
+    // form never showed it, and a generated column would offer edits that cannot
+    // be applied at all.
+    let flags: HashMap<String, crate::db::object_ddl::SqliteColumn> =
+        crate::db::sqlite_rebuild::live_columns(conn, table)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| (c.name.clone(), c))
+            .collect();
+    for column in columns.iter_mut() {
+        if let Some(live) = flags.get(&column.name) {
+            column.is_unique = live.unique;
+            column.is_auto_increment = live.auto_increment;
+        }
+        if generated.contains(&column.name) {
+            column.is_generated = true;
+            column.editable = false;
+        }
+    }
     Ok((columns, is_view))
 }
 

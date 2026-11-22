@@ -40,6 +40,18 @@ pub struct ColumnInfo {
     pub default_value: Option<String>,
     pub editable: bool,
     pub is_generated: bool,
+    /// Whether a single-column unique index covers this column.
+    ///
+    /// Carried so the SQLite table editor can show — and submit back — the
+    /// constraint it would otherwise silently drop on a rebuild.
+    #[serde(default)]
+    pub is_unique: bool,
+    /// Whether this column is an `INTEGER PRIMARY KEY AUTOINCREMENT`.
+    ///
+    /// The rowid sequence is only reproduced when the editor knows the column has
+    /// one, so the flag travels with the column metadata.
+    #[serde(default)]
+    pub is_auto_increment: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -654,6 +666,8 @@ mod tests {
             default_value: None,
             editable: true,
             is_generated: false,
+            is_unique: false,
+            is_auto_increment: false,
         };
         let json = serde_json::to_string(&col).unwrap();
         assert!(json.contains("user_id"));
@@ -684,6 +698,8 @@ mod tests {
             default_value: None,
             editable: false,
             is_generated: false,
+            is_unique: false,
+            is_auto_increment: false,
         };
         let json = serde_json::to_string(&c).unwrap();
         assert!(json.contains("\"editable\":false"));

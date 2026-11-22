@@ -12,6 +12,7 @@ pub mod row_write;
 pub mod schema_diff;
 pub mod sql_classify;
 pub mod sql_split;
+pub mod sqlite_ddl;
 pub mod sqlite_rebuild;
 pub mod tls;
 pub mod tool_resolver;

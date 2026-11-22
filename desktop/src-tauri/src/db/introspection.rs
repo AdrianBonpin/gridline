@@ -206,6 +206,18 @@ pub fn sqlite_columns_query(table: &str) -> String {
     )
 }
 
+/// Every column of a table including generated ones, via `PRAGMA table_xinfo`.
+///
+/// `table_info` omits generated columns entirely, so a table rebuild driven by it
+/// would drop them; `table_xinfo` adds the `hidden` flag (0 ordinary, 1 a virtual
+/// table's hidden column, 2 VIRTUAL generated, 3 STORED generated).
+pub fn sqlite_columns_xinfo_query(table: &str) -> String {
+    format!(
+        "PRAGMA table_xinfo({})",
+        crate::db::ident::quote(crate::db::ident::Engine::Sqlite, table)
+    )
+}
+
 /// Foreign-key metadata via `PRAGMA foreign_key_list` (see
 /// [`sqlite_columns_query`] for the quoting rule).
 pub fn sqlite_foreign_keys_query(table: &str) -> String {
