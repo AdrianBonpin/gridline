@@ -223,18 +223,19 @@ fn lock_recovering_poison<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'
 
 /// Extract a single table's DDL from a PostgreSQL database by shelling out to
 /// `pg_dump` (system-first, bundled-fallback) with `--schema-only`.
+///
 /// Credentials are supplied via the `PGPASSWORD` environment variable only —
-/// never as argv — and are never logged. Execution requires a reachable
-/// PostgreSQL server plus an installed `pg_dump`; unit tests cover the
-/// argument construction instead.
+/// never as argv — and are never logged. The connection's own TLS decision is
+/// applied to this process (`PGSSLMODE` plus any certificate material) so a
+/// `verify-full` connection cannot be stripped back to libpq's plaintext-capable
+/// `prefer` by an on-path attacker; a tunnelled connection dials the tunnel's
+/// loopback endpoint while still verifying the saved server name. Execution
+/// requires a reachable PostgreSQL server plus an installed `pg_dump`; unit
+/// tests cover the argument and environment construction instead.
 pub fn get_pg_ddl_via_dump(
     schema: &str,
     table: &str,
-    host: &str,
-    port: u16,
-    user: &str,
-    db: &str,
-    password: &str,
+    conn: &crate::commands::backup::PgConnParams,
     pg_dump_path: &str,
 ) -> Result<String, String> {
     if !pg_dump_available_at(pg_dump_path) {
@@ -243,14 +244,12 @@ pub fn get_pg_ddl_via_dump(
         );
     }
     let mut cmd = std::process::Command::new(pg_dump_path);
-    cmd.args([
-        format!("--host={host}"),
-        format!("--port={port}"),
-        format!("--username={user}"),
-        format!("--dbname={db}"),
-    ]);
+    cmd.args(crate::commands::backup::base_conn_args(conn));
     cmd.args(build_pg_dump_ddl_args(schema, table)?);
-    cmd.env("PGPASSWORD", password);
+    cmd.env("PGPASSWORD", &conn.password);
+    // Same decision as the app's driver, and refused before spawning when the
+    // stored mode is not one libpq can enforce.
+    conn.apply_tool_env(&mut cmd)?;
     let out = cmd
         .output()
         .map_err(|e| format!("pg_dump spawn failed: {e}"))?;
@@ -3903,28 +3902,30 @@ pub async fn get_table_ddl(
 
             // SSH-tunneled connections: pg_dump must reach the DB through the
             // same local loopback listener the app uses, not the remote host.
+            // The saved host stays in `--host` so a `verify-*` connection
+            // authenticates the certificate against the server the user saved;
+            // only the dialed address moves to the tunnel (`PGHOSTADDR`), exactly
+            // as `db::tls::PgConnectPlan` does for the app's own driver.
             let tunnel_port =
                 lock_recovering_poison(&state.ssh_manager).get_local_port(&connection_id);
-            let (dump_host, dump_port) = match tunnel_port {
-                Some(lp) => ("127.0.0.1".to_string(), lp),
-                None => (host, port),
-            };
+            let mut params =
+                crate::commands::backup::PgConnParams::new(host, port as i64, user, db, password)
+                    .with_tls(
+                        conn_row.ssl_mode.clone(),
+                        conn_row.ssl_ca_path.clone(),
+                        conn_row.ssl_cert_path.clone(),
+                        conn_row.ssl_key_path.clone(),
+                    );
+            if let Some(local_port) = tunnel_port {
+                params = params.through_tunnel(std::net::IpAddr::from([127, 0, 0, 1]), local_port);
+            }
 
             // pg_dump is blocking I/O; run it off the async runtime. Credentials
             // travel via PGPASSWORD, never argv. Resolve system-first,
             // bundled-fallback, before moving into the closure.
             let pg_dump_path = crate::commands::backup::resolve_tool(&app, "pg_dump").0;
             let ddl = tokio::task::spawn_blocking(move || {
-                get_pg_ddl_via_dump(
-                    &schema,
-                    &table,
-                    &dump_host,
-                    dump_port,
-                    &user,
-                    &db,
-                    &password,
-                    &pg_dump_path,
-                )
+                get_pg_ddl_via_dump(&schema, &table, &params, &pg_dump_path)
             })
             .await
             .map_err(|e| format!("pg_dump task failed: {e}"))??;

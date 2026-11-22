@@ -1847,11 +1847,13 @@ fn ddl_copy_sends_the_session_password_through_the_environment_only() {
     let ddl = super::get_pg_ddl_via_dump(
         "public",
         "t",
-        "localhost",
-        5432,
-        "u",
-        "db",
-        &password,
+        &crate::commands::backup::PgConnParams::new(
+            "localhost".into(),
+            5432,
+            "u".into(),
+            "db".into(),
+            password,
+        ),
         pg_dump.to_str().unwrap(),
     );
 

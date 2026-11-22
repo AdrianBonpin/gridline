@@ -27,6 +27,17 @@ pub struct PgConnParams {
     pub ssl_ca_path: Option<String>,
     pub ssl_cert_path: Option<String>,
     pub ssl_key_path: Option<String>,
+    /// The SSH tunnel endpoint the tools must dial, when the server is only
+    /// reachable through one.
+    ///
+    /// `host`/`port` stay the *saved* values and keep naming the server for
+    /// authentication and certificate verification; the tunnel only replaces the
+    /// address that gets dialed (libpq's `PGHOSTADDR`, the same split the app's
+    /// own driver makes in [`crate::db::tls::PgConnectPlan`]). Handing the
+    /// tunnel's `127.0.0.1` to `--host` instead would make a `verify-*`
+    /// connection authenticate the certificate against loopback and fail — or,
+    /// worse, tempt a downgrade to `prefer`.
+    pub tunnel: Option<(std::net::IpAddr, u16)>,
 }
 
 impl PgConnParams {
@@ -47,6 +58,25 @@ impl PgConnParams {
             ssl_ca_path: None,
             ssl_cert_path: None,
             ssl_key_path: None,
+            tunnel: None,
+        }
+    }
+
+    /// Reach this connection through an SSH tunnel's loopback listener.
+    ///
+    /// `hostaddr` is the address actually dialed; `host` remains the server name
+    /// that credentials and the certificate are checked against.
+    pub fn through_tunnel(mut self, hostaddr: std::net::IpAddr, port: u16) -> Self {
+        self.tunnel = Some((hostaddr, port));
+        self
+    }
+
+    /// The port the tools must dial: the tunnel's listener when tunnelled, the
+    /// saved port otherwise.
+    pub fn dial_port(&self) -> i64 {
+        match self.tunnel {
+            Some((_, port)) => port as i64,
+            None => self.port,
         }
     }
 
@@ -124,9 +154,28 @@ impl PgConnParams {
         Ok(env)
     }
 
-    /// The variables, applied to a tool command. Fails closed on an unknown mode.
-    fn apply_tls_env(&self, cmd: &mut Command) -> Result<(), String> {
-        for (key, value) in self.tls_env()? {
+    /// The libpq variable that routes the TCP connection through a tunnel.
+    ///
+    /// libpq takes the address to dial from `hostaddr` and keeps using `host` for
+    /// authentication and certificate verification, so a `verify-full` connection
+    /// through a tunnel is verified against the server the user saved — never
+    /// against `127.0.0.1`, and never silently relaxed to encryption-only. (The
+    /// MySQL CLI cannot be told a separate verification name, which is why
+    /// [`mysql_cli_tls_mode`] refuses a verify mode through a tunnel instead.)
+    pub fn tunnel_env(&self) -> Vec<(String, String)> {
+        match self.tunnel {
+            Some((hostaddr, _)) => vec![("PGHOSTADDR".to_string(), hostaddr.to_string())],
+            None => Vec::new(),
+        }
+    }
+
+    /// Everything a client tool needs to reach this connection exactly as the
+    /// app's own driver would: the TLS decision *and* the tunnel endpoint.
+    ///
+    /// One call so a spawn site cannot apply the mode and forget the routing (or
+    /// the other way round). Fails closed on an unknown mode.
+    pub(crate) fn apply_tool_env(&self, cmd: &mut Command) -> Result<(), String> {
+        for (key, value) in self.tls_env()?.into_iter().chain(self.tunnel_env()) {
             cmd.env(key, value);
         }
         Ok(())
@@ -394,11 +443,16 @@ pub async fn detect_pg_tools(force: Option<bool>, app_handle: AppHandle) -> PgTo
 // Core logic (headless-testable — no Tauri, no store, no keychain)
 // ---------------------------------------------------------------------------
 
-/// Builds the base connection args shared by pg_dump and pg_restore.
-fn base_conn_args(conn: &PgConnParams) -> Vec<String> {
+/// Builds the base connection args shared by pg_dump, pg_restore, psql and the
+/// DDL copy.
+///
+/// `--host` is always the saved server name (`PGHOSTADDR` carries a tunnel's
+/// loopback endpoint, see [`PgConnParams::tunnel_env`]); only the port follows
+/// the endpoint that is actually dialed.
+pub(crate) fn base_conn_args(conn: &PgConnParams) -> Vec<String> {
     vec![
         format!("--host={}", conn.host),
-        format!("--port={}", conn.port),
+        format!("--port={}", conn.dial_port()),
         format!("--username={}", conn.username),
         format!("--dbname={}", conn.database),
     ]
@@ -474,13 +528,8 @@ pub fn build_psql_restore_args(
     if txn.is_atomic() {
         args.push("--single-transaction".to_string());
     }
-    args.extend([
-        format!("--host={}", conn.host),
-        format!("--port={}", conn.port),
-        format!("--username={}", conn.username),
-        format!("--dbname={}", conn.database),
-        format!("--file={file_path}"),
-    ]);
+    args.extend(base_conn_args(conn));
+    args.push(format!("--file={file_path}"));
     args
 }
 
@@ -556,7 +605,7 @@ pub fn run_pg_dump_managed(
     cmd.env("PGPASSWORD", &conn.password).args(&args);
     // The CLI must not be looser than the app's own driver: without this a
     // `verify-full` connection dumps over libpq's `prefer`.
-    conn.apply_tls_env(&mut cmd).map_err(JobFailure::failed)?;
+    conn.apply_tool_env(&mut cmd).map_err(JobFailure::failed)?;
 
     let activity = job::path_size_probe(&options.file_path);
     let out = job::run_managed(job, cmd, Some(activity)).map_err(JobFailure::from)?;
@@ -614,7 +663,7 @@ pub fn run_pg_restore_managed(
         cmd
     };
     // Restoring into a TLS-verifying target must verify TLS: no `prefer` fallback.
-    conn.apply_tls_env(&mut cmd).map_err(JobFailure::failed)?;
+    conn.apply_tool_env(&mut cmd).map_err(JobFailure::failed)?;
 
     let out = job::run_managed(job, cmd, None).map_err(JobFailure::from)?;
     if out.status.success() {
@@ -1098,7 +1147,7 @@ pub fn run_db_sync_managed(
         .env("PGPASSWORD", &source.password)
         .args(&dump_args);
     source
-        .apply_tls_env(&mut dump_cmd)
+        .apply_tool_env(&mut dump_cmd)
         .map_err(JobFailure::failed)?;
 
     let mut restore_cmd = Command::new(&tools.pg_restore);
@@ -1108,7 +1157,7 @@ pub fn run_db_sync_managed(
     // Each endpoint enforces its OWN TLS decision: one side being `require` says
     // nothing about the other.
     target
-        .apply_tls_env(&mut restore_cmd)
+        .apply_tool_env(&mut restore_cmd)
         .map_err(JobFailure::failed)?;
 
     let out = job::run_managed_pipe(job, dump_cmd, restore_cmd).map_err(JobFailure::from)?;
