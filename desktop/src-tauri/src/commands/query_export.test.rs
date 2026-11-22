@@ -62,6 +62,8 @@ fn csv_line_bom_is_written_by_header_only() {
             default_value: None,
             editable: true,
             is_generated: false,
+            is_unique: false,
+            is_auto_increment: false,
         },
         crate::models::db_viewer::ColumnInfo {
             name: "b".into(),
@@ -73,6 +75,8 @@ fn csv_line_bom_is_written_by_header_only() {
             default_value: None,
             editable: true,
             is_generated: false,
+            is_unique: false,
+            is_auto_increment: false,
         },
     ];
     let line = csv_line(&cols, &[serde_json::json!("1"), serde_json::Value::Null]);
@@ -91,6 +95,8 @@ fn jsonl_line_encodes_row_object() {
         default_value: None,
         editable: true,
         is_generated: false,
+        is_unique: false,
+        is_auto_increment: false,
     }];
     let line = jsonl_line(&cols, &[serde_json::json!("x\"y")]);
     assert_eq!(line, "{\"a\":\"x\\\"y\"}");

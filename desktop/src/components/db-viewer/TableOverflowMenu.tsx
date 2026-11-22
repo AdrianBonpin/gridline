@@ -303,6 +303,11 @@ export function TableOverflowMenu({
           nullable: c.is_nullable,
           default: c.default_value,
           is_pk: c.is_pk,
+          // Column Identity carries the attributes the rebuild has to reproduce:
+          // without them the editor would submit `unique: false` and
+          // `auto_increment: false` for a column that has both.
+          unique: c.is_unique ?? false,
+          auto_increment: c.is_auto_increment ?? false,
         }));
         useDbViewerStore.getState().openFormTab({
           kind: "table",

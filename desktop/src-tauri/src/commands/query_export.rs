@@ -480,6 +480,8 @@ fn sqlite_export_body(
             default_value: None,
             editable: true,
             is_generated: false,
+            is_unique: false,
+            is_auto_increment: false,
         })
         .collect();
     if format == ExportFormat::Csv {
@@ -585,6 +587,8 @@ async fn pg_export_body(
                             default_value: None,
                             editable: true,
                             is_generated: false,
+                            is_unique: false,
+                            is_auto_increment: false,
                         })
                         .collect();
                 }
@@ -680,6 +684,8 @@ async fn mysql_export_body(
                     default_value: None,
                     editable: true,
                     is_generated: false,
+                    is_unique: false,
+                    is_auto_increment: false,
                 })
                 .collect();
             if format == ExportFormat::Csv {

@@ -63,7 +63,15 @@ export interface CrudItem {
   // constraint (ConstraintInfo)
   contype?: "CHECK" | "UNIQUE" | "EXCLUSION";
   // table (columnMeta carries the snapshot for edit diffs)
-  columnMeta?: { name: string; type: string; nullable: boolean; is_pk: boolean; default: string | null }[];
+  columnMeta?: {
+    name: string;
+    type: string;
+    nullable: boolean;
+    is_pk: boolean;
+    default: string | null;
+    unique?: boolean;
+    auto_increment?: boolean;
+  }[];
   // role (RoleInfo shape used for prefill)
   superuser?: boolean;
   inherit?: boolean;
@@ -221,6 +229,7 @@ export function initialCrudParams(
             ? (item.columnMeta ?? []).map((c) => ({
                 name: c.name, type: c.type, nullable: c.nullable,
                 default: c.default ?? null, is_pk: c.is_pk,
+                unique: c.unique, auto_increment: c.auto_increment,
                 original_name: c.name,
               }))
             : [],

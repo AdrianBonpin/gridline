@@ -203,8 +203,8 @@ describe("TableOverflowMenu", () => {
 
   it("Edit Table opens a table form tab with the live columns", async () => {
     const getTableColumns = vi.spyOn(commands, "getTableColumns").mockResolvedValue([
-      { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
-      { name: "email", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false, is_unique: false, is_auto_increment: true },
+      { name: "email", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false, is_unique: true, is_auto_increment: false },
     ] as any);
     const openFormTab = vi.spyOn(useDbViewerStore.getState(), "openFormTab");
     render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => ""} connectionId="c1" columns={[{ name: "id", data_type: "int", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false }]} />);
@@ -222,6 +222,10 @@ describe("TableOverflowMenu", () => {
     expect(params.action.old_columns.map((c: any) => c.name)).toEqual(["id", "email"]);
     // Column Identity travels with each editable row.
     expect(params.action.columns.map((c: any) => c.original_name)).toEqual(["id", "email"]);
+    // …and so do the attributes a rebuild has to reproduce: the rowid sequence
+    // and the unique key are part of the column the form submits back.
+    expect(params.action.columns.map((c: any) => c.auto_increment)).toEqual([true, false]);
+    expect(params.action.columns.map((c: any) => c.unique)).toEqual([false, true]);
   });
 
   it("Edit Table from an unexpanded tree item shows the live columns, not an empty form", async () => {
