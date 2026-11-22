@@ -17,7 +17,8 @@ async fn exec_sql(
     connection_id: &str,
     sql: String,
 ) -> Result<(), String> {
-    match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             client
@@ -89,7 +90,8 @@ pub(crate) async fn search_objects_inner(
     needle: &str,
 ) -> Result<Vec<ObjectSearchHit>, String> {
     let sql = pg_object_search_query();
-    match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let rows = client
@@ -127,7 +129,8 @@ pub(crate) async fn get_object_ddl_inner(
     object_type: &str,
     name: &str,
 ) -> Result<String, String> {
-    let client = match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    let client = match db_handle {
         Some(DbHandle::Postgresql(c, _)) => c,
         Some(_) => return Err("Copy-as-DDL is PostgreSQL-only".into()),
         None => return Err("Connection not found".into()),
@@ -235,7 +238,8 @@ pub(crate) async fn get_object_dependencies_inner(
     object_type: &str,
     name: &str,
 ) -> Result<Vec<DependencyInfo>, String> {
-    let client = match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    let client = match db_handle {
         Some(DbHandle::Postgresql(c, _)) => c,
         Some(_) => return Err("Dependencies are PostgreSQL-only".into()),
         None => return Err("Connection not found".into()),
@@ -333,7 +337,8 @@ pub(crate) async fn build_object_ddl_inner(
     kind: &str,
     params: serde_json::Value,
 ) -> Result<Vec<String>, String> {
-    match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(_, _)) => build_ddl(kind, params),
         Some(DbHandle::Sqlite(conn)) => {
             let conn = conn.lock().await;
@@ -394,7 +399,8 @@ pub(crate) async fn get_available_extensions_inner(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     connection_id: &str,
 ) -> Result<Vec<ExtensionInfo>, String> {
-    let client = match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    let client = match db_handle {
         Some(DbHandle::Postgresql(c, _)) => c,
         Some(_) => return Err("Extensions are PostgreSQL-only".into()),
         None => return Err("Connection not found".into()),
@@ -438,7 +444,8 @@ pub(crate) async fn build_rebuild_script_inner(
     table: &str,
     new_columns: serde_json::Value,
 ) -> Result<String, String> {
-    match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    match db_handle {
         Some(DbHandle::Sqlite(conn)) => {
             let conn = conn.lock().await;
             let new_cols: Vec<SqliteColumn> =
@@ -620,7 +627,8 @@ pub(crate) async fn get_roles_inner(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     connection_id: &str,
 ) -> Result<Vec<crate::models::RoleInfo>, String> {
-    let client = match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    let client = match db_handle {
         Some(DbHandle::Postgresql(c, _)) => c,
         Some(_) => return Err("Roles are PostgreSQL-only".into()),
         None => return Err("Connection not found".into()),
@@ -690,7 +698,8 @@ pub(crate) async fn get_role_privileges_inner(
     connection_id: &str,
     role: &str,
 ) -> Result<Vec<crate::models::PrivilegeEntry>, String> {
-    let client = match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    let client = match db_handle {
         Some(DbHandle::Postgresql(c, _)) => c,
         Some(_) => return Err("Privileges are PostgreSQL-only".into()),
         None => return Err("Connection not found".into()),
@@ -822,7 +831,8 @@ pub(crate) async fn get_table_rebuild_readiness_inner(
     table: &str,
     columns: Option<serde_json::Value>,
 ) -> Result<crate::models::RebuildReadiness, String> {
-    match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    match db_handle {
         Some(DbHandle::Sqlite(conn)) => {
             let conn = conn.lock().await;
             let needs_rebuild = match columns {
@@ -910,7 +920,8 @@ pub(crate) async fn get_tablespaces_inner(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     connection_id: &str,
 ) -> Result<Vec<crate::models::TablespaceInfo>, String> {
-    let client = match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    let client = match db_handle {
         Some(DbHandle::Postgresql(c, _)) => c,
         Some(_) => return Err("Tablespaces are PostgreSQL-only".into()),
         None => return Err("Connection not found".into()),

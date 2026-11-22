@@ -313,7 +313,8 @@ pub async fn get_schema_graph(
     let schema = schema.unwrap_or_else(|| "public".to_string());
     validate_schema_name(&schema)?;
 
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let query = build_pg_schema_graph_query(&schema);

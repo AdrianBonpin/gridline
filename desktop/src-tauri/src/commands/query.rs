@@ -1396,11 +1396,34 @@ pub async fn execute_query_multi(
     page_size: Option<i64>,
     state: State<'_, crate::AppState>,
 ) -> Result<MultiQueryResult, String> {
+    execute_query_multi_inner(
+        &state.pool_manager,
+        &state.db_store,
+        &state.cancel_registry,
+        &connection_id,
+        &query,
+        page,
+        page_size,
+    )
+    .await
+}
+
+/// Headless core of `execute_query_multi` (thin-command principle — no Tauri
+/// `State`), so the tool-job seam tests can drive it directly.
+pub(crate) async fn execute_query_multi_inner(
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    db_store: &std::sync::Mutex<crate::store::Store>,
+    cancel_registry: &crate::cancel::CancelRegistry,
+    connection_id: &str,
+    query: &str,
+    page: Option<i64>,
+    page_size: Option<i64>,
+) -> Result<MultiQueryResult, String> {
     let start = Instant::now();
     let p = page.unwrap_or(1);
     let ps = page_size.unwrap_or(50);
 
-    let statements = crate::db::sql_split::split_statements(&query);
+    let statements = crate::db::sql_split::split_statements(query);
     if statements.is_empty() {
         return Err("Query cannot be empty".to_string());
     }
@@ -1409,8 +1432,12 @@ pub async fn execute_query_multi(
     let mut result_sets: Vec<QueryResult> = Vec::new();
     let mut notices: Vec<StatementNotice> = Vec::new();
 
+    // The registry guard is a temporary of the `let` below: it is gone before
+    // this function awaits anything, so a long script on one connection cannot
+    // block another connection's commands.
+    let db_handle = pool_manager.lock().await.acquire(connection_id);
     let err_text: Option<String>;
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             err_text =
@@ -1435,8 +1462,8 @@ pub async fn execute_query_multi(
                 ps,
                 &mut result_sets,
                 &mut notices,
-                &state.cancel_registry,
-                &connection_id,
+                cancel_registry,
+                connection_id,
             )
             .await;
         }
@@ -1451,10 +1478,10 @@ pub async fn execute_query_multi(
     let history_id = Uuid::new_v4().to_string();
     if let Some(e) = &err_text {
         insert_history(
-            &state.db_store,
+            db_store,
             &history_id,
-            &connection_id,
-            &query,
+            connection_id,
+            query,
             Some(elapsed),
             Some(row_count),
             "error",
@@ -1462,10 +1489,10 @@ pub async fn execute_query_multi(
         );
     } else {
         insert_history(
-            &state.db_store,
+            db_store,
             &history_id,
-            &connection_id,
-            &query,
+            connection_id,
+            query,
             Some(elapsed),
             Some(row_count),
             "success",

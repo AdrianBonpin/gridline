@@ -1437,7 +1437,8 @@ pub async fn get_databases(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<String>, String> {
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let rows = client
@@ -1476,7 +1477,8 @@ pub async fn get_schemas(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<String>, String> {
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let rows = client
@@ -1490,8 +1492,10 @@ pub async fn get_schemas(
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
             let conn = conn.lock().await;
-            // One operation at a time on this connection (rusqlite requires it).
-            // The pool registry is already released here.
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. The pool registry guard
+            // was dropped when `db_handle` was bound, before this match, so no
+            // other connection waits on this one.
             let mut stmt = conn
                 .prepare("SELECT DISTINCT 'main' AS schema")
                 .map_err(|e| e.to_string())?;
@@ -1527,7 +1531,8 @@ pub(crate) async fn get_tables_inner(
     connection_id: &str,
     schema: Option<&str>,
 ) -> Result<Vec<TableInfo>, String> {
-    match pool_manager.lock().await.acquire(connection_id) {
+    let db_handle = pool_manager.lock().await.acquire(connection_id);
+    match db_handle {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let schema_filter = schema.unwrap_or("public").to_string();
@@ -1549,8 +1554,10 @@ pub(crate) async fn get_tables_inner(
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
             let conn = conn.lock().await;
-            // One operation at a time on this connection (rusqlite requires it).
-            // The pool registry is already released here.
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. The pool registry guard
+            // was dropped when `db_handle` was bound, before this match, so no
+            // other connection waits on this one.
             let mut stmt = conn
                 .prepare(
                     "SELECT name, 'main', type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -1740,7 +1747,8 @@ pub(crate) async fn get_table_data_inner(
     let filters = filters.unwrap_or_default();
     let sorts = sorts.unwrap_or_default();
 
-    match pool_manager.lock().await.acquire(connection_id) {
+    let db_handle = pool_manager.lock().await.acquire(connection_id);
+    match db_handle {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let qualified = ident::qualified(Engine::PostgreSql, schema, table)?;
@@ -1891,8 +1899,10 @@ pub(crate) async fn get_table_data_inner(
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
             let conn = conn.lock().await;
-            // One operation at a time on this connection (rusqlite requires it).
-            // The pool registry is already released here.
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. The pool registry guard
+            // was dropped when `db_handle` was bound, before this match, so no
+            // other connection waits on this one.
             // Build filter clause (shared by COUNT and data queries)
             let (filter_clause, filter_vals) = build_sqlite_filter_clause(&filters)?;
             let order_clause = build_order_clause(Engine::Sqlite, &sorts)?;
@@ -2190,7 +2200,8 @@ pub(crate) async fn get_table_columns_inner(
     schema: &str,
     table: &str,
 ) -> Result<Vec<crate::models::ColumnInfo>, String> {
-    match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    match db_handle {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let read_only = pg_relation_is_read_only(&client, schema, table).await;
@@ -2205,8 +2216,10 @@ pub(crate) async fn get_table_columns_inner(
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
             let conn = conn.lock().await;
-            // One operation at a time on this connection (rusqlite requires it).
-            // The pool registry is already released here.
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. The pool registry guard
+            // was dropped when `db_handle` was bound, before this match, so no
+            // other connection waits on this one.
             sqlite_column_metadata(&conn, table).map(|(columns, _)| columns)
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
@@ -2421,7 +2434,8 @@ pub(crate) async fn get_fk_preview_inner(
     column: &str,
     value: &str,
 ) -> Result<QueryResult, String> {
-    match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    match db_handle {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let target = resolve_fk_target(&client, schema, table, column).await?;
@@ -2457,8 +2471,10 @@ pub(crate) async fn get_fk_preview_inner(
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
             let conn = conn.lock().await;
-            // One operation at a time on this connection (rusqlite requires it).
-            // The pool registry is already released here.
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. The pool registry guard
+            // was dropped when `db_handle` was bound, before this match, so no
+            // other connection waits on this one.
             let target = resolve_fk_target_sqlite(&conn, table, column)?;
             let columns = sqlite_table_columns(&conn, &target)?;
             let data_query = crate::db::fk::preview_sql(Engine::Sqlite, &target)?;
@@ -2616,7 +2632,8 @@ pub(crate) async fn search_fk_options_inner(
         .checked_mul(page_size)
         .ok_or_else(|| "foreign-key option search page is too large".to_string())?;
 
-    match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    match db_handle {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let target = resolve_fk_target(&client, schema, table, column).await?;
@@ -2669,8 +2686,10 @@ pub(crate) async fn search_fk_options_inner(
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
             let conn = conn.lock().await;
-            // One operation at a time on this connection (rusqlite requires it).
-            // The pool registry is already released here.
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. The pool registry guard
+            // was dropped when `db_handle` was bound, before this match, so no
+            // other connection waits on this one.
             let target = resolve_fk_target_sqlite(&conn, table, column)?;
             let columns = sqlite_table_columns(&conn, &target)?;
             let pairs: Vec<(String, String)> = columns
@@ -2988,7 +3007,8 @@ pub(crate) async fn execute_change_inner(
     connection_id: &str,
     change: Change,
 ) -> Result<(), String> {
-    match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    match db_handle {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             let mut client = client.lock().await;
             match &change {
@@ -3107,8 +3127,10 @@ pub(crate) async fn execute_change_inner(
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
             let mut conn = conn.lock().await;
-            // One operation at a time on this connection (rusqlite requires it).
-            // The pool registry is already released here.
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. The pool registry guard
+            // was dropped when `db_handle` was bound, before this match, so no
+            // other connection waits on this one.
             match &change {
                 Change::Update {
                     schema,
@@ -3354,7 +3376,8 @@ pub async fn refresh_connection(
     // Verify the connection is still alive by running a trivial query. The
     // frontend re-issues getDatabases/getSchemas/getTables separately after
     // this returns, so we only need to confirm reachability here.
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             client
@@ -3365,8 +3388,10 @@ pub async fn refresh_connection(
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
             let conn = conn.lock().await;
-            // One operation at a time on this connection (rusqlite requires it).
-            // The pool registry is already released here.
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. The pool registry guard
+            // was dropped when `db_handle` was bound, before this match, so no
+            // other connection waits on this one.
             conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
                 .map_err(|e| e.to_string())?;
             Ok(())
@@ -3392,7 +3417,8 @@ pub async fn get_functions(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<FunctionInfo>, String> {
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
@@ -3428,7 +3454,8 @@ pub async fn get_hypertables(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<HypertableListResponse, String> {
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let detected: bool = client
@@ -3480,7 +3507,8 @@ pub async fn get_indexes(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<IndexInfo>, String> {
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
@@ -3516,7 +3544,8 @@ pub async fn get_constraints(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<ConstraintInfo>, String> {
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
@@ -3564,7 +3593,8 @@ pub async fn get_triggers(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<TriggerInfo>, String> {
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
@@ -3600,7 +3630,8 @@ pub async fn get_sequences(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<SequenceInfo>, String> {
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
@@ -3638,7 +3669,8 @@ pub async fn get_enums(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<EnumInfo>, String> {
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
@@ -3667,7 +3699,8 @@ pub async fn get_extensions(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<ExtensionInfo>, String> {
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(DbHandle::Postgresql(client, _)) => {
             let client = client.lock().await;
             let query = crate::db::introspection::pg_extensions_query();
@@ -3701,7 +3734,8 @@ pub async fn get_table_ddl(
     state: State<'_, crate::AppState>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    match state.pool_manager.lock().await.acquire(&connection_id) {
+    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    match db_handle {
         Some(DbHandle::Sqlite(conn)) => {
             let conn = conn.lock().await;
             get_sqlite_ddl(&conn, &table)
@@ -4645,7 +4679,8 @@ mod tests {
         };
 
         // The previously working session is intact...
-        let still_live = match pm.lock().await.acquire(id) {
+        let db_handle = pm.lock().await.acquire(id);
+        let still_live = match db_handle {
             Some(DbHandle::Sqlite(conn)) => {
                 let conn = conn.try_lock().expect("sqlite connection free");
                 conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
@@ -4841,7 +4876,8 @@ mod tests {
         assert_eq!(data.page, 1);
         assert_eq!(data.page_size, 10);
         // Columns must be resolvable through the shared helper.
-        let pool = match pm.lock().await.acquire(&id) {
+        let db_handle = pm.lock().await.acquire(&id);
+        let pool = match db_handle {
             Some(crate::db::pool::DbHandle::MySql(p)) => p,
             _ => panic!("mysql handle missing"),
         };

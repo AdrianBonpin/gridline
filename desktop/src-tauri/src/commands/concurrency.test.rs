@@ -430,3 +430,332 @@ async fn same_connection_work_queues_while_other_connections_stay_usable() {
         .expect("the queued query runs instead of reporting a missing connection");
     assert_eq!(queued.rows[0][0], serde_json::json!(10));
 }
+
+// ---------------------------------------------------------------------------
+// Criterion: a slow *browse* (a plain read, not a query or an export) on one
+// connection does not block another connection's commands
+// ---------------------------------------------------------------------------
+//
+// This is the shape the earlier suite missed. A browse, a catalog read and a
+// multi-statement script all took the registry the same way an export did, so
+// a slow READ serialized every other connection while the export-only test
+// stayed green. The slow side is a view whose column evaluates the gating
+// function: browsing it is a real `SELECT` against the user's data (COUNT plus
+// a page), and it blocks inside SQLite until the test releases it.
+
+/// `ORDERS` plus a view that evaluates the gate, so browsing the view is slow.
+const ORDERS_WITH_SLOW_VIEW: &str =
+    "CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER NOT NULL);
+     INSERT INTO orders (id, qty) VALUES (1, 10), (2, 20), (3, 30);
+     CREATE VIEW slow_v AS SELECT block() AS v FROM orders;";
+
+/// A script that must run on connection B: two plain statements.
+const TWO_STATEMENTS: &str = "SELECT 1 AS one; SELECT 2 AS two";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_browse_on_one_connection_does_not_block_another_connections_commands() {
+    use crate::commands::db_viewer::{
+        get_table_columns_inner, get_table_data_inner, get_tables_inner,
+    };
+    use crate::commands::query::execute_query_multi_inner;
+
+    let fixture = Fixture::new(ORDERS_WITH_SLOW_VIEW);
+    let pool = Arc::new(fixture.pool);
+    let store = Arc::new(fixture.store);
+    let registry = Arc::new(fixture.registry);
+
+    // Connection A: browse the view — a read that blocks in its first row.
+    let running = Arc::new(AtomicBool::new(true));
+    let a = {
+        let pool = pool.clone();
+        let running = running.clone();
+        tokio::spawn(async move {
+            let result =
+                get_table_data_inner(&pool, "conn-a", "main", "slow_v", None, None, None, None)
+                    .await;
+            running.store(false, Ordering::SeqCst);
+            result
+        })
+    };
+    await_entered(&fixture.gates[0]).await;
+
+    // Connection B: every shape of command that used to take the registry — a
+    // query, a browse, the catalog (table list + column metadata) and a
+    // multi-statement script. All must finish while A is still inside its read.
+    let (query, browse, tables, columns, multi) = tokio::join!(
+        tokio::time::timeout(
+            TIMEOUT,
+            execute_query_inner(&pool, &store, &registry, "conn-b", "SELECT 1 AS one", 1, 50),
+        ),
+        tokio::time::timeout(
+            TIMEOUT,
+            get_table_data_inner(&pool, "conn-b", "main", "orders", None, None, None, None),
+        ),
+        tokio::time::timeout(TIMEOUT, get_tables_inner(&pool, "conn-b", Some("main"))),
+        tokio::time::timeout(
+            TIMEOUT,
+            get_table_columns_inner(&pool, "conn-b", "main", "orders")
+        ),
+        tokio::time::timeout(
+            TIMEOUT,
+            execute_query_multi_inner(
+                &pool,
+                &store,
+                &registry,
+                "conn-b",
+                TWO_STATEMENTS,
+                None,
+                None
+            ),
+        ),
+    );
+    let a_was_running = running.load(Ordering::SeqCst);
+
+    fixture.gates[0].release();
+    let browsed_a = a.await.expect("connection A browse task");
+
+    assert!(
+        a_was_running,
+        "connection B's commands must not wait for connection A's slow browse"
+    );
+    query
+        .expect("connection B's query must not wait for A's browse")
+        .expect("connection B's query succeeds");
+    let browsed_b = browse
+        .expect("connection B's browse must not wait for A's browse")
+        .expect("connection B's browse succeeds");
+    assert_eq!(
+        browsed_b.rows.len(),
+        3,
+        "connection B saw its own three rows"
+    );
+    tables
+        .expect("the table list must not wait for A's browse")
+        .expect("connection B's table list succeeds");
+    let b_columns = columns
+        .expect("column metadata must not wait for A's browse")
+        .expect("connection B's column metadata succeeds");
+    assert_eq!(b_columns.len(), 2, "id + qty on connection B");
+    let b_multi = multi
+        .expect("a multi-statement script must not wait for A's browse")
+        .expect("connection B's script succeeds");
+    assert_eq!(b_multi.result_sets.len(), 2, "both of B's statements ran");
+
+    // A's own browse completes once released, and it really was the slow side.
+    let a_result = browsed_a.expect("connection A's browse succeeds once released");
+    assert_eq!(a_result.rows.len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// Criterion: a slow multi-statement script on one connection does not block
+// another connection, in either direction
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_multi_statement_script_on_one_connection_does_not_block_another() {
+    use crate::commands::query::execute_query_multi_inner;
+
+    let fixture = Fixture::new(ORDERS);
+    let pool = Arc::new(fixture.pool);
+    let store = Arc::new(fixture.store);
+    let registry = Arc::new(fixture.registry);
+
+    // Connection A: a script whose first statement blocks inside SQLite.
+    let running = Arc::new(AtomicBool::new(true));
+    let a = {
+        let pool = pool.clone();
+        let store = store.clone();
+        let registry = registry.clone();
+        let running = running.clone();
+        tokio::spawn(async move {
+            let result = execute_query_multi_inner(
+                &pool,
+                &store,
+                &registry,
+                "conn-a",
+                "SELECT block() AS v",
+                None,
+                None,
+            )
+            .await;
+            running.store(false, Ordering::SeqCst);
+            result
+        })
+    };
+    await_entered(&fixture.gates[0]).await;
+
+    // Connection B: a query and its own script, mid-script on A.
+    let (query, multi) = tokio::join!(
+        tokio::time::timeout(
+            TIMEOUT,
+            execute_query_inner(&pool, &store, &registry, "conn-b", "SELECT 1 AS one", 1, 50),
+        ),
+        tokio::time::timeout(
+            TIMEOUT,
+            crate::commands::query::execute_query_multi_inner(
+                &pool,
+                &store,
+                &registry,
+                "conn-b",
+                TWO_STATEMENTS,
+                None,
+                None,
+            ),
+        ),
+    );
+    let a_was_running = running.load(Ordering::SeqCst);
+
+    fixture.gates[0].release();
+    let a_result = a.await.expect("connection A script task");
+
+    assert!(
+        a_was_running,
+        "connection B must not wait for connection A's multi-statement script"
+    );
+    query
+        .expect("connection B's query must not wait for A's script")
+        .expect("connection B's query succeeds");
+    let b_multi = multi
+        .expect("connection B's script must not wait for A's script")
+        .expect("connection B's script succeeds");
+    assert_eq!(b_multi.result_sets.len(), 2);
+
+    let a_sets = a_result
+        .expect("connection A's script completes once released")
+        .result_sets;
+    assert_eq!(a_sets.len(), 1);
+    assert_eq!(a_sets[0].rows[0][0], serde_json::json!(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_query_on_one_connection_does_not_block_another_connections_script() {
+    use crate::commands::query::execute_query_multi_inner;
+
+    let fixture = Fixture::new(ORDERS);
+    let pool = Arc::new(fixture.pool);
+    let store = Arc::new(fixture.store);
+    let registry = Arc::new(fixture.registry);
+
+    // Connection A: a query that blocks inside SQLite.
+    let (a, a_running) = spawn_gated(&pool, &store, &registry, "conn-a");
+    await_entered(&fixture.gates[0]).await;
+
+    // Connection B: the multi-statement path, while A is still inside a query.
+    let multi = tokio::time::timeout(
+        TIMEOUT,
+        execute_query_multi_inner(
+            &pool,
+            &store,
+            &registry,
+            "conn-b",
+            TWO_STATEMENTS,
+            None,
+            None,
+        ),
+    )
+    .await;
+    let a_was_running = a_running.load(Ordering::SeqCst);
+
+    fixture.gates[0].release();
+    a.await
+        .expect("connection A query task")
+        .expect("connection A's query succeeds");
+
+    assert!(
+        a_was_running,
+        "connection B's script must not wait for connection A's slow query"
+    );
+    let b_multi = multi
+        .expect("connection B's script must not wait for A's query")
+        .expect("connection B's script succeeds");
+    assert_eq!(b_multi.result_sets.len(), 2);
+    assert_eq!(b_multi.result_sets[1].rows[0][0], serde_json::json!(2));
+}
+
+// ---------------------------------------------------------------------------
+// Structural guard: no production command may hold the pool registry across
+// its work
+// ---------------------------------------------------------------------------
+//
+// The behavioural tests above prove the current call sites release the
+// registry. This one keeps new ones from taking it back, because the failure
+// mode is invisible in review: `match registry.lock().await.acquire(id) { … }`
+// looks like it releases the guard (the `acquire` call completes immediately)
+// but a match scrutinee temporary lives until the END of the match, so the
+// guard is held across every `.await` in the arms — the exact head-of-line
+// blocking ticket 25 removes.
+
+/// The production sources, with test modules and `*.test.rs` files removed.
+fn production_sources() -> Vec<(std::path::PathBuf, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read src dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && !path.to_string_lossy().ends_with(".test.rs")
+            {
+                out.push(path);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    assert!(
+        !files.is_empty(),
+        "found no production sources under {root:?}"
+    );
+    files
+        .into_iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(&path).expect("read source file");
+            // Test modules inside a production file may take the registry: they
+            // are not commands and hold nothing across a real operation.
+            let production = match text.find("#[cfg(test)]") {
+                Some(idx) => text[..idx].to_string(),
+                None => text,
+            };
+            (path, production)
+        })
+        .collect()
+}
+
+#[test]
+fn no_production_code_holds_the_pool_registry_across_its_work() {
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, text) in production_sources() {
+        for (idx, line) in text.lines().enumerate() {
+            let line = line.trim();
+            // `match <registry>.lock().await.acquire(id) { … }`: the guard is a
+            // scrutinee temporary, alive for the whole match including its arms.
+            let match_form = line.starts_with("match") || line.contains("= match");
+            let registry_acquire = line.contains(".lock().await.acquire(");
+            if match_form && registry_acquire {
+                offenders.push(format!(
+                    "{}:{}: match on a registry lock holds the guard across the arms: {line}",
+                    path.display(),
+                    idx + 1
+                ));
+            }
+            // `let mut pm = <registry>.lock().await;`: the guard outlives the
+            // statement and is held until the end of the function scope.
+            let binds_registry = line.starts_with("let ")
+                && line.ends_with(".lock().await;")
+                && (line.contains("pool_manager.lock()") || line.contains("pm.lock()"));
+            if binds_registry {
+                offenders.push(format!(
+                    "{}:{}: the pool registry guard is bound to a variable: {line}",
+                    path.display(),
+                    idx + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the pool registry must only be locked long enough to clone a handle, \
+         never across a query, export, browse or catalog read (ticket 25):\n{}",
+        offenders.join("\n")
+    );
+}

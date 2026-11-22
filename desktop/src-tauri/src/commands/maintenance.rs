@@ -11,7 +11,8 @@ pub(crate) async fn run_maintenance_inner(
     table: &str,
     action: &str,
 ) -> Result<MaintenanceResult, String> {
-    let client = match pm.lock().await.acquire(connection_id) {
+    let db_handle = pm.lock().await.acquire(connection_id);
+    let client = match db_handle {
         Some(DbHandle::Postgresql(c, _)) => c,
         Some(_) => return Err("Maintenance is PostgreSQL-only".into()),
         None => return Err("Connection not found".into()),
