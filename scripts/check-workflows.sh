@@ -94,6 +94,15 @@ done
 for hook in scripts/hooks/pre-push scripts/hooks/post-merge; do
   grep -q 'mirror-gitea\.sh' "$hook" 2>/dev/null ||
     { fail "$hook no longer invokes scripts/mirror-gitea.sh"; mirror_ok=0; }
+  # The mirror needs bash (`set -o pipefail`). The hooks are POSIX sh and git
+  # runs them with the system shell (dash on Debian/Ubuntu), so invoking the
+  # mirror through `sh` kills it with "Illegal option -o pipefail" and every
+  # Linux user silently loses the mirror. Comments are stripped first.
+  if sed 's/#.*//' "$hook" |
+    grep -Eq '(^|[^[:alnum:]_.-])(sh|dash)[[:space:]]+[^;|&]*mirror-gitea\.sh'; then
+    fail "$hook runs scripts/mirror-gitea.sh through 'sh' (dash on Linux: 'Illegal option -o pipefail')"
+    mirror_ok=0
+  fi
 done
 if grep -rq '\.gitea/workflows' scripts/ --exclude=check-workflows.sh 2>/dev/null; then
   fail "a script under scripts/ still depends on the removed .gitea/workflows release pipeline"
@@ -125,13 +134,17 @@ mirror_behaviour() {
     bash scripts/mirror-gitea.sh >/dev/null 2>&1 || exit 1
     git --git-dir="$tmp/mirror.git" show-ref --verify --quiet refs/heads/prod || exit 1
     git --git-dir="$tmp/mirror.git" show-ref --verify --quiet refs/tags/v9.9.9 || exit 1
-    # The same through the installed pre-push hook on a GitHub push.
+    # The same through the installed pre-push hook on a GitHub push. The hook
+    # is run with `sh` on purpose: that is how git runs it, and on Linux `sh`
+    # is dash, which is what exposed `sh scripts/mirror-gitea.sh`.
     git commit -q --allow-empty -m second || exit 1
     git tag v9.9.10 || exit 1
-    printf 'refs/heads/prod %s refs/heads/prod %s\nrefs/tags/v9.9.10 %s refs/tags/v9.9.10 %s\n' \
+    hook_err="$(printf 'refs/heads/prod %s refs/heads/prod %s\nrefs/tags/v9.9.10 %s refs/tags/v9.9.10 %s\n' \
       "$(git rev-parse HEAD)" "1111111111111111111111111111111111111111" \
       "$(git rev-parse v9.9.10)" "2222222222222222222222222222222222222222" |
-      sh scripts/hooks/pre-push origin "https://github.com/AdrianBonpin/gridline.git" >/dev/null 2>&1 || exit 1
+      sh scripts/hooks/pre-push origin "https://github.com/AdrianBonpin/gridline.git" 2>&1 >/dev/null)" || exit 1
+    # The hook must not have taken its "mirror failed, carry on" path.
+    printf '%s' "$hook_err" | grep -q 'mirror was not updated' && exit 1
     git --git-dir="$tmp/mirror.git" show-ref --verify --quiet refs/tags/v9.9.10 || exit 1
     [ "$(git --git-dir="$tmp/mirror.git" rev-parse refs/heads/prod)" = "$(git rev-parse HEAD)" ] || exit 1
   )
@@ -862,43 +875,60 @@ fi
 [ "$mac_ok" = "1" ] && pass "macOS signing/notarization fails closed: credentials are required, .app + .dmg are verified and only verified artifacts are uploaded"
 
 # Behavioural check: the credential gate accepts a complete set and refuses an
-# incomplete one without leaking a value.
+# incomplete one without leaking a value. Every case below is argv/environment
+# only — no macOS tooling — so it runs unchanged on the Linux CI runner; the
+# cases are named so a failure says which behaviour broke and on which shell.
 mac_creds_behaviour() {
   local out
   (
     set -uo pipefail
     creds="$repo_root/scripts/require-macos-signing-credentials.sh"
     [ -x "$creds" ] || exit 1
+    # Name the failing case: the gate must fail closed on every bash (3.2 on
+    # macOS, 5.x on Linux) and a bare exit 1 hid which behaviour regressed.
+    broke() { echo "macOS credential gate: ${1}" >&2; exit 1; }
 
     # Every secret set: passes.
     env APPLE_CERTIFICATE=c APPLE_CERTIFICATE_PASSWORD=p \
       APPLE_SIGNING_IDENTITY="Developer ID Application: T (TEAMID)" \
       KEYCHAIN_PASSWORD=k APPLE_API_KEY=a APPLE_API_ISSUER=i \
-      APPLE_API_KEY_CONTENT=key "$creds" >/dev/null || exit 1
+      APPLE_API_KEY_CONTENT=key "$creds" >/dev/null ||
+      broke "refuses a complete set of all 7 secrets"
 
     # One secret missing: fails, names it, and never prints a value.
     out="$(env -u APPLE_API_ISSUER APPLE_CERTIFICATE=certificate-value \
       APPLE_CERTIFICATE_PASSWORD=p APPLE_SIGNING_IDENTITY=identity \
-      KEYCHAIN_PASSWORD=k APPLE_API_KEY=a APPLE_API_KEY_CONTENT=key "$creds" 2>&1)" && exit 1
-    printf '%s' "$out" | grep -q 'APPLE_API_ISSUER' || exit 1
-    if printf '%s' "$out" | grep -q 'certificate-value'; then exit 1; fi
+      KEYCHAIN_PASSWORD=k APPLE_API_KEY=a APPLE_API_KEY_CONTENT=key "$creds" 2>&1)" &&
+      broke "accepts a set with APPLE_API_ISSUER missing"
+    printf '%s' "$out" | grep -q 'APPLE_API_ISSUER' ||
+      broke "does not name the missing APPLE_API_ISSUER"
+    if printf '%s' "$out" | grep -q 'certificate-value'; then
+      broke "prints a credential value"
+    fi
 
     # Nothing set at all: fails.
     if env -u APPLE_CERTIFICATE -u APPLE_CERTIFICATE_PASSWORD \
       -u APPLE_SIGNING_IDENTITY -u KEYCHAIN_PASSWORD -u APPLE_API_KEY \
       -u APPLE_API_ISSUER -u APPLE_API_KEY_CONTENT "$creds" >/dev/null 2>&1; then
-      exit 1
+      broke "accepts an empty environment"
     fi
 
     # An explicit set works, and a missing member of it fails.
-    env GRIDLINE_TEST_CRED=1 "$creds" GRIDLINE_TEST_CRED >/dev/null || exit 1
+    env GRIDLINE_TEST_CRED=1 "$creds" GRIDLINE_TEST_CRED >/dev/null ||
+      broke "refuses an explicit set whose variable is set"
     if env GRIDLINE_TEST_CRED=1 "$creds" GRIDLINE_TEST_CRED GRIDLINE_TEST_OTHER >/dev/null 2>&1; then
-      exit 1
+      broke "accepts an explicit set with a missing member"
     fi
 
-    # Anything that is not a variable name is refused, not evaluated.
+    # Anything that is not a variable name is refused, not evaluated. This is
+    # fail-closed on its own: a `case` glob is a prefix match, so a validation
+    # that is not anchored accepts 'NAME; echo pwned' and bash 5 then abandons
+    # the loop body, reporting "all present" and exiting 0.
     if env GRIDLINE_TEST_CRED=1 "$creds" 'GRIDLINE_TEST_CRED; echo pwned' >/dev/null 2>&1; then
-      exit 1
+      broke "accepts a non-identifier argument instead of refusing it"
+    fi
+    if env GRIDLINE_TEST_CRED=1 "$creds" 'GRIDLINE_TEST_CRED extra' >/dev/null 2>&1; then
+      broke "accepts an argument with trailing words instead of refusing it"
     fi
   )
   local rc=$?
