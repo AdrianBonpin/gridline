@@ -14,13 +14,32 @@
 # The release is keyed by tag: the Actions job creates the draft on a tag push,
 # and this script finds it (creating it only if it somehow doesn't exist) and
 # attaches/replaces the two DMGs — Gridline_<ver>_aarch64.dmg and
-# Gridline_<ver>_x64.dmg. Uploads use --clobber, so a locally signed DMG
-# supersedes the CI one; publish the draft afterwards on GitHub.
+# Gridline_<ver>_x64.dmg — plus the .app tarball when the build produced one.
+# Uploads use --clobber, so a locally signed DMG supersedes the CI one; publish
+# the draft afterwards on GitHub.
+#
+# FAIL CLOSED: this path makes the same guarantees as the workflow, so a local
+# build can never ship an ad-hoc signed / unnotarized artifact:
+#
+#   * a "Developer ID Application" certificate must be in the login keychain and
+#     App Store Connect notarization credentials must be configured — both are
+#     checked BEFORE the (long) build starts, not after it;
+#   * scripts/verify-macos-artifacts.sh proves the Developer ID identity, the
+#     hardened runtime, the stapled ticket, Gatekeeper's assessment, and
+#     notarizes + staples + validates each disk image;
+#   * only the artifacts that verifier accepted are uploaded.
+#
+# There is deliberately no "skip notarization" switch: an unnotarized build is
+# not a release artifact (see SECURITY.md "Verifying a release").
 #
 # Auth: the `gh` CLI (GitHub is the only release target; the Gitea mirror is
 # code-only).
 
 set -euo pipefail
+
+WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
+VERIFY="${WORKSPACE}/scripts/verify-macos-artifacts.sh"
+REQUIRE_CREDS="${WORKSPACE}/scripts/require-macos-signing-credentials.sh"
 
 # ---- config ---------------------------------------------------------------
 GH_REPO="${GH_REPO:-AdrianBonpin/gridline}"
@@ -38,7 +57,7 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
-# ---- macOS signing + notarization -----------------------------------------
+# ---- macOS signing + notarization credentials (checked before the build) ---
 # Requires a "Developer ID Application" certificate in the login keychain and
 # an App Store Connect API key for notarization. See the README's "macOS
 # signing" section for how to create both.
@@ -49,7 +68,7 @@ fi
 #   APPLE_API_ISSUER=<Issuer ID>
 #   APPLE_API_KEY_PATH=/absolute/path/to/AuthKey_<KeyID>.p8
 # (or drop the .p8 at ~/.appstoreconnect/private_keys/AuthKey_<KeyID>.p8 and
-# omit APPLE_API_KEY_PATH — tauri auto-searches that location.)
+# omit APPLE_API_KEY_PATH — the same location the CI job uses.)
 
 # 1. Resolve the Developer ID Application signing identity from the keychain.
 SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
@@ -65,7 +84,6 @@ if [ -z "$SIGNING_IDENTITY" ]; then
   exit 1
 fi
 export APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY"
-echo ">> Signing identity: $SIGNING_IDENTITY"
 
 # 2. Load notarization credentials.
 NOTARIZE_ENV="${HOME}/.config/gridline/notarize.env"
@@ -75,23 +93,27 @@ if [ -f "$NOTARIZE_ENV" ]; then
   source "$NOTARIZE_ENV"
   set +a
 fi
-if [ -z "${APPLE_API_KEY:-}" ] || [ -z "${APPLE_API_ISSUER:-}" ]; then
-  if [ "${GRIDLINE_SKIP_NOTARIZE:-0}" = "1" ]; then
-    echo ">> WARNING: notarization credentials missing; GRIDLINE_SKIP_NOTARIZE=1 set." >&2
-    echo "  Building signed but NOT notarized (test-only — users will still see a prompt)." >&2
-  else
-    echo "ERROR: Notarization credentials not configured." >&2
-    echo "  Create ${NOTARIZE_ENV} with APPLE_API_KEY and APPLE_API_ISSUER" >&2
-    echo "  (and APPLE_API_KEY_PATH, or place the .p8 at ~/.appstoreconnect/private_keys/)." >&2
-    echo "  See the README's 'macOS signing' section for the App Store Connect API key setup." >&2
-    exit 1
-  fi
-else
-  echo ">> Notarization: API key ${APPLE_API_KEY} (issuer ${APPLE_API_ISSUER})"
+
+# 3. Refuse to start without them (same rule the release job applies).
+if ! "$REQUIRE_CREDS" APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_ISSUER; then
+  echo "  Create ${NOTARIZE_ENV} with APPLE_API_KEY and APPLE_API_ISSUER" >&2
+  echo "  (and APPLE_API_KEY_PATH, or place the .p8 at ~/.appstoreconnect/private_keys/)." >&2
+  echo "  See the README's 'macOS signing' section for the App Store Connect API key setup." >&2
+  exit 1
 fi
 
+APPLE_API_KEY_PATH="${APPLE_API_KEY_PATH:-${HOME}/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY}.p8}"
+export APPLE_API_KEY_PATH
+if [ ! -f "$APPLE_API_KEY_PATH" ]; then
+  echo "ERROR: notarization API key not found at ${APPLE_API_KEY_PATH}" >&2
+  echo "  Set APPLE_API_KEY_PATH in ${NOTARIZE_ENV} or place the .p8 at the default location." >&2
+  exit 1
+fi
+
+echo ">> Signing identity: $SIGNING_IDENTITY"
+echo ">> Notarization: API key ${APPLE_API_KEY} (issuer ${APPLE_API_ISSUER})"
+
 # ---- build bundled DB tools (macOS) ----------------------------------------
-WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_PG="${WORKSPACE}/desktop/src-tauri/resources/pg_tools"
 OUT_MY="${WORKSPACE}/desktop/src-tauri/resources/mysql_tools"
 
@@ -171,66 +193,47 @@ cd "${WORKSPACE}/desktop"
 echo ">> Installing frontend dependencies..."
 bun install --frozen-lockfile
 
+# Drop bundle output from an earlier run so nothing stale can be verified or
+# uploaded as if it were part of this build.
+rm -rf "${WORKSPACE}"/desktop/src-tauri/target/*/release/bundle
+
 echo ">> Building aarch64 (Apple Silicon)..."
 bun run tauri build --target aarch64-apple-darwin
 echo ">> Building x86_64 (Intel)..."
 bun run tauri build --target x86_64-apple-darwin
 
-VERSION="${TAG#v}"
-BUNDLE_ARM="${WORKSPACE}/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle"
-BUNDLE_INTEL="${WORKSPACE}/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle"
-
-# ---- verify signing + notarization -----------------------------------------
-# Confirm both .app bundles are properly signed and carry a stapled
-# notarization ticket before we upload them. spctl can lag right after
-# notarization (assessment cache), so stapler validate is the authoritative
-# check; a pending spctl is only a warning.
-for APP in \
-  "${BUNDLE_ARM}/macos/Gridline.app" \
-  "${BUNDLE_INTEL}/macos/Gridline.app"; do
-  [ -d "$APP" ] || { echo "missing $APP" >&2; exit 1; }
-  echo ">> Verifying $APP"
-  codesign --verify --deep --strict --verbose=2 "$APP" \
-    || { echo "codesign verify FAILED" >&2; exit 1; }
-  xcrun stapler validate "$APP" \
-    || { echo "notarization ticket not stapled" >&2; exit 1; }
-  spctl --assess --type execute --verbose=4 "$APP" \
-    || echo "  (spctl assessment pending — normal right after notarization; stapler validate passed)"
+# ---- verify signing + notarization, then upload ----------------------------
+# Both architectures go through the same verifier the release job uses: the
+# Developer ID identity (not an ad-hoc signature), the hardened runtime, the
+# stapled ticket and Gatekeeper's assessment must all pass, and each DMG is
+# notarized, stapled and validated before anything is uploaded. The verifier
+# prints the assets it accepted, and only those are uploaded.
+VERIFIED=()
+for TRIPLE in aarch64-apple-darwin x86_64-apple-darwin; do
+  echo ">> Verifying ${TRIPLE} artifacts"
+  if ! ACCEPTED="$("$VERIFY" --target "$TRIPLE")"; then
+    echo "ERROR: ${TRIPLE} artifacts are not signed, notarized and stapled; nothing uploaded." >&2
+    exit 1
+  fi
+  if [ -z "$ACCEPTED" ]; then
+    echo "ERROR: ${TRIPLE} verification accepted no artifacts; nothing uploaded." >&2
+    exit 1
+  fi
+  while IFS= read -r asset; do
+    if [ -n "$asset" ]; then
+      VERIFIED+=("$asset")
+    fi
+  done <<<"$ACCEPTED"
 done
 
-# ---- notarize + staple the DMGs --------------------------------------------
-# Notarizing the .app is not enough. When a user opens the downloaded DMG,
-# Gatekeeper assesses the DMG itself — and an unnotarized DMG is rejected as
-# "Unnotarized Developer ID" even though the app inside it is fine. Submit each
-# DMG to the same notary service and staple the ticket into the DMG.
-if [ "${GRIDLINE_SKIP_NOTARIZE:-0}" = "1" ]; then
-  echo ">> Skipping DMG notarization (GRIDLINE_SKIP_NOTARIZE=1)."
-else
-  API_KEY_PATH="${APPLE_API_KEY_PATH:-${HOME}/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY}.p8}"
-  [ -f "$API_KEY_PATH" ] || {
-    echo "ERROR: notarization API key not found at $API_KEY_PATH" >&2
-    echo "  Set APPLE_API_KEY_PATH in ${NOTARIZE_ENV} or place the .p8 at the default location." >&2
-    exit 1
-  }
-  for DMG in \
-    "${BUNDLE_ARM}/dmg/Gridline_${VERSION}_aarch64.dmg" \
-    "${BUNDLE_INTEL}/dmg/Gridline_${VERSION}_x64.dmg"; do
-    [ -f "$DMG" ] || { echo "missing $DMG" >&2; exit 1; }
-    echo ">> Notarizing $(basename "$DMG") (this can take a few minutes)"
-    xcrun notarytool submit "$DMG" \
-      --key "$API_KEY_PATH" \
-      --key-id "$APPLE_API_KEY" \
-      --issuer "$APPLE_API_ISSUER" \
-      --wait
-    xcrun stapler staple "$DMG" \
-      || { echo "failed to staple $(basename "$DMG")" >&2; exit 1; }
-    xcrun stapler validate "$DMG" \
-      || { echo "notarization ticket not stapled to $(basename "$DMG")" >&2; exit 1; }
-  done
+if [ "${#VERIFIED[@]}" -eq 0 ]; then
+  echo "ERROR: no verified artifacts to upload." >&2
+  exit 1
 fi
 
-# ---- create/ensure release + upload DMGs -----------------------------------
+# ---- create/ensure release + upload verified artifacts ---------------------
 cd "${WORKSPACE}"
+VERSION="${TAG#v}"
 
 echo ">> Ensuring release ${TAG} exists on ${GH_REPO}..."
 if ! gh release view "${TAG}" --repo "${GH_REPO}" >/dev/null 2>&1; then
@@ -240,10 +243,9 @@ else
   echo ">> Release ${TAG} already exists."
 fi
 
-# --clobber replaces the CI-built (ad-hoc) DMGs with this signed + notarized pair.
-echo ">> Uploading macOS DMGs (replacing any existing ones)..."
-gh release upload "${TAG}" --repo "${GH_REPO}" --clobber \
-  "${BUNDLE_ARM}/dmg/Gridline_${VERSION}_aarch64.dmg" \
-  "${BUNDLE_INTEL}/dmg/Gridline_${VERSION}_x64.dmg"
+# --clobber replaces the CI-built assets with this signed + notarized set.
+echo ">> Uploading verified macOS artifacts (replacing any existing ones)..."
+printf '   %s\n' "${VERIFIED[@]}"
+gh release upload "${TAG}" --repo "${GH_REPO}" --clobber "${VERIFIED[@]}"
 
 echo "Done. Review + publish the draft: https://github.com/${GH_REPO}/releases/tag/${TAG}"
