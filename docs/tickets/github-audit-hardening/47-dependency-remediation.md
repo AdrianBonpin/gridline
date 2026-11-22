@@ -7,10 +7,10 @@
 **Seams:** Built-product seam: catches audits, production builds, and both test suites; sensitive details stay in the private advisory channel.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/90
-**Status:** ready
+**Status:** done
 
-- [ ] Every patched advisory in the JavaScript and Rust trees is upgraded.
-- [ ] Reachable unsound or yanked dependencies are upgraded or replaced.
-- [ ] Each remaining warning has an owner, a rationale, and a review date.
-- [ ] Unreviewed new advisories fail the check.
-- [ ] Desktop and website production builds and test suites pass after the upgrades.
+- [x] Every patched advisory in the JavaScript and Rust trees is upgraded.
+- [x] Reachable unsound or yanked dependencies are upgraded or replaced.
+- [x] Each remaining warning has an owner, a rationale, and a review date.
+- [x] Unreviewed new advisories fail the check.
+- [x] Desktop and website production builds and test suites pass after the upgrades.

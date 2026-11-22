@@ -125,7 +125,7 @@ impl ReadOnlyControl for sqlx::MySqlConnection {
         let sql = statement.to_string();
         Box::pin(async move {
             use futures_util::TryStreamExt;
-            let mut stream = sqlx::raw_sql(&sql).execute_many(&mut *self);
+            let mut stream = sqlx::raw_sql(sqlx::AssertSqlSafe(sql)).execute_many(&mut *self);
             while let Some(_result) = stream.try_next().await.map_err(|e| format!("{e}"))? {}
             Ok(())
         })

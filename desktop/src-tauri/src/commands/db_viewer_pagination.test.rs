@@ -495,18 +495,18 @@ async fn live_mysql_filtered_browse_reports_the_filtered_total() {
             panic!("expected a mysql handle")
         };
         let pool = shared.lock().await;
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE TABLE `{}`.`{}` (id INT PRIMARY KEY, status VARCHAR(16))",
             db, table
-        ))
+        )))
         .execute(&*pool)
         .await
         .expect("create scratch table");
         for (i, status) in (1..=6).map(|i| (i, if i <= 2 { "paid" } else { "pending" })) {
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "INSERT INTO `{}`.`{}` (id, status) VALUES (?, ?)",
                 db, table
-            ))
+            )))
             .bind(i)
             .bind(status)
             .execute(&*pool)
@@ -554,9 +554,12 @@ async fn live_mysql_filtered_browse_reports_the_filtered_total() {
     let handle = pm.lock().await.acquire(&id).expect("handle");
     if let DbHandle::MySql(pool) = handle {
         let pool = pool.lock().await;
-        let _ = sqlx::query(&format!("DROP TABLE `{}`.`{}`", db, table))
-            .execute(&*pool)
-            .await;
+        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP TABLE `{}`.`{}`",
+            db, table
+        )))
+        .execute(&*pool)
+        .await;
     }
 }
 

@@ -1457,10 +1457,12 @@ pub async fn get_databases(
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
             let pool = pool.lock().await;
             let pool = &*pool; // Executor is implemented for &Pool, not for the guard
-            let rows = sqlx::query(&crate::db::mysql::mysql_databases_query())
-                .fetch_all(pool)
-                .await
-                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            let rows = sqlx::query(sqlx::AssertSqlSafe(
+                crate::db::mysql::mysql_databases_query(),
+            ))
+            .fetch_all(pool)
+            .await
+            .map_err(|e| sanitize_error(&format!("{e}")))?;
             let mut dbs: Vec<String> = rows
                 .iter()
                 .map(|r| crate::db::mysql::mysql_row_string(r, 0))
@@ -1509,10 +1511,12 @@ pub async fn get_schemas(
             let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // MySQL has no separate schema layer — databases play the role of
                                // schemas, so the schema selector mirrors the database list.
-            let rows = sqlx::query(&crate::db::mysql::mysql_databases_query())
-                .fetch_all(pool)
-                .await
-                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            let rows = sqlx::query(sqlx::AssertSqlSafe(
+                crate::db::mysql::mysql_databases_query(),
+            ))
+            .fetch_all(pool)
+            .await
+            .map_err(|e| sanitize_error(&format!("{e}")))?;
             let mut dbs: Vec<String> = rows
                 .iter()
                 .map(|r| crate::db::mysql::mysql_row_string(r, 0))
@@ -1582,7 +1586,7 @@ pub(crate) async fn get_tables_inner(
                                // when not — hence sqlx::query + try_get, not query_as.
             let query = crate::db::introspection::mysql_tables_query(schema);
             // The schema-filtered form binds `?`; the unfiltered form takes none.
-            let mut q = sqlx::query(&query);
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(query));
             if let Some(s) = schema {
                 q = q.bind(s);
             }
@@ -1641,7 +1645,7 @@ pub(crate) async fn mysql_load_columns(
     read_only_relation: bool,
 ) -> Result<Vec<ColumnInfo>, String> {
     let col_query = crate::db::mysql::mysql_columns_query();
-    let col_rows = sqlx::query(&col_query)
+    let col_rows = sqlx::query(sqlx::AssertSqlSafe(col_query))
         .bind(schema)
         .bind(table)
         .fetch_all(pool)
@@ -1680,7 +1684,7 @@ pub(crate) async fn mysql_load_columns(
 
     // FK pass: mark is_fk + fk_ref for columns named in the FK metadata.
     let fk_query = crate::db::mysql::mysql_fk_query();
-    let fk_rows = sqlx::query(&fk_query)
+    let fk_rows = sqlx::query(sqlx::AssertSqlSafe(fk_query))
         .bind(schema)
         .bind(table)
         .fetch_all(pool)
@@ -2001,7 +2005,7 @@ pub(crate) async fn get_table_data_inner(
             // of the whole-table count.
             let count_query =
                 crate::db::mysql::mysql_count_query_filtered(schema, table, &filters)?;
-            let mut count_q = sqlx::query_scalar::<_, i64>(&count_query);
+            let mut count_q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(count_query));
             for value in crate::db::mysql::mysql_filter_values(&filters) {
                 count_q = count_q.bind(value);
             }
@@ -2023,7 +2027,7 @@ pub(crate) async fn get_table_data_inner(
                 &default_sort,
             )?;
 
-            let mut q = sqlx::query(&data_query);
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(data_query));
             for value in crate::db::mysql::mysql_filter_values(&filters) {
                 q = q.bind(value);
             }
@@ -2268,14 +2272,14 @@ pub(crate) async fn mysql_relation_is_read_only(
     schema: &str,
     table: &str,
 ) -> bool {
-    let kind: Option<String> =
-        sqlx::query_scalar(crate::db::introspection::mysql_relation_type_query().as_str())
-            .bind(schema)
-            .bind(table)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
+    let relation_type_query = crate::db::introspection::mysql_relation_type_query();
+    let kind: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(relation_type_query))
+        .bind(schema)
+        .bind(table)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
     match kind {
         Some(kind) => !kind.eq_ignore_ascii_case("BASE TABLE"),
         None => false,
@@ -2548,7 +2552,7 @@ pub(crate) async fn get_fk_preview_inner(
             let target = resolve_fk_target_mysql(pool, schema, table, column).await?;
             let columns = mysql_load_columns(pool, &target.schema, &target.table, false).await?;
             let data_query = crate::db::fk::preview_sql(Engine::MySql, &target)?;
-            let data_rows = sqlx::query(&data_query)
+            let data_rows = sqlx::query(sqlx::AssertSqlSafe(data_query))
                 .bind(value)
                 .fetch_all(pool)
                 .await
@@ -2794,7 +2798,7 @@ pub(crate) async fn search_fk_options_inner(
             )?;
 
             // MySQL placeholders are positional: one bind per searched column.
-            let mut rows_query = sqlx::query(&sql.rows);
+            let mut rows_query = sqlx::query(sqlx::AssertSqlSafe(sql.rows.to_owned()));
             for _ in 0..sql.binds {
                 rows_query = rows_query.bind(search);
             }
@@ -2810,7 +2814,7 @@ pub(crate) async fn search_fk_options_inner(
                         .collect()
                 })
                 .collect();
-            let mut count_query = sqlx::query_scalar(&sql.count);
+            let mut count_query = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.count.to_owned()));
             for _ in 0..sql.binds {
                 count_query = count_query.bind(search);
             }
@@ -3013,11 +3017,14 @@ async fn apply_mysql_single_row(
         .begin()
         .await
         .map_err(|e| sanitize_error(&format!("{e}")))?;
-    let affected = bind_mysql_params(sqlx::query(&stmt.sql), &stmt.params)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| sanitize_error(&format!("{e}")))?
-        .rows_affected();
+    let affected = bind_mysql_params(
+        sqlx::query(sqlx::AssertSqlSafe(stmt.sql.to_owned())),
+        &stmt.params,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| sanitize_error(&format!("{e}")))?
+    .rows_affected();
     if affected == 1 {
         return tx
             .commit()
@@ -3028,10 +3035,13 @@ async fn apply_mysql_single_row(
         None
     } else {
         let probe = w.identity_probe()?;
-        let found = bind_mysql_params(sqlx::query(&probe.sql), &probe.params)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| sanitize_error(&format!("{e}")))?;
+        let found = bind_mysql_params(
+            sqlx::query(sqlx::AssertSqlSafe(probe.sql.to_owned())),
+            &probe.params,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?;
         Some(u64::from(found.is_some()))
     };
     tx.rollback()
@@ -3314,7 +3324,7 @@ pub(crate) async fn execute_change_inner(
                     let pairs = parse_json_pairs(data)?;
                     let (sql, params) =
                         crate::db::mysql::mysql_build_insert_sql(schema, table, &pairs);
-                    bind_mysql_params(sqlx::query(&sql), &params)
+                    bind_mysql_params(sqlx::query(sqlx::AssertSqlSafe(sql)), &params)
                         .execute(pool)
                         .await
                         .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -3342,7 +3352,7 @@ pub(crate) async fn execute_change_inner(
                 }
                 Change::AlterTable { sql, .. } => {
                     // Raw DDL, no bound parameters.
-                    sqlx::query(sql)
+                    sqlx::query(sqlx::AssertSqlSafe(sql.to_owned()))
                         .execute(pool)
                         .await
                         .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -3373,24 +3383,28 @@ pub(crate) async fn execute_change_inner(
                     let params: Vec<serde_json::Value> = rows.iter().flatten().cloned().collect();
                     // Bulk insert affects many rows — skip the single-row
                     // affected-count guard.
-                    bind_mysql_params(sqlx::query(&sql), &params)
+                    bind_mysql_params(sqlx::query(sqlx::AssertSqlSafe(sql.to_owned())), &params)
                         .execute(pool)
                         .await
                         .map_err(|e| sanitize_error(&format!("{e}")))?;
                     return Ok(());
                 }
                 Change::DropTable { schema, table, .. } => {
-                    sqlx::query(&crate::db::mysql::mysql_build_drop_sql(schema, table))
-                        .execute(pool)
-                        .await
-                        .map_err(|e| sanitize_error(&format!("{e}")))?;
+                    sqlx::query(sqlx::AssertSqlSafe(crate::db::mysql::mysql_build_drop_sql(
+                        schema, table,
+                    )))
+                    .execute(pool)
+                    .await
+                    .map_err(|e| sanitize_error(&format!("{e}")))?;
                     return Ok(());
                 }
                 Change::EmptyTable { schema, table, .. } => {
-                    sqlx::query(&crate::db::mysql::mysql_build_empty_sql(schema, table))
-                        .execute(pool)
-                        .await
-                        .map_err(|e| sanitize_error(&format!("{e}")))?;
+                    sqlx::query(sqlx::AssertSqlSafe(
+                        crate::db::mysql::mysql_build_empty_sql(schema, table),
+                    ))
+                    .execute(pool)
+                    .await
+                    .map_err(|e| sanitize_error(&format!("{e}")))?;
                     return Ok(());
                 }
             }
@@ -3784,10 +3798,12 @@ pub async fn get_table_ddl(
             let pool = pool.lock().await;
             let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // SHOW CREATE TABLE returns (Table, Create Table); take the DDL.
-            let row = sqlx::query(&crate::db::mysql::mysql_ddl_query(&schema, &table))
-                .fetch_one(pool)
-                .await
-                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            let row = sqlx::query(sqlx::AssertSqlSafe(crate::db::mysql::mysql_ddl_query(
+                &schema, &table,
+            )))
+            .fetch_one(pool)
+            .await
+            .map_err(|e| sanitize_error(&format!("{e}")))?;
             Ok(crate::db::mysql::mysql_row_string(&row, 1))
         }
         Some(DbHandle::Postgresql(_client, _)) => {

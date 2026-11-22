@@ -415,7 +415,7 @@ pub(crate) mod capture {
         let mut tables: BTreeMap<String, SnapshotTable> = BTreeMap::new();
         let mut views: Vec<SnapshotView> = Vec::new();
 
-        let rows = sqlx::query(&mysql_snapshot_columns_query(schema))
+        let rows = sqlx::query(sqlx::AssertSqlSafe(mysql_snapshot_columns_query(schema)))
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| format!("columns query failed: {e}"))?;
@@ -437,10 +437,12 @@ pub(crate) mod capture {
             });
         }
 
-        let rows = sqlx::query(&mysql_snapshot_constraints_query(schema))
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|e| format!("constraints query failed: {e}"))?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(mysql_snapshot_constraints_query(
+            schema,
+        )))
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| format!("constraints query failed: {e}"))?;
         for r in rows {
             let tname = mysql_row_string(&r, 0);
             let cname = mysql_row_string(&r, 1);
@@ -503,7 +505,7 @@ pub(crate) mod capture {
             }
         }
 
-        let rows = sqlx::query(&mysql_snapshot_indexes_query(schema))
+        let rows = sqlx::query(sqlx::AssertSqlSafe(mysql_snapshot_indexes_query(schema)))
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| format!("indexes query failed: {e}"))?;
@@ -526,7 +528,7 @@ pub(crate) mod capture {
             }
         }
 
-        let rows = sqlx::query(&mysql_snapshot_views_query(schema))
+        let rows = sqlx::query(sqlx::AssertSqlSafe(mysql_snapshot_views_query(schema)))
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| format!("views query failed: {e}"))?;

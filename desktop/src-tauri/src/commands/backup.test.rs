@@ -1694,22 +1694,26 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
     let dotted = "gl.dot.table";
     let bystander = "gl_restore_bystander";
     for obj in [table, dotted, bystander] {
-        sqlx::query(&format!("DROP TABLE IF EXISTS `{db}`.`{obj}`"))
-            .execute(&mut conn)
-            .await
-            .expect("pre-clean");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP TABLE IF EXISTS `{db}`.`{obj}`"
+        )))
+        .execute(&mut conn)
+        .await
+        .expect("pre-clean");
     }
     // Created by the test but never by the dump: a clean restore must leave it.
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE TABLE `{db}`.`{bystander}` (id INT PRIMARY KEY)"
-    ))
+    )))
     .execute(&mut conn)
     .await
     .expect("bystander");
-    sqlx::query(&format!("INSERT INTO `{db}`.`{bystander}` VALUES (7)"))
-        .execute(&mut conn)
-        .await
-        .expect("bystander row");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO `{db}`.`{bystander}` VALUES (7)"
+    )))
+    .execute(&mut conn)
+    .await
+    .expect("bystander row");
 
     // The dump carries MySQL dialect escapes (backslash and doubled quotes) and
     // a dotted quoted table name; both must survive splitting and restore.
@@ -1738,28 +1742,36 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
     .await
     .expect("first restore");
 
-    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM `{db}`.`{table}`"))
-        .fetch_one(&mut conn)
-        .await
-        .expect("count");
+    let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM `{db}`.`{table}`"
+    )))
+    .fetch_one(&mut conn)
+    .await
+    .expect("count");
     assert_eq!(count, 1);
-    let stored: String = sqlx::query_scalar(&format!("SELECT name FROM `{db}`.`{table}`"))
-        .fetch_one(&mut conn)
-        .await
-        .expect("escaped value");
+    let stored: String = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT name FROM `{db}`.`{table}`"
+    )))
+    .fetch_one(&mut conn)
+    .await
+    .expect("escaped value");
     assert_eq!(
         stored, "it's; O'Brien",
         "dialect escapes must reach the server intact"
     );
-    let dotted_rows: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM `{db}`.`{dotted}`"))
-        .fetch_one(&mut conn)
-        .await
-        .expect("dotted name");
+    let dotted_rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM `{db}`.`{dotted}`"
+    )))
+    .fetch_one(&mut conn)
+    .await
+    .expect("dotted name");
     assert_eq!(dotted_rows, 1, "a dotted quoted name is one table");
-    let survivors: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM `{db}`.`{bystander}`"))
-        .fetch_one(&mut conn)
-        .await
-        .expect("bystander survives");
+    let survivors: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM `{db}`.`{bystander}`"
+    )))
+    .fetch_one(&mut conn)
+    .await
+    .expect("bystander survives");
     assert_eq!(
         survivors, 1,
         "a clean restore must not drop objects the dump does not recreate"
@@ -1786,10 +1798,12 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
     .await
     .expect("clean restore must not hit a duplicate key");
 
-    let count2: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM `{db}`.`{table}`"))
-        .fetch_one(&mut conn)
-        .await
-        .expect("count2");
+    let count2: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM `{db}`.`{table}`"
+    )))
+    .fetch_one(&mut conn)
+    .await
+    .expect("count2");
     assert_eq!(count2, 1, "clean restore must replace, not append");
 
     // A statement that cannot succeed must fail and name its position.
@@ -1826,10 +1840,12 @@ async fn mysql_native_restore_applies_a_script_and_honours_clean() {
         .await
         .expect("reconnect");
     for obj in [table, dotted, bystander] {
-        sqlx::query(&format!("DROP TABLE IF EXISTS `{db}`.`{obj}`"))
-            .execute(&mut cleanup)
-            .await
-            .expect("cleanup");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP TABLE IF EXISTS `{db}`.`{obj}`"
+        )))
+        .execute(&mut cleanup)
+        .await
+        .expect("cleanup");
     }
     let _ = cleanup.close().await;
 }

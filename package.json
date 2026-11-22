@@ -12,5 +12,9 @@
     "e2e:desktop:build": "bun run --filter gridline-desktop e2e:build",
     "e2e:desktop": "bun run --filter gridline-desktop e2e",
     "e2e:appimage": "bun run --filter gridline-desktop e2e:appimage"
+  },
+  "overrides": {
+    "dompurify": "^3.4.18",
+    "fflate": "^0.8.3"
   }
 }

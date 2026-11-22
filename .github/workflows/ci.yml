@@ -1,9 +1,9 @@
 name: CI
 
-# Pull-request validation for the Tauri desktop app: Rust formatting + unit
-# tests, frontend unit tests, the frontend production build, and a gated
-# built-product desktop E2E smoke flow. Deliberately separate from release.yml —
-# no secrets, no bundling, read-only permissions.
+# Pull-request validation for the Tauri desktop app: dependency advisories,
+# Rust formatting + unit tests, frontend unit tests, the frontend production
+# build, and a gated built-product desktop E2E smoke flow. Deliberately separate
+# from release.yml — no secrets, no bundling, read-only permissions.
 #
 # `pull_request` (never `pull_request_target`) so a fork PR cannot reach a
 # write-scoped token.
@@ -68,7 +68,8 @@ jobs:
     name: fmt + tests + build
     runs-on: ubuntu-22.04
     # Bounded runtime: a hung `cargo test` cannot burn a runner for hours.
-    timeout-minutes: 30
+    # 40 rather than 30 minutes because the job also compiles cargo-audit.
+    timeout-minutes: 40
     # Read-only: this job only checks out and tests.
     permissions:
       contents: read
@@ -107,6 +108,17 @@ jobs:
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
+
+      # Dependency advisories are a gate, not a report: scripts/check-advisories.py
+      # audits both Bun lockfiles (workspace + the standalone website install) and
+      # the Rust lockfile, and fails on any advisory that is not either fixed or
+      # covered by a reviewed, dated entry in docs/security/dependency-exceptions.md.
+      # It sits in this job so the existing required `checks` status enforces it.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies for unreviewed advisories
+        run: ./scripts/check-advisories.py
 
       - name: Check Rust formatting
         working-directory: desktop/src-tauri

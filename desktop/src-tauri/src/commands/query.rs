@@ -997,10 +997,13 @@ async fn execute_mysql_page(
     offset: i64,
 ) -> Result<QueryResult, String> {
     use sqlx::Executor as _;
+    use sqlx::SqlSafeStr as _;
     use sqlx::Statement as _;
+    // sqlx 0.9 requires an explicitly asserted-safe SQL string; `wrapped` is
+    // built by this module from an already-validated statement.
     let wrapped = mysql_wrap_data(statement);
     let prepared = (&mut *conn)
-        .prepare(&wrapped)
+        .prepare(sqlx::AssertSqlSafe(wrapped).into_sql_str())
         .await
         .map_err(|e| mysql_error_text(&e))?;
     let columns: Vec<ColumnInfo> = prepared.columns().iter().map(mysql_column_info).collect();
@@ -1032,7 +1035,7 @@ async fn execute_mysql_raw(
     page_size: i64,
     off: i64,
 ) -> Result<QueryResult, String> {
-    let rows = sqlx::query(query)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(query.to_owned()))
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| mysql_error_text(&e))?;
@@ -1678,7 +1681,7 @@ pub(crate) async fn cancel_query_inner(
                 .connect()
                 .await
                 .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
-            sqlx::query(&format!("KILL QUERY {id}"))
+            sqlx::query(sqlx::AssertSqlSafe(format!("KILL QUERY {id}")))
                 .execute(&mut c)
                 .await
                 .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
@@ -2205,7 +2208,7 @@ mod tests {
         });
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let mut killer = opts.connect().await.expect("killer connect");
-        sqlx::query(&format!("KILL QUERY {conn_id}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("KILL QUERY {conn_id}")))
             .execute(&mut killer)
             .await
             .expect("kill");

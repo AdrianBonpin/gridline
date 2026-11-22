@@ -2244,7 +2244,9 @@ async fn exec_restore_statement(
     sql: &str,
 ) -> Result<(), sqlx::Error> {
     use sqlx::Executor;
-    conn.execute(sql).await.map(|_| ())
+    conn.execute(sqlx::AssertSqlSafe(sql.to_owned()))
+        .await
+        .map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
