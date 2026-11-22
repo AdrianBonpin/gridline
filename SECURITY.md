@@ -66,11 +66,16 @@ We will not pursue or support legal action against researchers who test against 
 
 ## Verifying a release
 
-macOS builds are Developer-ID signed and notarized in CI. Verify a downloaded DMG with:
+macOS builds are Developer-ID signed and notarized by GitHub Actions, and that is **enforced, not attempted**: the macOS release job fails when the Developer ID / App Store Connect credentials are missing or rejected, verifies the built `.app` and `.dmg` after signing and stapling (`codesign --verify`, `xcrun stapler validate`, `spctl --assess`), and uploads only the artifacts that passed. A macOS release without a notarized artifact is therefore not possible — if a DMG is on the release page, it was signed, notarized, stapled and verified before upload.
+
+Verify a downloaded DMG with:
 
 ```bash
 xcrun stapler validate Gridline_<version>_aarch64.dmg
+spctl --assess --type open --context context:primary-signature Gridline_<version>_aarch64.dmg
 spctl --assess --type execute /Applications/Gridline.app
 ```
+
+A failed `stapler validate`, or an `spctl` rejection, means the download is not the artifact Gridline published: do not run it, and report it privately (see above).
 
 Windows and Linux installers are currently unsigned, so prefer the official GitHub release page over any mirror.

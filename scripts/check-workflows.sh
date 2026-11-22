@@ -18,6 +18,10 @@
 #      the build, cached archives are verified rather than trusted, and the
 #      packaged tool manifests are checked before anything is uploaded
 #      (ticket 44, "Release inputs are verified").
+#   7. macOS signing/notarization fails CLOSED: a release without working Apple
+#      credentials stops before it builds, the built .app and .dmg are verified
+#      (codesign/stapler/spctl) after signing and stapling, and only verified
+#      artifacts are uploaded (ticket 45, "macOS signing fails closed").
 #
 # Ref protection, immutable releases and required checks are REPOSITORY
 # SETTINGS, not files; they cannot be asserted here. See AGENTS.md
@@ -545,6 +549,389 @@ if [ $? -eq 0 ]; then
   pass "the manifest gate passes an honest bundle and fails tampered, missing, extra or wrong-version tools"
 else
   fail "scripts/verify-bundled-tools.sh no longer gates the packaged manifests (run it by hand to debug)"
+fi
+
+# --------------------------------------------------------------------------
+# 7. macOS signing/notarization fails closed (ticket 45).
+# --------------------------------------------------------------------------
+mac_script="scripts/release-mac.sh"
+mac_verify_script="scripts/verify-macos-artifacts.sh"
+mac_creds_script="scripts/require-macos-signing-credentials.sh"
+mac_ok=1
+
+# step_region <workflow> <step name fragment> — the lines of one workflow step:
+# from its `- name:` line up to (but excluding) the next step.
+step_region() {
+  awk -v want="$2" '
+    /^      - name:/ {
+      if (started) exit
+      if (index($0, "name: " want) > 0) started = 1
+    }
+    started { print }
+  ' "$1"
+}
+
+for f in "$mac_verify_script" "$mac_creds_script" "$mac_script"; do
+  if [ ! -f "$f" ]; then
+    fail "missing $f (macOS signing/notarization cannot be enforced or verified)"
+    mac_ok=0
+    continue
+  fi
+  [ -x "$f" ] || { fail "$f is not executable"; mac_ok=0; }
+  bash -n "$f" 2>/dev/null || { fail "$f has a syntax error"; mac_ok=0; }
+done
+
+# 7a. Credentials are REQUIRED on macOS runners, before anything is built.
+mac_secrets="APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY KEYCHAIN_PASSWORD APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_CONTENT"
+gate_region="$(step_region "$release_wf" 'Require Apple signing and notarization secrets')"
+if [ -z "$gate_region" ]; then
+  fail "release.yml has no 'Require Apple signing and notarization secrets' step, so a macOS release can be built ad-hoc signed"
+  mac_ok=0
+else
+  printf '%s\n' "$gate_region" | grep -q 'require-macos-signing-credentials\.sh' ||
+    { fail "the macOS credential gate does not run scripts/require-macos-signing-credentials.sh"; mac_ok=0; }
+  for secret in $mac_secrets; do
+    printf '%s\n' "$gate_region" | grep -q "secrets\.${secret}" ||
+      { fail "the macOS credential gate does not require the ${secret} secret"; mac_ok=0; }
+  done
+  printf '%s\n' "$gate_region" | grep -q "startsWith(matrix.platform, 'macos')" ||
+    { fail "the macOS credential gate is not restricted to macOS runners (it would fail the Linux/Windows jobs)"; mac_ok=0; }
+fi
+
+# No step may downgrade absent Apple credentials to a notice/warning, and no
+# step may be allowed to fail without failing the job.
+downgrades="$(grep -n '::notice::\|::warning::' "$release_wf" 2>/dev/null |
+  grep -i 'apple\|macos\|notariz\|ad-hoc\|sign' || true)"
+if [ -n "$downgrades" ]; then
+  fail "release.yml downgrades macOS signing/notarization to a notice or warning instead of failing:"
+  printf '%s\n' "$downgrades" >&2
+  mac_ok=0
+fi
+if grep -q 'continue-on-error' "$release_wf" 2>/dev/null; then
+  fail "release.yml uses continue-on-error, so a failed step can still publish"
+  mac_ok=0
+fi
+
+# 7b. The macOS build must NOT upload: verification has to come first.
+mac_build_name='Build macOS bundles (no release upload)'
+mac_build_region="$(step_region "$release_wf" "$mac_build_name")"
+if [ -z "$mac_build_region" ]; then
+  fail "release.yml has no '${mac_build_name}' step, so macOS is built and uploaded in one step and cannot be verified first"
+  mac_ok=0
+else
+  printf '%s\n' "$mac_build_region" | grep -q 'uses: tauri-apps/tauri-action@' ||
+    { fail "the macOS build step no longer builds with tauri-action"; mac_ok=0; }
+  # Keys, not comments: the step may *explain* why there is no tagName.
+  if printf '%s\n' "$mac_build_region" | sed 's/#.*//' |
+    grep -Eq '(^|[[:space:]])(tagName|releaseName|releaseId)[[:space:]]*:'; then
+    fail "the macOS build step can upload (tagName/releaseName/releaseId is set); it must build only"
+    mac_ok=0
+  fi
+  printf '%s\n' "$mac_build_region" | grep -q "startsWith(matrix.platform, 'macos')" ||
+    { fail "the macOS-only build step is not restricted to macOS runners"; mac_ok=0; }
+fi
+
+# 7c. Verification covers the .app AND the .dmg, and cannot be swallowed.
+mac_verify_region="$(step_region "$release_wf" 'Verify signed and notarized macOS artifacts')"
+if [ -z "$mac_verify_region" ]; then
+  fail "release.yml has no 'Verify signed and notarized macOS artifacts' step"
+  mac_ok=0
+else
+  printf '%s\n' "$mac_verify_region" | grep -q 'verify-macos-artifacts\.sh' ||
+    { fail "the macOS verification step does not run scripts/verify-macos-artifacts.sh"; mac_ok=0; }
+  printf '%s\n' "$mac_verify_region" | grep -q "startsWith(matrix.platform, 'macos')" ||
+    { fail "the macOS verification step is not restricted to macOS runners"; mac_ok=0; }
+  printf '%s\n' "$mac_verify_region" | grep -q 'id: verify_macos' ||
+    { fail "the macOS verification step publishes no output, so the upload cannot use the verified list"; mac_ok=0; }
+  swallowed="$(printf '%s\n' "$mac_verify_region" |
+    grep -E 'codesign|spctl|stapler|notarytool|verify-macos-artifacts' |
+    grep -E '\|\|[[:space:]]*(true|:|echo|exit 0)|continue-on-error' || true)"
+  if [ -n "$swallowed" ]; then
+    fail "a macOS signature/notarization check is allowed to fail without stopping the job:"
+    printf '%s\n' "$swallowed" >&2
+    mac_ok=0
+  fi
+fi
+
+# The verifier itself must check both artifact kinds, not just the .app.
+if [ -f "$mac_verify_script" ]; then
+  for needle in \
+    'codesign --verify' \
+    'Authority=Developer ID Application' \
+    'Signature=adhoc' \
+    'xcrun stapler staple' \
+    'xcrun stapler validate' \
+    'xcrun notarytool submit' \
+    '--type execute' \
+    '--type open'; do
+    grep -qF -- "$needle" "$mac_verify_script" ||
+      { fail "scripts/verify-macos-artifacts.sh does not check '${needle}'"; mac_ok=0; }
+  done
+  swallowed="$(grep -E 'codesign|spctl|stapler|notarytool' "$mac_verify_script" |
+    grep -E '\|\|[[:space:]]*(true|:|echo|exit 0)' || true)"
+  if [ -n "$swallowed" ]; then
+    fail "scripts/verify-macos-artifacts.sh swallows a verification failure:"
+    printf '%s\n' "$swallowed" >&2
+    mac_ok=0
+  fi
+fi
+
+# 7d. Nothing is uploaded before verification, and the upload uses only the
+# verified paths.
+mac_upload_region="$(step_region "$release_wf" 'Upload verified macOS installers')"
+mac_build_line="$(grep -n "name: ${mac_build_name}" "$release_wf" | head -n 1 | cut -d: -f1)"
+mac_verify_line="$(grep -n 'name: Verify signed and notarized macOS artifacts' "$release_wf" | head -n 1 | cut -d: -f1)"
+mac_upload_line="$(grep -n 'name: Upload verified macOS installers' "$release_wf" | head -n 1 | cut -d: -f1)"
+if [ -z "$mac_upload_region" ]; then
+  fail "release.yml has no 'Upload verified macOS installers' step, so verified macOS artifacts are never published"
+  mac_ok=0
+else
+  printf '%s\n' "$mac_upload_region" | grep -q 'steps.verify_macos.outputs.assets' ||
+    { fail "the macOS upload step does not upload exactly the paths the verifier accepted"; mac_ok=0; }
+  printf '%s\n' "$mac_upload_region" | grep -q "startsWith(matrix.platform, 'macos')" ||
+    { fail "the macOS upload step is not restricted to macOS runners"; mac_ok=0; }
+  if [ -z "$mac_build_line" ] || [ -z "$mac_verify_line" ] || [ -z "$mac_upload_line" ]; then
+    fail "could not locate the macOS build/verify/upload steps to check their order"
+    mac_ok=0
+  elif [ "$mac_build_line" -ge "$mac_verify_line" ] || [ "$mac_verify_line" -ge "$mac_upload_line" ]; then
+    fail "the macOS upload step does not run after verification"
+    mac_ok=0
+  fi
+fi
+
+# The combined build+upload step is what makes an unverified artifact possible,
+# so it must never run on a macOS runner.
+coupled_region="$(step_region "$release_wf" 'Build and upload to GitHub Release')"
+if [ -z "$coupled_region" ]; then
+  fail "release.yml no longer has the non-macOS 'Build and upload to GitHub Release' step"
+  mac_ok=0
+elif ! printf '%s\n' "$coupled_region" | grep -q "!startsWith(matrix.platform, 'macos')"; then
+  fail "the build+upload step is not excluded from macOS runners, so macOS could be uploaded unverified"
+  mac_ok=0
+fi
+
+# 7e. The documented local fallback makes the same guarantees.
+if [ -f "$mac_script" ]; then
+  if grep -q 'GRIDLINE_SKIP_NOTARIZE' "$mac_script"; then
+    fail "scripts/release-mac.sh still has a skip-notarization escape hatch"
+    mac_ok=0
+  fi
+  grep -q 'require-macos-signing-credentials\.sh' "$mac_script" ||
+    { fail "scripts/release-mac.sh does not require notarization credentials"; mac_ok=0; }
+  grep -q 'verify-macos-artifacts\.sh' "$mac_script" ||
+    { fail "scripts/release-mac.sh does not verify the signed artifacts before uploading"; mac_ok=0; }
+  creds_line="$(grep -n 'require-macos-signing-credentials\.sh' "$mac_script" | head -n 1 | cut -d: -f1)"
+  build_line="$(grep -n 'tauri build' "$mac_script" | head -n 1 | cut -d: -f1)"
+  if [ -n "$creds_line" ] && [ -n "$build_line" ] && [ "$creds_line" -ge "$build_line" ]; then
+    fail "scripts/release-mac.sh only demands credentials after the build, so a broken setup wastes a full build"
+    mac_ok=0
+  fi
+fi
+
+# 7f. Published claims match the pipeline: nothing may describe a notarized
+# macOS artifact that is nevertheless ad-hoc signed (the old fail-open path).
+mac_claims="$(grep -Ein 'ad-hoc|adhoc' README.md AGENTS.md SECURITY.md 2>/dev/null |
+  grep -i 'notariz' || true)"
+if [ -n "$mac_claims" ]; then
+  fail "documentation still describes an ad-hoc/unnotarized macOS release next to a notarization claim:"
+  printf '%s\n' "$mac_claims" >&2
+  mac_ok=0
+fi
+
+[ "$mac_ok" = "1" ] && pass "macOS signing/notarization fails closed: credentials are required, .app + .dmg are verified and only verified artifacts are uploaded"
+
+# Behavioural check: the credential gate accepts a complete set and refuses an
+# incomplete one without leaking a value.
+mac_creds_behaviour() {
+  local out
+  (
+    set -uo pipefail
+    creds="$repo_root/scripts/require-macos-signing-credentials.sh"
+    [ -x "$creds" ] || exit 1
+
+    # Every secret set: passes.
+    env APPLE_CERTIFICATE=c APPLE_CERTIFICATE_PASSWORD=p \
+      APPLE_SIGNING_IDENTITY="Developer ID Application: T (TEAMID)" \
+      KEYCHAIN_PASSWORD=k APPLE_API_KEY=a APPLE_API_ISSUER=i \
+      APPLE_API_KEY_CONTENT=key "$creds" >/dev/null || exit 1
+
+    # One secret missing: fails, names it, and never prints a value.
+    out="$(env -u APPLE_API_ISSUER APPLE_CERTIFICATE=certificate-value \
+      APPLE_CERTIFICATE_PASSWORD=p APPLE_SIGNING_IDENTITY=identity \
+      KEYCHAIN_PASSWORD=k APPLE_API_KEY=a APPLE_API_KEY_CONTENT=key "$creds" 2>&1)" && exit 1
+    printf '%s' "$out" | grep -q 'APPLE_API_ISSUER' || exit 1
+    if printf '%s' "$out" | grep -q 'certificate-value'; then exit 1; fi
+
+    # Nothing set at all: fails.
+    if env -u APPLE_CERTIFICATE -u APPLE_CERTIFICATE_PASSWORD \
+      -u APPLE_SIGNING_IDENTITY -u KEYCHAIN_PASSWORD -u APPLE_API_KEY \
+      -u APPLE_API_ISSUER -u APPLE_API_KEY_CONTENT "$creds" >/dev/null 2>&1; then
+      exit 1
+    fi
+
+    # An explicit set works, and a missing member of it fails.
+    env GRIDLINE_TEST_CRED=1 "$creds" GRIDLINE_TEST_CRED >/dev/null || exit 1
+    if env GRIDLINE_TEST_CRED=1 "$creds" GRIDLINE_TEST_CRED GRIDLINE_TEST_OTHER >/dev/null 2>&1; then
+      exit 1
+    fi
+
+    # Anything that is not a variable name is refused, not evaluated.
+    if env GRIDLINE_TEST_CRED=1 "$creds" 'GRIDLINE_TEST_CRED; echo pwned' >/dev/null 2>&1; then
+      exit 1
+    fi
+  )
+  local rc=$?
+  return "$rc"
+}
+
+mac_creds_behaviour
+if [ $? -eq 0 ]; then
+  pass "the macOS credential gate passes a complete set and refuses an incomplete one without printing values"
+else
+  fail "scripts/require-macos-signing-credentials.sh no longer fails closed (run it by hand to debug)"
+fi
+
+# Behavioural check: the artifact verifier accepts a properly signed, stapled
+# and accepted pair and refuses an ad-hoc signature, a broken signature, a
+# missing hardened runtime/timestamp, an unstapled app, a missing disk image,
+# a rejected Gatekeeper assessment and a failed notarization. Synthetic
+# artifacts and fake macOS tools, so this runs on the Linux CI runner too.
+macos_verify_behaviour() {
+  local tmp rc
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/gridline-macos-verify-check.XXXXXX")" || return 1
+  (
+    set -uo pipefail
+    cd "$tmp" || exit 1
+    verify="$repo_root/scripts/verify-macos-artifacts.sh"
+    [ -x "$verify" ] || exit 1
+
+    mkdir -p bin bundle/macos/Gridline.app bundle/dmg || exit 1
+    : > key.p8 || exit 1
+    printf '{\n  "productName": "Gridline",\n  "version": "0.0.0"\n}\n' > conf.json || exit 1
+    : > bundle/dmg/Gridline_0.0.0_aarch64.dmg || exit 1
+
+    # Fake macOS toolchain. Behaviour is driven by environment variables so one
+    # fake can stand in for a correct signature and every broken one.
+    cat > bin/codesign <<'FAKE_CODESIGN'
+#!/bin/sh
+case "$1" in
+  --verify) exit "${FAKE_CODESIGN_VERIFY:-0}" ;;
+  --display)
+    echo "Executable=$3/Contents/MacOS/Gridline"
+    if [ "${FAKE_CODESIGN_ADHOC:-0}" = "1" ]; then
+      echo "Signature=adhoc"
+      echo "flags=0x0(none)"
+      exit 0
+    fi
+    echo "Authority=Developer ID Application: Gridline Test (TEAMID123)"
+    echo "Authority=Developer ID Certification Authority"
+    echo "Authority=Apple Root CA"
+    if [ "${FAKE_CODESIGN_TIMESTAMP:-1}" = "1" ]; then
+      echo "Timestamp=Jan 1, 2026 at 00:00:00"
+    fi
+    if [ "${FAKE_CODESIGN_RUNTIME:-1}" = "1" ]; then
+      echo "flags=0x10000(runtime)"
+    else
+      echo "flags=0x0(none)"
+    fi
+    exit 0 ;;
+esac
+exit 0
+FAKE_CODESIGN
+
+    cat > bin/xcrun <<'FAKE_XCRUN'
+#!/bin/sh
+case "$1 $2" in
+  "stapler validate") exit "${FAKE_STAPLER_VALIDATE:-0}" ;;
+  "stapler staple") exit "${FAKE_STAPLER_STAPLE:-0}" ;;
+  "notarytool submit") exit "${FAKE_NOTARYTOOL:-0}" ;;
+esac
+exit 1
+FAKE_XCRUN
+
+    cat > bin/spctl <<'FAKE_SPCTL'
+#!/bin/sh
+exit "${FAKE_SPCTL:-0}"
+FAKE_SPCTL
+    chmod +x bin/codesign bin/xcrun bin/spctl || exit 1
+
+    run_verify() {
+      env PATH="$tmp/bin:$PATH" \
+        GRIDLINE_MACOS_VERIFY_ATTEMPTS=1 GRIDLINE_MACOS_VERIFY_DELAY=0 \
+        APPLE_API_KEY=keyid APPLE_API_ISSUER=issuer APPLE_API_KEY_PATH="$tmp/key.p8" \
+        "$@" \
+        "$verify" --target aarch64-apple-darwin --bundle "$tmp/bundle" --conf "$tmp/conf.json"
+    }
+
+    # Honest artifacts: passes and prints exactly the disk image.
+    out="$(run_verify 2>/dev/null)" || exit 1
+    printf '%s\n' "$out" | grep -q 'bundle/dmg/Gridline_0.0.0_aarch64.dmg' || exit 1
+
+    # Ad-hoc signature (valid signature, wrong identity): refused.
+    out="$(run_verify FAKE_CODESIGN_ADHOC=1 2>&1)" && exit 1
+    printf '%s' "$out" | grep -q 'Developer ID Application identity' || exit 1
+
+    # Broken signature: refused.
+    if run_verify FAKE_CODESIGN_VERIFY=1 >/dev/null 2>&1; then exit 1; fi
+
+    # No hardened runtime: refused.
+    out="$(run_verify FAKE_CODESIGN_RUNTIME=0 2>&1)" && exit 1
+    printf '%s' "$out" | grep -q 'hardened runtime' || exit 1
+
+    # No secure timestamp: refused.
+    out="$(run_verify FAKE_CODESIGN_TIMESTAMP=0 2>&1)" && exit 1
+    printf '%s' "$out" | grep -q 'timestamp' || exit 1
+
+    # .app without a stapled ticket: refused.
+    if run_verify FAKE_STAPLER_VALIDATE=1 >/dev/null 2>&1; then exit 1; fi
+
+    # Gatekeeper rejecting the .app: refused.
+    if run_verify FAKE_SPCTL=1 >/dev/null 2>&1; then exit 1; fi
+
+    # Failed notarization of the disk image: refused.
+    if run_verify FAKE_NOTARYTOOL=1 >/dev/null 2>&1; then exit 1; fi
+
+    # Disk image that could not be stapled: refused.
+    if run_verify FAKE_STAPLER_STAPLE=1 >/dev/null 2>&1; then exit 1; fi
+
+    # Missing disk image: refused.
+    mv bundle/dmg/Gridline_0.0.0_aarch64.dmg dmg.moved || exit 1
+    if run_verify >/dev/null 2>&1; then exit 1; fi
+    mv dmg.moved bundle/dmg/Gridline_0.0.0_aarch64.dmg || exit 1
+
+    # Missing application bundle: refused.
+    mv bundle/macos/Gridline.app app.moved || exit 1
+    if run_verify >/dev/null 2>&1; then exit 1; fi
+    mv app.moved bundle/macos/Gridline.app || exit 1
+
+    # Missing notarization credentials: refused (never skip notarization).
+    if env -u APPLE_API_KEY -u APPLE_API_ISSUER -u APPLE_API_KEY_PATH \
+      PATH="$tmp/bin:$PATH" GRIDLINE_MACOS_VERIFY_ATTEMPTS=1 \
+      GRIDLINE_MACOS_VERIFY_DELAY=0 \
+      "$verify" --target aarch64-apple-darwin --bundle "$tmp/bundle" --conf "$tmp/conf.json" \
+      >/dev/null 2>&1; then
+      exit 1
+    fi
+
+    # An unexpected target triple is a usage error, not a silent pass.
+    if env PATH="$tmp/bin:$PATH" GRIDLINE_MACOS_VERIFY_ATTEMPTS=1 \
+      GRIDLINE_MACOS_VERIFY_DELAY=0 \
+      APPLE_API_KEY=keyid APPLE_API_ISSUER=issuer APPLE_API_KEY_PATH="$tmp/key.p8" \
+      "$verify" --target armv7-apple-ios --bundle "$tmp/bundle" --conf "$tmp/conf.json" \
+      >/dev/null 2>&1; then
+      exit 1
+    fi
+  )
+  rc=$?
+  rm -rf "$tmp"
+  return "$rc"
+}
+
+macos_verify_behaviour
+if [ $? -eq 0 ]; then
+  pass "the macOS verifier accepts signed/notarized/stapled artifacts and refuses ad-hoc, unstapled, rejected or unnotarized ones"
+else
+  fail "scripts/verify-macos-artifacts.sh no longer fails closed (run it by hand to debug)"
 fi
 
 if [ "$status" -eq 0 ]; then
