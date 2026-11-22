@@ -26,8 +26,24 @@
 #   5. `tauri.conf.json` still bundles both directories, so the checked files
 #      really are the files that get packaged.
 #
+# The expected tool FILE NAME carries the platform's binary suffix: the Windows
+# job writes (and manifests) `pg_dump.exe`, `pg_restore.exe`, `psql.exe`,
+# `mariadb-dump.exe` and `mariadb.exe`, while the Linux and macOS jobs write
+# the bare names. --platform says which shape is expected (it defaults to
+# $PLATFORM, then to the host's `uname -s`); both resource directories are
+# checked the same way. It is deliberately NOT decided by probing the
+# directory: under MSYS2 (the `bash` shell on the windows-latest runner)
+# `test -f pg_dump` SUCCEEDS for `pg_dump.exe`, so a probe picks the bare name,
+# `basename` then reports `pg_dump`, and a manifest that correctly lists
+# `pg_dump.exe` reads as missing the tool — the v0.9.1 false failure that
+# blocked every Windows release.
+#
 # Usage:
-#   scripts/verify-bundled-tools.sh [--resources DIR] [--conf FILE]
+#   scripts/verify-bundled-tools.sh [--resources DIR] [--conf FILE] [--platform LABEL]
+#
+#   --platform LABEL   the release runner label whose bundle shape is expected
+#                      (`windows-latest` → `.exe` names, `ubuntu-22.04` /
+#                      `macos-latest` / `macos-15-intel` → bare names).
 #
 # Exit status: 0 = every manifest and tool checked out, 1 = a check failed,
 # 2 = usage error.
@@ -41,10 +57,11 @@ fetch="$self_dir/verified-fetch.sh"
 
 resources="$repo_root/desktop/src-tauri/resources"
 conf="$repo_root/desktop/src-tauri/tauri.conf.json"
+platform_name=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/verify-bundled-tools.sh [--resources DIR] [--conf FILE]
+usage: scripts/verify-bundled-tools.sh [--resources DIR] [--conf FILE] [--platform LABEL]
 EOF
 }
 
@@ -54,6 +71,8 @@ while [ "$#" -gt 0 ]; do
     --resources=*) resources="${1#*=}"; shift ;;
     --conf) conf="${2:-}"; shift 2 || usage ;;
     --conf=*) conf="${1#*=}"; shift ;;
+    --platform) platform_name="${2:-}"; shift 2 || usage ;;
+    --platform=*) platform_name="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'verify-bundled-tools: unknown argument: %s\n' "$1" >&2; usage; exit 2 ;;
   esac
@@ -78,6 +97,42 @@ fi
 set -a
 . "$inputs_file"
 set +a
+
+#
+# Which binary suffix the bundle being checked must contain.
+#
+# Decided by the runner label — the same label the build step branches on to
+# decide what it writes — and never by probing the directory (see the header:
+# MSYS2 resolves `pg_dump` to `pg_dump.exe`, so a probe cannot tell the two
+# shapes apart). An unknown label is refused instead of guessed, so a release
+# that stops passing the label fails here rather than silently checking the
+# wrong shape.
+#
+if [ -z "$platform_name" ]; then
+  platform_name="${PLATFORM:-}"
+fi
+if [ -z "$platform_name" ]; then
+  platform_name="$(uname -s 2>/dev/null || true)"
+fi
+case "$platform_name" in
+  windows-*|Windows-*|WINDOWS-*|win32|MINGW*|mingw*|MSYS*|msys*|CYGWIN*|cygwin*)
+    bin_ext=".exe"
+    ;;
+  ubuntu-*|macos-*|MacOS*|linux|Linux|darwin|Darwin)
+    bin_ext=""
+    ;;
+  *)
+    printf 'verify-bundled-tools: refusing an unrecognised platform: %s\n' "${platform_name:-<empty>}" >&2
+    printf 'verify-bundled-tools: pass the release runner label via --platform (windows-latest, ubuntu-22.04, macos-latest, macos-15-intel)\n' >&2
+    exit 2
+    ;;
+esac
+if [ -n "$bin_ext" ]; then
+  shape="${bin_ext} tool names"
+else
+  shape="bare tool names (no ${bin_ext:-.exe} suffix)"
+fi
+pass "platform ${platform_name}: expecting ${shape}"
 
 #
 # Verify one resource directory's manifest and tools.
@@ -145,32 +200,35 @@ check_dir() {
   done < <(cd "$dir" && find . -maxdepth 1 -type f ! -name checksums.txt ! -name '.*' -print | sed 's|^\./||' | sort)
   [ "$unexpected" -eq 0 ] && pass "$subdir: manifest matches the files in the bundle ($entries entries)"
 
-  # 4: required tools present, runnable, and reporting the pinned version.
-  local tool file out first
+  # 4: required tools present, listed in the manifest, runnable, and reporting
+  # the pinned version. The file name is the platform's expected name
+  # (`pg_dump.exe` on Windows, `pg_dump` elsewhere), so the name checked here is
+  # exactly the name the build step wrote and the manifest lists — identically
+  # for pg_tools and mysql_tools. A bundle of the other shape fails, and so does
+  # a tool the manifest does not name.
+  local tool name file out first
   for tool in "${tools[@]}"; do
-    file=""
-    for candidate in "$dir/$tool" "$dir/$tool.exe"; do
-      if [ -f "$candidate" ]; then
-        file="$candidate"
-        break
-      fi
-    done
-    if [ -z "$file" ]; then
-      fail "$subdir: required tool $tool is not bundled"
+    name="${tool}${bin_ext}"
+    file="$dir/$name"
+    if [ ! -f "$file" ]; then
+      fail "$subdir: required tool $name is not bundled"
       continue
     fi
     case "$listed" in
-      *$'\n'"$(basename "$file")"$'\n'*) ;;
-      *) fail "$subdir: $(basename "$file") is missing from checksums.txt" ;;
+      *$'\n'"$name"$'\n'*) ;;
+      *) fail "$subdir: $name is missing from checksums.txt"; continue ;;
     esac
+    # The exact expected path is executed — including its `.exe` suffix on
+    # Windows, so the check runs the very file that ships instead of a bare name
+    # MSYS2 would resolve implicitly.
     if ! out="$("$file" --version 2>&1)"; then
-      fail "$subdir: $(basename "$file") does not run from the resource directory ($out)"
+      fail "$subdir: $name does not run from the resource directory ($out)"
       continue
     fi
     first="$(printf '%s\n' "$out" | head -n 1)"
     case "$out" in
-      *"$version"*) pass "$subdir: $(basename "$file") reports the pinned version ($first)" ;;
-      *) fail "$subdir: $(basename "$file") does not report pinned version $version (got: $first)" ;;
+      *"$version"*) pass "$subdir: $name reports the pinned version ($first)" ;;
+      *) fail "$subdir: $name does not report pinned version $version (got: $first)" ;;
     esac
   done
 }
