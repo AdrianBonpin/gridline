@@ -709,6 +709,11 @@ jobs:
 
       # Uploads exactly the paths the verifier printed: the asset list IS the
       # verification result, so a file that was not verified cannot be uploaded.
+      # The list is also checked against the shapes the verifier emits — a disk
+      # image and, when the build made one, the .app tarball — so a line that is
+      # not an installer (v0.9.0 collected `Processing: …/Gridline.app` from
+      # `stapler validate`'s stdout and tried to upload it as a file) stops the
+      # job instead of being uploaded or silently skipped.
       - name: Upload verified macOS installers
         if: startsWith(matrix.platform, 'macos')
         shell: bash
@@ -719,6 +724,31 @@ jobs:
           set -euo pipefail
           if [ -z "${VERIFIED_ASSETS:-}" ]; then
             echo "::error::no verified macOS assets to upload" >&2
+            exit 1
+          fi
+          # Filter to expected installer paths that are still on disk. Nothing
+          # is dropped quietly: an unexpected line fails the step, because the
+          # verifier's stdout contract is "verified paths only".
+          ASSETS=""
+          COUNT=0
+          while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            case "$(basename "$candidate")" in
+              *.dmg | *.app.tar.gz) ;;
+              *)
+                echo "::error::the macOS verifier listed something that is not a verified installer: ${candidate}" >&2
+                exit 1
+                ;;
+            esac
+            if [ ! -f "$candidate" ]; then
+              echo "::error::verified asset is gone: ${candidate}" >&2
+              exit 1
+            fi
+            ASSETS="${ASSETS}${candidate}"$'\n'
+            COUNT=$((COUNT + 1))
+          done <<< "$VERIFIED_ASSETS"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::the macOS verifier listed no usable installer; nothing may be uploaded" >&2
             exit 1
           fi
           # Draft releases are not served by /releases/tags/<tag> (404), so
@@ -752,10 +782,6 @@ jobs:
           fi
           while IFS= read -r asset; do
             [ -n "$asset" ] || continue
-            if [ ! -f "$asset" ]; then
-              echo "::error::verified asset is gone: ${asset}" >&2
-              exit 1
-            fi
             name="$(basename "$asset")"
             old=""
             while IFS=$'\t' read -r asset_name asset_id; do
@@ -775,7 +801,7 @@ jobs:
               --data-binary "@${asset}" \
               "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets?name=${name}"
             echo
-          done <<< "$VERIFIED_ASSETS"
+          done <<< "$ASSETS"
           echo "verified macOS artifacts uploaded"
 
   # After the installers are uploaded, refresh the Homebrew cask in the

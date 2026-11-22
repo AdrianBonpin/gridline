@@ -506,35 +506,93 @@ fetch_behaviour() {
     set -uo pipefail
     cd "$tmp" || exit 1
     fetch="$repo_root/scripts/verified-fetch.sh"
+    # Name the failing case: a bare `exit 1` hid which behaviour regressed.
+    broke() { echo "verified-fetch: ${1}" >&2; exit 1; }
     printf 'pinned payload\n' > good.bin || exit 1
     good="$("$fetch" sha256 good.bin)" || exit 1
     [ -n "$good" ] || exit 1
     # A file whose digest matches the pin verifies.
-    "$fetch" check good.bin "$good" >/dev/null || exit 1
+    "$fetch" check good.bin "$good" >/dev/null || broke "refuses pinned bytes"
     # A tampered file is rejected.
     printf 'tampered payload\n' > bad.bin || exit 1
-    if "$fetch" check bad.bin "$good" >/dev/null 2>&1; then exit 1; fi
+    if "$fetch" check bad.bin "$good" >/dev/null 2>&1; then broke "accepts a tampered file"; fi
     # A missing file is rejected.
-    if "$fetch" check absent.bin "$good" >/dev/null 2>&1; then exit 1; fi
+    if "$fetch" check absent.bin "$good" >/dev/null 2>&1; then broke "accepts a missing file"; fi
+
+    # --- the digest parser (v0.9.0 Windows release failure) ------------------
+    # GNU coreutils `sha256sum` prefixes the digest with a backslash when the
+    # file name needs escaping, and a backslash does — so every Windows runner
+    # path produced `\3508d8f0…`, which never equals the pin and failed the
+    # digest check on every bundled-tool download. Reproduce that exact output
+    # (a file name containing a backslash, hashed by the platform's tool, plus
+    # the escape marker when the tool printed none) and assert BOTH that the
+    # naive parse still fails and that the normalising parse succeeds.
+    weird='back\slash.zip'
+    printf 'pinned payload\n' > "$weird" || exit 1
+    weird_pin="$("$fetch" sha256 "$weird")" || broke "cannot hash a name containing a backslash"
+    if command -v sha256sum >/dev/null 2>&1; then
+      raw_line="$(sha256sum -- "$weird")" || exit 1
+    else
+      # macOS `shasum` does not escape; add the marker GNU coreutils would.
+      raw_line="$("$fetch" sha256 "$weird")"
+    fi
+    case "$raw_line" in
+      \\*) ;;
+      *) raw_line="\\${raw_line}" ;;
+    esac
+    # Exactly what the old parser did (`sha256sum "$file" | awk '{print $1}'`).
+    naive="$(printf '%s\n' "$raw_line" | awk '{print $1}')"
+    if [ "$naive" = "$weird_pin" ]; then
+      broke "fixture does not reproduce the GNU escape marker (raw: ${raw_line})"
+    fi
+    if "$fetch" check "$weird" "$naive" >/dev/null 2>&1; then
+      broke "accepts the escaped digest field verbatim"
+    fi
+    [ "$("$fetch" digest "$naive")" = "$weird_pin" ] ||
+      broke "does not normalise a leading backslash out of a digest field"
+    "$fetch" check "$weird" "$weird_pin" >/dev/null ||
+      broke "refuses a correctly pinned file whose name contains a backslash"
+    [ "$("$fetch" digest "${weird_pin} *x.zip")" = "$weird_pin" ] ||
+      broke "does not drop the sha256sum -b binary marker"
+    if [ "$("$fetch" digest "${weird_pin}0")" != "$weird_pin" ]; then
+      broke "does not keep exactly the first 64 hex characters"
+    fi
+    if [ "$("$fetch" digest 'deadbeef')" != 'deadbeef' ]; then
+      broke "mangles a malformed digest instead of passing it through"
+    fi
+    # Fail closed on a genuine mismatch, escape marker or not.
+    if "$fetch" check "$weird" "$(printf '0%.0s' $(seq 1 64))" >/dev/null 2>&1; then
+      broke "accepts a backslash-named file against a wrong pin"
+    fi
+    printf 'digest normalisation: naive parse of <%s> -> %s (rejected by the pin); normalised -> %s (accepted)\n' \
+      "$raw_line" "$naive" "$weird_pin"
+
     # A cached archive with the right digest is used (cache hit, no download).
     mkdir -p cache || exit 1
     cp good.bin cache/pinned.bin || exit 1
-    "$fetch" fetch https://example.invalid/pinned.bin "$good" cache/pinned.bin >/dev/null || exit 1
+    "$fetch" fetch https://example.invalid/pinned.bin "$good" cache/pinned.bin >/dev/null ||
+      broke "refuses a verified cache hit"
     # A poisoned cache entry is refused, not trusted and not silently replaced.
     printf 'poisoned\n' > cache/poisoned.bin || exit 1
-    if "$fetch" fetch https://example.invalid/poisoned.bin "$good" cache/poisoned.bin >/dev/null 2>&1; then exit 1; fi
-    [ "$(cat cache/poisoned.bin)" = "poisoned" ] || exit 1
+    if "$fetch" fetch https://example.invalid/poisoned.bin "$good" cache/poisoned.bin >/dev/null 2>&1; then
+      broke "trusts a poisoned cache entry"
+    fi
+    [ "$(cat cache/poisoned.bin)" = "poisoned" ] || broke "re-downloads over a poisoned cache entry"
     # A plain-http source is refused before anything is downloaded.
-    if "$fetch" fetch http://example.invalid/x.bin "$good" cache/x.bin >/dev/null 2>&1; then exit 1; fi
-    [ ! -e cache/x.bin ] || exit 1
+    if "$fetch" fetch http://example.invalid/x.bin "$good" cache/x.bin >/dev/null 2>&1; then
+      broke "downloads over plain http"
+    fi
+    [ ! -e cache/x.bin ] || broke "kept a file from a refused http source"
     # The pinned git commit is verified; any other commit is refused.
     mkdir repo || exit 1
     git -C repo init -q || exit 1
     git -C repo -c user.email=check@gridline.invalid -c user.name=check \
       commit -q --allow-empty -m one || exit 1
     sha="$(git -C repo rev-parse HEAD)" || exit 1
-    "$fetch" commit repo "$sha" >/dev/null || exit 1
-    if "$fetch" commit repo 1111111111111111111111111111111111111111 >/dev/null 2>&1; then exit 1; fi
+    "$fetch" commit repo "$sha" >/dev/null || broke "refuses the pinned commit"
+    if "$fetch" commit repo 1111111111111111111111111111111111111111 >/dev/null 2>&1; then
+      broke "accepts a moved git tag"
+    fi
   )
   rc=$?
   rm -rf "$tmp"
@@ -543,7 +601,7 @@ fetch_behaviour() {
 
 fetch_behaviour
 if [ $? -eq 0 ]; then
-  pass "verified-fetch accepts pinned bytes and refuses tampering, poisoned caches, non-https sources and moved tags"
+  pass "verified-fetch accepts pinned bytes and refuses tampering, escaped digests parsed naively, poisoned caches, non-https sources and moved tags"
 else
   fail "scripts/verified-fetch.sh no longer verifies its inputs (run it by hand to debug)"
 fi
@@ -568,14 +626,23 @@ manifest_behaviour() {
       printf '#!/bin/sh\necho "%s"\n' "$2" > "$1" || return 1
       chmod +x "$1"
     }
-    # Manifest exactly like the build step: `sha256sum *` over the directory.
+    # Manifest exactly like the build step: `sha256sum *` over the directory —
+    # including GNU coreutils' escape marker, which prefixes the digest with a
+    # backslash whenever the file name needs escaping (any Windows path does).
+    # The gate has to normalise that field or a correctly bundled tool reads as
+    # a manifest mismatch; v0.9.0 failed exactly here on Windows.
     write_manifest() { # <dir>
-      local d="$1" f
+      local d="$1" f sum marker
       : > "$d/checksums.txt.new" || return 1
       for f in "$d"/*; do
         [ -f "$f" ] || continue
         [ "$(basename "$f")" = "checksums.txt.new" ] && continue
-        printf '%s  %s\n' "$("$fetch" sha256 "$f")" "$(basename "$f")" >> "$d/checksums.txt.new" || return 1
+        sum="$("$fetch" sha256 "$f")" || return 1
+        marker=""
+        case "$(basename "$f")" in
+          *\\*) marker='\' ;;
+        esac
+        printf '%s%s  %s\n' "$marker" "$sum" "$(basename "$f")" >> "$d/checksums.txt.new" || return 1
       done
       mv "$d/checksums.txt.new" "$d/checksums.txt"
     }
@@ -587,12 +654,24 @@ manifest_behaviour() {
       for t in mariadb-dump mariadb; do
         write_tool "$resources/mysql_tools/$t" "$t  Ver 10.19  Distrib 11.4.5-MariaDB, for test" || return 1
       done
+      # A bundled file whose name contains a backslash, so the manifest line
+      # carries GNU's escape marker and the digest comparison has to normalise
+      # it (the Windows-runner failure in v0.9.0).
+      write_tool "$resources/pg_tools/back\slash.dll" "pg_dump (PostgreSQL) 16.4" || return 1
       write_manifest "$resources/pg_tools" || return 1
       write_manifest "$resources/mysql_tools"
     }
 
     build_bundle || exit 1
-    # An honest bundle passes.
+    # The fixture must really carry a GNU-escaped manifest line, or this probe
+    # quietly stops covering the Windows failure it exists for.
+    escaped_first_char="$(grep -F 'back\slash.dll' "$resources/pg_tools/checksums.txt" | cut -c1)"
+    if [ "$escaped_first_char" != '\' ]; then
+      echo "manifest probe: the fixture has no GNU-escaped manifest line (got '${escaped_first_char}')" >&2
+      exit 1
+    fi
+    # An honest bundle passes — including the file whose manifest digest is
+    # written with the escape marker.
     "$verify" --resources "$resources" --conf "$conf" >/dev/null || exit 1
 
     # A binary swapped after the manifest was written fails.
@@ -822,6 +901,14 @@ if [ -z "$mac_upload_region" ]; then
 else
   printf '%s\n' "$mac_upload_region" | grep -q 'steps.verify_macos.outputs.assets' ||
     { fail "the macOS upload step does not upload exactly the paths the verifier accepted"; mac_ok=0; }
+  # The upload step must also check the list it was handed: in v0.9.0 a
+  # `Processing: …/Gridline.app` line (a tool's progress output) reached it and
+  # the job died trying to upload it. A line that is not an installer has to
+  # fail the step — never be uploaded, and never be dropped silently.
+  printf '%s\n' "$mac_upload_region" | grep -q 'not a verified installer' ||
+    { fail "the macOS upload step does not reject a line in the verified asset list that is not an installer"; mac_ok=0; }
+  printf '%s\n' "$mac_upload_region" | grep -qF 'app.tar.gz' ||
+    { fail "the macOS upload step does not filter the verified asset list to the installer types the verifier emits"; mac_ok=0; }
   printf '%s\n' "$mac_upload_region" | grep -q "startsWith(matrix.platform, 'macos')" ||
     { fail "the macOS upload step is not restricted to macOS runners"; mac_ok=0; }
   if [ -z "$mac_build_line" ] || [ -z "$mac_verify_line" ] || [ -z "$mac_upload_line" ]; then
@@ -992,10 +1079,20 @@ FAKE_CODESIGN
 
     cat > bin/xcrun <<'FAKE_XCRUN'
 #!/bin/sh
+# The real tools write progress to STDOUT (`stapler validate` prints
+# `Processing: <path>`). The verifier must keep every one of these lines off
+# its stdout, which is the asset list — in v0.9.0 `Processing: …/Gridline.app`
+# reached it and the upload step tried to upload it as a file.
 case "$1 $2" in
-  "stapler validate") exit "${FAKE_STAPLER_VALIDATE:-0}" ;;
-  "stapler staple") exit "${FAKE_STAPLER_STAPLE:-0}" ;;
-  "notarytool submit") exit "${FAKE_NOTARYTOOL:-0}" ;;
+  "stapler validate")
+    echo "Processing: $3"
+    exit "${FAKE_STAPLER_VALIDATE:-0}" ;;
+  "stapler staple")
+    echo "Processing: $3"
+    exit "${FAKE_STAPLER_STAPLE:-0}" ;;
+  "notarytool submit")
+    echo "Conducting pre-submission checks for $(basename "$3")"; echo "Processing: $3"
+    exit "${FAKE_NOTARYTOOL:-0}" ;;
 esac
 exit 1
 FAKE_XCRUN
@@ -1014,9 +1111,49 @@ FAKE_SPCTL
         "$verify" --target aarch64-apple-darwin --bundle "$tmp/bundle" --conf "$tmp/conf.json"
     }
 
-    # Honest artifacts: passes and prints exactly the disk image.
-    out="$(run_verify 2>/dev/null)" || exit 1
-    printf '%s\n' "$out" | grep -q 'bundle/dmg/Gridline_0.0.0_aarch64.dmg' || exit 1
+    # Honest artifacts: passes, and stdout is EXACTLY the verified asset list.
+    # Every stdout line has to be an installer that exists — a progress line
+    # from a tool (`Processing: …/Gridline.app`) fails here instead of being
+    # uploaded as a path, which is how the v0.9.0 macOS jobs broke.
+    check_assets() { # <description> <expected line count>
+      local desc="$1" want="$2" line count=0
+      if ! out="$(run_verify 2>/dev/null)"; then
+        echo "macOS verifier: ${desc}: honest artifacts were rejected" >&2
+        exit 1
+      fi
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        count=$((count + 1))
+        case "$line" in
+          */Gridline_0.0.0_aarch64.dmg | */Gridline.app.tar.gz) ;;
+          *)
+            echo "macOS verifier: ${desc}: stdout carries something that is not a verified asset: <${line}>" >&2
+            exit 1
+            ;;
+        esac
+        if [ ! -f "$line" ]; then
+          echo "macOS verifier: ${desc}: stdout names a path that does not exist: <${line}>" >&2
+          exit 1
+        fi
+      done <<< "$out"
+      if [ "$count" -ne "$want" ]; then
+        echo "macOS verifier: ${desc}: expected ${want} verified asset(s) on stdout, got ${count}:" >&2
+        printf '%s\n' "$out" >&2
+        exit 1
+      fi
+      printf '%s\n' "$out"
+    }
+
+    assets="$(check_assets 'disk image only' 1)" || exit 1
+    printf '%s\n' "$assets" | grep -q 'bundle/dmg/Gridline_0.0.0_aarch64.dmg' || exit 1
+
+    # With the .app tarball present, stdout is the disk image plus that tarball
+    # — and still nothing else (the fakes are printing progress on stdout).
+    : > bundle/macos/Gridline.app.tar.gz || exit 1
+    assets="$(check_assets 'disk image + app tarball' 2)" || exit 1
+    printf '%s\n' "$assets" | grep -q 'bundle/macos/Gridline.app.tar.gz' || exit 1
+    rm -f bundle/macos/Gridline.app.tar.gz || exit 1
+
 
     # Ad-hoc signature (valid signature, wrong identity): refused.
     out="$(run_verify FAKE_CODESIGN_ADHOC=1 2>&1)" && exit 1

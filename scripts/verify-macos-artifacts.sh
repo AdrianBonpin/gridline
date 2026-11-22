@@ -42,7 +42,12 @@
 #              (default: <repo>/desktop/src-tauri/tauri.conf.json).
 #
 # Prints the verified asset paths (one absolute path per line) on success, so
-# the caller uploads exactly what was verified. Everything else goes to stderr.
+# the caller uploads exactly what was verified. **stdout carries nothing but
+# those paths** — every diagnostic, and every line a tool prints on its own
+# stdout, goes to stderr instead (`say` below, and the fd swap it is paired
+# with). `xcrun stapler validate` in particular prints `Processing: <path>` on
+# stdout; that line was on the asset list in v0.9.0 and the upload step failed
+# with "verified asset is gone: Processing: …/Gridline.app".
 #
 # Environment:
 #   APPLE_API_KEY, APPLE_API_ISSUER, APPLE_API_KEY_PATH
@@ -90,6 +95,18 @@ fi
 die() { printf 'verify-macos-artifacts: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*" >&2; }
 
+# ---- stdout is the asset list, and nothing else ----------------------------
+# The callers (.github/workflows/release.yml, scripts/release-mac.sh) treat
+# every stdout line as a path they may upload, so a tool that prints progress
+# on stdout must not be able to reach it. From here on fd 1 is stderr — any
+# command added later, redirected or not, inherits the safe channel — and the
+# verified paths are written to the real stdout saved as fd 3.
+#
+# The v0.9.0 release run proved why: `xcrun stapler validate` writes
+# `Processing: /…/Gridline.app` to stdout, both macOS jobs collected it as an
+# asset and the upload step reported `verified asset is gone: Processing: …`.
+exec 3>&1 1>&2
+
 # ---- tooling ---------------------------------------------------------------
 # These ship with macOS; a missing one means this is not a macOS verification
 # host (or the PATH is broken), so fail rather than silently skip a check.
@@ -103,13 +120,14 @@ esac
 [ "$attempts" -ge 1 ] || die "GRIDLINE_MACOS_VERIFY_ATTEMPTS must be at least 1"
 
 # retry <description> <command...> — every attempt must pass; the last failure
-# is the one that counts.
+# is the one that counts. The command's stdout goes to stderr: only the asset
+# list at the end of this script may reach stdout.
 retry() {
   local what="$1"
   shift
   local attempt rc
   for ((attempt = 1; attempt <= attempts; attempt++)); do
-    "$@"
+    "$@" 1>&2
     rc=$?
     if [ "$rc" -eq 0 ]; then
       return 0
@@ -145,7 +163,7 @@ say ">> verifying ${app}"
 [ -d "$app" ] || die "application bundle not found: ${app}"
 
 # ---- 1. the signature is valid ---------------------------------------------
-codesign --verify --deep --strict --verbose=2 "$app" ||
+codesign --verify --deep --strict --verbose=2 "$app" 1>&2 ||
   die "codesign --verify rejected ${app} (broken or missing signature)"
 
 # ---- 2. it is a Developer ID signature, not the ad-hoc fallback -------------
@@ -206,11 +224,12 @@ retry "spctl --assess --type open $(basename "$dmg")" \
   die "Gatekeeper rejected ${dmg}"
 
 # ---- what the caller may upload -------------------------------------------
-# Exactly the artifacts that were verified. The .app tarball is only present
-# when the build produced one (tauri-action packages the .app for macOS); it is
-# an archive of the .app verified above.
-printf '%s\n' "$dmg"
+# Exactly the artifacts that were verified: the disk image above and, only when
+# the build produced one (tauri-action packages the .app for macOS), the
+# tarball of that same .app. Written to fd 3 — the real stdout saved at the top
+# — so no tool output can join the list.
+printf '%s\n' "$dmg" >&3
 if [ -f "${bundle}/macos/${product}.app.tar.gz" ]; then
-  printf '%s\n' "${bundle}/macos/${product}.app.tar.gz"
+  printf '%s\n' "${bundle}/macos/${product}.app.tar.gz" >&3
 fi
 say ">> ${app} and $(basename "$dmg") verified as signed, notarized and stapled"

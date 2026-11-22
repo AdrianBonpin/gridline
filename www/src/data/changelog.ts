@@ -6,7 +6,7 @@ export interface ChangelogEntry {
 
 export const changelogEntries: ChangelogEntry[] = [
   {
-    version: "0.9.0",
+    version: "0.9.1",
     date: "2026-11-22",
     highlights: [
       "SSH host keys are verified before your credentials are sent, not after. A host you have connected to before verifies silently; a host Gridline has never seen pauses and asks you to accept its fingerprint once, which is remembered (non-standard ports included); a host whose key has changed fails closed and shows both the expected and the actual fingerprint. Replacing that trust is a separate, deliberate re-enrollment action — there is no inline override in the authentication error path — and the trust records contain no credentials, so no password, key or passphrase can reach a server whose identity has not been checked.",
