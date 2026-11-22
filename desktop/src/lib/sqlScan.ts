@@ -1,18 +1,55 @@
-/** Pure SQL splitter used by the destructive-query guard.
+/** Pure SQL splitter + classifier used by the destructive-query guard.
  *
- * Mirrors `desktop/src-tauri/src/db/sql_split.rs`. The two must accept the
- * same language — `sqlScan.test.ts` and `sql_split.test.rs` assert the same
- * input vectors so drift becomes a test failure, not a code-review question.
+ * Mirrors `desktop/src-tauri/src/db/sql_split.rs` (splitting) and
+ * `desktop/src-tauri/src/db/sql_classify.rs` (classification). The two
+ * languages must accept the same language, and BOTH assert the same vector
+ * corpus — `desktop/fixtures/sql-classification-vectors.json`, read by
+ * `sqlScanCorpus.test.ts` here and `sql_classify.test.rs` there — so drift
+ * becomes a test failure, not a code-review question.
  *
  * Understood constructs: single/double/backtick quoting with doubled-quote
- * escapes, `--` line comments, C-style block comments, PostgreSQL
+ * escapes, `--` line comments, C-style block comments (including MySQL
+ * executable comments, whose bodies the server runs), PostgreSQL
  * dollar-quoting (`$$…$$`, `$tag$…$tag$`), and MySQL `DELIMITER` directives.
  * Conservative by design: anything we cannot confidently close stays inside
  * the current statement rather than being split into a fragment that might
  * still be executable.
+ *
+ * Classification is the safety gate in front of a write, so it fails closed:
+ * an unrecognised verb, or an `EXPLAIN` whose wrapped statement cannot be
+ * proven read-only, requires confirmation rather than being treated as safe.
  */
 
 type Chars = string[];
+
+// --- work accounting ---------------------------------------------------------
+//
+// The destructive-query guard runs synchronously on every Run, so it must stay
+// linear in the script. A wall-clock budget cannot prove that: on a contended
+// machine a linear scan blows an arbitrary millisecond ceiling (observed
+// 343 ms for a ~1 MB script while `cargo test` was compiling), so the test
+// would fail on load instead of on a regression. This counter is the
+// deterministic substitute.
+//
+// Each scanner is a single pass that only advances an index, so the property
+// that can break is *how much text the scanners are handed*: re-splitting the
+// script or a suffix per statement turns this count into statements × length.
+// Cost in production is one integer add per scanner entry.
+let scanWork = 0;
+
+/** Reset the scanner work counter (tests and benchmarks). */
+export function resetScanWork(): void {
+  scanWork = 0;
+}
+
+/** Input characters handed to the splitter and the word scanner so far. */
+export function scanWorkUnits(): number {
+  return scanWork;
+}
+
+function chargeWork(characters: number): void {
+  scanWork += characters;
+}
 
 /** Read a quoted region starting at `chars[i] === quote`. Doubled quotes escape. */
 function readQuoted(chars: Chars, i: number, quote: string): { text: string; next: number } {
@@ -100,6 +137,7 @@ function findDollarClose(chars: Chars, from: number, tag: string): number | null
 
 /** True if the fragment contains anything other than whitespace and comments. */
 export function hasExecutableText(stmt: string): boolean {
+  chargeWork(stmt.length);
   const chars: Chars = Array.from(stmt);
   let i = 0;
   while (i < chars.length) {
@@ -148,6 +186,7 @@ function matchDelimiterDirective(chars: Chars, i: number): { end: number; token:
 
 /** Split `sql` into ordered statement texts. Comment-only fragments are dropped. */
 export function splitStatements(sql: string): string[] {
+  chargeWork(sql.length);
   const chars: Chars = Array.from(sql);
   const statements: string[] = [];
   let current = "";
@@ -266,6 +305,7 @@ export interface ScriptAnalysis {
  * immune to `SELECT 'DROP TABLE t'`.
  */
 export function scanWords(sql: string): string[] {
+  chargeWork(sql.length);
   const chars: Chars = Array.from(sql);
   const words: string[] = [];
   let i = 0;
@@ -280,6 +320,14 @@ export function scanWords(sql: string): string[] {
       continue;
     }
     if (c === "/" && chars[i + 1] === "*") {
+      if (chars[i + 2] === "!") {
+        // MySQL executable comment: the server runs its body, so the opener is
+        // not a comment at all — scan on as if it were plain SQL (the closing
+        // marker is punctuation, and the optional version gate is digits).
+        // Scanning inline can only ADD words, so it can never hide a write.
+        i += 3;
+        continue;
+      }
       i = readBlockComment(chars, i).next;
       continue;
     }
@@ -304,12 +352,29 @@ export function scanWords(sql: string): string[] {
   return words;
 }
 
+/**
+ * Classify the statement an `EXPLAIN` wraps.
+ *
+ * `EXPLAIN ANALYZE` executes the wrapped statement on PostgreSQL and on MySQL
+ * 8.0.18+, and option words (`(ANALYZE, BUFFERS, FORMAT JSON)`) make the
+ * wrapped verb awkward to locate, so ANY write or schema verb inside an
+ * `EXPLAIN` makes the whole statement destructive. `read` is only returned when
+ * a known read verb is actually present; anything else is unprovable.
+ */
+function classifyExplain(words: string[]): StatementKind {
+  if (words.some((word) => SCHEMA_VERBS.has(word))) return "schema";
+  if (words.some((word) => WRITE_VERBS.has(word))) return "write";
+  if (words.some((word) => READ_VERBS.has(word) || word === "WITH")) return "read";
+  return "unknown";
+}
+
 /** Classify a single statement. See `SCRIPT_DESTRUCTIVE_REASONS` for the reasons. */
 export function classifyStatement(stmt: string): StatementKind {
   const words = scanWords(stmt);
   if (words.length === 0) return "read"; // nothing executes
 
   const first = words[0];
+  if (first === "EXPLAIN") return classifyExplain(words.slice(1));
   if (first === "WITH") {
     // A data-modifying CTE can sit anywhere in the chain, e.g.
     //   WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d

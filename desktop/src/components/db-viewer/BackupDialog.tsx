@@ -6,7 +6,9 @@ import { Select } from "../ui/Select";
 import { BackupProgress } from "./BackupProgress";
 import { useBackupStore } from "../../stores/backupStore";
 import { useNotificationStore } from "../../stores/notificationStore";
-import { detectPgTools, pgDump } from "../../lib/commands";
+import { detectPgTools, pgDump, selectFileForGrant } from "../../lib/commands";
+import type { FileGrant } from "../../lib/fileGrant";
+import { fileGrantErrorMessage } from "../../lib/fileGrant";
 import type { PgToolStatus } from "../../lib/types";
 
 interface BackupDialogProps {
@@ -40,7 +42,9 @@ function getPlatformInstructions(): string {
 
 export function BackupDialog({ open, connectionId, onClose }: BackupDialogProps) {
   const [format, setFormat] = useState<BackupFormat>("custom");
-  const [filePath, setFilePath] = useState("");
+  // The File Grant authorizes the write; `selectedPath` is display only.
+  const [grant, setGrant] = useState<FileGrant | null>(null);
+  const [selectedPath, setSelectedPath] = useState("");
   const [schema, setSchema] = useState("");
   const [noOwner, setNoOwner] = useState(true);
   const [toolStatus, setToolStatus] = useState<PgToolStatus | null>(null);
@@ -63,41 +67,51 @@ export function BackupDialog({ open, connectionId, onClose }: BackupDialogProps)
       .finally(() => setCheckingTools(false));
   }, [open]);
 
+  // Rust brokers the dialog and issues the File Grant for the chosen path.
   const handlePickFile = useCallback(async () => {
+    const extensions: Record<BackupFormat, string[]> = {
+      plain: ["sql"],
+      custom: ["dump", "custom"],
+      tar: ["tar"],
+      directory: [],
+    };
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const extensions: Record<BackupFormat, string[]> = {
-        plain: ["sql"],
-        custom: ["dump", "custom"],
-        tar: ["tar"],
-        directory: [],
-      };
-      const picked = await save({
-        defaultPath: `backup.${format === "custom" ? "dump" : format === "plain" ? "sql" : "tar"}`,
+      const picked = await selectFileForGrant({
+        intent: "write",
+        title: "Save backup as",
+        defaultName: `backup.${format === "custom" ? "dump" : format === "plain" ? "sql" : "tar"}`,
         filters: [{ name: "Backup", extensions: extensions[format] }],
       });
-      if (picked) setFilePath(picked);
-    } catch {
-      // dialog not available (non-Tauri env), use manual path input
+      if (!picked) return;
+      setGrant(picked);
+      setSelectedPath(picked.path);
+    } catch (e) {
+      notify(fileGrantErrorMessage(e) ?? String(e), "error");
     }
-  }, [format]);
+  }, [format, notify]);
 
   const handleStartBackup = useCallback(async () => {
-    if (!filePath) {
-      notify("Please select a file path", "error");
+    if (!grant) {
+      notify("Please select an output file", "error");
       return;
     }
+    const grantId = grant.id;
+    // Single use: this selection is spent by the attempt.
+    setGrant(null);
     setRunning(true);
     const jobId = `dump-${Date.now()}`;
     startJob(jobId, "dump");
     try {
-      await pgDump(connectionId, {
-        format,
-        filePath,
-        schema: schema || undefined,
-        tables: undefined,
-        noOwner,
-      });
+      await pgDump(
+        connectionId,
+        {
+          format,
+          schema: schema || undefined,
+          tables: undefined,
+          noOwner,
+        },
+        grantId,
+      );
       notify("Backup completed successfully", "success");
       onClose();
     } catch (e) {
@@ -106,7 +120,7 @@ export function BackupDialog({ open, connectionId, onClose }: BackupDialogProps)
     } finally {
       setRunning(false);
     }
-  }, [filePath, format, schema, noOwner, connectionId, startJob, notify, onClose]);
+  }, [grant, format, schema, noOwner, connectionId, startJob, notify, onClose]);
 
   const toolsMissing = toolStatus && !toolStatus.pg_dump_found;
   const installInstructions = getPlatformInstructions();
@@ -159,9 +173,10 @@ export function BackupDialog({ open, connectionId, onClose }: BackupDialogProps)
               <div className="flex gap-2">
                 <input
                   type="text"
-                  value={filePath}
-                  onChange={(e) => setFilePath(e.target.value)}
-                  placeholder="/path/to/backup.dump"
+                  value={selectedPath}
+                  readOnly
+                  aria-label="Output file"
+                  placeholder="Choose an output file…"
                   className="flex-1 rounded-full bg-surface border border-border px-4 py-2 text-sm text-text placeholder-text-muted/60 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors"
                 />
                 <Button variant="secondary" onClick={handlePickFile}>
@@ -207,7 +222,7 @@ export function BackupDialog({ open, connectionId, onClose }: BackupDialogProps)
               <Button variant="ghost" onClick={onClose} disabled={running}>
                 Cancel
               </Button>
-              <Button onClick={handleStartBackup} disabled={running || !filePath}>
+              <Button onClick={handleStartBackup} disabled={running || !grant}>
                 {running ? "Backing up..." : "Start Backup"}
               </Button>
             </div>

@@ -28,6 +28,9 @@ fn validate(input: &ConnectionInput) -> Result<(), String> {
             return Err("username must be 100 chars or fewer".into());
         }
     }
+    // Fail closed on a TLS mode we cannot honor: an unrecognized value must
+    // never be stored and later resolved to plaintext.
+    crate::db::tls::validate_ssl_mode(input.ssl_mode.as_deref())?;
     Ok(())
 }
 
@@ -83,29 +86,127 @@ pub fn create_connection(
 }
 
 #[tauri::command]
-pub fn update_connection(
-    state: tauri::State<crate::AppState>,
+pub async fn update_connection(
+    state: tauri::State<'_, crate::AppState>,
     id: String,
     input: ConnectionInput,
 ) -> Result<Connection, String> {
-    update_connection_inner(&state.db_store, id, input)
+    update_connection_with_state(&state, id, input).await
+}
+
+/// Save an edit, and close the session it invalidated.
+///
+/// `update_connection_inner` validated and stored a configuration; a live pool
+/// handle for the same id may still be talking to the *previous* one (old host,
+/// port, database or TLS), so every write would keep going through a config that
+/// no longer exists in the store. A retarget therefore tears the session down
+/// exactly like `db_disconnect` (`db::lifecycle::close_session_if_retargeted`),
+/// and the next command reconnects from the saved connection. Metadata-only
+/// edits (name, folder, tags, environment) keep the session.
+pub(crate) async fn update_connection_with_state(
+    state: &crate::AppState,
+    id: String,
+    input: ConnectionInput,
+) -> Result<Connection, String> {
+    update_connection_and_close_stale_session(
+        &state.db_store,
+        &state.pool_manager,
+        &state.ssh_manager,
+        &state.cancel_registry,
+        id,
+        input,
+    )
+    .await
+}
+
+/// [`update_connection_with_state`] with its resources passed explicitly, so the
+/// store write and the session teardown can be exercised together without a
+/// Tauri app handle.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn update_connection_and_close_stale_session(
+    store: &Mutex<Store>,
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    ssh_manager: &Mutex<crate::commands::ssh::SshTunnelManager>,
+    cancel_registry: &crate::cancel::CancelRegistry,
+    id: String,
+    input: ConnectionInput,
+) -> Result<Connection, String> {
+    let before = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        store
+            .get_connections()?
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| crate::models::connection::connection_not_found(&id))?
+    };
+    let updated = update_connection_inner(store, id, input)?;
+    crate::db::lifecycle::close_session_if_retargeted(
+        &updated.id,
+        &before,
+        &updated,
+        pool_manager,
+        ssh_manager,
+        cancel_registry,
+    )
+    .await;
+    Ok(updated)
 }
 
 #[tauri::command]
-pub fn delete_connection(
-    state: tauri::State<crate::AppState>,
+pub async fn delete_connection(
+    state: tauri::State<'_, crate::AppState>,
     id: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    delete_connection_inner(&state.db_store, &id)?;
-    // Purge keychain secrets (missing entries are no-ops) and close any
-    // SSH tunnel associated with the deleted connection.
-    let _ = crate::commands::keychain::delete_connection_password_internal(&app, &id);
-    let _ = crate::commands::keychain::delete_connection_ssh_password_internal(&app, &id);
-    let _ = crate::commands::keychain::delete_connection_ssh_passphrase_internal(&app, &id);
-    if let Ok(mut mgr) = state.ssh_manager.lock() {
-        mgr.close_tunnel(&id);
-    }
+    delete_connection_and_secrets(&state, &id, |account| {
+        crate::commands::keychain::delete_account_internal(&app, account)
+    })
+    .await
+}
+
+/// Delete a connection: forget it, close everything its live session owns, and
+/// purge every secret it stored.
+///
+/// `delete_secret` is the keychain write, injected so this whole delete path —
+/// resources *and* secrets — is testable without an OS keyring.
+pub(crate) async fn delete_connection_and_secrets<F>(
+    state: &crate::AppState,
+    id: &str,
+    delete_secret: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    delete_connection_with_resources(state, id).await?;
+    // Purge every keychain secret the connection owned (missing entries are
+    // no-ops): a deleted connection must not leave its database password, SSH
+    // password, or key passphrase behind.
+    crate::commands::keychain::purge_connection_secrets(id, delete_secret);
+    Ok(())
+}
+
+/// Forget a connection in the local store and close everything its live
+/// session owns.
+///
+/// Deleting a connection is a teardown: the pool handle, the SSH tunnel (and
+/// its loopback listener) and the cancellation handles go through the same
+/// single path as `db_disconnect`, so a deleted connection cannot keep a live
+/// session — or a reachable proxy — behind it. Its in-memory session credential
+/// goes too: no secret may still be addressable by a connection that no longer
+/// exists. Keychain secrets are purged by [`delete_connection_and_secrets`].
+pub(crate) async fn delete_connection_with_resources(
+    state: &crate::AppState,
+    id: &str,
+) -> Result<(), String> {
+    delete_connection_inner(&state.db_store, id)?;
+    crate::db::lifecycle::teardown_connection(
+        id,
+        &state.pool_manager,
+        &state.ssh_manager,
+        &state.cancel_registry,
+    )
+    .await;
+    state.session_credentials.forget(id);
     Ok(())
 }
 
@@ -187,7 +288,7 @@ mod tests {
     fn state() -> std::sync::Mutex<Store> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
-        std::sync::Mutex::new(Store::from_connection(conn))
+        std::sync::Mutex::new(Store::from_connection(conn).expect("test store"))
     }
 
     #[test]
@@ -364,3 +465,172 @@ mod tests {
 #[cfg(test)]
 #[path = "connections.test.rs"]
 mod connections_tests;
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn input(name: &str) -> ConnectionInput {
+        ConnectionInput {
+            name: name.into(),
+            db_type: "postgresql".into(),
+            host: "db.internal".into(),
+            port: Some(5432),
+            username: None,
+            folder_id: None,
+            password: None,
+            database: None,
+            environment: None,
+            ssh_host: Some("jump.internal".into()),
+            ssh_port: Some(22),
+            ssh_user: Some("tunnel".into()),
+            ssh_auth_method: Some("password".into()),
+            ssh_private_key_path: None,
+            ssh_password: None,
+            ssh_passphrase: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            tag_ids: vec![],
+            use_keychain: true,
+        }
+    }
+
+    fn app_state(store: Arc<Mutex<Store>>) -> crate::AppState {
+        crate::AppState {
+            db_store: store,
+            pool_manager: tokio::sync::Mutex::new(crate::db::pool::ConnectionPoolManager::new()),
+            ssh_manager: std::sync::Mutex::new(crate::commands::ssh::SshTunnelManager::new(
+                Arc::new(crate::commands::ssh::fake::NoSshBackend),
+            )),
+            cancel_registry: crate::cancel::CancelRegistry::new(),
+            jobs: Arc::new(crate::job::JobRegistry::new()),
+            file_grants: Arc::new(crate::file_grant::FileGrantStore::new()),
+            session_credentials: Arc::new(crate::session_credential::SessionCredentialStore::new()),
+        }
+    }
+
+    /// Criterion: deleting a connection closes its resources *and* removes its
+    /// secrets.
+    ///
+    /// The connection is deleted while it has a live pool handle, a tunnel and
+    /// a cancellation handle; nothing may outlive it. The same delete path must
+    /// purge every secret it owns — the database password and both SSH secrets.
+    #[tokio::test]
+    async fn delete_connection_closes_resources_and_purges_secrets() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::run_migrations(&conn).unwrap();
+        let store = Arc::new(Mutex::new(
+            Store::from_connection(conn).expect("test store"),
+        ));
+        let created = create_connection_inner(&store, input("Client A")).unwrap();
+
+        let state = app_state(store);
+        let session = rusqlite::Connection::open_in_memory().unwrap();
+        let interrupt = session.get_interrupt_handle();
+        state
+            .pool_manager
+            .lock()
+            .await
+            .register(&created.id, crate::db::pool::DbHandle::sqlite(session));
+        state
+            .cancel_registry
+            .set_sqlite(&created.id, crate::cancel::SqliteCancel::new(interrupt));
+        state.cancel_registry.mark_cancelled(&created.id);
+        // A keychain-off connection's password lives in backend memory for this
+        // session; deleting the connection must not leave it addressable.
+        state
+            .session_credentials
+            .set(&created.id, "session-only-password");
+        let tunnel_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = tunnel_closed.clone();
+        state.ssh_manager.lock().unwrap().insert_tunnel(
+            created.id.clone(),
+            crate::commands::ssh::Tunnel::with_closer(
+                1,
+                Box::new(move || flag.store(true, std::sync::atomic::Ordering::SeqCst)),
+            ),
+        );
+
+        // The keychain write is injected: this asserts the secrets the delete
+        // path asks the keyring to remove, without an OS keyring.
+        let mut purged: Vec<String> = Vec::new();
+        delete_connection_and_secrets(&state, &created.id, |account| {
+            purged.push(account.to_string());
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            get_connections_inner(&state.db_store).unwrap().len(),
+            0,
+            "the connection is gone from the local store"
+        );
+        assert_eq!(
+            purged,
+            crate::commands::keychain::connection_secret_accounts(&created.id),
+            "every connection-owned secret is purged, so none survives the delete"
+        );
+        assert!(
+            state.session_credentials.get(&created.id).is_none(),
+            "the deleted connection's in-memory session credential is forgotten"
+        );
+        assert!(
+            purged.contains(&created.id)
+                && purged.contains(&format!("ssh_password:{}", created.id))
+                && purged.contains(&format!("ssh_passphrase:{}", created.id)),
+            "the database password, SSH password and key passphrase all go: {purged:?}"
+        );
+        assert!(
+            state.pool_manager.lock().await.get(&created.id).is_none(),
+            "the deleted connection's pool handle is closed"
+        );
+        assert!(
+            state.ssh_manager.lock().unwrap().active_count() == 0,
+            "the deleted connection's tunnel is closed"
+        );
+        assert!(
+            tunnel_closed.load(std::sync::atomic::Ordering::SeqCst),
+            "the tunnel closer ran, so no loopback listener survives the delete"
+        );
+        assert!(
+            state.cancel_registry.get(&created.id).is_none(),
+            "the deleted connection's cancellation handle is closed"
+        );
+        assert!(
+            !state.cancel_registry.is_cancelled(&created.id),
+            "no stale cancel-requested flag survives the delete"
+        );
+    }
+
+    /// Deleting a connection that was never opened still succeeds and removes
+    /// its row (the keychain purge runs in the command either way).
+    #[tokio::test]
+    async fn delete_connection_without_a_live_session_still_succeeds() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::run_migrations(&conn).unwrap();
+        let store = Arc::new(Mutex::new(
+            Store::from_connection(conn).expect("test store"),
+        ));
+        let created = create_connection_inner(&store, input("Client B")).unwrap();
+        let state = app_state(store);
+
+        let mut purged = 0usize;
+        delete_connection_and_secrets(&state, &created.id, |_account| {
+            purged += 1;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(get_connections_inner(&state.db_store).unwrap().len(), 0);
+        assert_eq!(
+            purged,
+            crate::commands::keychain::connection_secret_accounts(&created.id).len(),
+            "secrets are purged even for a connection that was never opened"
+        );
+    }
+}

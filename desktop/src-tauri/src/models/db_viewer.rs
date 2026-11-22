@@ -31,10 +31,27 @@ pub struct ColumnInfo {
     pub is_nullable: bool,
     pub is_pk: bool,
     pub is_fk: bool,
-    pub fk_ref: Option<(String, String)>,
+    /// Referenced `(schema, table, column)` for a foreign-key column.
+    ///
+    /// The referenced schema is carried explicitly: a foreign key may point
+    /// into another schema, and following it against the browsing schema would
+    /// silently read a same-named local table instead.
+    pub fk_ref: Option<(String, String, String)>,
     pub default_value: Option<String>,
     pub editable: bool,
     pub is_generated: bool,
+    /// Whether a single-column unique index covers this column.
+    ///
+    /// Carried so the SQLite table editor can show — and submit back — the
+    /// constraint it would otherwise silently drop on a rebuild.
+    #[serde(default)]
+    pub is_unique: bool,
+    /// Whether this column is an `INTEGER PRIMARY KEY AUTOINCREMENT`.
+    ///
+    /// The rowid sequence is only reproduced when the editor knows the column has
+    /// one, so the flag travels with the column metadata.
+    #[serde(default)]
+    pub is_auto_increment: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,7 +83,20 @@ pub struct ConstraintInfo {
 pub struct QueryResult {
     pub columns: Vec<ColumnInfo>,
     pub rows: Vec<Vec<serde_json::Value>>,
-    pub total_rows: i64,
+    /// Exact total row count when the backend knows it **without running the
+    /// statement again**; `None` means unknown.
+    ///
+    /// A page request executes the statement exactly once, so a total is only
+    /// reported when that single execution already revealed it (the verbatim
+    /// path sees every row). The paged path reports `None` instead of counting,
+    /// because counting would execute the statement a second time and repeat
+    /// whatever side effects it has (volatile functions, sequences, `nextval`,
+    /// `pg_sleep`). Unknown is reported, never recomputed.
+    pub total_rows: Option<i64>,
+    /// True when at least one more row exists after this page. Always exact:
+    /// it comes from the same single execution (one row fetched beyond the
+    /// page), so pagination keeps working while the total is unknown.
+    pub has_more: bool,
     pub page: i64,
     pub page_size: i64,
     pub execution_time_ms: Option<i64>,
@@ -250,6 +280,15 @@ pub enum Change {
         schema: String,
         table: String,
         primary_key: String,
+        /// The original values of the row the user saw, as displayed.
+        ///
+        /// Used as the write predicate for a physical-locator identity
+        /// (`ctid`/`rowid`), so a row that moved — or whose locator was reused
+        /// by a different row — is refused instead of modified. Absent on
+        /// payloads staged before this field existed; a locator delete without
+        /// it fails closed rather than writing unguarded.
+        #[serde(default)]
+        old_data: String,
     },
     AlterTable {
         id: String,
@@ -279,8 +318,16 @@ pub enum Change {
         id: String,
         sql: String,
     },
+    /// A machine-generated table rebuild (create temp / copy / drop / rename).
+    ///
+    /// `table` names the table being rebuilt so the change-application seam can
+    /// re-validate the live shape against the rebuild guard before the script's
+    /// first mutating statement runs. A rebuild that cannot name its table fails
+    /// closed instead of applying blind.
     RebuildTable {
         id: String,
+        #[serde(default)]
+        table: String,
         sql: String,
     },
 }
@@ -486,13 +533,33 @@ mod tests {
         let result = QueryResult {
             columns: vec![],
             rows: vec![],
-            total_rows: 0,
+            total_rows: Some(0),
+            has_more: false,
             page: 1,
             page_size: 100,
             execution_time_ms: None,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains(r#""rows":[]"#));
+    }
+
+    #[test]
+    fn query_result_reports_an_unknown_total_as_null() {
+        let result = QueryResult {
+            columns: vec![],
+            rows: vec![],
+            total_rows: None,
+            has_more: true,
+            page: 1,
+            page_size: 100,
+            execution_time_ms: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(
+            json.contains(r#""total_rows":null"#),
+            "an unavailable total must cross IPC as null (unknown), not as a number; got {json}"
+        );
+        assert!(json.contains(r#""has_more":true"#));
     }
 
     #[test]
@@ -520,6 +587,7 @@ mod tests {
             schema: "public".to_string(),
             table: "users".to_string(),
             primary_key: "{\"id\": 2}".to_string(),
+            old_data: String::new(),
         };
         assert_eq!(deleted.id(), "chg-3");
 
@@ -590,14 +658,32 @@ mod tests {
             is_nullable: true,
             is_pk: false,
             is_fk: true,
-            fk_ref: Some(("users".to_string(), "id".to_string())),
+            fk_ref: Some((
+                "reporting".to_string(),
+                "users".to_string(),
+                "id".to_string(),
+            )),
             default_value: None,
             editable: true,
             is_generated: false,
+            is_unique: false,
+            is_auto_increment: false,
         };
         let json = serde_json::to_string(&col).unwrap();
         assert!(json.contains("user_id"));
-        assert!(json.contains("users"));
+        assert_eq!(
+            col.fk_ref,
+            Some((
+                "reporting".to_string(),
+                "users".to_string(),
+                "id".to_string()
+            )),
+            "fk_ref must keep the referenced schema, table and column"
+        );
+        assert!(
+            json.contains("\"reporting\""),
+            "the referenced schema must be serialized: {json}"
+        );
     }
 
     #[test]
@@ -612,6 +698,8 @@ mod tests {
             default_value: None,
             editable: false,
             is_generated: false,
+            is_unique: false,
+            is_auto_increment: false,
         };
         let json = serde_json::to_string(&c).unwrap();
         assert!(json.contains("\"editable\":false"));
@@ -838,6 +926,7 @@ mod tests {
     fn change_rebuild_table_serializes_with_snake_case_tag() {
         let change = Change::RebuildTable {
             id: "chg-rb1".to_string(),
+            table: "users".to_string(),
             sql: "CREATE TABLE _t ...".to_string(),
         };
         let json = serde_json::to_string(&change).unwrap();
@@ -845,17 +934,35 @@ mod tests {
             json.contains(r#""type":"rebuild_table""#),
             "RebuildTable should serialize with tag 'rebuild_table'; got: {json}"
         );
+        assert!(
+            json.contains(r#""table":"users""#),
+            "the table being rebuilt travels with the change; got: {json}"
+        );
         assert_eq!(change.id(), "chg-rb1");
     }
 
     #[test]
     fn change_rebuild_table_roundtrip() {
         let json = serde_json::json!({
-            "type": "rebuild_table", "id": "rb", "sql": "SELECT 1"
+            "type": "rebuild_table", "id": "rb", "table": "users", "sql": "SELECT 1"
         });
         let c: Change = serde_json::from_value(json).unwrap();
         match c {
-            Change::RebuildTable { sql, .. } => assert_eq!(sql, "SELECT 1"),
+            Change::RebuildTable { table, sql, .. } => {
+                assert_eq!(table, "users");
+                assert_eq!(sql, "SELECT 1");
+            }
+            _ => panic!("expected RebuildTable"),
+        }
+    }
+
+    #[test]
+    fn change_rebuild_table_without_a_table_name_still_deserializes() {
+        // A payload that names no table must reach the handler, which refuses it
+        // explicitly, instead of failing as an opaque deserialization error.
+        let json = serde_json::json!({"type": "rebuild_table", "id": "rb", "sql": "SELECT 1"});
+        match serde_json::from_value::<Change>(json).unwrap() {
+            Change::RebuildTable { table, .. } => assert!(table.is_empty()),
             _ => panic!("expected RebuildTable"),
         }
     }

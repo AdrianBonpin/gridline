@@ -1,11 +1,17 @@
-import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
-import { ChevronDown, ChevronUp, Table2, Terminal, AlertCircle, Database } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense, lazy } from "react";
+import { ChevronDown, ChevronUp, Table2, Terminal, AlertCircle, AlertTriangle, Database } from "lucide-react";
 import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar, NAV_CAPABILITY_KEY } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
-import { isSchemaModifyingQuery } from "../../lib/utils";
-import { analyzeScript, type ScriptAnalysis } from "../../lib/sqlScan";
+import { errorText, isSchemaModifyingQuery } from "../../lib/utils";
+import { planExecution } from "../../lib/executionGuard";
+import {
+    confirmationStatus,
+    createPendingConfirmation,
+    type LiveConfirmationContext,
+    type PendingConfirmation,
+} from "../../lib/pendingConfirmation";
 import { executeQueryMulti, cancelQuery } from "../../lib/commands";
 import { getCapabilities, isMysqlFamily } from "../../lib/dbCapabilities";
 
@@ -27,6 +33,7 @@ import { StreamExportDialog } from "./StreamExportDialog";
 import { qualifiedTableSql } from "../../lib/exportData";
 import { EditConnectionModal } from "./EditConnectionModal";
 import { PasswordPromptDialog } from "./PasswordPromptDialog";
+import { SshHostTrustDialog } from "../connections/SshHostTrustDialog";
 import { useDbConnection } from "../../hooks/useDbConnection";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useConnectionStore } from "../../stores/connectionStore";
@@ -40,9 +47,28 @@ import { QueriesPanel } from "../queries/QueriesPanel";
 import { useQueryStore } from "../../stores/queryStore";
 import { ObjectSearchPalette } from "./ObjectSearchPalette";
 import * as cmd from "../../lib/commands";
-import type { EnumInfo } from "../../lib/types";
+import type { EnumInfo, MultiQueryResult } from "../../lib/types";
 import type { FkOption } from "../grid/CellEditor";
-import type { QueueItem } from "../../stores/dbViewerStore";
+import { fkRelation, fkTarget } from "../../lib/fkTarget";
+import type { QueueItem, ViewerTab } from "../../stores/dbViewerStore";
+import { rowIdentityFor } from "../../lib/rowIdentity";
+import { resolveRowDetail, type RowDetailSet } from "../../lib/rowDetail";
+import {
+    rowSelectionKey,
+    rowSelectionKeys,
+    selectedRowIndices,
+} from "../../lib/rowSelection";
+import {
+    changeOriginFor,
+    itemsForChangeTarget,
+    type ChangeOrigin,
+} from "../../lib/changeOrigin";
+import {
+    outOfOriginReason,
+    tabDataIsCurrent,
+    tabsAffectedByChanges,
+} from "../../lib/tabIdentity";
+import { useActiveChangeOrigin } from "../../hooks/useActiveChangeOrigin";
 
 /**
  * Derive optimistic staged cell values from the changes queue for a table
@@ -56,7 +82,7 @@ export function deriveStagedValues(
     schema: string,
     table: string,
     rows: unknown[][],
-    getLocator: (row: unknown[]) => Record<string, unknown>,
+    getLocator: (row: unknown[]) => Record<string, unknown> | null,
 ): Record<string, string | null> {
     const map: Record<string, string | null> = {};
     const updates = changesQueue.filter(
@@ -71,6 +97,7 @@ export function deriveStagedValues(
     if (updates.length === 0) return map;
     rows.forEach((row, rowIdx) => {
         const loc = getLocator(row);
+        if (!loc) return;
         for (const c of updates) {
             const pk = c.primaryKey!;
             const matches = Object.entries(pk).every(
@@ -96,7 +123,7 @@ export function derivePendingCellKeys(
     schema: string,
     table: string,
     rows: unknown[][],
-    getLocator: (row: unknown[]) => Record<string, unknown>,
+    getLocator: (row: unknown[]) => Record<string, unknown> | null,
 ): Record<string, boolean> {
     const keys: Record<string, boolean> = {};
     const updates = changesQueue.filter(
@@ -111,6 +138,7 @@ export function derivePendingCellKeys(
     if (updates.length === 0) return keys;
     rows.forEach((row, rowIdx) => {
         const loc = getLocator(row);
+        if (!loc) return;
         for (const c of updates) {
             const pk = c.primaryKey!;
             const matches = Object.entries(pk).every(
@@ -123,6 +151,23 @@ export function derivePendingCellKeys(
         }
     });
     return keys;
+}
+
+/**
+ * Does this tab render one grid per result set (a multi-statement run) instead
+ * of a single grid for its `data`?
+ *
+ * Used by both the results render and the row-detail resolver, so the two can
+ * never disagree about which rows are on screen — the drawer is resolved inside
+ * exactly the result sets the grids are showing.
+ */
+export function displaysResultSetPanels(
+    tab: ViewerTab | null,
+): tab is ViewerTab & { multi: MultiQueryResult } {
+    if (!tab || tab.tabType !== "query" || !tab.multi) return false;
+    return (
+        tab.multi.result_sets.length > 1 || tab.multi.notices.length > 0
+    );
 }
 
 /**
@@ -159,6 +204,114 @@ export function pickDisplayColumn(
     return textish ? textish.name : refCol;
 }
 
+/** Page size for FK option search (one dropdown page). */
+const FK_OPTION_PAGE_SIZE = 50;
+
+/**
+ * Build FK dropdown options from one page of the referenced table.
+ *
+ * `refCol` is the referenced key column (the value that gets staged); the label
+ * pairs it with a human-friendly display column.
+ */
+export function fkOptionsFrom(
+    result: { columns: { name: string; data_type: string }[]; rows: unknown[][] },
+    refCol: string,
+): FkOption[] {
+    const refIdx = result.columns.findIndex((c) => c.name === refCol);
+    if (refIdx < 0) return [];
+    const displayCol = pickDisplayColumn(result.columns, refCol);
+    const displayIdx =
+        displayCol === refCol
+            ? refIdx
+            : result.columns.findIndex((c) => c.name === displayCol);
+    return result.rows.map((row) => {
+        const refValue = String(row[refIdx]);
+        const dispValue =
+            displayIdx >= 0 && displayIdx !== refIdx
+                ? String(row[displayIdx])
+                : "";
+        return {
+            value: refValue,
+            label:
+                dispValue && dispValue !== refValue
+                    ? `${refValue} — ${dispValue}`
+                    : refValue,
+            // Referenced-row cells for the FK-reference-style one-row dropdown.
+            cells: result.columns
+                .slice(0, 5)
+                .map((c, i) => ({ name: c.name, value: String(row[i] ?? "") })),
+        };
+    });
+}
+
+/** Stable empty selection, so a tab with nothing selected keeps a stable identity. */
+const NO_SELECTION: string[] = [];
+
+/**
+ * Identity of a table data request: the whole intent (target + page + filter +
+ * sort), not just "something is in flight". A request for a *different* intent
+ * supersedes the in-flight one instead of being dropped on the floor.
+ */
+function tableRequestKey(tab: {
+    schema: string;
+    table: string;
+    page: number;
+    pageSize: number;
+    filterRules: unknown;
+    sortRules: unknown;
+}): string {
+    return JSON.stringify([
+        tab.schema,
+        tab.table,
+        tab.page,
+        tab.pageSize,
+        tab.filterRules,
+        tab.sortRules,
+    ]);
+}
+
+/**
+ * The tab's own account of what happened to its last request: the failure in
+ * the workspace (never only a toast) and an explicit stale marker whenever the
+ * rows on screen did not come from that request.
+ */
+function TabStatusBanners({
+    error,
+    stale,
+    staleReason,
+}: {
+    error: string | null;
+    stale: boolean;
+    staleReason?: string | null;
+}) {
+    return (
+        <>
+            {error && (
+                <div
+                    role="alert"
+                    data-testid="tab-error"
+                    className="flex items-center gap-2 px-3 py-2 text-xs text-red-400 border-b border-border bg-surface-raised"
+                >
+                    <AlertCircle size={14} className="shrink-0" />
+                    <span className="truncate">{error}</span>
+                </div>
+            )}
+            {stale && (
+                <div
+                    data-testid="stale-results"
+                    className="flex items-center gap-2 px-3 py-1.5 text-xs text-amber-400 border-b border-border bg-amber-500/10"
+                >
+                    <AlertTriangle size={14} className="shrink-0" />
+                    <span>
+                        {staleReason ??
+                            "These results are stale — the last run did not complete."}
+                    </span>
+                </div>
+            )}
+        </>
+    );
+}
+
 export interface DbViewerScreenProps {
     connectionId: string;
     onHome: () => void;
@@ -170,22 +323,42 @@ export function DbViewerScreen({
     onHome,
     onSettings,
 }: DbViewerScreenProps) {
-    const { connectionError, connect, passwordPromptOpen, submitPassword, cancelPassword } =
-        useDbConnection(connectionId);
+    const {
+        connectionError,
+        connect,
+        passwordPromptOpen,
+        submitPassword,
+        cancelPassword,
+        sshHostTrustState,
+        sshHostTrustBusy,
+        sshHostTrustError,
+        acceptSshHostTrust,
+        dismissSshHostTrust,
+    } = useDbConnection(connectionId);
     const [dismissedError, setDismissedError] = useState<string | null>(null);
     const [currentView, setCurrentView] = useState<string>("db-viewer");
     const [tablePanelWidth, setTablePanelWidth] = useState(280);
     const [queriesPanelWidth, setQueriesPanelWidth] = useState(280);
     const [searchQuery, setSearchQuery] = useState("");
-    const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
-    const [rowDetailIdx, setRowDetailIdx] = useState<number | null>(null);
     const [editModalOpen, setEditModalOpen] = useState(false);
-    const [pendingDestructive, setPendingDestructive] = useState<{
-        sql: string;
-        analysis: ScriptAnalysis;
-    } | null>(null);
+    // A destructive confirmation is bound to exactly one request (ticket 17):
+    // its tab, Change Origin, reviewed SQL revision, and intent all travel
+    // with it, so it cannot be confirmed from anywhere else. The ref mirrors
+    // the state so a second synchronous click cannot execute it twice.
+    const [pendingDestructive, setPendingDestructive] =
+        useState<PendingConfirmation | null>(null);
+    const pendingDestructiveRef = useRef<PendingConfirmation | null>(null);
     const [streamExport, setStreamExport] = useState<{ sql: string } | null>(null);
     const connections = useConnectionStore((s) => s.connections);
+    // A tool job (backup / restore / sync / DDL copy) on a keychain-off
+    // connection asks for its session password through this prompt; answering
+    // retries the same job. Cancelling leaves the job failed, never empty-passed.
+    const sessionCredentialPrompt = useConnectionStore(
+        (s) => s.sessionCredentialPrompt,
+    );
+    const resolveSessionCredential = useConnectionStore(
+        (s) => s.resolveSessionCredential,
+    );
     const currentConnection =
         connections.find((c) => c.id === connectionId) ?? null;
     const capabilities = getCapabilities(currentConnection?.db_type ?? "postgresql");
@@ -236,7 +409,12 @@ export function DbViewerScreen({
     const filterRules = activeTab?.filterRules ?? [];
     const sortRules = activeTab?.sortRules ?? [];
     const hiddenColumns = new Set(activeTab?.hiddenColumns ?? []);
-    const changesQueue = useDbViewerStore((s) => s.changesQueue);
+    // Only the active Change Origin's staged work may drive this viewer:
+    // pending insert rows, optimistic staged values, and pending dots for a
+    // table never come from another connection, database, or target.
+    const allChanges = useDbViewerStore((s) => s.changesQueue);
+    const activeChangeOrigin = useActiveChangeOrigin();
+    const changesQueue = itemsForChangeTarget(allChanges, activeChangeOrigin);
     const tables = useDbViewerStore((s) => s.tables);
     const stageCellEdit = useDbViewerStore((s) => s.stageCellEdit);
     const updateChange = useDbViewerStore((s) => s.updateChange);
@@ -266,17 +444,77 @@ export function DbViewerScreen({
             : false;
     const readOnlyTable = isMatview || isView;
 
-    const setTabData = useDbViewerStore((s) => s.setTabData);
-    const setTabError = useDbViewerStore((s) => s.setTabError);
     const setTabMulti = useDbViewerStore((s) => s.setTabMulti);
-    const setTabLoading = useDbViewerStore((s) => s.setTabLoading);
+    const beginTabRequest = useDbViewerStore((s) => s.beginTabRequest);
+    const applyTabResult = useDbViewerStore((s) => s.applyTabResult);
+    const applyTabError = useDbViewerStore((s) => s.applyTabError);
+    const cancelTabRequest = useDbViewerStore((s) => s.cancelTabRequest);
+    const reportTabError = useDbViewerStore((s) => s.reportTabError);
+    const markTabOutOfOrigin = useDbViewerStore((s) => s.markTabOutOfOrigin);
     const databases = useDbViewerStore((s) => s.databases);
     const currentDatabase = useDbViewerStore((s) => s.currentDatabase);
     const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
     const schemas = useDbViewerStore((s) => s.schemas);
     const currentSchema = useDbViewerStore((s) => s.currentSchema);
     const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
-    const fetchingRef = useRef<Set<string>>(new Set());
+    const fetchingRef = useRef<Map<string, string>>(new Map());
+
+    // The Change Origin the viewer is *actually* pointed at right now. Tabs and
+    // their data are attached to the origin they were opened on, so this is what
+    // decides whether a tab may be queried at all (same connection + database).
+    const liveOrigin: ChangeOrigin | null = useMemo(
+        () =>
+            currentConnection
+                ? changeOriginFor(currentConnection, currentDatabase)
+                : null,
+        [currentConnection, currentDatabase],
+    );
+
+    // The confirmation handlers run outside React's render (clicks, store
+    // updates), so they read the newest origin through a ref rather than a
+    // captured one.
+    const liveOriginRef = useRef<ChangeOrigin | null>(liveOrigin);
+    liveOriginRef.current = liveOrigin;
+
+    /** Live viewer state a pending confirmation is re-checked against. */
+    const liveConfirmationContext = useCallback((): LiveConfirmationContext => {
+        const state = useDbViewerStore.getState();
+        return {
+            activeTabId: state.activeTabId,
+            tabs: state.tabs,
+            origin: liveOriginRef.current,
+        };
+    }, []);
+
+    /** Drop the pending confirmation: the request it answered is gone. */
+    const cancelPendingDestructive = useCallback(() => {
+        pendingDestructiveRef.current = null;
+        setPendingDestructive(null);
+    }, []);
+
+    // A confirmation applies only to the exact request it was raised for.
+    // Switching tabs, editing the reviewed SQL, moving to another Change
+    // Origin, or closing the tab cancels it before a user can confirm it — the
+    // dialog never survives long enough to answer a different request.
+    useEffect(() => {
+        if (!pendingDestructive) return;
+        if (
+            confirmationStatus(
+                pendingDestructive,
+                liveConfirmationContext(),
+            ) !== "valid"
+        ) {
+            cancelPendingDestructive();
+        }
+    }, [
+        pendingDestructive,
+        activeTab?.id,
+        activeTab?.query,
+        activeTab?.origin,
+        liveOrigin,
+        liveConfirmationContext,
+        cancelPendingDestructive,
+    ]);
 
     // CellEditor options for the active table tab: PG enum labels (cached per
     // connection+schema) + FK reference rows (page 1, 50 per FK column).
@@ -284,16 +522,39 @@ export function DbViewerScreen({
         enums: Record<string, string[]>;
         fks: Record<string, FkOption[]>;
         fkPlaceholders: Record<string, string>;
+        fkSearches: Record<string, (query: string) => Promise<FkOption[]>>;
     } | null>(null);
     const enumCacheRef = useRef<Map<string, EnumInfo[]>>(new Map());
+    const metadataRev = useDbViewerStore((s) => s.metadataRev);
     // Key identifying the (connection, tab, schema) the options were fetched for;
     // guards against refetching on every render while data updates in place.
     const editorOptionsKeyRef = useRef<string>("");
 
+    /**
+     * Fetch one tab's rows from the database the tab belongs to.
+     *
+     * Returns whether the rows shown for the tab are now current (a superseded
+     * request and a failure both return false). A tab whose origin database no
+     * longer matches the live target is never queried — the pool is connected
+     * somewhere else, so the answer would be another environment's data under
+     * this tab's identity — and is marked visibly stale instead.
+     */
     const fetchData = useCallback(
-        async (tab: NonNullable<typeof activeTab>) => {
-            if (fetchingRef.current.has(tab.id)) return;
-            fetchingRef.current.add(tab.id);
+        async (tab: NonNullable<typeof activeTab>): Promise<boolean> => {
+            if (!tabDataIsCurrent(tab.origin ?? null, liveOrigin)) {
+                markTabOutOfOrigin(
+                    tab.id,
+                    outOfOriginReason(tab.origin ?? null, liveOrigin),
+                );
+                return false;
+            }
+            // De-duplicate only the *same* intent: a request for a new page,
+            // filter or sort supersedes the one in flight instead of being
+            // discarded (which would leave the grid on the old rows forever).
+            const intent = tableRequestKey(tab);
+            if (fetchingRef.current.get(tab.id) === intent) return false;
+            fetchingRef.current.set(tab.id, intent);
+            const token = beginTabRequest(tab.id);
             try {
                 const result = await cmd.getTableData(
                     connectionId,
@@ -304,50 +565,99 @@ export function DbViewerScreen({
                     tab.filterRules,
                     tab.sortRules,
                 );
-                setTabData(tab.id, result);
+                // Only the newest request may write: a slow response for a
+                // superseded page never replaces newer controls' rows.
+                return applyTabResult(tab.id, token, result);
             } catch (e) {
                 const msg = e instanceof Error ? e.message : String(e);
-                setTabError(tab.id, msg);
+                applyTabError(tab.id, token, msg);
+                return false;
             } finally {
-                fetchingRef.current.delete(tab.id);
+                if (fetchingRef.current.get(tab.id) === intent) {
+                    fetchingRef.current.delete(tab.id);
+                }
             }
         },
-        [connectionId, setTabData, setTabError],
+        [
+            connectionId,
+            liveOrigin,
+            applyTabError,
+            applyTabResult,
+            beginTabRequest,
+            markTabOutOfOrigin,
+        ],
     );
 
-    async function executeQueryForTab(tabId: string, sql: string) {
-        const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId);
-        if (!tab) return;
-        setTabLoading(tabId, true);
-        try {
-            const multi = await executeQueryMulti(connectionId, sql, tab.page, tab.pageSize);
-            const first = multi.result_sets[0] ?? null;
-            // Stamp the run's execution time onto the first set so the toolbar
-            // (TableControls reads activeTab.data.execution_time_ms) still shows it.
-            if (first) {
-                setTabData(tabId, { ...first, execution_time_ms: multi.execution_time_ms });
-            } else {
-                // Lone DML/DDL run with no result set — keep the empty-state behavior.
-                setTabData(tabId, {
-                    columns: [],
-                    rows: [],
-                    total_rows: 0,
-                    page: tab.page,
-                    page_size: tab.pageSize,
-                    execution_time_ms: multi.execution_time_ms,
-                });
+    /**
+     * Execute `sql` for a query tab as its newest request.
+     *
+     * The returned token decides whether the outcome may be shown: a newer run,
+     * a newer page/filter/sort intent, or a cancellation takes a newer token and
+     * the older response is dropped. Every outcome — rows or failure — resolves
+     * the tab's loading state.
+     */
+    const executeQueryForTab = useCallback(
+        async (tabId: string, sql: string) => {
+            const tab = useDbViewerStore
+                .getState()
+                .tabs.find((t) => t.id === tabId);
+            if (!tab) return;
+            const page = tab.page;
+            const pageSize = tab.pageSize;
+            const token = beginTabRequest(tabId);
+            try {
+                const multi = await executeQueryMulti(
+                    connectionId,
+                    sql,
+                    page,
+                    pageSize,
+                );
+                const first = multi.result_sets[0] ?? null;
+                // Stamp the run's execution time onto the first set so the
+                // toolbar (TableControls reads activeTab.data.execution_time_ms)
+                // still shows it.
+                const result = first
+                    ? { ...first, execution_time_ms: multi.execution_time_ms }
+                    : {
+                          // Lone DML/DDL run with no result set — keep the
+                          // empty-state behavior.
+                          columns: [],
+                          rows: [],
+                          // No result set at all: zero rows is exact, not unknown.
+                          total_rows: 0,
+                          has_more: false,
+                          page,
+                          page_size: pageSize,
+                          execution_time_ms: multi.execution_time_ms,
+                      };
+                if (!applyTabResult(tabId, token, result)) return;
+                setTabMulti(tabId, multi);
+                useQueryStore.getState().invalidateHistory(connectionId);
+                if (isSchemaModifyingQuery(sql)) {
+                    const st = useDbViewerStore.getState();
+                    // Columns may be gone/renamed: autocomplete and the tree's
+                    // expanded columns must re-introspect rather than keep
+                    // offering the pre-DDL snapshot.
+                    st.invalidateMetadata();
+                    void st.refreshTree(connectionId, st.currentSchema ?? undefined);
+                }
+            } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                // A stale failure (superseded or cancelled) is not this tab's
+                // current outcome, so it is never shown.
+                if (applyTabError(tabId, token, msg)) {
+                    useQueryStore.getState().invalidateHistory(connectionId);
+                }
             }
-            setTabMulti(tabId, multi);
-            useQueryStore.getState().invalidateHistory(connectionId);
-            if (isSchemaModifyingQuery(sql)) {
-                const st = useDbViewerStore.getState();
-                void st.refreshTree(connectionId, st.currentSchema ?? undefined);
-            }
-        } catch (e) {
-            setTabError(tabId, e instanceof Error ? e.message : String(e));
-            useQueryStore.getState().invalidateHistory(connectionId);
-        }
-    }
+        },
+        [
+            connectionId,
+            applyTabError,
+            applyTabResult,
+            beginTabRequest,
+            setTabMulti,
+        ],
+    );
 
     const handleStageEdit = useCallback(
         (payload: {
@@ -378,26 +688,180 @@ export function DbViewerScreen({
         [updateChange],
     );
 
-    const handleOpenRowDetail = useCallback((rowIndex: number) => {
-        setRowDetailIdx(rowIndex);
-    }, []);
+    /**
+     * After Commit All: refresh **every** affected tab and clear its optimistic
+     * markers once its own refetch lands.
+     *
+     * Commit All is per-change; a commit can touch several tables (and several
+     * open tabs). Refreshing only the active tab would leave every other tab
+     * showing pre-commit rows with stale optimistic values painted over them. A
+     * refresh that fails marks that tab visibly stale (via the request
+     * generation) instead of pretending the tab is current, and its optimistic
+     * markers stay until a refresh succeeds.
+     */
+    const handleCommitted = useCallback(
+        async (committed: QueueItem[], origin: ChangeOrigin) => {
+            const state = useDbViewerStore.getState();
+            const affected = tabsAffectedByChanges(state.tabs, committed, origin);
+            for (const tab of affected) {
+                if (tab.tabType !== "table") continue;
+                const fresh = await fetchData(tab);
+                if (fresh) {
+                    useDbViewerStore
+                        .getState()
+                        .pruneCommittedOptimisticMarkers(
+                            origin,
+                            tab.schema,
+                            tab.table,
+                        );
+                }
+            }
+        },
+        [fetchData],
+    );
 
-    const handleCommitted = useCallback(() => {
-        if (!activeTab) return;
-        fetchData(activeTab);
-    }, [activeTab, fetchData]);
+    /**
+     * Apply a paging intent to a query tab. Only called once the run the intent
+     * implies is actually dispatched, so the controls never describe a page
+     * that was never (or not yet) fetched.
+     */
+    const applyPageIntent = useCallback(
+        (tabId: string, intent: { page?: number; pageSize?: number }) => {
+            if (intent.page === undefined && intent.pageSize === undefined) {
+                return;
+            }
+            useDbViewerStore.setState((s) => ({
+                tabs: s.tabs.map((t) =>
+                    t.id === tabId
+                        ? {
+                              ...t,
+                              page:
+                                  intent.pageSize !== undefined
+                                      ? 1
+                                      : (intent.page ?? t.page),
+                              pageSize: intent.pageSize ?? t.pageSize,
+                          }
+                        : t,
+                ),
+            }));
+        },
+        [],
+    );
 
     /** Route a script through the destructive-statement guard, or run it. */
     const runWithGuard = useCallback(
-        (tabId: string, sql: string) => {
-            const analysis = analyzeScript(sql);
-            if (analysis.destructive) {
-                setPendingDestructive({ sql, analysis });
+        (
+            tabId: string,
+            sql: string,
+            intent: { page?: number; pageSize?: number } = {},
+        ) => {
+            // An Execution Entry Point may only reach the database this tab
+            // belongs to: running an old tab's SQL against a newly selected
+            // database would silently execute it somewhere else.
+            const tab = useDbViewerStore
+                .getState()
+                .tabs.find((t) => t.id === tabId);
+            if (tab && !tabDataIsCurrent(tab.origin ?? null, liveOrigin)) {
+                markTabOutOfOrigin(
+                    tabId,
+                    outOfOriginReason(tab.origin ?? null, liveOrigin),
+                );
+                return;
+            }
+            // One confirmation answers one request. While it is pending no
+            // other Execution Entry Point may execute, and none may replace it
+            // with a newer request — a keyboard shortcut must not relocate a
+            // confirmation onto different text or another tab.
+            if (pendingDestructiveRef.current) return;
+            const plan = planExecution(sql);
+            if (!plan.hasText) return;
+            if (plan.needsConfirmation) {
+                // Everything the confirmation answers for — tab, Change
+                // Origin, reviewed revision, paging intent — is captured with
+                // it, so the paging intent waits for *this* confirmation and a
+                // refused dialog leaves the page controls alone.
+                const pending = createPendingConfirmation(
+                    { tabId, origin: liveOrigin, sql: plan.sql, intent },
+                    plan.analysis,
+                );
+                pendingDestructiveRef.current = pending;
+                setPendingDestructive(pending);
             } else {
-                executeQueryForTab(tabId, sql);
+                applyPageIntent(tabId, intent);
+                void executeQueryForTab(tabId, plan.sql);
             }
         },
-        [executeQueryForTab],
+        [
+            applyPageIntent,
+            executeQueryForTab,
+            liveOrigin,
+            markTabOutOfOrigin,
+        ],
+    );
+
+    /**
+     * Confirm the pending destructive request.
+     *
+     * Re-checked against live state first: if the tab, Change Origin, or
+     * reviewed revision moved after the dialog opened, the confirmation is
+     * stale and nothing executes. Otherwise the reviewed text is sent exactly
+     * once — the ref is cleared synchronously before the dispatch, so a
+     * double-click (or a second Enter) cannot run it twice.
+     */
+    const confirmPendingDestructive = useCallback(() => {
+        const pending = pendingDestructiveRef.current;
+        pendingDestructiveRef.current = null;
+        setPendingDestructive(null);
+        if (!pending) return;
+        if (
+            confirmationStatus(pending, liveConfirmationContext()) !== "valid"
+        ) {
+            return;
+        }
+        applyPageIntent(pending.tabId, pending.intent);
+        void executeQueryForTab(pending.tabId, pending.sql);
+    }, [applyPageIntent, executeQueryForTab, liveConfirmationContext]);
+
+    /**
+     * Run the text a query tab holds *right now*.
+     *
+     * Re-run, refresh and paging are Execution Entry Points too, so each of
+     * them reads the tab's live text at click time and hands it to the same
+     * guard — never a query string captured earlier, and never a classification
+     * cached from a previous run.
+     */
+    const runCurrentQueryText = useCallback(
+        (tabId: string, intent: { page?: number; pageSize?: number } = {}) => {
+            const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId);
+            if (!tab || tab.tabType !== "query") return;
+            runWithGuard(tabId, tab.query ?? "", intent);
+        },
+        [runWithGuard],
+    );
+
+    /**
+     * Cancel the active query.
+     *
+     * Cancellation is final: it takes a new request token (so the cancelled
+     * execution can never land afterwards) and never triggers a fallback or a
+     * re-run. The outcome — cancellation, or a failed cancellation — is shown
+     * in the query workspace itself.
+     */
+    const handleCancelQuery = useCallback(
+        async (tabId: string) => {
+            try {
+                await cancelQuery(connectionId);
+                cancelTabRequest(tabId, "Query cancelled");
+                notify("Query cancelled", "info");
+            } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                // Cancellation failed, so the execution is still running: keep
+                // its loading state but make the failure visible in the tab.
+                reportTabError(tabId, msg);
+                notify(msg, "error");
+            }
+        },
+        [cancelTabRequest, connectionId, notify, reportTabError],
     );
 
     // Read the active tab from the store directly so the Monaco keybinding action
@@ -406,10 +870,8 @@ export function DbViewerScreen({
         const state = useDbViewerStore.getState();
         const tab = state.tabs.find((t) => t.id === state.activeTabId);
         if (!tab || tab.tabType !== "query") return;
-        const sql = tab.query?.trim() ?? "";
-        if (!sql) return;
-        runWithGuard(tab.id, sql);
-    }, [runWithGuard]);
+        runCurrentQueryText(tab.id);
+    }, [runCurrentQueryText]);
 
     // Auto-format the active query tab's SQL
     const handleFormatQuery = useCallback(() => {
@@ -498,17 +960,39 @@ export function DbViewerScreen({
         if (activeTab.tabType !== "table") return;
         if (!activeTab.loading) return;
         if (activeTab.error) return;
-        fetchData(activeTab);
+        void fetchData(activeTab);
     }, [activeTab, fetchData]);
+
+    /**
+     * Keep every tab attached to the connection + database it was opened on.
+     *
+     * Switching the database selector never re-queries a tab against the newly
+     * selected database: foreign tabs become visibly stale (their rows stay on
+     * screen, but never as the current target's data). When the selector comes
+     * back, those tabs are re-queried from the database they belong to.
+     */
+    useEffect(() => {
+        const restored = useDbViewerStore.getState().syncTabOrigins(liveOrigin);
+        for (const tabId of restored) {
+            const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId);
+            if (tab && tab.tabType === "table") void fetchData(tab);
+        }
+    }, [liveOrigin, fetchData]);
 
     // Feed the grid's CellEditor with enum labels + FK reference rows for the
     // active table tab. Fetched once per tab/schema (enums additionally cached
     // per connection+schema across tabs); a failed fetch for one FK column is
     // skipped without breaking the tab. Never refetches on in-place data updates.
+    //
+    // FK options come from `search_fk_options`, which resolves the *referenced*
+    // relation in the backend and searches it in the engine. Fetching the
+    // referenced table from the tab's own schema is what used to substitute a
+    // same-named local table, and taking only page one is what truncated the
+    // dropdown's search.
     useEffect(() => {
         const key =
             activeTab && activeTab.tabType === "table" && activeTab.data
-                ? `${connectionId}:${activeTab.id}:${activeTab.schema}`
+                ? `${connectionId}:${currentDatabase ?? ""}:${metadataRev}:${activeTab.id}:${activeTab.schema}`
                 : "";
         if (key === editorOptionsKeyRef.current) return;
         editorOptionsKeyRef.current = key;
@@ -524,7 +1008,7 @@ export function DbViewerScreen({
             const fkPlaceholders: Record<string, string> = {};
 
             // PG enums: fetched once per connection+schema, reused across tabs.
-            const cacheKey = `${connectionId}:${tab.schema}`;
+            const cacheKey = `${connectionId}:${currentDatabase ?? ""}:${metadataRev}:${tab.schema}`;
             let enumList = enumCacheRef.current.get(cacheKey);
             if (!enumList) {
                 try {
@@ -539,57 +1023,33 @@ export function DbViewerScreen({
                 if (match) enums[col.name] = match.labels;
             }
 
-            // FK options: referenced rows (page 1, 50) per FK column.
-            const fkCols = cols.filter((c) => c.is_fk && c.fk_ref);
+            // FK options: one page of the *referenced* relation per FK column,
+            // plus a search function so the dropdown queries the whole table.
+            const fkSearches: Record<
+                string,
+                (query: string) => Promise<FkOption[]>
+            > = {};
+            const fkCols = cols.filter((c) => fkTarget(c));
             await Promise.all(
                 fkCols.map(async (col) => {
-                    const [refTable, refCol] = col.fk_ref!;
-                    try {
-                        const result = await cmd.getTableData(
+                    const ref = fkTarget(col);
+                    if (!ref) return;
+                    fkPlaceholders[col.name] = `Search ${fkRelation(ref)}…`;
+                    const load = async (search: string) => {
+                        const result = await cmd.searchFkOptions(
                             connectionId,
                             tab.schema,
-                            refTable,
+                            tab.table,
+                            col.name,
+                            search,
                             1,
-                            50,
+                            FK_OPTION_PAGE_SIZE,
                         );
-                        const refIdx = result.columns.findIndex(
-                            (c) => c.name === refCol,
-                        );
-                        if (refIdx >= 0) {
-                            const displayCol = pickDisplayColumn(
-                                result.columns,
-                                refCol,
-                            );
-                            const displayIdx =
-                                displayCol === refCol
-                                    ? refIdx
-                                    : result.columns.findIndex(
-                                          (c) => c.name === displayCol,
-                                      );
-                            fks[col.name] = result.rows.map((row) => {
-                                const refValue = String(row[refIdx]);
-                                const dispValue =
-                                    displayIdx >= 0 && displayIdx !== refIdx
-                                        ? String(row[displayIdx])
-                                        : "";
-                                return {
-                                    value: refValue,
-                                    label:
-                                        dispValue && dispValue !== refValue
-                                            ? `${refValue} — ${dispValue}`
-                                            : refValue,
-                                    // Referenced-row cells for the FK-reference-style
-                                    // one-row dropdown (first 5 columns).
-                                    cells: result.columns
-                                        .slice(0, 5)
-                                        .map((c, i) => ({
-                                            name: c.name,
-                                            value: String(row[i] ?? ""),
-                                        })),
-                                };
-                            });
-                            fkPlaceholders[col.name] = `Search ${refTable}…`;
-                        }
+                        return fkOptionsFrom(result, ref.column);
+                    };
+                    try {
+                        fks[col.name] = await load("");
+                        fkSearches[col.name] = load;
                     } catch {
                         // Skip this FK column; the cell keeps the plain editor.
                     }
@@ -598,10 +1058,15 @@ export function DbViewerScreen({
 
             // Apply only if no newer fetch superseded this one (tab/schema switched).
             if (editorOptionsKeyRef.current === key) {
-                setEditorOptions({ enums, fks, fkPlaceholders });
+                setEditorOptions({
+                    enums,
+                    fks,
+                    fkPlaceholders,
+                    fkSearches,
+                });
             }
         })();
-    }, [activeTab, connectionId]);
+    }, [activeTab, connectionId, currentDatabase, metadataRev]);
 
     // Smart default sort: apply once when data first loads for a tab
     useEffect(() => {
@@ -860,8 +1325,9 @@ export function DbViewerScreen({
         const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId);
         if (!tab) return;
         if (tab.tabType === "query") {
-            const sql = tab.query?.trim() ?? "";
-            if (sql) executeQueryForTab(tabId, sql);
+            // Refresh on a query tab is an Execution Entry Point: it re-runs the
+            // tab's current text, so it goes through the same guard as Run.
+            runCurrentQueryText(tabId);
             return;
         }
         useDbViewerStore.setState((s) => ({
@@ -869,12 +1335,136 @@ export function DbViewerScreen({
                 t.id === tabId ? { ...t, loading: true, error: null } : t,
             ),
         }));
-    }, []);
+    }, [runCurrentQueryText]);
+
+    /**
+     * Page/page-size changes on a query tab are paging Execution Entry Points:
+     * they re-run the tab's current text through the guard. The paging intent is
+     * applied only when that run is dispatched, so cancelling the confirmation
+     * cannot leave the controls promising a page that was never fetched — and
+     * the tab is never left loading work that never started.
+     */
+    const handleQueryPageRequest = useCallback(
+        (next: { page?: number; pageSize?: number }) => {
+            const tabId = useDbViewerStore.getState().activeTabId;
+            if (!tabId) return;
+            runCurrentQueryText(tabId, next);
+        },
+        [runCurrentQueryText],
+    );
+
+    const handleQueryPageChange = useCallback(
+        (page: number) => handleQueryPageRequest({ page }),
+        [handleQueryPageRequest],
+    );
+
+    const handleQueryPageSizeChange = useCallback(
+        (pageSize: number) => handleQueryPageRequest({ pageSize }),
+        [handleQueryPageRequest],
+    );
 
     const rawRows = activeTab?.data?.rows ?? [];
     const columns = activeTab?.data?.columns ?? [];
     // Data is already filtered and sorted server-side; no client-side transform needed.
     const processedRows = rawRows;
+    const dbType = currentConnection?.db_type ?? "postgresql";
+    const toggleRowSelection = useDbViewerStore((s) => s.toggleRowSelection);
+    const setRowSelection = useDbViewerStore((s) => s.setRowSelection);
+    const clearRowSelection = useDbViewerStore((s) => s.clearRowSelection);
+    const openRowDetail = useDbViewerStore((s) => s.openRowDetail);
+    const clearRowDetail = useDbViewerStore((s) => s.clearRowDetail);
+
+    /**
+     * The selection, resolved against the rows on screen.
+     *
+     * Selection is stored as Row Identity keys (`lib/rowSelection.ts`), never as
+     * positions, and is only ever turned into positions here — from the rows
+     * currently displayed. A key whose row is no longer on screen therefore
+     * counts as nothing: no checkbox, no count, no bulk action. The store clears
+     * the selection on every page, page-size, filter, sort, tab, origin, and
+     * dataset change, so this is the second line of defence, not the first.
+     */
+    const selectionKeys = activeTab?.selection ?? NO_SELECTION;
+    const selectedIndices = useMemo(
+        () => selectedRowIndices(columns, processedRows, dbType, selectionKeys),
+        [columns, processedRows, dbType, selectionKeys],
+    );
+    const selectedIndexSet = useMemo(
+        () => new Set(selectedIndices),
+        [selectedIndices],
+    );
+    // The exact rows a bulk action receives: the ones the user has selected in
+    // this result set, never a stale index into another page's rows.
+    const selectedRowData = useMemo(
+        () => selectedIndices.map((index) => processedRows[index]!),
+        [selectedIndices, processedRows],
+    );
+
+    /**
+     * The open row detail, resolved against the result sets currently displayed.
+     *
+     * Only the reference (result set + Row Identity) is remembered; the row is
+     * looked up in what this tab is showing right now. A reference that no
+     * longer resolves — another page, another sort, another table, a shorter
+     * multi-statement result — renders nothing at all rather than falling back
+     * to whatever now sits at the old position. The store closes the drawer on
+     * every such change, so this is the second line of defence, not the first.
+     */
+    const rowDetailSets = useMemo<RowDetailSet[]>(() => {
+        if (displaysResultSetPanels(activeTab)) {
+            return activeTab.multi.result_sets.map((set) => ({
+                columns: set.columns,
+                rows: set.rows,
+            }));
+        }
+        return [{ columns, rows: processedRows }];
+    }, [activeTab, columns, processedRows]);
+    const rowDetailRow = useMemo(
+        () =>
+            resolveRowDetail(
+                rowDetailSets,
+                dbType,
+                activeTab?.rowDetail ?? null,
+            ),
+        [rowDetailSets, dbType, activeTab?.rowDetail],
+    );
+
+    /** Toggle one row's selection by its identity, not by its position. */
+    const handleToggleRow = useCallback(
+        (rowIndex: number) => {
+            const tabId = useDbViewerStore.getState().activeTabId;
+            const row = processedRows[rowIndex];
+            if (!tabId || !row) return;
+            const key = rowSelectionKey(columns, row, dbType);
+            if (!key) return;
+            toggleRowSelection(tabId, key);
+        },
+        [columns, processedRows, dbType, toggleRowSelection],
+    );
+
+    const handleToggleAll = useCallback(() => {
+        const tabId = useDbViewerStore.getState().activeTabId;
+        if (!tabId) return;
+        const all = rowSelectionKeys(columns, processedRows, dbType);
+        const everythingSelected =
+            all.length > 0 &&
+            selectedIndices.length > 0 &&
+            selectedIndices.length === all.length;
+        if (everythingSelected) clearRowSelection(tabId);
+        else setRowSelection(tabId, all);
+    }, [
+        columns,
+        processedRows,
+        dbType,
+        selectedIndices.length,
+        clearRowSelection,
+        setRowSelection,
+    ]);
+
+    const handleClearSelection = useCallback(() => {
+        const tabId = useDbViewerStore.getState().activeTabId;
+        if (tabId) clearRowSelection(tabId);
+    }, [clearRowSelection]);
 
     // Pending insert rows (from the changes queue) are prepended to the grid as
     // editable rows. Only pending inserts for the active table tab count.
@@ -893,6 +1483,31 @@ export function DbViewerScreen({
         columns.map((col) => c.newData?.[col.name] ?? null),
     );
     const displayRows = [...pendingInsertRows, ...processedRows];
+
+    /**
+     * Open the row detail for a row of a displayed result set.
+     *
+     * The drawer is bound to the row's Row Identity and to the result set it
+     * came from (see `lib/rowSelection.ts`, `lib/rowDetail.ts`), never to the
+     * grid position it was clicked at: a row detail is opened from the rows
+     * currently displayed and resolved back against them, so a drawer can never
+     * outlive its result set and show another row's content.
+     */
+    const handleOpenRowDetail = useCallback(
+        (rowIndex: number, resultSet?: RowDetailSet & { index: number }) => {
+            const tabId = useDbViewerStore.getState().activeTabId;
+            const setColumns = resultSet?.columns ?? columns;
+            const setRows = resultSet?.rows ?? processedRows;
+            const row = setRows[rowIndex];
+            if (!tabId || !row) return;
+            const key = rowSelectionKey(setColumns, row, dbType);
+            // No columns means no Row Identity to bind to; the drawer never
+            // opens on a bare position.
+            if (!key) return;
+            openRowDetail(tabId, { setIndex: resultSet?.index ?? 0, key });
+        },
+        [processedRows, columns, dbType, openRowDetail],
+    );
 
     const onPanelResizeStart = useCallback(
         (e: React.MouseEvent) => {
@@ -1008,21 +1623,12 @@ const onQueriesPanelResizeStart = useCallback(
     const activeTable = activeTab?.table ?? "";
 
     function renderQueryWorkspace() {
-        const getLocator = (row: unknown[]) => {
-            const pkCol = columns.find((c) => c.is_pk);
-            if (pkCol) {
-                const pkIndex = columns.findIndex(
-                    (c) => c.name === pkCol.name,
-                );
-                return { [pkCol.name]: row[pkIndex] };
-            }
-            const dbType = currentConnection?.db_type ?? "postgresql";
-            const locatorIndex = columns.length;
-            if (dbType === "sqlite") {
-                return { rowid: row[locatorIndex] };
-            }
-            return { ctid: row[locatorIndex] };
-        };
+        // Row Identity: every primary-key column, or the backend's physical
+        // locator (rowid/ctid) for a no-PK table. `null` means this row has no
+        // complete identity, so an edit/delete must not be staged for it.
+        const getLocator = (row: unknown[]) =>
+            rowIdentityFor(columns, row, currentConnection?.db_type ?? "postgresql")
+                ?.values ?? null;
 
         // Staged cell values derived from the changes queue (single source of
         // truth): keyed `${rowIndex}:${colName}` → optimistic value. Pending +
@@ -1057,8 +1663,8 @@ const onQueriesPanelResizeStart = useCallback(
             rows: displayRows,
             columns,
             hiddenColumns,
-            selectedRows,
-            dbType: currentConnection?.db_type ?? "postgresql",
+            selectedRows: selectedIndexSet,
+            dbType,
             tabType: activeTab?.tabType ?? "table",
             getLocator,
             onStageEdit: readOnlyTable ? undefined : handleStageEdit,
@@ -1068,25 +1674,12 @@ const onQueriesPanelResizeStart = useCallback(
             enumValues: editorOptions?.enums,
             fkOptions: editorOptions?.fks,
             fkPlaceholders: editorOptions?.fkPlaceholders,
+            fkSearches: editorOptions?.fkSearches,
             stagedValues,
             pendingKeys,
             pendingInsertChangeIds,
-            onToggleRow: (rowIndex: number) => {
-                setSelectedRows((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(rowIndex)) next.delete(rowIndex);
-                    else next.add(rowIndex);
-                    return next;
-                });
-            },
-            onToggleAll: () => {
-                setSelectedRows((prev) => {
-                    if (prev.size === processedRows.length && processedRows.length > 0) {
-                        return new Set();
-                    }
-                    return new Set(processedRows.map((_, i) => i));
-                });
-            },
+            onToggleRow: handleToggleRow,
+            onToggleAll: handleToggleAll,
         };
 
         return (
@@ -1128,7 +1721,7 @@ const onQueriesPanelResizeStart = useCallback(
                                             </div>
                                         }
                                     >
-                                        <div ref={queryColumnRef} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+                                        <div ref={queryColumnRef} data-testid="query-workspace" className="flex flex-col flex-1 min-h-0 overflow-hidden">
                                             <QueryToolbar
                                                 onRun={handleRunQuery}
                                                 onFormat={handleFormatQuery}
@@ -1137,17 +1730,21 @@ const onQueriesPanelResizeStart = useCallback(
                                                 onRunFromHistory={handleRunFromHistory}
                                                 dbType={currentConnection?.db_type}
                                                 isRunning={isRunning}
-                                                onCancel={async () => {
-                                                    try {
-                                                        await cancelQuery(connectionId);
-                                                        notify("Query cancelled", "info");
-                                                    } catch (e) {
-                                                        notify(
-                                                            e instanceof Error ? e.message : String(e),
-                                                            "error",
-                                                        );
-                                                    }
+                                                onCancel={() => {
+                                                    void handleCancelQuery(activeTab.id);
                                                 }}
+                                            />
+                                            <TabStatusBanners
+                                                error={activeTab.error}
+                                                stale={
+                                                    !!activeTab.stale &&
+                                                    (!!activeTab.data ||
+                                                        !!activeTab.outOfOrigin)
+                                                }
+                                                staleReason={
+                                                    activeTab.staleReason ??
+                                                    null
+                                                }
                                             />
                                             <div className="flex-1 min-h-0 overflow-hidden">
                                                 <QueryEditor
@@ -1261,25 +1858,39 @@ const onQueriesPanelResizeStart = useCallback(
                                                                         rules,
                                                                     )
                                                                 }
+                                                                // The user's auto-refresh setting is
+                                                                // handed over unchanged, exactly as the
+                                                                // table variant gets it: a query tab's
+                                                                // text is reviewed per execution, so the
+                                                                // toolbar's `isQuery` guard — not a
+                                                                // magic zero here — is what keeps a
+                                                                // hidden timer from re-running it.
+                                                                // Passing a real rate is also what makes
+                                                                // that guard testable from this screen.
                                                                 defaultRefreshRate={
                                                                     settings?.table_refresh_rate ??
                                                                     0
                                                                 }
-                                                                selectedCount={
-                                                                    selectedRows.size
+                                                                onRequestPage={
+                                                                    handleQueryPageChange
                                                                 }
-                                                                selectedRows={processedRows.filter(
-                                                                    (_, i) =>
-                                                                        selectedRows.has(
-                                                                            i,
-                                                                        ),
-                                                                )}
-                                                                onClearSelection={() =>
-                                                                    setSelectedRows(
-                                                                        new Set(),
-                                                                    )
+                                                                onRequestPageSize={
+                                                                    handleQueryPageSizeChange
+                                                                }
+                                                                selectedCount={
+                                                                    selectedIndices.length
+                                                                }
+                                                                selectedRows={
+                                                                    selectedRowData
+                                                                }
+                                                                onClearSelection={
+                                                                    handleClearSelection
                                                                 }
                                                                 variant="query"
+                                                                dbType={
+                                                                    currentConnection?.db_type ??
+                                                                    "postgresql"
+                                                                }
                                                                 isMatview={readOnlyTable}
                                                                 onExportToFile={() =>
                                                                     setStreamExport({
@@ -1296,12 +1907,24 @@ const onQueriesPanelResizeStart = useCallback(
                                                             />
                                                         )}
                                                         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                                                {activeTab?.tabType === "query" && activeTab.multi && (activeTab.multi.result_sets.length > 1 || activeTab.multi.notices.length > 0) ? (
+                                                {displaysResultSetPanels(activeTab) ? (
                                                     <ResultSetPanels
                                                         multi={activeTab.multi}
-                                                        renderGrid={(set) => (
-                                                            <VirtualDataGrid {...gridPropsForQueryTab} rows={set.rows} columns={set.columns} />
-                                                        )}
+                                                        renderGrid={(set, index) => {
+                                                            return (
+                                                                <VirtualDataGrid
+                                                                    {...gridPropsForQueryTab}
+                                                                    rows={set.rows}
+                                                                    columns={set.columns}
+                                                                    onOpenRowDetail={(rowIndex) =>
+                                                                        handleOpenRowDetail(
+                                                                            rowIndex,
+                                                                            { index, ...set },
+                                                                        )
+                                                                    }
+                                                                />
+                                                            );
+                                                        }}
                                                     />
                                                 ) : (
                                                     <VirtualDataGrid {...gridPropsForQueryTab} />
@@ -1328,51 +1951,21 @@ const onQueriesPanelResizeStart = useCallback(
                                                     </div>
                                                 </>
                                             )}
-                                            <DestructiveQueryDialog
-                                                open={pendingDestructive !== null}
-                                                query={pendingDestructive?.sql ?? ""}
-                                                statementIndex={
-                                                    pendingDestructive?.analysis
-                                                        .firstDestructiveIndex ?? null
-                                                }
-                                                statementCount={
-                                                    pendingDestructive?.analysis
-                                                        .totalStatements ?? null
-                                                }
-                                                reason={
-                                                    pendingDestructive?.analysis.reason ?? null
-                                                }
-                                                onConfirm={() => {
-                                                    if (
-                                                        pendingDestructive &&
-                                                        activeTab
-                                                    ) {
-                                                        executeQueryForTab(
-                                                            activeTab.id,
-                                                            pendingDestructive.sql,
-                                                        );
-                                                    }
-                                                    setPendingDestructive(null);
-                                                }}
-                                                onCancel={() =>
-                                                    setPendingDestructive(null)
-                                                }
-                                            />
                                         </div>
                                     </Suspense>
                                 ) : (
                                     <>
-                                        {activeTab?.error && (
-                                            <div
-                                                role="alert"
-                                                className="flex items-center gap-2 px-3 py-2 text-xs text-red-400 border-b border-border bg-surface-raised"
-                                            >
-                                                <AlertCircle size={14} className="shrink-0" />
-                                                <span className="truncate">
-                                                    {activeTab.error}
-                                                </span>
-                                            </div>
-                                        )}
+                                        <TabStatusBanners
+                                            error={activeTab?.error ?? null}
+                                            stale={
+                                                !!activeTab?.stale &&
+                                                (!!activeTab?.data ||
+                                                    !!activeTab?.outOfOrigin)
+                                            }
+                                            staleReason={
+                                                activeTab?.staleReason ?? null
+                                            }
+                                        />
                                         {activeTab && (
                                             <TableControls
                                                 connectionId={connectionId}
@@ -1406,13 +1999,16 @@ const onQueriesPanelResizeStart = useCallback(
                                                     settings?.table_refresh_rate ??
                                                     0
                                                 }
-                                                selectedCount={selectedRows.size}
-                                                selectedRows={processedRows.filter(
-                                                    (_, i) =>
-                                                        selectedRows.has(i),
-                                                )}
-                                                onClearSelection={() =>
-                                                    setSelectedRows(new Set())
+                                                selectedCount={
+                                                    selectedIndices.length
+                                                }
+                                                selectedRows={selectedRowData}
+                                                onClearSelection={
+                                                    handleClearSelection
+                                                }
+                                                dbType={
+                                                    currentConnection?.db_type ??
+                                                    "postgresql"
                                                 }
                                                 isMatview={readOnlyTable}
                                                 onExportToFile={() =>
@@ -1437,7 +2033,7 @@ const onQueriesPanelResizeStart = useCallback(
                                                 rows={displayRows}
                                                 columns={columns}
                                                 hiddenColumns={hiddenColumns}
-                                                selectedRows={selectedRows}
+                                                selectedRows={selectedIndexSet}
                                                 dbType={currentConnection?.db_type ?? "postgresql"}
                                                 tabType={activeTab?.tabType ?? "table"}
                                                 getLocator={getLocator}
@@ -1448,51 +2044,41 @@ const onQueriesPanelResizeStart = useCallback(
                                                 enumValues={editorOptions?.enums}
                                                 fkOptions={editorOptions?.fks}
                                                 fkPlaceholders={editorOptions?.fkPlaceholders}
+                                                fkSearches={editorOptions?.fkSearches}
                                                 stagedValues={stagedValues}
                                                 pendingKeys={pendingKeys}
                                                 pendingInsertChangeIds={pendingInsertChangeIds}
-                                                onToggleRow={(rowIndex) => {
-                                                    setSelectedRows((prev) => {
-                                                        const next = new Set(
-                                                            prev,
-                                                        );
-                                                        if (next.has(rowIndex))
-                                                            next.delete(
-                                                                rowIndex,
-                                                            );
-                                                        else next.add(rowIndex);
-                                                        return next;
-                                                    });
-                                                }}
-                                                onToggleAll={() => {
-                                                    setSelectedRows((prev) => {
-                                                        if (
-                                                            prev.size ===
-                                                                processedRows.length &&
-                                                            processedRows.length >
-                                                                0
-                                                        ) {
-                                                            return new Set();
-                                                        }
-                                                        return new Set(
-                                                            processedRows.map(
-                                                                (_, i) => i,
-                                                            ),
-                                                        );
-                                                    });
-                                                }}
+                                                onToggleRow={handleToggleRow}
+                                                onToggleAll={handleToggleAll}
                                             />
                                         </div>
                                     </>
                                 )}
-                            {rowDetailIdx !== null && activeTab?.data && (
+                            {activeTab && rowDetailRow && (
                                 <RowDetailDrawer
-                                    columns={activeTab.data.columns}
-                                    row={activeTab.data.rows[rowDetailIdx]}
-                                    onClose={() => setRowDetailIdx(null)}
-                                    onCopy={(value) =>
-                                        navigator.clipboard.writeText(value).catch(() => {})
-                                    }
+                                    columns={rowDetailRow.columns}
+                                    row={rowDetailRow.row}
+                                    onClose={() => clearRowDetail(activeTab.id)}
+                                    onCopy={(value) => {
+                                        // A copy that silently fails looks
+                                        // successful; say so instead.
+                                        const clipboard = navigator.clipboard;
+                                        if (!clipboard) {
+                                            notify(
+                                                "Copy failed: the clipboard is unavailable",
+                                                "error",
+                                            );
+                                            return;
+                                        }
+                                        void clipboard
+                                            .writeText(value)
+                                            .catch((e) =>
+                                                notify(
+                                                    `Copy failed: ${errorText(e)}`,
+                                                    "error",
+                                                ),
+                                            );
+                                    }}
                                 />
                             )}
                             </div>
@@ -1501,7 +2087,14 @@ const onQueriesPanelResizeStart = useCallback(
 
     return (
         <TooltipProvider>
-            <div className="h-full bg-canvas flex border-t border-border">
+            {/* While a destructive confirmation is pending the viewer behind it
+                is inert, so nothing underneath can take focus or receive
+                typing. The dialog itself is portalled to `document.body`, so
+                it is outside this subtree and stays interactive. */}
+            <div
+                className="h-full bg-canvas flex border-t border-border"
+                inert={pendingDestructive !== null}
+            >
                 <DbViewerSidebar
                     currentView={currentView}
                     onNavigate={handleNavigate}
@@ -1602,6 +2195,20 @@ const onQueriesPanelResizeStart = useCallback(
                         />
                     ) : null}
                 </div>
+                {/* The dialog is lazy-loaded, so the root needs its own boundary:
+                    a suspended lazy component here would blank the whole viewer. */}
+                <Suspense fallback={null}>
+                    <DestructiveQueryDialog
+                        open={pendingDestructive !== null}
+                        query={pendingDestructive?.sql ?? ""}
+                        statement={pendingDestructive?.statement ?? null}
+                        statementIndex={pendingDestructive?.statementIndex ?? null}
+                        statementCount={pendingDestructive?.statementCount ?? null}
+                        reason={pendingDestructive?.analysis.reason ?? null}
+                        onConfirm={confirmPendingDestructive}
+                        onCancel={cancelPendingDestructive}
+                    />
+                </Suspense>
                 {currentConnection && (
                     <EditConnectionModal
                         connection={currentConnection}
@@ -1615,6 +2222,23 @@ const onQueriesPanelResizeStart = useCallback(
                     connectionName={currentConnection?.name ?? ""}
                     onConnect={submitPassword}
                     onCancel={cancelPassword}
+                />
+                <PasswordPromptDialog
+                    open={sessionCredentialPrompt !== null}
+                    connectionName={
+                        sessionCredentialPrompt?.connectionName ?? ""
+                    }
+                    onConnect={(password) => resolveSessionCredential(password)}
+                    onCancel={() => resolveSessionCredential(null)}
+                />
+                <SshHostTrustDialog
+                    state={sshHostTrustState}
+                    busy={sshHostTrustBusy}
+                    error={sshHostTrustError}
+                    onAccept={async () => {
+                        if (await acceptSshHostTrust()) connect();
+                    }}
+                    onClose={dismissSshHostTrust}
                 />
                 {capabilities.objects && (
                     <ObjectSearchPalette connectionId={connectionId} />

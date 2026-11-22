@@ -70,10 +70,14 @@ const MODIFIERS: &[&str] = &[
 
 /// Build the ordered `DROP … IF EXISTS` script for a clean restore.
 /// Returns an empty vector when no object can be identified (fail closed).
-pub fn plan_clean_drops(default_schema: &str, statements: &[String]) -> Vec<String> {
+///
+/// Generic over `AsRef<str>` so it reads both owned statement text and the
+/// borrowed [`crate::db::mysql_script::MySqlStatement`] slices the native
+/// restore uses (no per-statement copy of the dump).
+pub fn plan_clean_drops<S: AsRef<str>>(default_schema: &str, statements: &[S]) -> Vec<String> {
     let mut found: Vec<(ObjectKind, String)> = Vec::new();
     for stmt in statements {
-        if let Some((kind, name)) = parse_create_target(stmt) {
+        if let Some((kind, name)) = parse_create_target(stmt.as_ref()) {
             let qualified = qualify(default_schema, &name);
             if !found.iter().any(|(k, n)| *k == kind && *n == qualified) {
                 found.push((kind, qualified));
@@ -87,8 +91,195 @@ pub fn plan_clean_drops(default_schema: &str, statements: &[String]) -> Vec<Stri
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Confinement: the replay may only act inside the selected database
+// ---------------------------------------------------------------------------
+
+/// Keywords that name an object a dump can recreate or drop.
+const OBJECT_KINDS: &[&str] = &["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "EVENT"];
+/// Keywords that name a schema (a database) rather than an object inside one.
+const SCHEMA_KINDS: &[&str] = &["DATABASE", "SCHEMA"];
+/// Tokens that may sit between the object keyword and the object name.
+const SKIPPABLE: &[&str] = &["IF", "NOT", "EXISTS", "TEMPORARY", "ONLINE", "OFFLINE"];
+/// Trailing options of a `DROP` list that are not object names.
+const DROP_OPTIONS: &[&str] = &["RESTRICT", "CASCADE"];
+
+/// Refuse a restore script that would act outside `target`.
+///
+/// The replay executes every statement verbatim after `USE <target>`, so a dump
+/// carrying `USE otherdb` (what `mysqldump --databases` emits) or a
+/// schema-qualified `CREATE TABLE otherdb.t` writes into a database the user did
+/// not select. That also made the clean phase disagree with the replay: the
+/// clean plan derives its DROP list from the same `CREATE` statements and
+/// qualifies an *unqualified* name with the target, so a dump whose `USE` pointed
+/// elsewhere was replayed into `otherdb` while the clean phase dropped
+/// `target.t` — data loss in the target plus a restore that restored nothing.
+///
+/// Confining the replay fixes both ends at once: once every `USE` and every
+/// write target names the target schema, an unqualified name in
+/// [`plan_clean_drops`] really is an object of the target, so the plan and the
+/// replay cannot describe different objects.
+///
+/// Deliberately fail-closed rather than a rewrite: silently redirecting
+/// `otherdb.t` to `target.t` would change which objects a dump creates, and the
+/// user can always select the database the dump names as the target.
+///
+/// The statement text is never echoed (SQL must not be logged); the message names
+/// the position and the offending schema only.
+pub fn check_confined<S: AsRef<str>>(target: &str, statements: &[S]) -> Result<(), String> {
+    for (index, stmt) in statements.iter().enumerate() {
+        for schema in escape_schemas(stmt.as_ref()) {
+            if !schema.eq_ignore_ascii_case(target) {
+                return Err(format!(
+                    "Statement {} targets schema `{}`, but this restore is confined to `{}`. \
+                     Select `{}` as the target database, or restore a dump that does not \
+                     create or drop objects in another schema.",
+                    index + 1,
+                    schema,
+                    target,
+                    schema
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Schemas a statement names in a position that *writes* (never a column
+/// reference inside a view body, an alias, or a string literal).
+fn escape_schemas(stmt: &str) -> Vec<String> {
+    if may_be(stmt, "USE") {
+        return qualified_parts(stmt, "USE").into_iter().take(1).collect();
+    }
+    if may_create(stmt) {
+        // `plan_clean_drops` reads exactly these statements, so this half of the
+        // check is what keeps the DROP plan schema-accurate.
+        let mut out = qualified_parts(stmt, "CREATE");
+        if let Some((_, name)) = parse_create_target(stmt) {
+            out.extend(schema_of(&name));
+        }
+        return out;
+    }
+    if may_be(stmt, "DROP") {
+        return qualified_parts(stmt, "DROP");
+    }
+    if may_be(stmt, "ALTER") {
+        return qualified_parts(stmt, "ALTER");
+    }
+    Vec::new()
+}
+
+/// Schema qualifiers of the names a `USE` / `CREATE` / `DROP` / `ALTER` statement
+/// acts on.
+///
+/// Only the leading object-name positions of a recognised statement are read, so
+/// a `SELECT` alias (`o.id`), a string literal (`'a.b'`) or a column reference in
+/// a view body is never mistaken for a schema.
+fn qualified_parts(stmt: &str, keyword: &str) -> Vec<String> {
+    let unwrapped = unwrap_version_comments(stmt);
+    let tokens = tokenize(&unwrapped);
+    let mut out = Vec::new();
+    let Some(start) = tokens.iter().position(|t| t.eq_ignore_ascii_case(keyword)) else {
+        return out;
+    };
+
+    // `USE <schema>`: the very next token is the database.
+    if keyword.eq_ignore_ascii_case("USE") {
+        if let Some(name) = tokens.get(start + 1) {
+            let name = unquote_identifier(name.trim_end_matches(','));
+            if !name.is_empty() {
+                out.push(name);
+            }
+        }
+        return out;
+    }
+
+    // Walk to the object (or schema) keyword, skipping the modifiers a dump puts
+    // in between (`CREATE OR REPLACE`, `ALGORITHM=…`, `DEFINER=…`, `SQL
+    // SECURITY …`, `DROP TEMPORARY`).
+    let mut i = start + 1;
+    while i < tokens.len() {
+        let upper = tokens[i].to_ascii_uppercase();
+        if OBJECT_KINDS.contains(&upper.as_str()) {
+            i += 1;
+            break;
+        }
+        if SCHEMA_KINDS.contains(&upper.as_str()) {
+            // `CREATE DATABASE d` / `DROP DATABASE d`: the next name is a schema.
+            let mut j = i + 1;
+            while j < tokens.len()
+                && (SKIPPABLE.contains(&tokens[j].to_ascii_uppercase().as_str())
+                    || tokens[j].contains('='))
+            {
+                j += 1;
+            }
+            if let Some(name) = tokens.get(j) {
+                let name = unquote_identifier(name.trim_end_matches(','));
+                if !name.is_empty() {
+                    out.push(name);
+                }
+            }
+            return out;
+        }
+        if tokens[i].contains('=') || MODIFIERS.contains(&upper.as_str()) {
+            i += 1;
+            continue;
+        }
+        // Not an object statement this check can read (`DROP USER`, `ALTER
+        // DATABASE`, …): confinement is not silently assumed, the caller's
+        // statement is simply not judged by this branch.
+        return out;
+    }
+
+    // The object name(s) follow, comma separated for a `DROP` list.
+    while i < tokens.len() {
+        let upper = tokens[i].to_ascii_uppercase();
+        if SKIPPABLE.contains(&upper.as_str()) || DROP_OPTIONS.contains(&upper.as_str()) {
+            i += 1;
+            continue;
+        }
+        let trailing_comma = tokens[i].ends_with(',');
+        let candidate = tokens[i].strip_suffix("()").unwrap_or(&tokens[i]);
+        // The qualifier is read off the raw token: unquoting the whole token
+        // first would eat the leading backtick of `` `db`.`t` `` and hide the dot
+        // that separates the two names.
+        let candidate = candidate.trim_end_matches(',');
+        if candidate.is_empty() || !is_plausible_identifier(candidate) {
+            break;
+        }
+        out.extend(schema_of(candidate));
+        i += 1;
+        if !trailing_comma {
+            break;
+        }
+    }
+    out
+}
+
+/// The schema part of a possibly-qualified object name.
+///
+/// `name` keeps its quoting: the split happens outside backticks, so
+/// `` `db`.`t` `` is two names while `` `db.t` `` is one.
+fn schema_of(name: &str) -> Option<String> {
+    let parts = split_qualified(name);
+    if parts.len() == 2 {
+        let schema = unquote_identifier(&parts[0]);
+        if schema.is_empty() {
+            return None;
+        }
+        return Some(schema);
+    }
+    None
+}
+
 /// Extract `(kind, raw name)` from a `CREATE …` statement, or `None`.
 fn parse_create_target(stmt: &str) -> Option<(ObjectKind, String)> {
+    // A dump is mostly `INSERT`s. Rejecting them on a zero-allocation scan keeps
+    // clean planning bounded on a 100 MB script instead of copying every
+    // statement to look at it.
+    if !may_create(stmt) {
+        return None;
+    }
     let tokens = unwrap_version_comments(stmt);
     let tokens = tokenize(&tokens);
     let mut it = tokens.iter().peekable();
@@ -138,6 +329,52 @@ fn parse_create_target(stmt: &str) -> Option<(ObjectKind, String)> {
         }
     }
     None
+}
+
+/// True when the statement's first significant token is `word`. Skipping
+/// whitespace and comments costs no allocation; an executable `/*! … */`
+/// comment (mysqldump's wrapper for routines and triggers) hides the keyword,
+/// so it opts into the full parse instead of guessing.
+fn may_be(stmt: &str, word: &str) -> bool {
+    let bytes = stmt.as_bytes();
+    let mut i = 0usize;
+    loop {
+        while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return false;
+        }
+        if bytes[i] == b'#' || crate::db::mysql_script::is_dash_comment(&stmt[i..]) {
+            let end = crate::db::mysql_script::line_comment_end(stmt, i);
+            if end >= bytes.len() {
+                return false; // nothing but a comment
+            }
+            i = end;
+            continue;
+        }
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            if bytes.get(i + 2) == Some(&b'!') {
+                return true; // executable comment: let the full parse decide
+            }
+            match crate::db::mysql_script::skip_block_comment(stmt, i) {
+                Some(end) => i = end,
+                None => return false,
+            }
+            continue;
+        }
+        break;
+    }
+    let found: String = stmt[i..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    found.eq_ignore_ascii_case(word)
+}
+
+/// True when the statement's first significant token is `CREATE`.
+fn may_create(stmt: &str) -> bool {
+    may_be(stmt, "CREATE")
 }
 
 /// Reject candidates that are clearly not object names. A `(`, `)`, `,` or `;`
@@ -213,11 +450,12 @@ fn tokenize(s: &str) -> Vec<String> {
     tokens
 }
 
-/// `a` -> `schema`.`a`; `db`.`a` / `db.a` -> `db`.`a`.
+/// `a` -> `schema`.`a`; `db`.`a` / `db.a` -> `db`.`a`;
+/// `` `my.table` `` -> ``schema`.`my.table`` (one name, not schema plus table).
 fn qualify(default_schema: &str, name: &str) -> String {
-    let parts: Vec<String> = name
-        .split('.')
-        .map(|p| mysql_quote_ident(strip_backticks(p)))
+    let parts: Vec<String> = split_qualified(name)
+        .iter()
+        .map(|p| mysql_quote_ident(&unquote_identifier(p)))
         .collect();
     if parts.len() == 1 {
         format!("{}.{}", mysql_quote_ident(default_schema), parts[0])
@@ -226,8 +464,38 @@ fn qualify(default_schema: &str, name: &str) -> String {
     }
 }
 
-fn strip_backticks(s: &str) -> &str {
-    s.trim_matches('`')
+/// Split a possibly-qualified object name on `.` **outside** backtick quotes.
+/// A quoted name may legally contain a dot, so a naive `split('.')` invents a
+/// schema qualifier that does not exist and targets the wrong object.
+fn split_qualified(name: &str) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_backtick = false;
+    for ch in name.chars() {
+        match ch {
+            '`' => {
+                in_backtick = !in_backtick;
+                cur.push(ch);
+            }
+            '.' if !in_backtick => parts.push(std::mem::take(&mut cur)),
+            _ => cur.push(ch),
+        }
+    }
+    parts.push(cur);
+    parts
+}
+
+/// Decode one (optionally backtick-quoted) name component: drop the outer
+/// quotes and collapse MySQL's doubled-backtick escape to a single backtick.
+/// Re-quoting with [`mysql_quote_ident`] then doubles it exactly once more.
+fn unquote_identifier(s: &str) -> String {
+    match s
+        .strip_prefix('`')
+        .and_then(|inner| inner.strip_suffix('`'))
+    {
+        Some(inner) => inner.replace("``", "`"),
+        None => s.to_string(),
+    }
 }
 
 #[cfg(test)]

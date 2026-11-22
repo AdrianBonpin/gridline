@@ -1,11 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, X, RotateCcw } from "lucide-react";
-import { useDbViewerStore } from "../../stores/dbViewerStore";
-import { useUiStore } from "../../stores/uiStore";
+import { useDbViewerStore, currentChangeOrigin } from "../../stores/dbViewerStore";
 import { useNotificationStore } from "../../stores/notificationStore";
+import { useActiveChangeOrigin } from "../../hooks/useActiveChangeOrigin";
 import * as cmd from "../../lib/commands";
 import { buildChangePayload, buildChangeSql } from "../../lib/changePayload";
 import { isSchemaModifyingQuery } from "../../lib/utils";
+import { shortcutIsSuppressed } from "../../lib/shortcutGuard";
+import {
+  describeChangeOrigin,
+  describeRetargeting,
+  isSameChangeOrigin,
+  itemsForChangeTarget,
+  type ChangeOrigin,
+} from "../../lib/changeOrigin";
 import type { QueueItem, QueueStatus } from "../../stores/dbViewerStore";
 
 const statusBg: Record<QueueStatus, string> = {
@@ -33,6 +41,14 @@ function formatChangeLabel(change: QueueItem): string {
     default:
       return change.table ?? "-";
   }
+}
+
+/** How a change is named in a commit report: its description, else its shape. */
+function describeChange(change: QueueItem): string {
+  const description = change.description?.trim();
+  return description && description.length > 0
+    ? description
+    : formatChangeLabel(change);
 }
 
 /** Render the old → new value change for update queue items. */
@@ -67,41 +83,111 @@ function tableRef(change: QueueItem): string {
   return change.table ?? "-";
 }
 
-export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } = {}) {
+export function ChangesQueuePanel({
+  onCommitted,
+}: {
+  /**
+   * Called with exactly the changes this commit cycle applied and the origin
+   * they belong to, so the viewer can refresh every affected tab.
+   */
+  onCommitted?: (
+    committed: QueueItem[],
+    origin: ChangeOrigin,
+  ) => void | Promise<void>;
+} = {}) {
   const changesQueue = useDbViewerStore((state) => state.changesQueue);
   const removeChange = useDbViewerStore((state) => state.removeChange);
-  const clearChanges = useDbViewerStore((state) => state.clearChanges);
+  const clearChangesForTarget = useDbViewerStore((state) => state.clearChangesForTarget);
   const markChangeCommitted = useDbViewerStore((state) => state.markChangeCommitted);
   const markChangeFailed = useDbViewerStore((state) => state.markChangeFailed);
   const notify = useNotificationStore((state) => state.notify);
+  const activeOrigin = useActiveChangeOrigin();
 
   const [view, setView] = useState<"visual" | "sql">("visual");
+  // Why the last Commit All was refused. Visible, specific, and cleared as soon
+  // as the origin changes.
+  const [refusal, setRefusal] = useState<string | null>(null);
+
+  useEffect(() => {
+    setRefusal(null);
+  }, [activeOrigin?.connectionId, activeOrigin?.database, activeOrigin?.target]);
+
+  // Only the active Change Origin's work is exposed here; another connection,
+  // database, or target never shows — let alone commits — this queue.
+  const queue = useMemo(
+    () => itemsForChangeTarget(changesQueue, activeOrigin),
+    [changesQueue, activeOrigin],
+  );
 
   const handleCommitAll = useCallback(async () => {
-    const connectionId = useUiStore.getState().activeConnectionId;
-    if (!connectionId) {
-      notify("No active connection", "error");
+    // Resolve the origin at commit time instead of trusting the active
+    // connection id alone: the saved connection may have been retargeted
+    // (host/database/TLS changed) since this work was staged.
+    const origin = currentChangeOrigin();
+    if (!origin) {
+      const message =
+        "Cannot commit: no active saved connection, so this pending work has no Change Origin to apply to. Open the connection it was staged on.";
+      setRefusal(message);
+      notify(message, "error");
       return;
     }
 
-    const pending = useDbViewerStore.getState().changesQueue.filter(
-      (c) => c.status === "pending",
-    );
+    const pending = itemsForChangeTarget(
+      useDbViewerStore.getState().changesQueue,
+      origin,
+    ).filter((c) => c.status === "pending");
     if (pending.length === 0) return;
 
+    // Refuse the whole batch when any of it was staged against a target this
+    // connection no longer points at — a reused connection id must never
+    // redirect staged writes somewhere else.
+    const stale = pending.filter((c) => !isSameChangeOrigin(c.origin, origin));
+    if (stale.length > 0) {
+      const first = stale[0];
+      const message = first.origin
+        ? describeRetargeting(first.origin, origin)
+        : `Cannot commit "${describeChange(first)}": it was staged without a Change Origin, so it cannot be proven to belong to ${describeChangeOrigin(origin)}. Revert it and stage the change again.`;
+      setRefusal(message);
+      notify(message, "error");
+      return;
+    }
+    setRefusal(null);
+
+    const total = pending.length;
+    const committedItems: QueueItem[] = [];
     let committedCount = 0;
+    let failedChange: QueueItem | null = null;
+    let failedMessage = "";
     let treeDirty = false;
 
+    // Sequential, per-change atomicity: stop at the first failure and keep
+    // every earlier success durable. There is no whole-queue rollback.
     for (const change of pending) {
       try {
         const payload = buildChangePayload(change);
-        await cmd.executeChange(connectionId, payload);
+        // The origin the BACKEND validates against is the one recorded when this
+        // change was staged, never one recomputed here. Sending
+        // `currentChangeOrigin()` made the comparison the backend performs
+        // (`staged target == stored target`) tautological: the renderer decided
+        // which target a staged write belonged to, which is exactly what the
+        // backend is there to prevent. Fail closed if an item somehow has no
+        // origin — an unowned change is never offered for commit.
+        const stagedOrigin = change.origin;
+        if (!stagedOrigin) {
+          throw new Error(
+            `Cannot commit "${describeChange(change)}": it was staged without a Change Origin, so its target cannot be proven. Revert it and stage the change again.`,
+          );
+        }
+        await cmd.executeChange(stagedOrigin.connectionId, payload, stagedOrigin);
         markChangeCommitted(change.id);
+        committedItems.push(change);
         committedCount++;
         if (change.type === "drop_table") {
           treeDirty = true;
           const st = useDbViewerStore.getState();
-          st.closeTabsForTable(change.schema ?? "", change.table ?? "");
+          // Only the committing origin's tabs close: another database's tab for
+          // the same table name is a different object.
+          st.closeTabsForTable(change.schema ?? "", change.table ?? "", origin);
         } else if (
           change.type === "rebuild_table" ||
           (change.type === "ddl" && change.sql && isSchemaModifyingQuery(change.sql))
@@ -111,38 +197,69 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         markChangeFailed(change.id, msg);
-        notify(`Change failed: ${msg}`, "error");
+        failedChange = change;
+        failedMessage = msg;
         break;
       }
     }
 
-    if (committedCount > 0) {
-      onCommitted?.();
+    if (treeDirty) {
+      // Columns may be gone/renamed; caches must re-introspect.
+      useDbViewerStore.getState().invalidateMetadata();
+    }
+
+    if (failedChange) {
+      // Honest partial-success report: what is durable, what failed, and what
+      // was never attempted. There is no whole-queue rollback to promise.
+      const remaining = total - committedCount - 1;
+      const remainingPart =
+        remaining > 0
+          ? ` ${remaining} remaining change(s) were not applied.`
+          : "";
+      const keptPart =
+        committedCount > 0 ? " Changes already committed are kept." : "";
+      notify(
+        `Commit All committed ${committedCount} of ${total} change(s). ` +
+          `"${describeChange(failedChange)}" failed: ${failedMessage}.` +
+          remainingPart +
+          keptPart,
+        "error",
+      );
+    } else if (committedCount > 0) {
       notify(`${committedCount} change(s) committed`, "success");
+    }
+
+    // Refresh every affected tab *after* reporting the commit outcome, so a slow
+    // refresh can never delay (or hide) the result of the commit itself.
+    if (committedCount > 0) {
+      await onCommitted?.(committedItems, origin);
     }
 
     if (treeDirty) {
       const st = useDbViewerStore.getState();
-      void st.refreshTree(connectionId, st.currentSchema ?? undefined);
+      void st.refreshTree(origin.connectionId, st.currentSchema ?? undefined);
     }
-  }, [markChangeCommitted, markChangeFailed, notify]);
+  }, [markChangeCommitted, markChangeFailed, notify, onCommitted]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        void handleCommitAll();
-      }
+      if (!((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s")) return;
+      // Commit All is a durable write: never let it fire from inside a text
+      // field (where Cmd+S means "save") or from under a modal that owns the
+      // keyboard (ticket 39).
+      if (shortcutIsSuppressed(e)) return;
+      e.preventDefault();
+      void handleCommitAll();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [handleCommitAll]);
 
-  if (changesQueue.length === 0) {
+  if (queue.length === 0) {
     return null;
   }
 
-  const pendingCount = changesQueue.filter((c) => c.status === "pending").length;
+  const pendingCount = queue.filter((c) => c.status === "pending").length;
 
   return (
     <div className="flex flex-col">
@@ -178,9 +295,19 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
         </div>
       </div>
 
+      {refusal && (
+        <div
+          role="alert"
+          data-testid="commit-refusal"
+          className="border-b border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-500"
+        >
+          {refusal}
+        </div>
+      )}
+
       <div className="max-h-64 overflow-y-auto px-2 py-2 space-y-2">
         {view === "visual" ? (
-          changesQueue.map((change) => (
+          queue.map((change) => (
             <div
               key={change.id}
               className={`rounded-lg border border-border bg-surface-raised/40 px-3 py-2 ${statusBg[change.status]}`}
@@ -248,10 +375,15 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
                   )}
                 </>
               )}
+              {change.status === "failed" && change.error && (
+                <div className="mt-1 text-xs text-red-500 break-words">
+                  {change.error}
+                </div>
+              )}
             </div>
           ))
         ) : (
-          changesQueue.map((change) => (
+          queue.map((change) => (
             <pre
               key={change.id}
               className="text-xs text-text-muted whitespace-pre-wrap rounded-md bg-canvas px-3 py-2 font-mono border border-border"
@@ -265,7 +397,7 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
       <div className="flex items-center justify-between border-t border-border px-3 py-2">
         <button
           type="button"
-          onClick={clearChanges}
+          onClick={() => clearChangesForTarget(activeOrigin)}
           className="text-xs text-text-muted hover:text-text hover:bg-surface-raised rounded-md px-2 py-1 transition-colors cursor-pointer"
         >
           Clear All
@@ -274,6 +406,7 @@ export function ChangesQueuePanel({ onCommitted }: { onCommitted?: () => void } 
           type="button"
           disabled={pendingCount === 0}
           onClick={handleCommitAll}
+          data-testid="commit-all"
           className="inline-flex items-center rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
         >
           Commit All ({pendingCount})

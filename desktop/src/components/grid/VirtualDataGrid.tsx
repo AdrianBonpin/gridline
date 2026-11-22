@@ -4,11 +4,13 @@ import { Key, Braces, ArrowUpRight } from "lucide-react";
 import type { ColumnInfo } from "../../lib/types";
 import { abbreviateType } from "../../lib/utils";
 import { FkPreviewPopover } from "../db-viewer/FkPreviewPopover";
+import { fkLabel, fkTarget, type FkTarget } from "../../lib/fkTarget";
 import { JsonCellPopover, jsonPreview } from "../db-viewer/JsonCellPopover";
 import { CellEditor, type FkOption } from "./CellEditor";
 import { CellContextMenu } from "./CellContextMenu";
-import { cellToUpdateChange, isCellEditable, type TabKind } from "./gridEditability";
+import { cellToUpdateChange, isCellEditable, updateGuardValues, type TabKind } from "./gridEditability";
 import { nextCell, type CellPos } from "./keyboardNav";
+import { copyCellText } from "../../lib/exportData";
 
 interface VirtualDataGridProps {
   connectionId: string;
@@ -31,7 +33,9 @@ interface VirtualDataGridProps {
     newData: Record<string, unknown>;
   }) => void;
   onOpenRowDetail?: (rowIndex: number) => void;
-  getLocator?: (row: unknown[]) => Record<string, unknown>;
+  /** Row Identity for a row: every PK column, or the backend physical locator.
+   * `null` when the row has no complete identity (edit/delete must not stage). */
+  getLocator?: (row: unknown[]) => Record<string, unknown> | null;
   readOnly?: boolean;
   /** When set, renders a pending-edit indicator on the staged cell at (row, col). */
   pendingCell?: { row: number; col: number } | null;
@@ -41,6 +45,11 @@ interface VirtualDataGridProps {
   fkOptions?: Record<string, FkOption[]>;
   /** Placeholder text for the FK search input, keyed by column NAME. */
   fkPlaceholders?: Record<string, string>;
+  /**
+   * Server-side FK option search keyed by column NAME. Present → the dropdown
+   * queries the referenced table instead of filtering the first page locally.
+   */
+  fkSearches?: Record<string, (query: string) => Promise<FkOption[]>>;
   /** Optimistic staged cell values keyed `${rowIndex}:${colName}` → value (null = NULL), from the changes queue. */
   stagedValues?: Record<string, string | null>;
   /** Keys of cells with a PENDING (not yet committed) update → drives the pulsing orange outline. */
@@ -76,6 +85,7 @@ export function VirtualDataGrid({
   enumValues,
   fkOptions,
   fkPlaceholders,
+  fkSearches,
   stagedValues,
   pendingKeys,
   pendingInsertChangeIds,
@@ -197,28 +207,28 @@ export function VirtualDataGrid({
 
   const [fkPreview, setFkPreview] = useState<{
     connectionId: string;
-    schema: string;
-    table: string;
-    column: string;
+    source: { schema: string; table: string; column: string };
+    target: FkTarget;
     value: string;
     anchorRect: DOMRect | null;
   } | null>(null);
 
   const handleFkClick = useCallback(
     (col: ColumnInfo, cellValue: unknown, e: React.MouseEvent) => {
-      if (!col.is_fk || !col.fk_ref || cellValue === null || cellValue === undefined) return;
-      const [refTable] = col.fk_ref;
+      const target = fkTarget(col);
+      if (!target || cellValue === null || cellValue === undefined) return;
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
       setFkPreview({
         connectionId,
-        schema,
-        table: refTable,
-        column: col.fk_ref[1],
+        // The request carries the source column; the backend resolves the
+        // referenced relation, so a same-named local table cannot be used.
+        source: { schema, table, column: col.name },
+        target,
         value: String(cellValue),
         anchorRect: rect,
       });
     },
-    [connectionId, schema],
+    [connectionId, schema, table],
   );
 
   // ── JSON popover state ────────────────────────────────
@@ -266,7 +276,9 @@ export function VirtualDataGrid({
         if (!col) return;
         const ci = columns.findIndex((c) => c.name === col.name);
         const value = rows[activeCell.row]?.[ci];
-        navigator.clipboard.writeText(String(value));
+        // Copying a NULL yields the explicit uppercase marker — an empty
+        // clipboard string would be indistinguishable from an empty value.
+        navigator.clipboard.writeText(copyCellText(value));
       }
     },
     [activeCell, columns, dbType, editingCell, rows, tabType, visibleColumns, virtualizer],
@@ -320,13 +332,31 @@ export function VirtualDataGrid({
           if (isInsertRow && insertChangeId) {
             onStageInsertCell?.(insertChangeId, col.name, committed);
           } else {
-            const locator = getLocator?.(row) ?? {};
+            // No complete Row Identity (no PK and no locator) → staging would
+            // stage a change that addresses nothing; refuse instead.
+            const locator = getLocator?.(row) ?? null;
+            if (!locator) {
+              setEditingCell(null);
+              return;
+            }
+            // A locator identity needs the whole row as its guard; an edit that
+            // cannot carry one is never staged.
+            const oldData = updateGuardValues({
+              columns,
+              row,
+              identity: locator,
+              editedColumn: col.name,
+            });
+            if (!oldData) {
+              setEditingCell(null);
+              return;
+            }
             onStageEdit?.(
               cellToUpdateChange({
                 schema,
                 table,
                 primaryKey: locator,
-                oldData: { [col.name]: dbValue },
+                oldData,
                 newData: { [col.name]: committed },
               }) as {
                 type: "update";
@@ -374,7 +404,7 @@ export function VirtualDataGrid({
               : isNull
                 ? "NULL"
                 : isFk
-                  ? `FK → ${col.fk_ref![0]}.${col.fk_ref![1]}: ${String(displayCell)}`
+                  ? `FK → ${fkLabel(fkTarget(col))}: ${String(displayCell)}`
                   : isJson
                     ? "Click to view JSON"
                     : String(displayCell)
@@ -402,6 +432,7 @@ export function VirtualDataGrid({
                 enumValues={enumValues?.[col.name]}
                 fkOptions={fkOptions?.[col.name]}
                 fkPlaceholder={fkPlaceholders?.[col.name]}
+                onSearchFk={fkSearches?.[col.name]}
                 onCommit={commitEdit}
                 onCancel={() => setEditingCell(null)}
               />
@@ -420,7 +451,7 @@ export function VirtualDataGrid({
               <button
                 type="button"
                 aria-label="Open FK reference"
-                title={`FK → ${col.fk_ref![0]}.${col.fk_ref![1]}`}
+                title={`FK → ${fkLabel(fkTarget(col))}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
@@ -450,7 +481,7 @@ export function VirtualDataGrid({
       if (!column) return;
       const ci = columns.findIndex((c) => c.name === column.name);
       const value = rows[row]?.[ci];
-      await navigator.clipboard.writeText(String(value));
+      await navigator.clipboard.writeText(copyCellText(value));
     },
     [columns, rows, visibleColumns],
   );
@@ -469,13 +500,21 @@ export function VirtualDataGrid({
         if (changeId) onStageInsertCell?.(changeId, column.name, null);
         return;
       }
-      const locator = getLocator?.(rows[row]) ?? {};
+      const locator = getLocator?.(rows[row]) ?? null;
+      if (!locator) return;
+      const oldData = updateGuardValues({
+        columns,
+        row: rows[row],
+        identity: locator,
+        editedColumn: column.name,
+      });
+      if (!oldData) return;
       onStageEdit?.(
         cellToUpdateChange({
           schema,
           table,
           primaryKey: locator,
-          oldData: { [column.name]: value },
+          oldData,
           newData: { [column.name]: null },
         }) as {
           type: "update";
@@ -604,9 +643,8 @@ export function VirtualDataGrid({
       {fkPreview && (
         <FkPreviewPopover
           connectionId={fkPreview.connectionId}
-          schema={fkPreview.schema}
-          table={fkPreview.table}
-          column={fkPreview.column}
+          source={fkPreview.source}
+          target={fkPreview.target}
           value={fkPreview.value}
           anchorRect={fkPreview.anchorRect}
           onClose={() => setFkPreview(null)}
@@ -662,7 +700,8 @@ export function VirtualDataGrid({
               setCtxMenu(null);
             }}
             onOpenFk={() => {
-              if (ctxCol?.is_fk && ctxCol.fk_ref) {
+              const target = fkTarget(ctxCol);
+              if (target && ctxCol) {
                 // Resolve the column index into `rows` (ctxMenu.col indexes visibleColumns,
                 // which can differ when columns are hidden).
                 const ci = columns.findIndex((c) => c.name === ctxCol.name);
@@ -670,9 +709,8 @@ export function VirtualDataGrid({
                 if (cellValue !== null && cellValue !== undefined) {
                   setFkPreview({
                     connectionId,
-                    schema,
-                    table: ctxCol.fk_ref[0],
-                    column: ctxCol.fk_ref[1],
+                    source: { schema, table, column: ctxCol.name },
+                    target,
                     value: String(cellValue),
                     anchorRect: ctxMenu.pos,
                   });

@@ -164,47 +164,7 @@ fn a_single_semicolon_is_ordinary_text_under_a_custom_delimiter() {
     assert_eq!(stmts[1], "SELECT 3");
 }
 
-/// The TypeScript mirror in `desktop/src/lib/sqlScan.test.ts` asserts the
-/// SAME table. Edit both or the guard and the executor will disagree about
-/// how many statements a script contains.
-#[test]
-fn shared_cross_language_vectors() {
-    let vectors: Vec<(&str, Vec<&str>)> = vec![
-        ("SELECT 1; SELECT 2", vec!["SELECT 1", "SELECT 2"]),
-        ("SELECT 'a;b'; SELECT 2", vec!["SELECT 'a;b'", "SELECT 2"]),
-        (
-            "SELECT 'it''s'; SELECT 2",
-            vec!["SELECT 'it''s'", "SELECT 2"],
-        ),
-        (
-            "SELECT \"a;b\"; SELECT `x;y`",
-            vec!["SELECT \"a;b\"", "SELECT `x;y`"],
-        ),
-        (
-            "SELECT 1 -- ; not a boundary\n; SELECT 2",
-            vec!["SELECT 1 -- ; not a boundary", "SELECT 2"],
-        ),
-        ("SELECT /* ; */ 1", vec!["SELECT /* ; */ 1"]),
-        (
-            "SELECT $$a;b$$; SELECT 2",
-            vec!["SELECT $$a;b$$", "SELECT 2"],
-        ),
-        (
-            "SELECT $fn$x;y$fn$; SELECT 2",
-            vec!["SELECT $fn$x;y$fn$", "SELECT 2"],
-        ),
-        ("SELECT a$b", vec!["SELECT a$b"]),
-        ("SELECT 1$", vec!["SELECT 1$"]),
-        ("-- nothing\n; SELECT 1", vec!["SELECT 1"]),
-        ("/* c */", Vec::new()),
-        ("", Vec::new()),
-        ("  ;  ; ", Vec::new()),
-        (
-            "DELIMITER //\nSELECT 1; SELECT 2//\nDELIMITER ;\nSELECT 3;",
-            vec!["SELECT 1; SELECT 2", "SELECT 3"],
-        ),
-    ];
-    for (sql, expected) in vectors {
-        assert_eq!(split_statements(sql), expected, "input: {sql:?}");
-    }
-}
+// The shared cross-language vectors (splitting AND classification) live in ONE
+// fixture read by both languages: `desktop/fixtures/sql-classification-vectors.json`
+// via `sql_classify.test.rs` (Rust) and `desktop/src/lib/sqlScanCorpus.test.ts`
+// (TypeScript). Do not reintroduce a second copy of those expectations here.

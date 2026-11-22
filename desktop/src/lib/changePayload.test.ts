@@ -12,10 +12,21 @@ describe("buildChangePayload", () => {
     expect(p).toEqual({ id: "c1", type: "insert", schema: "public", table: "t", data: "{\"a\":1}" });
   });
 
-  it("delete -> {schema, table, primary_key}", () => {
+  it("delete -> {schema, table, primary_key, old_data}", () => {
+    const item = { ...base, type: "delete", sql: "", schema: "public", table: "t",
+      primaryKey: { rowid: 5 }, oldData: { url: "/cart" } } as unknown as QueueItem;
+    expect(buildChangePayload(item)).toEqual({
+      id: "c1", type: "delete", schema: "public", table: "t",
+      primary_key: "{\"rowid\":5}", old_data: "{\"url\":\"/cart\"}",
+    });
+  });
+
+  it("delete without original values sends an empty old_data, never an undefined one", () => {
+    // The backend treats empty as "no originals", so a locator delete staged
+    // without them fails closed instead of writing unguarded.
     const item = { ...base, type: "delete", sql: "", schema: "public", table: "t",
       primaryKey: { id: 5 } } as unknown as QueueItem;
-    expect(buildChangePayload(item)).toEqual({ id: "c1", type: "delete", schema: "public", table: "t", primary_key: "{\"id\":5}" });
+    expect(buildChangePayload(item)).toMatchObject({ old_data: "{}" });
   });
 
   it("bulk_insert -> {schema, table, columns, rows}", () => {
@@ -69,15 +80,20 @@ describe("buildChangeSql", () => {
 
 function rebuildItem(sql: string): QueueItem {
   return {
-    id: "ch-rb1", type: "rebuild_table", sql, status: "pending",
-    createdAt: 0,
+    id: "ch-rb1", type: "rebuild_table", schema: "main", table: "users", sql, status: "pending",
+    createdAt: 0, origin: null,
   } as unknown as QueueItem;
 }
 
 describe("rebuild_table payload", () => {
-  it("builds a rebuild_table payload with the script", () => {
+  it("builds a rebuild_table payload with the script and the table it rebuilds", () => {
     const p = buildChangePayload(rebuildItem("CREATE TABLE _t();"));
-    expect(p).toEqual({ id: "ch-rb1", type: "rebuild_table", sql: "CREATE TABLE _t();" });
+    expect(p).toEqual({
+      id: "ch-rb1",
+      type: "rebuild_table",
+      table: "users",
+      sql: "CREATE TABLE _t();",
+    });
   });
   it("buildChangeSql returns the script verbatim", () => {
     expect(buildChangeSql(rebuildItem("SELECT 1;"))).toBe("SELECT 1;");
@@ -87,7 +103,7 @@ describe("rebuild_table payload", () => {
 const ddlItem: QueueItem = {
   id: "ch-1", type: "ddl",
   sql: "CREATE TYPE public.role AS ENUM ('admin')",
-  status: "pending", createdAt: 0,
+  status: "pending", createdAt: 0, origin: null,
 };
 describe("ddl change", () => {
   it("builds a ddl payload with id + type + sql", () => {

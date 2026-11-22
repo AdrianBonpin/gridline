@@ -3,46 +3,17 @@ import {
   analyzeScript,
   classifyStatement,
   hasSchemaModifyingStatement,
+  resetScanWork,
   scanWords,
+  scanWorkUnits,
   splitStatements,
 } from "./sqlScan";
 
-/**
- * Shared cross-language vectors. Every row of this table also appears in
- * `desktop/src-tauri/src/db/sql_split.test.rs::shared_cross_language_vectors`.
- * Keep the two tables byte-identical.
- */
-const SHARED_VECTORS: Array<{ sql: string; expected: string[] }> = [
-  { sql: "SELECT 1; SELECT 2", expected: ["SELECT 1", "SELECT 2"] },
-  { sql: "SELECT 'a;b'; SELECT 2", expected: ["SELECT 'a;b'", "SELECT 2"] },
-  { sql: "SELECT 'it''s'; SELECT 2", expected: ["SELECT 'it''s'", "SELECT 2"] },
-  { sql: 'SELECT "a;b"; SELECT `x;y`', expected: ['SELECT "a;b"', "SELECT `x;y`"] },
-  {
-    sql: "SELECT 1 -- ; not a boundary\n; SELECT 2",
-    expected: ["SELECT 1 -- ; not a boundary", "SELECT 2"],
-  },
-  { sql: "SELECT /* ; */ 1", expected: ["SELECT /* ; */ 1"] },
-  { sql: "SELECT $$a;b$$; SELECT 2", expected: ["SELECT $$a;b$$", "SELECT 2"] },
-  { sql: "SELECT $fn$x;y$fn$; SELECT 2", expected: ["SELECT $fn$x;y$fn$", "SELECT 2"] },
-  { sql: "SELECT a$b", expected: ["SELECT a$b"] },
-  { sql: "SELECT 1$", expected: ["SELECT 1$"] },
-  { sql: "-- nothing\n; SELECT 1", expected: ["SELECT 1"] },
-  { sql: "/* c */", expected: [] },
-  { sql: "", expected: [] },
-  { sql: "  ;  ; ", expected: [] },
-  {
-    sql: "DELIMITER //\nSELECT 1; SELECT 2//\nDELIMITER ;\nSELECT 3;",
-    expected: ["SELECT 1; SELECT 2", "SELECT 3"],
-  },
-];
-
-describe("splitStatements — shared cross-language vectors", () => {
-  for (const { sql, expected } of SHARED_VECTORS) {
-    it(`splits ${JSON.stringify(sql)}`, () => {
-      expect(splitStatements(sql)).toEqual(expected);
-    });
-  }
-});
+// The shared cross-language vectors (splitting AND classification) live in ONE
+// fixture read by both languages: `desktop/fixtures/sql-classification-vectors.json`
+// via `sqlScanCorpus.test.ts` (TypeScript) and
+// `desktop/src-tauri/src/db/sql_classify.test.rs` (Rust). Do not reintroduce a
+// second copy of those expectations here.
 
 describe("splitStatements — conservative edge cases", () => {
   it("keeps an unterminated quote inside one statement (never splits it)", () => {
@@ -271,22 +242,53 @@ describe("scanWords", () => {
 });
 
 // Spec §2.2 P1: the guard runs synchronously on every Run and must not stall
-// the UI on a large script. The local budget is <2 ms for 1 MB; CI runners
-// vary, so the assertion ceiling is generous — it still catches a quadratic
-// implementation, which is the failure mode that matters.
-describe("performance budget", () => {
-  it("splits + classifies a ~1 MB script without going quadratic", () => {
-    const oneStatement = "INSERT INTO users (id, name) VALUES (1, 'a;b');\n";
-    const script = oneStatement.repeat(
-      Math.ceil(1_000_000 / oneStatement.length),
-    );
-    expect(script.length).toBeGreaterThan(1_000_000);
+// the UI on a large script, so it must stay linear in the script.
+//
+// This is asserted as **scanner work**, not wall-clock time. A millisecond
+// ceiling is a load test: a ~1 MB script was measured at 343 ms while
+// `cargo test` was compiling, and a linear implementation that happens to be
+// slow on a contended runner fails it just as loudly as a quadratic one. Work
+// units are deterministic, so the assertion only moves when the amount of text
+// the scanners are handed moves.
+describe("scanner work stays linear in the script", () => {
+  const oneReadStatement =
+    "SELECT id, name FROM users WHERE name = 'a;b' AND id > 10;\n";
+  const script = oneReadStatement.repeat(
+    Math.ceil(1_000_000 / oneReadStatement.length),
+  );
+  const half = script.slice(0, Math.floor(script.length / 2));
 
-    const started = performance.now();
+  it("splits + classifies every statement of a ~1 MB read-only script", () => {
+    resetScanWork();
     const analysis = analyzeScript(script);
-    const elapsed = performance.now() - started;
 
+    expect(script.length).toBeGreaterThan(1_000_000);
+    expect(analysis.destructive).toBe(false);
+    // The guard really walked the whole script, not just its first statement.
+    expect(analysis.totalStatements).toBeGreaterThan(15_000);
+    // Three linear passes (split, executable-text check, word scan) plus
+    // per-statement overhead. Re-splitting the script — or a suffix of it — per
+    // statement would be statements × length, four orders of magnitude over.
+    expect(scanWorkUnits()).toBeLessThan(script.length * 8);
+  });
+
+  it("scales linearly: twice the script costs about twice the work", () => {
+    resetScanWork();
+    analyzeScript(half);
+    const halfWork = scanWorkUnits();
+
+    resetScanWork();
+    analyzeScript(script);
+    const fullWork = scanWorkUnits();
+
+    expect(halfWork).toBeGreaterThan(0);
+    expect(fullWork).toBeLessThan(halfWork * 2.5);
+  });
+
+  it("still finds the destructive statement at the end of a ~1 MB script", () => {
+    const analysis = analyzeScript(`${script}DROP TABLE users;`);
     expect(analysis.destructive).toBe(true);
-    expect(elapsed).toBeLessThan(250);
+    expect(analysis.reason).toBe("schema");
+    expect(analysis.firstDestructiveIndex).toBe(analysis.totalStatements);
   });
 });

@@ -124,10 +124,17 @@ export interface ValidationResult {
   error: string;
 }
 
+export interface ImportWarning {
+  index: number;
+  name: string;
+  message: string;
+}
+
 export interface ImportResult {
   imported: number;
   skipped: number;
   skippedRecords: { index: number; reason: string }[];
+  warnings: ImportWarning[];
 }
 
 // ─── DB Viewer Types ────────────────────────────────────────────
@@ -145,10 +152,26 @@ export interface ColumnInfo {
   is_nullable: boolean;
   is_pk: boolean;
   is_fk: boolean;
-  fk_ref: [string, string] | null;
+  /**
+   * Referenced `[schema, table, column]` for a foreign-key column.
+   *
+   * The referenced schema is part of the reference: a foreign key may point into
+   * another schema, and following it against the browsing schema would read a
+   * same-named local table instead.
+   */
+  fk_ref: [string, string, string] | null;
   default_value: string | null;
   editable: boolean;
   is_generated: boolean;
+  /**
+   * Whether a single-column unique index covers this column (SQLite).
+   *
+   * The table editor submits it back, so a rebuild cannot silently drop the
+   * constraint the form never showed.
+   */
+  is_unique?: boolean;
+  /** Whether this column is an `INTEGER PRIMARY KEY AUTOINCREMENT` (SQLite). */
+  is_auto_increment?: boolean;
 }
 
 export interface IndexInfo {
@@ -182,7 +205,15 @@ export interface RecentConnection {
 export interface QueryResult {
   columns: ColumnInfo[];
   rows: unknown[][];
-  total_rows: number;
+  /**
+   * Exact total row count, or `null` when it is unavailable. A backend that
+   * executes a statement once per request cannot always know the total without
+   * running the statement again, so it reports `null` (unknown) rather than
+   * recomputing — recomputing would repeat any side effects.
+   */
+  total_rows: number | null;
+  /** True when at least one row exists after this page (always exact). */
+  has_more?: boolean;
   page: number;
   page_size: number;
   execution_time_ms?: number | null;
@@ -293,21 +324,80 @@ export interface ConnectionTestResult {
   latency_ms?: number | null;
 }
 
+// ─── SSH Host Trust ─────────────────────────────────────────────
+
+/**
+ * The host-key identity a user is asked to accept. Mirrors the Rust
+ * `HostKeyFingerprint`: key algorithm plus an OpenSSH-style `SHA256:` digest.
+ * Never contains credentials.
+ */
+export interface HostKeyFingerprint {
+  key_type: string;
+  fingerprint: string;
+}
+
+/**
+ * Trust between Gridline and one SSH endpoint (ADR 0001). Three states, not a
+ * boolean: `unknown` needs first-use acceptance, `mismatch` needs deliberate
+ * re-enrollment, and only `trusted` may receive credentials.
+ */
+export type SshHostTrustState =
+  | {
+      state: "trusted";
+      host: string;
+      port: number;
+      key_type: string;
+      fingerprint: string;
+      source: "known_hosts" | "enrolled";
+    }
+  | {
+      state: "unknown";
+      host: string;
+      port: number;
+      key_type: string;
+      fingerprint: string;
+    }
+  | {
+      state: "mismatch";
+      host: string;
+      port: number;
+      key_type: string;
+      fingerprint: string;
+      expected_key_type: string;
+      expected_fingerprint: string;
+      source: "known_hosts" | "enrolled";
+    };
+
 // ─── Backup Types ────────────────────────────────────────────────
 
+/**
+ * A PostgreSQL backup request.
+ *
+ * Deliberately carries **no** output path: the path is authorized by a File
+ * Grant (`lib/fileGrant.ts`) whose id is sent alongside these options, so a
+ * renderer-supplied string can never choose where a dump is written. The Rust
+ * side rejects an unknown `filePath` field outright.
+ */
 export interface BackupOptions {
   format: "plain" | "custom" | "tar" | "directory";
-  filePath: string;
   schema?: string;
   tables?: string[];
   noOwner: boolean;
 }
 
-export interface RestoreOptions {
+/** A PostgreSQL restore request. No input path: the file comes from the File
+ * Grant named alongside it (see {@link selectFileForGrant}). */
+export interface PgRestoreRequest {
   format: string;
-  filePath: string;
   clean: boolean;
   schema?: string;
+  /**
+   * The user explicitly accepted a non-atomic restore after the backend named
+   * the dump's incompatibility and the partial-application risk. Omitted (or
+   * false) means a dump that cannot be restored in one transaction is refused
+   * instead of silently downgraded — see {@link nonAtomicRefusalReason}.
+   */
+  acceptNonAtomic?: boolean;
 }
 
 export interface SyncOptions {
@@ -329,6 +419,13 @@ export interface PgToolStatus {
   pg_restore_resolved_name?: string | null;
   pg_dump_bundled_available?: boolean;
   pg_restore_bundled_available?: boolean;
+  /**
+   * Why the bounded `--version` probe failed when the tool could not be used
+   * (it hung past its deadline, or would not start). `null` when the tool
+   * resolved, or when nothing was found at all.
+   */
+  pg_dump_probe_error?: string | null;
+  pg_restore_probe_error?: string | null;
 }
 
 // ─── Backup Types: MySQL / SQLite / Settings (v0.7.8) ───────────
@@ -347,11 +444,14 @@ export interface MySqlToolStatus {
   mysqldumpIsMariaDb?: boolean;
   mysqldumpBundledAvailable?: boolean;
   mysqlBundledAvailable?: boolean;
+  /** See `PgToolStatus.pg_dump_probe_error`. */
+  mysqldumpProbeError?: string | null;
+  mysqlProbeError?: string | null;
 }
 
+/** A MySQL backup request; no output path — see {@link BackupOptions}. */
 export interface MySqlBackupOptions {
   database: string;
-  filePath: string;
   singleTransaction: boolean;
   noData: boolean;
   routines: boolean;
@@ -359,18 +459,21 @@ export interface MySqlBackupOptions {
   events: boolean;
 }
 
-export interface MySqlRestoreOptions {
+/** What a granted data-import source read returns (see `readImportFile`). */
+export interface ImportSource {
+  text: string;
+  displayName: string;
+  bytes: number;
+}
+
+/** A MySQL restore request; no input path — see {@link PgRestoreRequest}. */
+export interface MySqlRestoreRequest {
   database: string;
-  filePath: string;
   clean: boolean;
 }
 
-export interface SqliteBackupOptions {
-  filePath: string;
-}
-
-export interface SqliteRestoreOptions {
-  filePath: string;
+/** A SQLite restore request; no input path — see {@link PgRestoreRequest}. */
+export interface SqliteRestoreRequest {
   clean: boolean;
 }
 

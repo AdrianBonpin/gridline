@@ -6,6 +6,7 @@ import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import * as commands from "../../lib/commands";
 import * as exportData from "../../lib/exportData";
+import { useConnectionStore } from "../../stores/connectionStore";
 
 describe("TableOverflowMenu", () => {
   beforeEach(() => {
@@ -68,6 +69,40 @@ describe("TableOverflowMenu", () => {
     expect(onOpenTab).toHaveBeenCalledWith("public", "users", true);
   });
 
+  it("Copy table schema asks for a session password and retries the DDL job (ticket 27)", async () => {
+    const writeText = (navigator.clipboard as any).writeText as ReturnType<typeof vi.fn>;
+    const getDdl = vi
+      .spyOn(commands, "getTableDdl")
+      .mockRejectedValueOnce(new Error("session-credential-required:conn-ddl"))
+      .mockResolvedValueOnce("CREATE TABLE t (id int)");
+    const requestSessionCredential = vi.fn(async () => "typed-password");
+    const setSessionPassword = vi.fn(async () => {});
+    const original = useConnectionStore.getState();
+    useConnectionStore.setState({ requestSessionCredential, setSessionPassword });
+    try {
+      render(
+        <TableOverflowMenu
+          schema="public"
+          table="t"
+          onOpenTab={() => "tab-1"}
+          connectionId="c1"
+        />,
+      );
+      fireEvent.click(screen.getByLabelText(/table options/i));
+      fireEvent.click(screen.getByText(/copy table schema/i));
+
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith("CREATE TABLE t (id int)"));
+      expect(requestSessionCredential).toHaveBeenCalledWith("conn-ddl");
+      expect(setSessionPassword).toHaveBeenCalledWith("conn-ddl", "typed-password");
+      expect(getDdl).toHaveBeenCalledTimes(2);
+    } finally {
+      useConnectionStore.setState({
+        requestSessionCredential: original.requestSessionCredential,
+        setSessionPassword: original.setSessionPassword,
+      });
+    }
+  });
+
   it("Copy table schema calls getTableDdl and writes clipboard", async () => {
     vi.spyOn(commands, "getTableDdl").mockResolvedValue("CREATE TABLE t (id int)");
     const writeText = (navigator.clipboard as any).writeText as ReturnType<typeof vi.fn>;
@@ -116,7 +151,7 @@ describe("TableOverflowMenu", () => {
     render(<TableOverflowMenu schema="public" table="t" onOpenTab={() => "tab-1"} columns={columns} rows={[[1]]} />);
     fireEvent.click(screen.getByLabelText(/table options/i));
     fireEvent.click(screen.getByText(/export data \(csv\)/i));
-    await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "csv", "public.t"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "csv", "t", { schema: "public", dbType: undefined }));
   });
 
   it("Excel export calls exportData and notifies", async () => {
@@ -127,7 +162,7 @@ describe("TableOverflowMenu", () => {
     render(<TableOverflowMenu schema="public" table="t" onOpenTab={() => "tab-1"} columns={columns} rows={[[1]]} />);
     fireEvent.click(screen.getByLabelText(/table options/i));
     fireEvent.click(screen.getByText(/export data \(excel\)/i));
-    await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "xlsx", "public.t"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith([[1]], columns, "xlsx", "t", { schema: "public", dbType: undefined }));
     const st = useNotificationStore.getState();
     expect(st.notifications.some((n) => n.message.toLowerCase().includes("exported"))).toBe(true);
   });
@@ -139,15 +174,17 @@ describe("TableOverflowMenu", () => {
       rows: [[42]],
       total_rows: 1,
       page: 1,
-      page_size: 1000,
+      page_size: 500,
     });
     const { useNotificationStore } = await import("../../stores/notificationStore");
     useNotificationStore.getState().notifications.length = 0;
     render(<TableOverflowMenu schema="public" table="t" onOpenTab={() => "tab-1"} connectionId="c1" />);
     fireEvent.click(screen.getByLabelText(/table options/i));
     fireEvent.click(screen.getByText(/export data \(excel\)/i));
+    // One bounded page — 500 is the backend's largest accepted page size, so a
+    // larger request would be rejected rather than clamped.
     await waitFor(() =>
-      expect(getSpy).toHaveBeenCalledWith("c1", "public", "t", 1, 1000),
+      expect(getSpy).toHaveBeenCalledWith("c1", "public", "t", 1, 500),
     );
     await waitFor(() => expect(spy).toHaveBeenCalled());
     const st = useNotificationStore.getState();
@@ -164,11 +201,317 @@ describe("TableOverflowMenu", () => {
     expect(commands.runMaintenance).toHaveBeenCalledWith("c1", "public", "users", "vacuum");
   });
 
-  it("Edit Table opens a table form tab", () => {
+  it("Edit Table opens a table form tab with the live columns", async () => {
+    const getTableColumns = vi.spyOn(commands, "getTableColumns").mockResolvedValue([
+      { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false, is_unique: false, is_auto_increment: true },
+      { name: "email", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false, is_unique: true, is_auto_increment: false },
+    ] as any);
     const openFormTab = vi.spyOn(useDbViewerStore.getState(), "openFormTab");
     render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => ""} connectionId="c1" columns={[{ name: "id", data_type: "int", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false }]} />);
     fireEvent.click(screen.getByLabelText("Table options"));
     fireEvent.click(screen.getByText("Edit Table…"));
-    expect(openFormTab).toHaveBeenCalledWith(expect.objectContaining({ kind: "table", mode: "edit" }));
+
+    await waitFor(() =>
+      expect(openFormTab).toHaveBeenCalledWith(expect.objectContaining({ kind: "table", mode: "edit" })),
+    );
+    // The form is built from a live catalog read, never from whatever the tree
+    // happened to have cached (or not cached) for this table.
+    expect(getTableColumns).toHaveBeenCalledWith("c1", "public", "users");
+    const params = openFormTab.mock.calls[0][0].params as any;
+    expect(params.action.columns.map((c: any) => c.name)).toEqual(["id", "email"]);
+    expect(params.action.old_columns.map((c: any) => c.name)).toEqual(["id", "email"]);
+    // Column Identity travels with each editable row.
+    expect(params.action.columns.map((c: any) => c.original_name)).toEqual(["id", "email"]);
+    // …and so do the attributes a rebuild has to reproduce: the rowid sequence
+    // and the unique key are part of the column the form submits back.
+    expect(params.action.columns.map((c: any) => c.auto_increment)).toEqual([true, false]);
+    expect(params.action.columns.map((c: any) => c.unique)).toEqual([false, true]);
+  });
+
+  it("Edit Table from an unexpanded tree item shows the live columns, not an empty form", async () => {
+    // An unexpanded tree row passes no columns at all.
+    vi.spyOn(commands, "getTableColumns").mockResolvedValue([
+      { name: "order_id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      { name: "product_id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      { name: "quantity", data_type: "integer", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    ] as any);
+    render(<TableOverflowMenu schema="main" table="order_items" onOpenTab={() => ""} connectionId="c1" dbType="sqlite" />);
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Edit Table…"));
+
+    await waitFor(() => expect(useDbViewerStore.getState().tabs).toHaveLength(1));
+    const params = useDbViewerStore.getState().tabs[0].form?.params as any;
+    expect(params.action.columns.map((c: any) => c.name)).toEqual([
+      "order_id",
+      "product_id",
+      "quantity",
+    ]);
+  });
+
+  it("Edit Table does not open an empty form when the live columns cannot be read", async () => {
+    vi.spyOn(commands, "getTableColumns").mockRejectedValue(new Error("connection reset"));
+    const openFormTab = vi.spyOn(useDbViewerStore.getState(), "openFormTab");
+    const { useNotificationStore } = await import("../../stores/notificationStore");
+    useNotificationStore.getState().notifications.length = 0;
+    render(<TableOverflowMenu schema="public" table="users" onOpenTab={() => ""} connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Edit Table…"));
+
+    await waitFor(() => {
+      expect(
+        useNotificationStore
+          .getState()
+          .notifications.some((n) => /live columns/i.test(n.message)),
+      ).toBe(true);
+    });
+    expect(openFormTab).not.toHaveBeenCalled();
+    expect(useDbViewerStore.getState().tabs).toHaveLength(0);
+  });
+
+  it("Import reads the live columns so conversion is driven by declared types", async () => {
+    // An unexpanded tree row passes no columns at all, and a cached list can be
+    // stale; the import dialog needs the declared types either way.
+    const getTableColumns = vi.spyOn(commands, "getTableColumns").mockResolvedValue([
+      { name: "zip", data_type: "character varying", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      { name: "age", data_type: "integer", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    ] as any);
+    render(<TableOverflowMenu schema="public" table="people" onOpenTab={() => ""} connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Import data (CSV/JSON)"));
+
+    await waitFor(() => expect(screen.getByText(/import into public.people/i)).toBeInTheDocument());
+    expect(getTableColumns).toHaveBeenCalledWith("c1", "public", "people");
+  });
+
+  it("Import reports a failed column read instead of opening an unusable dialog", async () => {
+    vi.spyOn(commands, "getTableColumns").mockRejectedValue(new Error("connection reset"));
+    const { useNotificationStore } = await import("../../stores/notificationStore");
+    useNotificationStore.getState().notifications.length = 0;
+    render(<TableOverflowMenu schema="public" table="people" onOpenTab={() => ""} connectionId="c1" />);
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Import data (CSV/JSON)"));
+
+    await waitFor(() => {
+      expect(
+        useNotificationStore
+          .getState()
+          .notifications.some((n) => /could not load the columns/i.test(n.message)),
+      ).toBe(true);
+    });
+    expect(screen.queryByText(/import into/i)).toBeNull();
+  });
+});
+describe("TableOverflowMenu offers only actions that apply to the relation kind", () => {
+  beforeEach(() => {
+    useDbViewerStore.getState().reset();
+    useUiStore.setState({ activeConnectionId: "c1" });
+    vi.resetAllMocks();
+  });
+
+  /** Menu labels only a plain table may offer. */
+  const TABLE_ONLY_LABELS = [
+    "Edit Table…",
+    "Empty Table",
+    "Delete Table",
+    "Import data (CSV/JSON)",
+    "Create Index…",
+    "Create Constraint…",
+    "VACUUM",
+  ];
+
+  function openMenu() {
+    fireEvent.click(screen.getByLabelText("Table options"));
+  }
+
+  function offered(label: string): boolean {
+    return screen.queryByText(label) !== null;
+  }
+
+  it("offers a plain table every action", () => {
+    render(
+      <TableOverflowMenu
+        schema="public"
+        table="users"
+        tableType="TABLE"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    openMenu();
+    for (const label of TABLE_ONLY_LABELS) {
+      expect(offered(label), label).toBe(true);
+    }
+  });
+
+  it("offers a view only the actions that apply to it", () => {
+    render(
+      <TableOverflowMenu
+        schema="main"
+        table="order_summary"
+        tableType="VIEW"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    openMenu();
+    // Reads still apply: a view is browsable, exportable, and its DDL is copyable.
+    expect(offered("Open in new tab")).toBe(true);
+    expect(offered("Export data (CSV)")).toBe(true);
+    expect(offered("Copy table schema")).toBe(true);
+    // Nothing the server would reject for a view is offered.
+    for (const label of TABLE_ONLY_LABELS) {
+      expect(offered(label), label).toBe(false);
+    }
+  });
+
+  it("offers a materialized view no edit, empty-table or drop action", () => {
+    render(
+      <TableOverflowMenu
+        schema="public"
+        table="mv_orders"
+        tableType="MATERIALIZED VIEW"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    openMenu();
+    // A materialized view is a real relation: indexing and maintenance apply.
+    expect(offered("Create Index…")).toBe(true);
+    expect(offered("VACUUM")).toBe(true);
+    // Its rows and its table shape never do.
+    for (const label of [
+      "Edit Table…",
+      "Empty Table",
+      "Delete Table",
+      "Import data (CSV/JSON)",
+      "Create Constraint…",
+    ]) {
+      expect(offered(label), label).toBe(false);
+    }
+  });
+
+  it("stages nothing when a table-only action is invoked for a view", async () => {
+    // The menu never renders these rows for a view; the action guard is the
+    // second line of defence so no invalid change can be staged either way.
+    vi.spyOn(commands, "getObjectDependencies").mockResolvedValue([]);
+    render(
+      <TableOverflowMenu
+        schema="main"
+        table="order_summary"
+        tableType="VIEW"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    openMenu();
+    expect(screen.queryByText("Empty Table")).toBeNull();
+    expect(screen.queryByText("Delete Table")).toBeNull();
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+  });
+});
+
+describe("TableOverflowMenu stages a dependent drop through one confirmation path", () => {
+  beforeEach(() => {
+    useDbViewerStore.getState().reset();
+    useUiStore.setState({ activeConnectionId: "c1" });
+    vi.resetAllMocks();
+  });
+
+  const dependencies = [
+    { deptype: "n", class: "pg_class", name: "v_orders" },
+    { deptype: "n", class: "pg_class", name: "fk_orders_user" },
+  ];
+
+  /** Open the menu and reach the point where the drop confirmation is shown. */
+  async function startDependentDrop() {
+    vi.spyOn(commands, "getObjectDependencies").mockResolvedValue(dependencies);
+    render(
+      <TableOverflowMenu
+        schema="public"
+        table="orders"
+        tableType="TABLE"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Delete Table"));
+    await screen.findByText("v_orders");
+  }
+
+  it("presents exactly one dialog that names the dependencies", async () => {
+    await startDependentDrop();
+    // One dialog — not a dependency dialog stacked on a confirm dialog.
+    expect(screen.getAllByTestId("animated-backdrop")).toHaveLength(1);
+    expect(
+      screen.getAllByRole("button", { name: /^delete table$/i }),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^cancel$/i })).toHaveLength(
+      1,
+    );
+    expect(screen.getByText("v_orders")).toBeInTheDocument();
+    expect(screen.getByText("fk_orders_user")).toBeInTheDocument();
+  });
+
+  it("stages exactly one drop change when that one confirmation proceeds", async () => {
+    await startDependentDrop();
+    const confirm = screen.getByRole("button", { name: /^delete table$/i });
+    // The single dialog requires one deliberate acknowledgement.
+    expect(confirm).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(confirm).toBeEnabled();
+
+    fireEvent.click(confirm);
+
+    const queue = useDbViewerStore.getState().changesQueue;
+    expect(queue).toHaveLength(1);
+    expect(queue[0]).toMatchObject({
+      type: "drop_table",
+      schema: "public",
+      table: "orders",
+    });
+    // No second confirmation follows: the one dialog is the whole path.
+    expect(screen.queryByTestId("animated-backdrop")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /^delete table$/i }),
+    ).toBeNull();
+  });
+
+  it("stages nothing when the acknowledgement is cancelled", async () => {
+    await startDependentDrop();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+    expect(screen.queryByTestId("animated-backdrop")).toBeNull();
+  });
+
+  it("still stages exactly one change for a drop with no dependencies", async () => {
+    vi.spyOn(commands, "getObjectDependencies").mockResolvedValue([]);
+    render(
+      <TableOverflowMenu
+        schema="public"
+        table="orders"
+        tableType="TABLE"
+        connectionId="c1"
+        dbType="postgresql"
+        onOpenTab={() => "tab-1"}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Table options"));
+    fireEvent.click(screen.getByText("Delete Table"));
+    await waitFor(() =>
+      expect(screen.getAllByTestId("animated-backdrop")).toHaveLength(1),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^delete table$/i }));
+
+    const queue = useDbViewerStore.getState().changesQueue;
+    expect(queue).toHaveLength(1);
+    expect(queue[0]).toMatchObject({ type: "drop_table", table: "orders" });
   });
 });

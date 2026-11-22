@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { FolderOpen, Upload } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { CopyButton } from "../ui/CopyButton";
 import { BackupProgress } from "./BackupProgress";
 import {
@@ -18,9 +17,19 @@ import {
     getSchemas,
     mysqlRestore,
     sqliteRestore,
+    selectFileForGrant,
 } from "../../lib/commands";
 import type { PgToolStatus, BackupJob } from "../../lib/types";
+import type { FileFilter, FileGrant } from "../../lib/fileGrant";
+import {
+    FILE_GRANT_STATE,
+    fileGrantErrorKind,
+    fileGrantErrorMessage,
+    type FileGrantErrorKind,
+} from "../../lib/fileGrant";
 import { isMysqlFamily } from "../../lib/dbCapabilities";
+import { nonAtomicRefusalReason } from "../../lib/restoreRisk";
+import { withSessionCredential } from "../../lib/sessionCredential";
 
 interface RestorePageProps {
     connectionId: string;
@@ -58,20 +67,27 @@ export function RestorePage({ connectionId }: RestorePageProps) {
     const database = connection?.database ?? null;
     const isPg = dbType === "postgresql";
     const isMysql = isMysqlFamily(dbType);
-    const isSqlite = dbType === "sqlite";
 
-    const [filePath, setFilePath] = useState("");
+    // The restore input is authorized by a backend-issued File Grant: the path
+    // below is display metadata, and `grant.id` is what the restore consumes.
+    const [grant, setGrant] = useState<FileGrant | null>(null);
+    const [selectedPath, setSelectedPath] = useState("");
+    const [grantError, setGrantError] = useState<FileGrantErrorKind | null>(null);
     const [format, setFormat] = useState("custom");
     const [clean, setClean] = useState(true);
     const [schema, setSchema] = useState("");
     const [confirmed, setConfirmed] = useState(false);
+    // The backend's reason for refusing a transactional restore, once it has
+    // identified one. Non-null means the dump can only be restored
+    // statement-by-statement, so the user has to accept that risk explicitly.
+    const [nonAtomicReason, setNonAtomicReason] = useState<string | null>(null);
+    const [acceptNonAtomic, setAcceptNonAtomic] = useState(false);
     const [pgToolStatus, setPgToolStatus] = useState<PgToolStatus | null>(null);
     const [checkingTools, setCheckingTools] = useState(true);
     const [availableSchemas, setAvailableSchemas] = useState<string[]>([]);
 
     const activeJobId = useBackupStore((s) => s.activeJobId);
     const jobs = useBackupStore((s) => s.jobs);
-    const startJob = useBackupStore((s) => s.startJob);
     const notify = useNotificationStore((s) => s.notify);
 
     const activeJob = jobs.find((j) => j.id === activeJobId);
@@ -91,12 +107,17 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                 "error",
             );
             pendingJobRef.current = null;
+        } else if (activeJob.status === "cancelled") {
+            notify("Restore cancelled", "info");
+            pendingJobRef.current = null;
         }
     }, [activeJob, notify]);
 
     useEffect(() => {
         setCheckingTools(true);
         setConfirmed(false);
+        setNonAtomicReason(null);
+        setAcceptNonAtomic(false);
         setPgToolStatus(null);
         setAvailableSchemas([]);
 
@@ -139,37 +160,48 @@ export function RestorePage({ connectionId }: RestorePageProps) {
               ? ["sql"]
               : ["db", "sqlite", "sql"];
 
-        const picked = await open({
-            multiple: false,
-            filters: [
-                {
-                    name: "Backup Files",
-                    extensions,
-                },
-            ],
-        });
-        if (picked && typeof picked === "string") setFilePath(picked);
-    }, [isPg, isMysql, isSqlite]);
+        const filters: FileFilter[] = [{ name: "Backup Files", extensions }];
+        try {
+            const picked = await selectFileForGrant({
+                intent: "read",
+                title: "Choose a backup file to restore",
+                filters,
+            });
+            if (!picked) return; // cancelled: nothing to authorize
+            setGrant(picked);
+            setSelectedPath(picked.path);
+            setGrantError(null);
+        } catch (e) {
+            const kind = fileGrantErrorKind(e);
+            if (kind) setGrantError(kind);
+            notify(fileGrantErrorMessage(e) ?? String(e), "error");
+        }
+    }, [isPg, isMysql, notify]);
 
     const runWithProgress = useCallback(
         async (type: BackupJob["type"], action: () => Promise<unknown>) => {
-            const jobId = `${type}-${Date.now()}`;
-            startJob(jobId, type);
-            pendingJobRef.current = jobId;
-
-            try {
-                await action();
-            } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                useBackupStore.getState().failJob(jobId, msg);
-            }
+            // `runJob` adopts the job id the backend returns, so the progress
+            // events and the cancel command address the real job.
+            await useBackupStore.getState().runJob(type, action);
+            pendingJobRef.current = useBackupStore.getState().activeJobId;
         },
-        [startJob],
+        [],
     );
 
+    // Cancel a running restore. The backend terminates the tool's whole process
+    // tree; the native MySQL engine stops at the next statement boundary.
+    const handleCancelRestore = useCallback(async () => {
+        const jobId = useBackupStore.getState().activeJobId;
+        if (!jobId) return;
+        const cancelled = await useBackupStore.getState().cancelJob(jobId);
+        if (!cancelled) {
+            notify("The restore had already finished", "info");
+        }
+    }, [notify]);
+
     const handleStartRestore = useCallback(async () => {
-        if (!filePath) {
-            notify("Please select a file path", "error");
+        if (!grant) {
+            notify("Please choose a backup file", "error");
             return;
         }
         if (isMysql && !database) {
@@ -177,37 +209,89 @@ export function RestorePage({ connectionId }: RestorePageProps) {
             return;
         }
 
-        await runWithProgress("restore", () => {
-            if (isPg) {
-                return pgRestore(connectionId, {
-                    format,
-                    filePath,
-                    clean,
-                    schema: schema || undefined,
+        // A grant is single-use: this selection is spent by the attempt, so the
+        // next job must choose the file again (a replayed id is rejected).
+        const grantId = grant.id;
+        setGrant(null);
+
+        await runWithProgress("restore", async () => {
+            try {
+                // A keychain-off connection supplies its session password
+                // through a prompt if the backend does not have it yet. The
+                // credential is resolved before `grantId` is consumed, so the
+                // retry reuses this selection.
+                return await withSessionCredential(connectionId, async () => {
+                    if (isPg) {
+                        return await pgRestore(
+                            connectionId,
+                            {
+                                format,
+                                clean,
+                                schema: schema || undefined,
+                                // Only ever sent after the user accepted the risk the
+                                // backend named for this dump.
+                                ...(nonAtomicReason ? { acceptNonAtomic: true } : {}),
+                            },
+                            grantId,
+                        );
+                    }
+                    if (isMysql) {
+                        return await mysqlRestore(
+                            connectionId,
+                            {
+                                database: database!,
+                                clean,
+                            },
+                            grantId,
+                        );
+                    }
+                    return await sqliteRestore(connectionId, { clean }, grantId);
                 });
+            } catch (e) {
+                const kind = fileGrantErrorKind(e);
+                if (kind) {
+                    // Surface the grant state instead of a generic tool failure.
+                    setGrantError(kind);
+                    throw new Error(fileGrantErrorMessage(e) ?? String(e));
+                }
+                // A dump the backend cannot restore in one transaction was
+                // refused before any job existed. That is a risk decision, not a
+                // restore failure: name it and require an explicit acceptance.
+                const reason = nonAtomicRefusalReason(e);
+                if (reason) {
+                    setNonAtomicReason(reason);
+                    setAcceptNonAtomic(false);
+                    notify(
+                        "This dump cannot be restored transactionally — review the risk to continue",
+                        "info",
+                    );
+                }
+                throw e;
             }
-            if (isMysql) {
-                return mysqlRestore(connectionId, {
-                    database: database!,
-                    filePath,
-                    clean,
-                });
-            }
-            return sqliteRestore(connectionId, { filePath, clean });
         });
     }, [
-        filePath,
+        grant,
         database,
         isPg,
         isMysql,
-        isSqlite,
         format,
         clean,
         schema,
+        nonAtomicReason,
         connectionId,
         notify,
         runWithProgress,
     ]);
+
+    // Retry after a failure: without a live grant the retry starts by choosing
+    // the file again, because the previous selection is spent.
+    const handleRetry = useCallback(() => {
+        if (grant) {
+            void handleStartRestore();
+            return;
+        }
+        void handlePickFile();
+    }, [grant, handleStartRestore, handlePickFile]);
 
     // pg_restore is still required for PostgreSQL. MySQL restore runs in-process
     // via the sqlx driver, so a missing mariadb/mysql client must not gate it —
@@ -218,7 +302,12 @@ export function RestorePage({ connectionId }: RestorePageProps) {
     const toolsBundled = isPg
         ? pgToolStatus?.pg_restore_source === "bundled"
         : false;
-    const canStart = filePath && confirmed && !isRunning;
+    const canStart =
+        Boolean(grant) &&
+        confirmed &&
+        !isRunning &&
+        // A dump that cannot be transactional runs only on a confirmed risk.
+        (!nonAtomicReason || acceptNonAtomic);
     const installInstructions = getPlatformInstructions(
         isPg ? PG_INSTALL_INSTRUCTIONS : MYSQL_INSTALL_INSTRUCTIONS,
     );
@@ -267,6 +356,31 @@ export function RestorePage({ connectionId }: RestorePageProps) {
 
             {/* Content */}
             <div className="flex-1 overflow-auto">
+                {/* File Grant state: expired, already used, or missing. Each has
+                    a recovery action, so the flow never fails only in logs. */}
+                {grantError && (
+                    <div
+                        data-testid={`restore-file-grant-${grantError}`}
+                        role="alert"
+                        className="flex items-start justify-between gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3"
+                    >
+                        <div className="min-w-0 space-y-1">
+                            <p className="text-sm font-semibold text-amber-300">
+                                {FILE_GRANT_STATE[grantError].title}
+                            </p>
+                            <p className="text-xs leading-relaxed text-amber-200/80">
+                                {FILE_GRANT_STATE[grantError].detail}
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => void handlePickFile()}
+                            className="shrink-0 rounded-lg border border-amber-500/40 px-3 py-1 text-xs font-medium text-amber-200 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                        >
+                            Choose file
+                        </button>
+                    </div>
+                )}
                 {/* Tool check */}
                 {checkingTools && checkingMessage && (
                     <div className="px-4 py-3 text-sm text-text-muted">
@@ -336,7 +450,13 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                             <FormRow label="Format">
                                 <select
                                     value={format}
-                                    onChange={(e) => setFormat(e.target.value)}
+                                    onChange={(e) => {
+                                        setFormat(e.target.value);
+                                        // A different format is a different dump, so
+                                        // the previous risk decision no longer applies.
+                                        setNonAtomicReason(null);
+                                        setAcceptNonAtomic(false);
+                                    }}
                                     className={`${controlClass} mr-3`}
                                 >
                                     <option value="custom">Custom Archive</option>
@@ -347,13 +467,35 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                             </FormRow>
                         )}
 
-                        {/* Backup file */}
+                        {/* What the restore promises about a failure. */}
+                        {isPg && (
+                            <div
+                                data-testid="restore-atomicity"
+                                className="border-b border-border px-4 py-2 text-[11px] leading-relaxed text-text-muted/70"
+                            >
+                                This restore runs in one transaction: if any statement
+                                fails, everything it applied is rolled back and the
+                                target database is left unchanged. A dump that cannot
+                                be restored in one transaction — a SQL script containing
+                                VACUUM, CREATE DATABASE, a CONCURRENTLY index, a
+                                \connect, or its own BEGIN/COMMIT — is refused first,
+                                and only runs after you accept that a failure can leave
+                                the target partially applied.
+                            </div>
+                        )}
+
+                        {/* Backup file. Display only: the read is authorized by
+                            the File Grant behind it, so the field is read-only
+                            and Start stays disabled until a file is chosen. */}
                         <FormRow label="Backup file">
                             <input
                                 type="text"
-                                value={filePath}
-                                onChange={(e) => setFilePath(e.target.value)}
+                                value={selectedPath}
+                                readOnly
+                                aria-label="Backup file"
+                                data-testid="restore-input-path"
                                 placeholder="/path/to/backup.dump"
+                                title="Chosen with Browse — the path alone does not authorize a read"
                                 className={inputClass}
                             />
                             <button
@@ -418,6 +560,57 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                             </div>
                         )}
 
+                        {/* The backend identified a dump it cannot restore in one
+                            transaction. Nothing runs non-atomically without this
+                            explicit risk acceptance. */}
+                        {isPg && nonAtomicReason && (
+                            <div
+                                data-testid="restore-non-atomic-risk"
+                                role="alert"
+                                className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-3 space-y-2"
+                            >
+                                <p className="text-sm font-semibold text-amber-300">
+                                    This dump cannot be restored in one transaction
+                                </p>
+                                <p
+                                    data-testid="restore-non-atomic-reason"
+                                    className="text-xs leading-relaxed text-amber-200/80"
+                                >
+                                    {nonAtomicReason}
+                                </p>
+                                <label className="flex items-start gap-3 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={acceptNonAtomic}
+                                        onChange={(e) => setAcceptNonAtomic(e.target.checked)}
+                                        data-testid="restore-non-atomic-risk-checkbox"
+                                        className="mt-0.5 bg-surface border-border accent-amber-500 w-4 h-4 cursor-pointer"
+                                    />
+                                    <span className="text-sm text-amber-200/90 leading-relaxed">
+                                        I accept that a failure partway through leaves
+                                        this database partially restored, keeping every
+                                        object restored before the failure.
+                                    </span>
+                                </label>
+                                {!grant && (
+                                    <div className="flex items-start justify-between gap-3">
+                                        <p className="text-[11px] text-amber-200/60">
+                                            Each attempt uses up the file selection, so
+                                            choose the file again to run it
+                                            non-atomically.
+                                        </p>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handlePickFile()}
+                                            className="shrink-0 rounded-lg border border-amber-500/40 px-3 py-1 text-xs font-medium text-amber-200 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                                        >
+                                            Choose file
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
                         {/* Destructive confirmation */}
                         <div className="border-b border-border bg-red-500/5 px-4 py-3 space-y-2">
                             <label className="flex items-start gap-3 cursor-pointer">
@@ -449,7 +642,21 @@ export function RestorePage({ connectionId }: RestorePageProps) {
                                     progress={activeJob.status === "completed" ? 100 : 50}
                                     jobType="restore"
                                     status={activeJob.status}
-                                    errorMessage={activeJob.error_message ?? undefined}
+                                    errorMessage={
+                                        // The refusal is shown as the risk panel, not
+                                        // as a repeat of the raw coded failure.
+                                        nonAtomicReason
+                                            ? "Not started: this dump cannot be restored in one transaction."
+                                            : activeJob.error_message ?? undefined
+                                    }
+                                    onCancel={
+                                        isRunning ? () => void handleCancelRestore() : undefined
+                                    }
+                                    onRetry={
+                                        !isRunning
+                                            ? () => void handleRetry()
+                                            : undefined
+                                    }
                                 />
                             </div>
                         )}

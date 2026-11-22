@@ -17,7 +17,13 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ListChecks, Play, Table2, Layers, Eye, Terminal, X, Plus, Pencil } from "lucide-react";
-import { useDbViewerStore, type ViewerTab } from "../../stores/dbViewerStore";
+import {
+  useDbViewerStore,
+  type QueueItem,
+  type ViewerTab,
+} from "../../stores/dbViewerStore";
+import { useActiveChangeOrigin } from "../../hooks/useActiveChangeOrigin";
+import { itemsForChangeTarget, type ChangeOrigin } from "../../lib/changeOrigin";
 import { ChangesQueuePanel } from "./ChangesQueuePanel";
 import { OBJECT_ICONS } from "./objects/ObjectDetail";
 
@@ -83,7 +89,14 @@ function SortableTab({
   );
 }
 
-export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
+export function TabBar({
+  onCommitted,
+}: {
+  onCommitted?: (
+    committed: QueueItem[],
+    origin: ChangeOrigin,
+  ) => void | Promise<void>;
+} = {}) {
   const tabs = useDbViewerStore((state) => state.tabs);
   const tables = useDbViewerStore((state) => state.tables);
   const activeTabId = useDbViewerStore((state) => state.activeTabId);
@@ -92,6 +105,9 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
   const openQueryTab = useDbViewerStore((state) => state.openQueryTab);
   const reorderTab = useDbViewerStore((state) => state.reorderTab);
   const changesQueue = useDbViewerStore((state) => state.changesQueue);
+  // The badge (and the panel toggle) reflect only the active Change Origin, so
+  // another connection's or database's pending work is never counted here.
+  const activeOrigin = useActiveChangeOrigin();
   const changesPanelExpanded = useDbViewerStore(
     (state) => state.changesPanelExpanded,
   );
@@ -123,7 +139,8 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
     if (from >= 0 && to >= 0) reorderTab(from, to);
   };
 
-  const pendingCount = changesQueue.filter(
+  const originQueue = itemsForChangeTarget(changesQueue, activeOrigin);
+  const pendingCount = originQueue.filter(
     (c) => c.status === "pending",
   ).length;
 
@@ -262,9 +279,10 @@ export function TabBar({ onCommitted }: { onCommitted?: () => void } = {}) {
           <button
             type="button"
             onClick={() => {
-              if (changesQueue.length > 0) toggleChangesPanel();
+              if (originQueue.length > 0) toggleChangesPanel();
             }}
             aria-label="Changes queue"
+            data-testid="changes-queue-toggle"
             className={[
               "flex items-center gap-1.5 rounded-md border bg-surface px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer",
               pendingCount > 0

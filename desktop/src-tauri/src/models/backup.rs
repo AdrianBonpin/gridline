@@ -1,5 +1,22 @@
+//! Backup / restore / sync models.
+//!
+//! Two families live here and the split is a security boundary:
+//!
+//! * **Engine options** ([`BackupOptions`], [`MySqlBackupOptions`],
+//!   [`RestoreOptions`], …) carry the on-disk path the engine actually uses.
+//!   They are built at the command boundary from a consumed File Grant (see
+//!   `crate::file_grant`) and are never deserialized straight from renderer
+//!   input.
+//! * **Renderer requests** ([`PgDumpOptions`], [`MySqlDumpOptions`],
+//!   [`PgRestoreRequest`], [`MySqlRestoreRequest`], [`SqliteRestoreRequest`])
+//!   carry no path at all — only a grant id travels alongside them — and reject
+//!   unknown fields, so a stale renderer that still sends `filePath` fails
+//!   loudly instead of having its path silently ignored.
+
 use serde::{Deserialize, Serialize};
 
+/// Engine options for a PostgreSQL dump: the output path is already resolved
+/// from a File Grant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupOptions {
@@ -10,6 +27,30 @@ pub struct BackupOptions {
     pub no_owner: bool,
 }
 
+/// What the renderer may ask for when it starts a PostgreSQL backup. No output
+/// path: the path comes from the File Grant named by `file_grant`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PgDumpOptions {
+    pub format: String,
+    pub schema: Option<String>,
+    pub tables: Option<Vec<String>>,
+    pub no_owner: bool,
+}
+
+impl PgDumpOptions {
+    /// Combine this request with the path a File Grant authorized.
+    pub fn with_output_path(self, file_path: String) -> BackupOptions {
+        BackupOptions {
+            format: self.format,
+            file_path,
+            schema: self.schema,
+            tables: self.tables,
+            no_owner: self.no_owner,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestoreOptions {
@@ -17,6 +58,34 @@ pub struct RestoreOptions {
     pub file_path: String,
     pub clean: bool,
     pub schema: Option<String>,
+}
+
+/// What the renderer may ask for when it starts a PostgreSQL restore. No input
+/// path: the file comes from the File Grant named by `file_grant`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PgRestoreRequest {
+    pub format: String,
+    pub clean: bool,
+    pub schema: Option<String>,
+    /// The user explicitly accepted a non-atomic restore after the backend named
+    /// the dump's incompatibility and the partial-application risk. Absent (or
+    /// false) means an incompatible dump is refused instead of silently
+    /// downgraded.
+    #[serde(default)]
+    pub accept_non_atomic: bool,
+}
+
+impl PgRestoreRequest {
+    /// Combine this request with the path a File Grant authorized.
+    pub fn with_source_path(self, file_path: String) -> RestoreOptions {
+        RestoreOptions {
+            format: self.format,
+            file_path,
+            clean: self.clean,
+            schema: self.schema,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +117,11 @@ pub struct PgToolStatus {
     /// Whether a bundled file exists at the expected path (runnable or not).
     pub pg_dump_bundled_available: bool,
     pub pg_restore_bundled_available: bool,
+    /// Why the bounded `--version` probe failed when the tool was not found
+    /// (a hang that hit the deadline, or a binary that could not be started).
+    /// `None` when the tool resolved, or when nothing was found at all.
+    pub pg_dump_probe_error: Option<String>,
+    pub pg_restore_probe_error: Option<String>,
 }
 
 /// Resolved on-disk paths for the three client tools (system-first, bundled-fallback).
@@ -99,6 +173,34 @@ pub struct MySqlBackupOptions {
     pub events: bool,
 }
 
+/// What the renderer may ask for when it starts a MySQL backup. No output path
+/// — see [`PgDumpOptions`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MySqlDumpOptions {
+    pub database: String,
+    pub single_transaction: bool,
+    pub no_data: bool,
+    pub routines: bool,
+    pub triggers: bool,
+    pub events: bool,
+}
+
+impl MySqlDumpOptions {
+    /// Combine this request with the path a File Grant authorized.
+    pub fn with_output_path(self, file_path: String) -> MySqlBackupOptions {
+        MySqlBackupOptions {
+            database: self.database,
+            file_path,
+            single_transaction: self.single_transaction,
+            no_data: self.no_data,
+            routines: self.routines,
+            triggers: self.triggers,
+            events: self.events,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MySqlRestoreOptions {
@@ -107,10 +209,24 @@ pub struct MySqlRestoreOptions {
     pub clean: bool,
 }
 
+/// What the renderer may ask for when it starts a MySQL restore. No input path
+/// — see [`PgRestoreRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SqliteBackupOptions {
-    pub file_path: String,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MySqlRestoreRequest {
+    pub database: String,
+    pub clean: bool,
+}
+
+impl MySqlRestoreRequest {
+    /// Combine this request with the path a File Grant authorized.
+    pub fn with_source_path(self, file_path: String) -> MySqlRestoreOptions {
+        MySqlRestoreOptions {
+            database: self.database,
+            file_path,
+            clean: self.clean,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +234,24 @@ pub struct SqliteBackupOptions {
 pub struct SqliteRestoreOptions {
     pub file_path: String,
     pub clean: bool,
+}
+
+/// What the renderer may ask for when it starts a SQLite restore. No input path
+/// — see [`PgRestoreRequest`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqliteRestoreRequest {
+    pub clean: bool,
+}
+
+impl SqliteRestoreRequest {
+    /// Combine this request with the path a File Grant authorized.
+    pub fn with_source_path(self, file_path: String) -> SqliteRestoreOptions {
+        SqliteRestoreOptions {
+            file_path,
+            clean: self.clean,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +269,9 @@ pub struct MySqlToolStatus {
     pub mysqldump_is_mariadb: bool,
     pub mysqldump_bundled_available: bool,
     pub mysql_bundled_available: bool,
+    /// See `PgToolStatus::pg_dump_probe_error`.
+    pub mysqldump_probe_error: Option<String>,
+    pub mysql_probe_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +358,8 @@ mod tests {
             pg_restore_resolved_name: None,
             pg_dump_bundled_available: true,
             pg_restore_bundled_available: false,
+            pg_dump_probe_error: None,
+            pg_restore_probe_error: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"pg_dump_source\":\"system\""));
@@ -269,6 +408,8 @@ mod tests {
             mysqldump_is_mariadb: true,
             mysqldump_bundled_available: true,
             mysql_bundled_available: true,
+            mysqldump_probe_error: None,
+            mysql_probe_error: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mysqldumpSource\":\"bundled\""));

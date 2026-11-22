@@ -1,33 +1,114 @@
 name: CI
 
-# Pull-request validation for the Tauri desktop app: Rust formatting + unit
-# tests, frontend unit tests, and the frontend production build. Deliberately
-# separate from release.yml — no secrets, no bundling, read-only permissions.
+# Pull-request validation for the Tauri desktop app: dependency advisories,
+# both Bun lockfiles, Rust formatting + unit tests, frontend unit tests, the
+# desktop and website production builds, and a gated built-product desktop E2E
+# smoke flow. Deliberately separate from release.yml — no secrets, no bundling,
+# read-only permissions.
 #
 # `pull_request` (never `pull_request_target`) so a fork PR cannot reach a
 # write-scoped token.
+#
+# A nightly `schedule` run executes the same jobs and is how the seams of
+# ticket 48 are covered: advisories published after a run (the audit gate is a
+# point-in-time check, not a subscription) and cross-platform divergence (the
+# `platform` matrix) surface during normal work instead of at tag time.
 
 on:
   pull_request:
     branches: [prod]
   workflow_dispatch:
+  schedule:
+    # Nightly, off the release-window hours.
+    - cron: '0 4 * * *'
 
-permissions:
-  contents: read
+# Default-deny: each job below grants only the scope it uses.
+permissions: {}
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # The desktop E2E job builds and launches the real app, so it is scoped to
+  # pull requests that can actually change desktop behavior. Everything else
+  # (docs, website) skips it. Computed with git rather than a third-party
+  # action so no extra action needs pinning.
+  changes:
+    name: detect desktop changes
+    runs-on: ubuntu-22.04
+    # Read-only: the job only reads git history to diff the pull request.
+    permissions:
+      contents: read
+    outputs:
+      desktop: ${{ steps.detect.outputs.desktop }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes that can affect the desktop app
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA:-}" ]; then
+            echo "Not a pull_request run; running the desktop E2E harness."
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE_SHA" >/dev/null 2>&1 || true
+          if ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed-files.txt 2>/dev/null; then
+            echo "Could not diff $BASE_SHA..$HEAD_SHA; running the desktop E2E harness."
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cat changed-files.txt
+          if grep -Eq '^(desktop/|bun\.lock|package\.json|\.github/workflows/ci\.yml)' changed-files.txt; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=false" >> "$GITHUB_OUTPUT"
+          fi
+
   checks:
     name: fmt + tests + build
     runs-on: ubuntu-22.04
     # Bounded runtime: a hung `cargo test` cannot burn a runner for hours.
-    timeout-minutes: 30
+    # 40 rather than 30 minutes because the job also compiles cargo-audit.
+    timeout-minutes: 40
+    # Read-only: this job only checks out and tests.
+    permissions:
+      contents: read
+    # Scratch MySQL for the live-database Rust tests (`GRIDLINE_TEST_MYSQL_*`).
+    # Those tests used to `return` early without a server, so the MySQL decode
+    # path (issue #41) and the filtered-total browse were green while asserting
+    # nothing. With this service and `GRIDLINE_REQUIRE_LIVE_DB_TESTS=1` on the
+    # test step, a missing/unreachable server is a FAILURE, not a skip.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: gridline
+          MYSQL_DATABASE: gridline_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Asserts the release pipeline's trust rules (one pipeline, pinned
+      # actions, job-scoped tokens, tag metadata as data) before anything is
+      # built. See scripts/check-workflows.sh.
+      - name: Check release pipeline hygiene
+        run: ./scripts/check-workflows.sh
 
       # Tauri v2 needs these to compile the crate on Linux. Same list as
       # release.yml, so a missing system dependency surfaces on the PR
@@ -39,20 +120,41 @@ jobs:
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
         with:
+          toolchain: stable
           components: rustfmt
 
       - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: './desktop/src-tauri -> target'
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
+
+      # Both Bun lockfiles must describe their manifests: the workspace
+      # `bun.lock` (root + desktop + www) and the standalone `www/bun.lock` that
+      # the Railpack/Dokploy website build resolves. Dependabot updates each of
+      # them from its own `.github/dependabot.yml` entry, so a manifest edited
+      # without its lockfile has to fail here rather than at release/deploy time
+      # (ticket 48). See scripts/check-lockfiles.sh.
+      - name: Verify both Bun lockfiles are in sync with their manifests
+        run: ./scripts/check-lockfiles.sh
+
+      # Dependency advisories are a gate, not a report: scripts/check-advisories.py
+      # audits both Bun lockfiles (workspace + the standalone website install) and
+      # the Rust lockfile, and fails on any advisory that is not either fixed or
+      # covered by a reviewed, dated entry in docs/security/dependency-exceptions.md.
+      # It sits in this job so the existing required `checks` status enforces it.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies for unreviewed advisories
+        run: ./scripts/check-advisories.py
 
       - name: Check Rust formatting
         working-directory: desktop/src-tauri
@@ -60,10 +162,197 @@ jobs:
 
       - name: Run Rust tests
         working-directory: desktop/src-tauri
+        # `GRIDLINE_REQUIRE_LIVE_DB_TESTS=1` makes a missing live database a hard
+        # failure (see `missing_live_db_prerequisite`), so the live MySQL cases
+        # cannot silently skip here the way they do on a machine with no server.
+        env:
+          GRIDLINE_REQUIRE_LIVE_DB_TESTS: "1"
+          GRIDLINE_TEST_MYSQL_HOST: 127.0.0.1
+          GRIDLINE_TEST_MYSQL_PORT: "3306"
+          GRIDLINE_TEST_MYSQL_USER: root
+          GRIDLINE_TEST_MYSQL_PASS: gridline
+          GRIDLINE_TEST_MYSQL_DB: gridline_test
         run: cargo test
 
-      - name: Run frontend tests
-        run: bun run test
-
+      # The build runs BEFORE the tests so the built-product seam
+      # (desktop/e2e/builtPolicy.test.ts) actually reads `desktop/dist` instead
+      # of skipping itself. `GRIDLINE_REQUIRE_BUILT_POLICY=1` makes a missing
+      # artifact a failure, so the packaged policy cannot be green without being
+      # checked against the bundle Tauri embeds.
       - name: Build the desktop frontend
         run: bun run --filter gridline-desktop build
+
+      - name: Run frontend tests (against the built bundle)
+        env:
+          GRIDLINE_REQUIRE_BUILT_POLICY: "1"
+        run: bun run test
+
+      # The website is a workspace member with its own production build (Astro +
+      # the OG-image prebuild). It is not covered by the desktop build, and the
+      # deployed artifact is built from it, so it joins the gate here.
+      - name: Build the website (production)
+        run: bun run build:www
+
+  # Cross-platform compile + test matrix (ticket 48). The release ships four
+  # targets — macOS arm64, macOS x64, Windows x64 and Linux x86_64 — so each one
+  # has to compile and pass the test suites BEFORE a release instead of being
+  # discovered at tag time. Deliberately not on every pull request: four full
+  # Rust builds per PR would dominate the feedback loop, and `checks` already
+  # covers Linux on every PR. This job is the pre-release path (dispatch CI on
+  # `prod` before tagging — AGENTS.md "Before tagging") and also runs nightly.
+  # scripts/check-workflows.sh asserts its matrix covers every platform
+  # release.yml actually builds.
+  platform:
+    name: platform compile + tests (${{ matrix.platform }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest      # Apple Silicon (aarch64-apple-darwin)
+          - platform: macos-15-intel    # Intel Macs (x86_64-apple-darwin)
+          - platform: ubuntu-22.04      # Linux x86_64
+          - platform: windows-latest    # Windows x86_64
+    runs-on: ${{ matrix.platform }}
+    # Bounded: a hung test binary cannot burn a runner for hours.
+    timeout-minutes: 45
+    # Read-only: this job only checks out and tests.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Tauri v2 needs these to compile the crate on Linux (same list as
+      # release.yml). macOS and Windows runners already carry their toolchains.
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
+        with:
+          toolchain: stable
+
+      # rust-cache keys on the OS/arch it runs on, so one step serves all four
+      # legs; the extra key keeps these caches apart from checks/e2e.
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: './desktop/src-tauri -> target'
+          key: platform-matrix
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run Rust tests
+        working-directory: desktop/src-tauri
+        run: cargo test
+
+      # Same ordering as the `checks` job: build first, then test against the
+      # built bundle (see desktop/e2e/builtPolicy.test.ts).
+      - name: Build the desktop frontend
+        run: bun run --filter gridline-desktop build
+
+      - name: Run frontend tests (against the built bundle)
+        env:
+          GRIDLINE_REQUIRE_BUILT_POLICY: "1"
+        run: bun run test
+
+  # Targeted built-product coverage: launches the real (non-AppImage) desktop
+  # binary through tauri-driver + WebKitWebDriver under Xvfb and drives every
+  # flow in the harness registry — the demo smoke, the destructive re-run entry
+  # points, the composite-key edit, and the SQLite rebuild guard. A failed
+  # launch, a missing window, an empty grid, or a swallowed confirmation fails
+  # the job and uploads each flow's launch log plus a screenshot/page source.
+  desktop-e2e:
+    name: desktop e2e (every registered flow)
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # Read-only: it builds the app locally and uploads artifacts from it.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # WebKitGTK runtime + `WebKitWebDriver` (the native driver tauri-driver
+      # drives) + Xvfb for a headless display. ubuntu-24.04 ships the
+      # WebKitGTK 4.1 driver, matching what Tauri v2 links against.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+            webkit2gtk-driver xvfb
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: './desktop/src-tauri -> target'
+          key: desktop-e2e
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - name: Build the desktop binary
+        run: bun run --filter gridline-desktop e2e:build
+
+      # Every *registered* flow runs — the list comes from the harness's own
+      # registry (`desktop/e2e/preflight.mjs` `FLOWS`), not a hand-written subset.
+      # A new flow is therefore exercised by CI the moment it is registered
+      # instead of silently having no lane (composite-edit and sqlite-rebuild had
+      # none when this step only named two flows). Each flow gets its own launch,
+      # its own pristine app-data directory, and its own artifacts folder; a
+      # failing flow does not hide the results of the flows after it, and the step
+      # fails if any of them did.
+      - name: Run every registered desktop E2E flow
+        run: |
+          set -euo pipefail
+          flows="$(bun desktop/e2e/run.mjs --list-flows)"
+          if [ -z "${flows}" ]; then
+            echo "the harness reported no registered flows; refusing to pass CI" >&2
+            exit 1
+          fi
+          echo "registered flows: $(printf '%s' "${flows}" | tr '\n' ' ')"
+          status=0
+          for flow in ${flows}; do
+            echo "::group::desktop e2e flow ${flow}"
+            if xvfb-run -a bun run --filter gridline-desktop e2e -- \
+              --flow "${flow}" --artifacts "e2e-artifacts/${flow}"; then
+              echo "flow ${flow}: PASS"
+            else
+              echo "flow ${flow}: FAIL"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "${status}"
+
+      - name: Upload E2E failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-e2e-artifacts
+          path: desktop/e2e-artifacts
+          retention-days: 7
+          if-no-files-found: warn

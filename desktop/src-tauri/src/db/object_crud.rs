@@ -492,12 +492,39 @@ pub enum FunctionAction {
     },
 }
 
+/// `mode name type` for one argument. The argument *name* is an identifier and
+/// is quoted through `db::ident` (an empty name is legal — PG allows unnamed
+/// arguments); the type is SQL the user authored, so it is passed through as is.
 fn arg_sql(a: &FunctionArg) -> String {
     let mode = match a.mode.trim().to_lowercase().as_str() {
         "in" | "" => String::new(),
         m => format!("{} ", m.to_uppercase()),
     };
-    format!("{}{} {}", mode, a.name, a.type_)
+    let name = if a.name.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{} ",
+            crate::db::ident::quote(crate::db::ident::Engine::PostgreSql, a.name.trim())
+        )
+    };
+    format!("{mode}{name}{}", a.type_)
+}
+
+/// A routine language is a plain identifier (`plpgsql`, `sql`, `c`, …). It is
+/// interpolated into DDL, so anything else — a statement separator, a comment,
+/// whitespace — is rejected with a reason instead of being pasted in.
+fn validate_language(language: &str) -> Result<&str, String> {
+    let l = language.trim();
+    let mut chars = l.chars();
+    let looks_like_identifier = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !looks_like_identifier {
+        return Err(format!(
+            "Function language {language:?} must be a plain identifier (letters, digits, underscore)"
+        ));
+    }
+    Ok(l)
 }
 
 pub fn function_ddl(p: &FunctionParams) -> Result<Vec<String>, String> {
@@ -528,8 +555,15 @@ pub fn function_ddl(p: &FunctionParams) -> Result<Vec<String>, String> {
                 _ => "",
             };
             let strict = if *strict { " STRICT" } else { "" };
+            let language = validate_language(language)?;
+            // The body is arbitrary text — quotes, semicolons, and even `$$`
+            // are all legal inside it. `pg_dollar_quote` picks a delimiter the
+            // body does not contain (and rejects unrepresentable bodies), so the
+            // stored definition is byte-for-byte what the user wrote instead of
+            // being cut short at an inner `$$`.
+            let quoted_body = crate::db::ident::pg_dollar_quote(body)?;
             format!(
-                "CREATE OR REPLACE {} {}({}){} LANGUAGE {}{}{} AS $${}$$",
+                "CREATE OR REPLACE {} {}({}){} LANGUAGE {}{}{} AS {}",
                 kind,
                 q,
                 arglist.join(", "),
@@ -537,7 +571,7 @@ pub fn function_ddl(p: &FunctionParams) -> Result<Vec<String>, String> {
                 language,
                 vol,
                 strict,
-                body
+                quoted_body
             )
         }
         FunctionAction::Drop { arg_types } => {
@@ -666,6 +700,14 @@ pub struct TableColumn {
     pub default: Option<Option<String>>, // null | Some(null) | Some(expr)
     pub is_pk: bool,
     pub unique: Option<bool>,
+    /// Explicit rename intent: the name of the live column this entry replaces.
+    ///
+    /// Column identity lives here, not in the ordinal: only a column that
+    /// carries this field is a RENAME, and a column that does not is either
+    /// kept by name or added. Table position, type similarity, and ordinals are
+    /// never evidence of a rename.
+    #[serde(default)]
+    pub renamed_from: Option<String>,
 }
 
 impl TableColumn {
@@ -834,52 +876,197 @@ pub fn table_ddl(p: &TableParams) -> Result<Vec<String>, String> {
     })
 }
 
+/// One new column's place in the edit, resolved by Column Identity.
+///
+/// `source` is the live column this entry came from — the name-matched column,
+/// or the explicit `renamed_from` column. `None` means the entry is a new
+/// column. Position plays no part: an entry is never matched to a live column
+/// because the two happen to share an ordinal.
+struct ColumnEdit<'a> {
+    new: &'a TableColumn,
+    source: Option<&'a TableColumn>,
+}
+
+/// Statements for one table edit, computed from Column Identity.
+///
+/// Rules (see GLOSSARY.md — Column Identity):
+/// * a RENAME exists only for a column carrying explicit `renamed_from`;
+/// * a name-matched column is kept and its attribute changes become ALTERs;
+/// * any other column is an ADD;
+/// * a live column that is neither kept nor renamed away is a DROP.
+///
+/// Every requested edit produces its own statement, so a submission that
+/// combines a rename with other edits stages all of them.
+/// Why an edit that moves columns cannot be staged as `ALTER TABLE`.
+pub const TABLE_EDIT_POSITION_ERROR: &str = "PostgreSQL cannot move or insert a column with ALTER TABLE, \
+so this edit would apply only part of what was asked. Apply the rename/add/drop/type change first, \
+then move the columns in a second edit (moving columns without renaming them is staged as a table rebuild).";
+
+/// Why a rename cannot be carried by a PostgreSQL table rebuild.
+pub const REBUILD_RENAME_REFUSAL: &str = "A table rebuild cannot apply a column rename: the rebuilt \
+table's primary key, unique/check constraints, indexes, foreign keys and grants are re-created from the \
+live definitions, which still name the old column, so the rename would be dropped and the old name kept. \
+Stage the rename as an edit (ALTER TABLE ... RENAME COLUMN) instead.";
+
+/// Refuse a PostgreSQL rebuild submission that carries a rename.
+///
+/// [`rebuild_script`] copies data with an identity `INSERT INTO tmp (cols)
+/// SELECT cols FROM original`: the *same* name on both sides. A rename
+/// (`renamed_from`) therefore has no place in the script and used to be dropped
+/// silently — with a name-set permutation (`a→b`, `b→a`) the submission even
+/// passed the reorder-only shape check, so the table was rebuilt with the old
+/// names and the user was told nothing. The preserved constraint/index/FK
+/// definitions make honouring the rename here unsafe (they are replayed
+/// verbatim and would still name the old column), so the honest answer is a
+/// refusal that names the edit path; the caller routes it there instead.
+pub fn ensure_rebuild_carries_no_rename(new_columns: &[TableColumn]) -> Result<(), String> {
+    for c in new_columns {
+        if c.renamed_from.as_deref().is_some_and(|from| from != c.name) {
+            return Err(REBUILD_RENAME_REFUSAL.to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Reject an edit that REORDERS existing columns, which `ALTER TABLE` cannot
+/// express.
+///
+/// `ALTER TABLE` appends a column and drops one; it cannot move an existing one.
+/// Every other rule in [`table_diff`] is about names and attributes, so without
+/// this check a submission that renames a column *and* moves it staged the rename
+/// only and silently ignored the move — the drag looked applied and was not. The
+/// frontend routes a reorder of unchanged names to the table rebuild; a rename
+/// changes the names, so a submission combining both cannot use that path and is
+/// refused here instead.
+///
+/// A column added between two existing ones is deliberately NOT rejected: ticket
+/// 07 establishes that an entry's position is never read as its identity, so a
+/// new column is simply appended (see `table_edit_add_in_middle_stages_only_add`).
+fn ensure_position_is_expressible(
+    edits: &[ColumnEdit<'_>],
+    old: &[TableColumn],
+) -> Result<(), String> {
+    let live_position: std::collections::HashMap<&str, usize> = old
+        .iter()
+        .enumerate()
+        .map(|(index, column)| (column.name.as_str(), index))
+        .collect();
+    let mut highest: Option<usize> = None;
+    for edit in edits {
+        let Some(source) = edit.source else {
+            continue;
+        };
+        let position = *live_position
+            .get(source.name.as_str())
+            .ok_or(TABLE_EDIT_POSITION_ERROR)?;
+        if highest.is_some_and(|previous| position < previous) {
+            return Err(TABLE_EDIT_POSITION_ERROR.to_string());
+        }
+        highest = Some(position);
+    }
+    Ok(())
+}
+
 fn table_diff(q: &str, old: &[TableColumn], new: &[TableColumn]) -> Result<Vec<String>, String> {
     for c in new {
         validate_object_name(&c.name)?;
         validate_type(&c.type_)?;
     }
-    let mut old_by_name: std::collections::HashMap<&str, &TableColumn> =
-        old.iter().map(|c| (c.name.as_str(), c)).collect();
-    let mut out: Vec<String> = Vec::new();
-    let mut used_old: HashSet<usize> = HashSet::new();
-    // 1. RENAMEs: unmatched new col at ordinal i matching an unmatched old col at ordinal i with identical type/nullable/default
-    let mut renames: Vec<(usize, String, String)> = Vec::new(); // (old_idx, old_name, new_name)
-    for (i, nc) in new.iter().enumerate() {
-        if old_by_name.contains_key(nc.name.as_str()) {
-            continue;
-        }
-        if let Some(oc) = old.get(i) {
-            if !used_old.contains(&i)
-                && oc.type_.trim() == nc.type_.trim()
-                && oc.nullable == nc.nullable
-                && oc.default_sql() == nc.default_sql()
-            {
-                renames.push((i, oc.name.clone(), nc.name.clone()));
-                used_old.insert(i);
-                old_by_name.remove(oc.name.as_str());
-            }
+    let mut seen_new: HashSet<&str> = HashSet::new();
+    for c in new {
+        if !seen_new.insert(c.name.as_str()) {
+            return Err(format!("Duplicate column name: {}", c.name));
         }
     }
-    for (_, oldn, newn) in &renames {
+    let old_by_name: std::collections::HashMap<&str, &TableColumn> =
+        old.iter().map(|c| (c.name.as_str(), c)).collect();
+
+    // 0. Resolve identity and the explicit rename intents.
+    let mut edits: Vec<ColumnEdit<'_>> = Vec::with_capacity(new.len());
+    let mut renames: Vec<(&str, &str)> = Vec::new(); // (from, to)
+    for nc in new {
+        let from = nc.renamed_from.as_deref().filter(|f| *f != nc.name);
+        let source = match from {
+            Some(from) => {
+                validate_object_name(from)?;
+                let oc = old_by_name.get(from).ok_or_else(|| {
+                    format!(
+                        "Cannot rename column \"{from}\" to \"{}\": no such column on the table",
+                        nc.name
+                    )
+                })?;
+                if renames.iter().any(|(f, _)| *f == from) {
+                    return Err(format!(
+                        "Column \"{from}\" is the source of more than one rename"
+                    ));
+                }
+                if let Some(existing) = old_by_name.get(nc.name.as_str()) {
+                    if existing.name != from
+                        && !new.iter().any(|c| {
+                            c.renamed_from
+                                .as_deref()
+                                .is_some_and(|f| f == existing.name)
+                        })
+                    {
+                        return Err(format!(
+                            "Cannot rename column \"{from}\" to \"{}\": that column name still exists",
+                            nc.name
+                        ));
+                    }
+                }
+                renames.push((from, nc.name.as_str()));
+                Some(*oc)
+            }
+            None => old_by_name.get(nc.name.as_str()).copied(),
+        };
+        edits.push(ColumnEdit { new: nc, source });
+    }
+    // A rename whose target is another rename's source (a swap or a chain)
+    // cannot be expressed in one pass — every RENAME sees the live names.
+    for (_, to) in &renames {
+        if renames.iter().any(|(from, _)| from == to) {
+            return Err(format!(
+                "Cannot rename to \"{to}\": it is still the source of another rename in this submission"
+            ));
+        }
+    }
+    let renamed_away: HashSet<&str> = renames.iter().map(|(from, _)| *from).collect();
+
+    // 0b. Column POSITION is not expressible in `ALTER TABLE`: PostgreSQL can
+    // append a column and drop one, but it cannot move one, and it cannot insert
+    // one between two existing columns. The frontend routes a pure reorder (same
+    // names, different order) to the table rebuild; a submission that also
+    // renames, adds or drops cannot use that path, so the reorder part would be
+    // silently dropped — the rename would apply and the column order the user
+    // dragged would not. Refusing is the only honest option here.
+    ensure_position_is_expressible(&edits, old)?;
+
+    // 1. RENAMEs first, so the ALTERs below can address the new name.
+    let mut out: Vec<String> = renames
+        .iter()
+        .map(|(from, to)| {
+            format!(
+                "ALTER TABLE {} RENAME COLUMN {} TO {}",
+                q,
+                quote_ident(from),
+                quote_ident(to)
+            )
+        })
+        .collect();
+
+    // 2. ADDs: entries with no source column.
+    for edit in edits.iter().filter(|e| e.source.is_none()) {
         out.push(format!(
-            "ALTER TABLE {} RENAME COLUMN \"{}\" TO \"{}\"",
-            q, oldn, newn
+            "ALTER TABLE {} ADD COLUMN {}",
+            q,
+            col_def(edit.new)?
         ));
     }
-    // 2. ADDs: remaining unmatched new cols
-    for nc in new {
-        if old_by_name.contains_key(nc.name.as_str()) || renames.iter().any(|r| r.2 == nc.name) {
-            continue;
-        }
-        let s = format!("ALTER TABLE {} ADD COLUMN {}", q, col_def(nc)?);
-        out.push(s);
-    }
-    // 3. ALTERs for kept (name-matched) cols
-    for nc in new {
-        let Some(oc) = old.iter().find(|c| c.name == nc.name) else {
-            continue;
-        };
+
+    // 3. ALTERs: attribute changes on a kept or renamed column. `filter_map`
+    // makes the pairing structural — an edit without a source column is an ADD
+    // (step 2) and cannot reach the ALTERs at all.
+    for (nc, oc) in edits.iter().filter_map(|e| e.source.map(|oc| (e.new, oc))) {
         if oc.type_.trim() != nc.type_.trim() {
             out.push(format!(
                 "ALTER TABLE {} ALTER COLUMN {} TYPE {}",
@@ -922,10 +1109,11 @@ fn table_diff(q: &str, old: &[TableColumn], new: &[TableColumn]) -> Result<Vec<S
             _ => {}
         }
     }
-    // 4. DROPs last: old cols not present in new and not renamed-away
+
+    // 4. DROPs last: live columns that are neither kept by name nor renamed.
     let new_names: HashSet<&str> = new.iter().map(|c| c.name.as_str()).collect();
     for oc in old {
-        if !new_names.contains(oc.name.as_str()) && !renames.iter().any(|r| r.1 == oc.name) {
+        if !new_names.contains(oc.name.as_str()) && !renamed_away.contains(oc.name.as_str()) {
             out.push(format!(
                 "ALTER TABLE {} DROP COLUMN {}",
                 q,
@@ -1009,6 +1197,7 @@ pub fn rebuild_script(input: &RebuildInput, new_columns: &[TableColumn]) -> Resu
         validate_object_name(&c.name)?;
         validate_type(&c.type_)?;
     }
+    ensure_rebuild_carries_no_rename(new_columns)?;
     let q = qual(&input.schema, &input.name)?;
     let tmp = qual(&input.schema, &format!("_gridline_rb_{}", input.name))?;
     let mut s = String::new();
@@ -1737,7 +1926,7 @@ mod tests {
                 "volatility": "IMMUTABLE", "strict": true }
         });
         assert_eq!(build_ddl("function", p).unwrap(), vec![
-            "CREATE OR REPLACE FUNCTION \"public\".\"add\"(a int, b int) RETURNS int LANGUAGE plpgsql IMMUTABLE STRICT AS $$BEGIN RETURN a+b; END$$"
+            "CREATE OR REPLACE FUNCTION \"public\".\"add\"(\"a\" int, \"b\" int) RETURNS int LANGUAGE plpgsql IMMUTABLE STRICT AS $$BEGIN RETURN a+b; END$$"
         ]);
     }
 
@@ -1751,7 +1940,7 @@ mod tests {
                 "volatility": null, "strict": false }
         });
         assert_eq!(build_ddl("procedure", p).unwrap(), vec![
-            "CREATE OR REPLACE PROCEDURE \"public\".\"do_thing\"(x int) LANGUAGE plpgsql AS $$BEGIN PERFORM x; END$$"
+            "CREATE OR REPLACE PROCEDURE \"public\".\"do_thing\"(\"x\" int) LANGUAGE plpgsql AS $$BEGIN PERFORM x; END$$"
         ]);
     }
 
@@ -1923,7 +2112,7 @@ mod tests {
                 ],
                 "columns": [
                     { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
-                    { "name": "label", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "label", "type": "text", "nullable": true, "default": null, "is_pk": false, "renamed_from": "name" },
                     { "name": "email", "type": "text", "nullable": false, "default": "'x'", "is_pk": false }
                 ]
             }
@@ -1970,6 +2159,266 @@ mod tests {
         assert!(sql
             .iter()
             .any(|s| s == "ALTER TABLE \"public\".\"t\" ALTER COLUMN \"c\" SET NOT NULL"));
+    }
+
+    // --- Column Identity: renames are explicit intent only (ticket 07) ---
+
+    #[test]
+    fn table_edit_add_in_middle_stages_only_add() {
+        // Adding `email` between `id` and `name` lands it on the ordinal that
+        // `name` occupied. Position must not read as identity: the only
+        // statement is the ADD, with no rename and no data movement.
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "email", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false }
+                ]
+            }
+        });
+        assert_eq!(
+            build_ddl("table", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"users\" ADD COLUMN \"email\" text"]
+        );
+    }
+
+    #[test]
+    fn table_edit_explicit_rename_stages_only_rename() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "label", "type": "text", "nullable": true, "default": null, "is_pk": false, "renamed_from": "name" }
+                ]
+            }
+        });
+        assert_eq!(
+            build_ddl("table", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"users\" RENAME COLUMN \"name\" TO \"label\""]
+        );
+    }
+
+    #[test]
+    fn table_edit_rename_without_intent_is_add_and_drop() {
+        // The same shape as an explicit rename, but the user never asked for
+        // one: a differently named column is a new column, and the old one goes.
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "label", "type": "text", "nullable": true, "default": null, "is_pk": false }
+                ]
+            }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        assert!(!sql.iter().any(|s| s.contains("RENAME")), "got: {sql:?}");
+        assert!(sql
+            .iter()
+            .any(|s| s == "ALTER TABLE \"public\".\"users\" ADD COLUMN \"label\" text"));
+        assert!(sql
+            .iter()
+            .any(|s| s == "ALTER TABLE \"public\".\"users\" DROP COLUMN \"name\""));
+    }
+
+    #[test]
+    fn table_edit_reorder_is_refused_instead_of_staged_silently() {
+        // The frontend routes a pure reorder (unchanged names) to the rebuild
+        // path, so this shape only reaches `table_diff` when the submission is
+        // not rebuild-eligible — and then it used to stage NOTHING at all while
+        // the UI showed the dragged order.
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true }
+                ]
+            }
+        });
+        let err = build_ddl("table", p).expect_err("a reorder must not stage silently");
+        assert_eq!(err, TABLE_EDIT_POSITION_ERROR);
+        assert!(
+            !err.contains("RENAME"),
+            "a reorder must never be reported as a rename: {err}"
+        );
+    }
+
+    #[test]
+    fn table_edit_rename_plus_reorder_is_refused() {
+        // The reported bug: rename `name` -> `label` AND move `age` before it.
+        // `table_diff` can express the rename but not the move, so only the
+        // rename was staged and the order the user dragged was silently lost.
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "label", "type": "text", "nullable": true, "default": null, "is_pk": false, "renamed_from": "name" }
+                ]
+            }
+        });
+        let err = build_ddl("table", p).expect_err("rename + reorder must be refused");
+        assert_eq!(err, TABLE_EDIT_POSITION_ERROR);
+    }
+
+    #[test]
+    fn table_edit_combined_rename_and_other_edits_stages_all() {
+        // One submission: rename name→label, make it NOT NULL with a default,
+        // add `email`, drop `age`. Every edit must appear, nothing dropped.
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "label", "type": "text", "nullable": false, "default": "'unknown'", "is_pk": false, "renamed_from": "name" },
+                    { "name": "email", "type": "text", "nullable": true, "default": null, "is_pk": false }
+                ]
+            }
+        });
+        let sql = build_ddl("table", p).unwrap();
+        let expect = [
+            "ALTER TABLE \"public\".\"users\" RENAME COLUMN \"name\" TO \"label\"",
+            "ALTER TABLE \"public\".\"users\" ALTER COLUMN \"label\" SET DEFAULT 'unknown'",
+            "ALTER TABLE \"public\".\"users\" ALTER COLUMN \"label\" SET NOT NULL",
+            "ALTER TABLE \"public\".\"users\" ADD COLUMN \"email\" text",
+            "ALTER TABLE \"public\".\"users\" DROP COLUMN \"age\"",
+        ];
+        for stmt in expect {
+            assert!(
+                sql.iter().any(|s| s == stmt),
+                "missing {stmt}; got: {sql:?}"
+            );
+        }
+        assert_eq!(sql.len(), expect.len(), "no extra statements: {sql:?}");
+        // RENAME must precede the ALTERs that address the new name.
+        let joined = sql.join("\n");
+        assert!(
+            joined.find("RENAME COLUMN").unwrap() < joined.find("SET NOT NULL").unwrap(),
+            "rename before alter; got: {joined}"
+        );
+    }
+
+    #[test]
+    fn table_edit_rename_target_collision_is_rejected() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "name", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "age", "type": "text", "nullable": true, "default": null, "is_pk": false, "renamed_from": "name" },
+                    { "name": "age", "type": "int", "nullable": true, "default": null, "is_pk": false }
+                ]
+            }
+        });
+        let err = build_ddl("table", p).unwrap_err();
+        assert!(
+            err.contains("column name") && err.contains("age"),
+            "expected a duplicate-column rejection; got: {err}"
+        );
+    }
+
+    #[test]
+    fn table_edit_rename_of_unknown_column_is_rejected() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true }
+                ],
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false, "default": null, "is_pk": true },
+                    { "name": "label", "type": "text", "nullable": true, "default": null, "is_pk": false, "renamed_from": "nope" }
+                ]
+            }
+        });
+        let err = build_ddl("table", p).unwrap_err();
+        assert!(
+            err.contains("nope"),
+            "expected the unknown source named; got: {err}"
+        );
+    }
+
+    #[test]
+    fn table_edit_swapped_renames_are_rejected() {
+        // a→b and b→a both address live names, so they cannot be applied in one
+        // pass. Refuse with the reason instead of emitting SQL that half-runs.
+        let p = serde_json::json!({
+            "schema": "public", "name": "t",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "a", "type": "text", "nullable": true, "default": null, "is_pk": false },
+                    { "name": "b", "type": "text", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "b", "type": "text", "nullable": true, "default": null, "is_pk": false, "renamed_from": "a" },
+                    { "name": "a", "type": "text", "nullable": true, "default": null, "is_pk": false, "renamed_from": "b" }
+                ]
+            }
+        });
+        let err = build_ddl("table", p).unwrap_err();
+        assert!(
+            err.contains("source of another rename"),
+            "expected a swap refusal; got: {err}"
+        );
+    }
+
+    #[test]
+    fn table_edit_rename_quotes_legal_identifiers() {
+        let p = serde_json::json!({
+            "schema": "public", "name": "users",
+            "action": { "op": "edit",
+                "old_columns": [
+                    { "name": "select", "type": "text", "nullable": true, "default": null, "is_pk": false }
+                ],
+                "columns": [
+                    { "name": "we ird name", "type": "text", "nullable": true, "default": null, "is_pk": false, "renamed_from": "select" }
+                ]
+            }
+        });
+        assert_eq!(
+            build_ddl("table", p).unwrap(),
+            vec!["ALTER TABLE \"public\".\"users\" RENAME COLUMN \"select\" TO \"we ird name\""]
+        );
     }
 
     #[test]
@@ -2100,6 +2549,7 @@ mod tests {
                 default: None,
                 is_pk: false,
                 unique: None,
+                renamed_from: None,
             },
             TableColumn {
                 name: "email".into(),
@@ -2108,6 +2558,7 @@ mod tests {
                 default: None,
                 is_pk: false,
                 unique: None,
+                renamed_from: None,
             },
         ];
         let script = rebuild_script(&input, &new).unwrap();
@@ -2161,6 +2612,7 @@ mod tests {
             default: Some(Some("nextval('t_id_seq'::regclass)".into())),
             is_pk: false,
             unique: None,
+            renamed_from: None,
         }];
         let script = rebuild_script(&input, &new).unwrap();
         assert!(script.contains("ALTER SEQUENCE \"public\".\"t_id_seq\" OWNED BY NONE"));
@@ -2174,4 +2626,63 @@ mod tests {
             "detach before drop before reattach; got: {script}"
         );
     }
+
+    /// A permutation rename (`a→b`, `b→a`) keeps the column-name SET unchanged,
+    /// so it looks like a pure reorder. The rebuild copies data by identity
+    /// name, so applying it that way kept the old names and dropped both renames
+    /// without a word. The script builder must refuse such a submission instead.
+    #[test]
+    fn rebuild_script_refuses_a_submission_carrying_a_rename() {
+        let input = RebuildInput {
+            schema: "public".into(),
+            name: "t".into(),
+            constraints: vec![],
+            indexes: vec![],
+            fks_out: vec![],
+            fks_in: vec![],
+            grants: vec![],
+            owned_sequences: vec![],
+        };
+        let swapped = vec![
+            TableColumn {
+                name: "b".into(),
+                type_: "text".into(),
+                nullable: true,
+                default: None,
+                is_pk: false,
+                unique: None,
+                renamed_from: Some("a".into()),
+            },
+            TableColumn {
+                name: "a".into(),
+                type_: "text".into(),
+                nullable: true,
+                default: None,
+                is_pk: false,
+                unique: None,
+                renamed_from: Some("b".into()),
+            },
+        ];
+        let err = rebuild_script(&input, &swapped).expect_err("a rebuild cannot carry a rename");
+        assert_eq!(err, REBUILD_RENAME_REFUSAL);
+        assert!(
+            err.contains("rename"),
+            "the refusal must say what it is refusing: {err}"
+        );
+
+        // The same columns with no rename intent stay a plain, expressible
+        // reorder — the refusal is specific to rename intent, not to the shape.
+        let plain = swapped
+            .iter()
+            .map(|c| TableColumn {
+                renamed_from: None,
+                ..c.clone()
+            })
+            .collect::<Vec<_>>();
+        assert!(rebuild_script(&input, &plain).is_ok());
+    }
 }
+
+#[cfg(test)]
+#[path = "object_crud_definitions.test.rs"]
+mod definition_round_trip_tests;

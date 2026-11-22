@@ -4,6 +4,7 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { AnimatedModal } from "../ui/AnimatedModal";
 import { Button } from "../ui/Button";
 import { ImportDialog } from "./ImportDialog";
+import type { ImportTargetColumn } from "../../lib/importConvert";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useNotificationStore } from "../../stores/notificationStore";
@@ -12,7 +13,13 @@ import * as cmd from "../../lib/commands";
 import { getCapabilities } from "../../lib/dbCapabilities";
 import { DependencyDialog } from "./DependencyDialog";
 import { initialCrudParams } from "../../lib/objectCrud";
+import {
+  relationKindOf,
+  relationSupportsAction,
+  type TableActionId,
+} from "../../lib/relationKind";
 import type { ColumnInfo, DependencyInfo, MaintenanceResult } from "../../lib/types";
+import { withSessionCredential } from "../../lib/sessionCredential";
 
 interface TableOverflowMenuProps {
   schema: string;
@@ -22,6 +29,8 @@ interface TableOverflowMenuProps {
   columns?: ColumnInfo[];
   rows?: unknown[][];
   dbType?: string;
+  /** `TableInfo.table_type` of the row that opened this menu. */
+  tableType?: string;
 }
 
 interface MenuItem {
@@ -32,6 +41,25 @@ interface MenuItem {
 }
 
 type MaintenanceAction = "vacuum" | "analyze" | "reindex";
+
+/**
+ * Menu items whose action only applies to some relation kinds. A view is
+ * browsable but its rows and shape are not editable, so `Empty Table`,
+ * `Delete Table`, `Edit Table…`, import, index/constraint creation and
+ * maintenance are never offered for it — an action that exists only to fail is
+ * worse than no action.
+ */
+const MENU_ACTION_KIND: Partial<Record<string, TableActionId>> = {
+  import: "import",
+  create_index: "create_index",
+  create_constraint: "create_constraint",
+  edit_table: "edit_table",
+  vacuum: "maintenance",
+  analyze: "maintenance",
+  reindex: "maintenance",
+  empty: "empty",
+  delete: "drop",
+};
 
 const maintenanceLockCopy: Record<MaintenanceAction, string> = {
   vacuum: "VACUUM blocks concurrent DDL only on this table.",
@@ -51,17 +79,22 @@ export function TableOverflowMenu({
   columns,
   rows,
   dbType,
+  tableType,
 }: TableOverflowMenuProps) {
   const storeConnectionId = useUiStore((s) => s.activeConnectionId);
   const connectionId = connectionIdProp ?? storeConnectionId;
   const addChange = useDbViewerStore((s) => s.addChange);
   const notify = useNotificationStore((s) => s.notify);
   const caps = getCapabilities(dbType ?? "postgresql");
+  const kind = relationKindOf(tableType);
+  const applies = (action: TableActionId) => relationSupportsAction(action, kind);
 
   const [open, setOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"empty" | "delete" | null>(null);
   const [dropDeps, setDropDeps] = useState<DependencyInfo[]>([]);
   const [importOpen, setImportOpen] = useState(false);
+  /** Target columns (name + declared type) read when the import menu item ran. */
+  const [importColumns, setImportColumns] = useState<ImportTargetColumn[]>([]);
   const [maintenance, setMaintenance] = useState<{ action: MaintenanceAction; lockCopy: string } | null>(null);
   const [maintenanceRunning, setMaintenanceRunning] = useState(false);
   const [maintenanceResult, setMaintenanceResult] = useState<
@@ -111,7 +144,31 @@ export function TableOverflowMenu({
     }
   };
 
+  /** The single staged change a confirmed table drop produces. */
+  const stageDropTable = () => {
+    addChange({
+      type: "drop_table",
+      schema,
+      table,
+      description: `Drop Table: ${schema}.${table}`,
+    });
+    cancelDropTable();
+  };
+
+  /** Cancelling the drop acknowledgement stages nothing. */
+  const cancelDropTable = () => {
+    setDropDeps([]);
+    setConfirmAction(null);
+  };
+
   const handleAction = async (id: string) => {
+    // Second line of defence: an action that does not apply to this relation
+    // kind is not offered, and cannot do anything if it is somehow invoked.
+    const gatedAction = MENU_ACTION_KIND[id];
+    if (gatedAction && !applies(gatedAction)) {
+      setOpen(false);
+      return;
+    }
     switch (id) {
       case "open":
         onOpenTab(schema, table, true);
@@ -120,12 +177,18 @@ export function TableOverflowMenu({
       case "copy-schema": {
         if (!connectionId) break;
         try {
-          const ddl = await cmd.getTableDdl(connectionId, schema, table);
+          // DDL copy shells out to pg_dump, so a keychain-off connection has to
+          // supply its session password before the copy can authenticate.
+          const ddl = await withSessionCredential(connectionId, () =>
+            cmd.getTableDdl(connectionId, schema, table),
+          );
           if (navigator.clipboard) {
             void navigator.clipboard.writeText(ddl);
           }
-        } catch {
-          /* ignore copy failures */
+        } catch (e) {
+          // A cancelled prompt or a failed copy must be visible, not a menu that
+          // silently closes with an empty clipboard.
+          notify(e instanceof Error ? e.message : String(e), "error");
         }
         setOpen(false);
         break;
@@ -144,21 +207,24 @@ export function TableOverflowMenu({
               : format.toUpperCase();
         try {
           if (rows && rows.length > 0 && columns && columns.length > 0) {
-            exportData(rows, columns, format, `${schema}.${table}`);
+            exportData(rows, columns, format, table, { schema, dbType });
             notify(
               `Exported ${rows.length} row${rows.length === 1 ? "" : "s"} as ${label}`,
               "success",
             );
           } else if (connectionId) {
-            // Tree kebab: no rows are loaded here — fetch the table data
-            // first, then export (capped at 1000 rows per fetch).
-            const result = await cmd.getTableData(connectionId, schema, table, 1, 1000);
+            // Tree kebab: no rows are loaded here — fetch one bounded page
+            // first, then export. 500 is the largest page the backend accepts;
+            // asking for more is rejected rather than silently clamped.
+            const result = await cmd.getTableData(connectionId, schema, table, 1, 500);
             if (!result.rows.length) {
               notify("Nothing to export", "info");
             } else {
-              exportData(result.rows, result.columns, format, `${schema}.${table}`);
+              exportData(result.rows, result.columns, format, table, { schema, dbType });
+              // The table path always reports an exact total; treat an absent
+              // one as "no truncation claim" rather than inventing a number.
               const truncated =
-                result.total_rows > result.rows.length
+                (result.total_rows ?? 0) > result.rows.length
                   ? ` (first ${result.rows.length} of ${result.total_rows})`
                   : "";
               notify(
@@ -178,17 +244,70 @@ export function TableOverflowMenu({
         setOpen(false);
         break;
       }
-      case "import":
-        setImportOpen(true);
+      case "import": {
+        // Conversion is driven by each target column's DECLARED type, so import
+        // needs the live column snapshot: the tree row that opened this menu may
+        // be unexpanded (no columns at all), and a cached list can predate DDL.
+        if (!connectionId) {
+          notify("Cannot import: no active connection", "error");
+          setOpen(false);
+          break;
+        }
         setOpen(false);
+        let liveColumns: ColumnInfo[];
+        try {
+          liveColumns = await cmd.getTableColumns(connectionId, schema, table);
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          notify(
+            `Could not load the columns of ${schema}.${table}: ${message}`,
+            "error",
+          );
+          break;
+        }
+        if (liveColumns.length === 0) {
+          notify(`${schema}.${table} has no columns to import into`, "error");
+          break;
+        }
+        setImportColumns(liveColumns.map((c) => ({ name: c.name, dataType: c.data_type })));
+        setImportOpen(true);
         break;
+      }
       case "edit_table": {
-        const columnMeta = (columns ?? []).map((c) => ({
+        // Always read the live column snapshot: the tree row that opened this
+        // menu may be unexpanded (no columns), and even an expanded row's
+        // cached list can predate DDL. Editing an empty or stale schema
+        // snapshot is the failure this avoids.
+        if (!connectionId) {
+          notify("Cannot edit table: no active connection", "error");
+          setOpen(false);
+          break;
+        }
+        setOpen(false);
+        let liveColumns: ColumnInfo[];
+        try {
+          // Metadata read, not a row page: introspection never paginates or
+          // consumes the table's rows.
+          liveColumns = await cmd.getTableColumns(connectionId, schema, table);
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          notify(
+            `Could not load the live columns for ${schema}.${table}: ${message}`,
+            "error",
+          );
+          break;
+        }
+        const columnMeta = liveColumns.map((c) => ({
           name: c.name,
           type: c.data_type,
           nullable: c.is_nullable,
           default: c.default_value,
           is_pk: c.is_pk,
+          // Column Identity carries the attributes the rebuild has to reproduce:
+          // without them the editor would submit `unique: false` and
+          // `auto_increment: false` for a column that has both.
+          unique: c.is_unique ?? false,
+          auto_increment: c.is_auto_increment ?? false,
         }));
         useDbViewerStore.getState().openFormTab({
           kind: "table",
@@ -202,12 +321,16 @@ export function TableOverflowMenu({
             name: table,
             action: {
               op: "edit",
-              columns: columnMeta,
+              // Each row remembers its live column (Column Identity); a rename
+              // is a name the user edits on that row, never a positional match.
+              columns: columnMeta.map((c) => ({
+                ...c,
+                original_name: c.name,
+              })),
               old_columns: columnMeta,
             },
           },
         });
-        setOpen(false);
         break;
       }
       case "create_index":
@@ -271,11 +394,19 @@ export function TableOverflowMenu({
     { id: "export-sql", label: "Export data (SQL)" },
     { id: "export-md", label: "Export data (Markdown)" },
     { id: "export-xlsx", label: "Export data (Excel)" },
-    { id: "import", label: "Import data (CSV/JSON)" },
-    { id: "create_index", label: "Create Index…" },
-    { id: "create_constraint", label: "Create Constraint…" },
-    ...(caps.tableManagement ? [{ id: "edit_table", label: "Edit Table…" }] : []),
-    ...(caps.maintenance
+    ...(caps.import && applies("import")
+      ? [{ id: "import", label: "Import data (CSV/JSON)" }]
+      : []),
+    ...(applies("create_index")
+      ? [{ id: "create_index", label: "Create Index…" }]
+      : []),
+    ...(applies("create_constraint")
+      ? [{ id: "create_constraint", label: "Create Constraint…" }]
+      : []),
+    ...(caps.tableManagement && applies("edit_table")
+      ? [{ id: "edit_table", label: "Edit Table…" }]
+      : []),
+    ...(caps.maintenance && applies("maintenance")
       ? [
           { id: "maintenance-divider", divider: true },
           { id: "vacuum", label: "VACUUM" },
@@ -283,8 +414,12 @@ export function TableOverflowMenu({
           { id: "reindex", label: "REINDEX", danger: true },
         ]
       : []),
-    { id: "empty", label: "Empty Table", danger: true },
-    { id: "delete", label: "Delete Table", danger: true },
+    ...(applies("empty")
+      ? [{ id: "empty", label: "Empty Table", danger: true }]
+      : []),
+    ...(applies("drop")
+      ? [{ id: "delete", label: "Delete Table", danger: true }]
+      : []),
   ];
 
   return (
@@ -306,6 +441,7 @@ export function TableOverflowMenu({
                 key={item.id}
                 type="button"
                 onClick={() => handleAction(item.id)}
+                data-testid={`table-menu-${item.id}`}
                 className={[
                   "flex items-center justify-between px-3 py-2 text-sm w-full text-left transition-colors cursor-pointer",
                   item.danger ? "text-red-400 hover:bg-red-500/10 hover:text-red-300" : "text-text-muted hover:text-text hover:bg-surface-raised",
@@ -361,15 +497,6 @@ export function TableOverflowMenu({
         </AnimatedModal>
       )}
 
-      {confirmAction === "delete" && dropDeps.length > 0 && (
-        <DependencyDialog
-          open
-          deps={dropDeps}
-          onProceed={() => setConfirmAction(null)}
-          onCancel={() => setConfirmAction(null)}
-        />
-      )}
-
       {confirmAction === "empty" && (
         <ConfirmDialog
           open
@@ -388,30 +515,44 @@ export function TableOverflowMenu({
           onCancel={() => setConfirmAction(null)}
         />
       )}
-      {confirmAction === "delete" && (
-        <ConfirmDialog
-          open
-          title={`Delete Table: ${table}`}
-          message={`Are you sure you want to permanently delete "${schema}"."${table}"? All data will be lost.`}
-          confirmLabel="Delete Table"
-          onConfirm={() => {
-            addChange({
-              type: "drop_table",
-              schema,
-              table,
-              description: `Drop Table: ${schema}.${table}`,
-            });
-            setConfirmAction(null);
-          }}
-          onCancel={() => setConfirmAction(null)}
-        />
-      )}
+      {/*
+       * A drop reaches the changes queue through exactly ONE confirmation.
+       * A dependent drop used to raise a dependency dialog *and* a confirm
+       * dialog; Proceed dismissed both and staged nothing. Now the single
+       * dialog is the whole acknowledgement: it names the dependencies, takes
+       * one deliberate tick, and its confirm button stages the one change.
+       */}
+      {confirmAction === "delete" &&
+        (dropDeps.length > 0 ? (
+          <DependencyDialog
+            open
+            title={`Delete Table: ${table}`}
+            dependencyNotice={`These objects depend on "${schema}"."${table}" — review them before dropping it:`}
+            message={`Deleting "${schema}"."${table}" permanently loses all of its data. The staged change is a plain DROP TABLE without CASCADE.`}
+            acknowledgementLabel="I understand these depend on it and may block or outlive the drop."
+            confirmLabel="Delete Table"
+            deps={dropDeps}
+            onProceed={stageDropTable}
+            onCancel={cancelDropTable}
+          />
+        ) : (
+          <ConfirmDialog
+            open
+            title={`Delete Table: ${table}`}
+            message={`Are you sure you want to permanently delete "${schema}"."${table}"? All data will be lost.`}
+            confirmLabel="Delete Table"
+            onConfirm={stageDropTable}
+            onCancel={cancelDropTable}
+          />
+        ))}
 
       <ImportDialog
         open={importOpen}
         schema={schema}
         table={table}
-        columns={columns?.map((c) => c.name) ?? []}
+        // Conversion is driven by the declared column type, so the target list
+        // carries each column's introspected type (not just its name).
+        columns={importColumns}
         onStage={(change) => {
           addChange({
             type: "bulk_insert",

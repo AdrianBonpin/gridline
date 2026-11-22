@@ -64,7 +64,7 @@ mod tests {
     fn state() -> std::sync::Mutex<Store> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
-        std::sync::Mutex::new(Store::from_connection(conn))
+        std::sync::Mutex::new(Store::from_connection(conn).expect("test store"))
     }
 
     #[test]

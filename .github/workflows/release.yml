@@ -3,17 +3,39 @@ name: Release
 # Builds Gridline installers for macOS (Apple Silicon + Intel), Windows, and
 # Linux, then uploads them to a draft GitHub Release.
 #
+# This is the ONLY release pipeline. The Gitea instance is a code mirror with
+# no release workflow (`scripts/mirror-gitea.sh` + `scripts/hooks/*` mirror the
+# branch and tags only), so the release controls below only have to hold here.
+#
 # Trigger: push a version tag from the `prod` branch (production), e.g.
 #   git checkout prod && git pull
-#   git tag v0.5.0 && git push origin v0.5.0
+#   git tag v0.5.0 && git push github v0.5.0
 #
-# SIGNING STATUS: this is the ACTIVE release path. macOS is Developer-ID
-# signed + notarized in CI when the Apple secrets below are configured (see
-# README "macOS signing & notarization"). When the secrets are absent the mac
-# jobs still build, but ad-hoc signed / unnotarized. Linux/Windows installers
-# remain unsigned.
+# TRUST MODEL (do not loosen without reading
+# docs/superpowers/specs/2026-11-21-github-audit-hardening.md):
+#   * every third-party action is pinned to a full commit SHA,
+#   * the workflow token is default-deny and each job grants only what it uses,
+#   * ref/tag metadata reaches shell steps through environment variables and is
+#     compared as data — never interpolated into a `run:` body, a jq program or
+#     a rendered template body,
+#   * `scripts/check-workflows.sh` asserts all of the above (run it in CI),
+#   * macOS FAILS CLOSED: absent Apple signing/notarization credentials stop the
+#     macOS jobs before anything is built, and the signed .app/.dmg are verified
+#     before any macOS asset is uploaded (ticket 45).
+# Release refs (tag + `prod`) protection, immutability and required checks are
+# repository settings, not files: see AGENTS.md "Release ref protection".
 #
-# Required secrets for signed + notarized macOS builds:
+# SIGNING STATUS: this is the ACTIVE release path, and macOS builds are NOT
+# allowed to be ad-hoc signed. A macOS release requires all seven secrets below;
+# `scripts/require-macos-signing-credentials.sh` fails the job when any is
+# missing, `scripts/verify-macos-artifacts.sh` proves the Developer ID identity,
+# hardened runtime, stapled ticket, Gatekeeper assessment and DMG notarization
+# before the DMGs are uploaded. There is deliberately no ad-hoc/unnotarized
+# fallback: an unsigned macOS build must fail the release rather than ship under
+# the "Developer-ID signed and notarized" claim in README and SECURITY.md.
+# Linux/Windows installers remain unsigned.
+#
+# Required secrets for signed + notarized macOS builds (all seven, no fallback):
 #   APPLE_CERTIFICATE           base64 of the Developer ID Application .p12
 #   APPLE_CERTIFICATE_PASSWORD  password for that .p12
 #   APPLE_SIGNING_IDENTITY      "Developer ID Application: Name (TEAMID)"
@@ -48,8 +70,9 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write
+# Default-deny. Jobs grant the scopes they actually use below; a new job that
+# forgets to declare permissions gets none instead of a write token.
+permissions: {}
 
 env:
   # workflow_dispatch passes the tag as an input; push/release events derive it
@@ -57,10 +80,94 @@ env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  # Tag-time gate (ticket 50, "releasable"): a tag names a release candidate, so
+  # the commit it points at has to pass the checks a pull request does BEFORE
+  # anything is built or published. Without this job a version mismatch or a
+  # failing test was only discovered after the draft release (and its installers)
+  # already existed — `bump-cask` reads the published DMG names, so the mismatch
+  # surfaced in the cask bump, i.e. after publication.
+  #
+  # Deliberately Linux-only and read-only: it tests the release commit, it never
+  # builds or uploads an artifact, and it holds no write token.
+  gate:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.bump_cask != true)
+    runs-on: ubuntu-22.04
+    # Bounded: a hung test binary cannot hold the release for hours.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      # Tauri v2 needs these to compile the crate on Linux (same list as ci.yml).
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: './desktop/src-tauri -> target'
+          key: release-gate
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      # The release pipeline's own trust rules, re-asserted on the exact commit
+      # that is about to be published.
+      - name: Check release pipeline hygiene
+        run: ./scripts/check-workflows.sh
+
+      # Version consistency first: it is the failure this gate exists for, and it
+      # costs a second, so a tag whose manifests disagree fails here instead of
+      # after four platform builds.
+      - name: Verify the release version is consistent everywhere
+        working-directory: desktop
+        run: >-
+          bunx vitest run
+          src/lib/version.test.ts
+          src/lib/bundle-config.test.ts
+          src/lib/docs-coverage.test.ts
+
+      - name: Check Rust formatting
+        working-directory: desktop/src-tauri
+        run: cargo fmt --all --check
+
+      - name: Run Rust tests
+        working-directory: desktop/src-tauri
+        run: cargo test
+
+      # Build before the tests: the built-product seam
+      # (desktop/e2e/builtPolicy.test.ts) reads `desktop/dist`, and
+      # `GRIDLINE_REQUIRE_BUILT_POLICY=1` makes a missing artifact a failure
+      # instead of a silent skip.
+      - name: Build the desktop frontend
+        run: bun run --filter gridline-desktop build
+
+      - name: Run frontend tests (against the built bundle)
+        env:
+          GRIDLINE_REQUIRE_BUILT_POLICY: "1"
+        run: bun run test
+
   publish:
     # Build + draft release happen on a tag push or a dispatch that isn't a
     # cask-only run. The `release: published` event exists only to trigger the
     # cask bump below.
+    needs: gate
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.bump_cask != true)
     env:
       # Empty when the secret is unset — the tool steps below test for a
@@ -79,30 +186,43 @@ jobs:
           - platform: windows-latest    # Windows x86_64 (NSIS .exe + .msi)
             args: ''
     runs-on: ${{ matrix.platform }}
+    # Creates/updates the draft release and replaces the uploaded DMG assets.
+    # Nothing else — no issues, packages or actions scope.
+    permissions:
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      # ---- Apple signing setup (macOS only, skipped when secrets absent) ---
-      - name: Detect Apple signing secrets
-        id: apple
+      # ---- Apple signing setup (macOS only) --------------------------------
+      # Fail closed, before a single file is compiled: a macOS release without
+      # working Developer ID + notarization credentials must not produce an
+      # artifact at all. The rule lives in a script so it is asserted by
+      # scripts/check-workflows.sh (all seven names, no value ever printed).
+      - name: Require Apple signing and notarization secrets
+        if: startsWith(matrix.platform, 'macos')
         shell: bash
+        # Secrets via env, never through `${{ }}` inside the script body.
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: |
-          if [ -n "${{ secrets.APPLE_CERTIFICATE }}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::APPLE_CERTIFICATE not set — macOS build will be ad-hoc signed and NOT notarized."
-          fi
+          set -euo pipefail
+          "${GITHUB_WORKSPACE}/scripts/require-macos-signing-credentials.sh"
 
       # The bundled pg/mariadb tools are re-signed in their own steps below, so
       # the identity must be in a keychain BEFORE those steps run. tauri-action
       # is deliberately NOT given APPLE_CERTIFICATE (only the identity), so it
       # does not create a second keychain.
       - name: Import Apple Developer ID certificate
-        if: startsWith(matrix.platform, 'macos') && steps.apple.outputs.enabled == 'true'
+        if: startsWith(matrix.platform, 'macos')
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -122,10 +242,16 @@ jobs:
           EXISTING="$(security list-keychain -d user | tr -d ' \"')"
           security list-keychain -d user -s "$KEYCHAIN" $EXISTING
           rm -f "$RUNNER_TEMP/cert.p12"
-          security find-identity -v -p codesigning
+          # The imported certificate must actually provide the identity we sign
+          # with — a stale/expired .p12 would otherwise only fail much later.
+          security find-identity -v -p codesigning | tee "$RUNNER_TEMP/identities.txt"
+          if ! grep -qF "$APPLE_SIGNING_IDENTITY" "$RUNNER_TEMP/identities.txt"; then
+            echo "::error::the imported certificate does not provide APPLE_SIGNING_IDENTITY; the macOS build could only be ad-hoc signed" >&2
+            exit 1
+          fi
 
       - name: Prepare notarization credentials
-        if: startsWith(matrix.platform, 'macos') && steps.apple.outputs.enabled == 'true'
+        if: startsWith(matrix.platform, 'macos')
         shell: bash
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -145,6 +271,23 @@ jobs:
             echo "APPLE_API_ISSUER=${APPLE_API_ISSUER}"
             echo "APPLE_API_KEY_PATH=${KEY_PATH}"
           } >> "$GITHUB_ENV"
+          # Prove the credentials are ACCEPTED now, not after a 40-minute build
+          # and a failed notarization. A transient network error is retried;
+          # a rejected key fails the job here.
+          attempt=1
+          while :; do
+            if xcrun notarytool history --key "$KEY_PATH" \
+              --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" >/dev/null; then
+              echo "notarization credentials accepted by App Store Connect"
+              break
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::App Store Connect rejected the notarization credentials (APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_CONTENT)" >&2
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep 15
+          done
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -153,35 +296,63 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master; toolchain selected by input
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: './desktop/src-tauri -> target'
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      # Pinned tool inputs (scripts/tool-inputs.env) are cached between runs so
+      # a release does not re-download the Windows archives every time. A cache
+      # hit is NEVER trusted: scripts/verified-fetch.sh re-hashes the cached
+      # archive against the pin on every build and fails the job on a mismatch,
+      # so neither a corrupted nor a poisoned cache can reach the bundle. The
+      # key includes the pin file, so bumping a version misses the cache
+      # instead of reusing the previous archive.
+      - name: Cache pinned tool inputs
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/gridline-tool-inputs
+          key: gridline-tool-inputs-${{ runner.os }}-${{ hashFiles('scripts/tool-inputs.env') }}
+
+      # Build inputs come from scripts/tool-inputs.env (version + digest) and
+      # are retrieved only through scripts/verified-fetch.sh, which fails the
+      # step on a digest mismatch — never warns and continues. No upstream tool
+      # host and no digest literal appears in this workflow: scripts/
+      # check-workflows.sh enforces both.
       - name: Build PostgreSQL client tools (bundled)
         shell: bash
+        # Runner label / cache dir via env: no `${{ }}` expression is
+        # interpolated into the shell body (same rule that applies to tag
+        # metadata).
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          TOOL_INPUT_CACHE: ${{ runner.temp }}/gridline-tool-inputs
         run: |
           set -euo pipefail
-          PG_VER="16.4"
+          SCRIPTS="${GITHUB_WORKSPACE}/scripts"
+          # shellcheck disable=SC1091
+          set -a; . "${SCRIPTS}/tool-inputs.env"; set +a
           OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/pg_tools"
-          mkdir -p "$OUT"
-          case "${{ matrix.platform }}" in
+          mkdir -p "$OUT" "$TOOL_INPUT_CACHE"
+          PG_TARBALL="${TOOL_INPUT_CACHE}/postgresql-${PG_TOOLS_VERSION}.tar.bz2"
+          case "$PLATFORM" in
             ubuntu-22.04)
               sudo apt-get update -y
               sudo apt-get install -y build-essential libreadline-dev zlib1g-dev flex bison patchelf
-              curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2" -o /tmp/pg.tar.bz2
-              tar -xf /tmp/pg.tar.bz2 -C /tmp
-              cd /tmp/postgresql-${PG_VER}
+              "${SCRIPTS}/verified-fetch.sh" fetch "$PG_SOURCE_URL" "$PG_SOURCE_SHA256" "$PG_TARBALL"
+              tar -xf "$PG_TARBALL" -C /tmp
+              cd "/tmp/postgresql-${PG_TOOLS_VERSION}"
               ./configure --prefix=/tmp/pgbuild --without-readline --without-icu CFLAGS="-O2"
               # Build the shared prerequisites (catalog headers + libpq/common/
               # port archives) SERIALLY FIRST. Parallel `make -C` runs recurse
@@ -204,9 +375,9 @@ jobs:
               done
               ;;
             macos-latest|macos-15-intel)
-              curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2" -o /tmp/pg.tar.bz2
-              tar -xf /tmp/pg.tar.bz2 -C /tmp
-              cd /tmp/postgresql-${PG_VER}
+              "${SCRIPTS}/verified-fetch.sh" fetch "$PG_SOURCE_URL" "$PG_SOURCE_SHA256" "$PG_TARBALL"
+              tar -xf "$PG_TARBALL" -C /tmp
+              cd "/tmp/postgresql-${PG_TOOLS_VERSION}"
               # ac_cv_func_strchrnul=no: Xcode 16.4's SDK marks strchrnul as
               # introduced in macOS 15.4, so configure detects it and PG's
               # snprintf.c calls the system symbol — which fails to compile
@@ -249,12 +420,9 @@ jobs:
               fi
               ;;
             windows-latest)
-              URL="https://get.enterprisedb.com/postgresql/postgresql-${PG_VER}-1-windows-x64-binaries.zip"
-              curl -fsSL "$URL" -o /tmp/pg.zip
-              EXPECTED="3508d8f085bc3980f38211a82e3f31e5fcae9952105d3dc2f8be67b64a822baa"
-              echo "$EXPECTED  /tmp/pg.zip" | sha256sum -c -
-              sha256sum /tmp/pg.zip
-              unzip -o /tmp/pg.zip -d /tmp/pg
+              PG_ZIP="${TOOL_INPUT_CACHE}/${PG_WINDOWS_PACKAGE_URL##*/}"
+              "${SCRIPTS}/verified-fetch.sh" fetch "$PG_WINDOWS_PACKAGE_URL" "$PG_WINDOWS_SHA256" "$PG_ZIP"
+              unzip -o "$PG_ZIP" -d /tmp/pg
               cp /tmp/pg/pgsql/bin/pg_dump.exe /tmp/pg/pgsql/bin/pg_restore.exe /tmp/pg/pgsql/bin/psql.exe "$OUT"/
               # pg_dump.exe needs far more than libpq.dll (libcrypto-3-x64.dll,
               # libssl-3-x64.dll, libiconv-2.dll, libintl-9.dll,
@@ -263,11 +431,14 @@ jobs:
               cp /tmp/pg/pgsql/bin/*.dll "$OUT"/
               ;;
           esac
+          # The packaged manifest: the digests of exactly the files that will
+          # be bundled. scripts/verify-bundled-tools.sh re-checks it (and the
+          # tools' versions) right before anything is uploaded.
           (cd "$OUT" && sha256sum * | tee checksums.txt)
           # Resolve the per-platform binary suffix WITHOUT a command
           # substitution: `$( [ ... ] && echo .exe )` returns exit 1 when the
           # test is false, and under `set -e` that aborts the whole step.
-          if [ "${{ matrix.platform }}" = windows-latest ]; then
+          if [ "$PLATFORM" = windows-latest ]; then
             BIN_EXT=".exe"
           else
             BIN_EXT=""
@@ -284,17 +455,27 @@ jobs:
 
       - name: Build MariaDB client tools (bundled)
         shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          TOOL_INPUT_CACHE: ${{ runner.temp }}/gridline-tool-inputs
         run: |
           set -euo pipefail
-          MARIADB_VER="11.4.5"
+          SCRIPTS="${GITHUB_WORKSPACE}/scripts"
+          # shellcheck disable=SC1091
+          set -a; . "${SCRIPTS}/tool-inputs.env"; set +a
           OUT="${GITHUB_WORKSPACE}/desktop/src-tauri/resources/mysql_tools"
-          mkdir -p "$OUT"
-          case "${{ matrix.platform }}" in
+          mkdir -p "$OUT" "$TOOL_INPUT_CACHE"
+          MARIADB_SRC="/tmp/mariadb-server"
+          case "$PLATFORM" in
             ubuntu-22.04)
               sudo apt-get update -y
               sudo apt-get install -y cmake build-essential libssl-dev libzstd-dev pkg-config libgnutls28-dev patchelf
-              git clone --depth 1 --branch "mariadb-${MARIADB_VER}" https://github.com/MariaDB/server.git /tmp/mariadb-server
-              cd /tmp/mariadb-server
+              git clone --depth 1 --branch "$MARIADB_GIT_TAG" "$MARIADB_GIT_URL" "$MARIADB_SRC"
+              # The tag only says where to fetch from: the tree is used only if
+              # HEAD is exactly the pinned commit, so a moved upstream tag fails
+              # here instead of being built.
+              "${SCRIPTS}/verified-fetch.sh" commit "$MARIADB_SRC" "$MARIADB_GIT_COMMIT"
+              cd "$MARIADB_SRC"
               # Client-only build: wolfSSL + zlib are vendored. The in-tree
               # Connector C still probes GnuTLS on Unix regardless of WITH_SSL,
               # so libgnutls28-dev is required at build time.
@@ -334,8 +515,9 @@ jobs:
               done
               ;;
             macos-latest|macos-15-intel)
-              git clone --depth 1 --branch "mariadb-${MARIADB_VER}" https://github.com/MariaDB/server.git /tmp/mariadb-server
-              cd /tmp/mariadb-server
+              git clone --depth 1 --branch "$MARIADB_GIT_TAG" "$MARIADB_GIT_URL" "$MARIADB_SRC"
+              "${SCRIPTS}/verified-fetch.sh" commit "$MARIADB_SRC" "$MARIADB_GIT_COMMIT"
+              cd "$MARIADB_SRC"
               # macOS connects the in-tree Connector C against brew OpenSSL
               # (proven to build+run on the runners); the Linux-only GnuTLS
               # probe does not fire here. Absolute brew paths are rewritten to
@@ -389,18 +571,10 @@ jobs:
               done
               ;;
             windows-latest)
-              URL="https://archive.mariadb.org/mariadb-${MARIADB_VER}/winx64-packages/mariadb-${MARIADB_VER}-winx64.zip"
-              # Pinned digest for mariadb-${MARIADB_VER}-winx64.zip, taken from the
-              # version's signed sum file:
-              #   https://archive.mariadb.org/mariadb-<ver>/winx64-packages/sha256sums.txt
-              #   (sha256sums.txt.asc is signed by MariaDB's release key)
-              # MOVE THIS DIGEST WHENEVER MARIADB_VER MOVES: a mismatched pair
-              # fails this job before anything is extracted, which is the point.
-              MARIADB_WIN_SHA256="b7c11d38657f16b837e68199d73670510aadb78f42dfa5d5fdea31a7aab342e3"
-              curl -fsSL "$URL" -o /tmp/mariadb.zip
-              echo "${MARIADB_WIN_SHA256}  /tmp/mariadb.zip" | sha256sum -c -
-              unzip -o /tmp/mariadb.zip -d /tmp/mariadb
-              WINROOT="/tmp/mariadb/mariadb-${MARIADB_VER}-winx64"
+              MARIADB_ZIP="${TOOL_INPUT_CACHE}/${MARIADB_WINDOWS_PACKAGE_URL##*/}"
+              "${SCRIPTS}/verified-fetch.sh" fetch "$MARIADB_WINDOWS_PACKAGE_URL" "$MARIADB_WINDOWS_SHA256" "$MARIADB_ZIP"
+              unzip -o "$MARIADB_ZIP" -d /tmp/mariadb
+              WINROOT="/tmp/mariadb/mariadb-${MARIADB_TOOLS_VERSION}-winx64"
               cp "$WINROOT"/bin/mariadb-dump.exe "$WINROOT"/bin/mariadb.exe "$OUT"/
               # The clients' only runtime dependency is the client library
               # (lib/libmariadb.dll); the winx64 package statically links
@@ -409,10 +583,13 @@ jobs:
               cp "$WINROOT"/lib/libmariadb.dll "$OUT"/
               ;;
           esac
+          # The packaged manifest: the digests of exactly the files that will
+          # be bundled. scripts/verify-bundled-tools.sh re-checks it (and the
+          # tools' versions) right before anything is uploaded.
           (cd "$OUT" && sha256sum * | tee checksums.txt)
           # Resolve the per-platform binary suffix WITHOUT a command
           # substitution (see the pg_tools step for why).
-          if [ "${{ matrix.platform }}" = windows-latest ]; then
+          if [ "$PLATFORM" = windows-latest ]; then
             BIN_EXT=".exe"
           else
             BIN_EXT=""
@@ -427,8 +604,25 @@ jobs:
             "$OUT/${b}${BIN_EXT}" --version >/dev/null 2>&1 || { echo "$b failed to run from resource dir"; exit 1; }
           done
 
+      # Gate: the packaged tool manifests are checked HERE, before tauri-action
+      # copies these directories into the installers and opens the draft
+      # release. A missing tool, a file that no longer matches the digest its
+      # manifest recorded (e.g. one swapped after the build step), an unexpected
+      # extra file, or a tool that reports a version other than the pin fails
+      # this job, so no unverified executable can be uploaded.
+      - name: Verify bundled tool manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${GITHUB_WORKSPACE}/scripts/verify-bundled-tools.sh"
+
+      # Non-macOS installers have nothing to verify, so each is built and
+      # uploaded in one step. macOS deliberately does NOT use this step (see the
+      # `if:` below): its bundles are built without uploading, verified, and only
+      # then uploaded.
       - name: Build and upload to GitHub Release
-        uses: tauri-apps/tauri-action@v0
+        if: ${{ !startsWith(matrix.platform, 'macos') }}
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -442,74 +636,147 @@ jobs:
           # README download tables link to them statically per release —
           # remember to update both README tables when cutting a new version.
 
-      # tauri-action notarizes + staples the .app but NOT the .dmg wrapping it,
-      # so Gatekeeper rejects the downloaded DMG as "Unnotarized Developer ID"
-      # even though the app inside is fine. Submit the DMG to the same notary
-      # service, staple the ticket, and replace the uploaded asset.
-      #
-      # Assets are replaced via the release ID rather than `gh release upload`:
-      # the GitHub releases/tags endpoint returns 404 for drafts, so uploading
-      # by tag cannot work while the release is still a draft.
-      - name: Notarize and staple the DMGs
-        if: startsWith(matrix.platform, 'macos') && steps.apple.outputs.enabled == 'true'
+      # Hand the packaged AppImage to the smoke lane (appimage-smoke.yml), which
+      # starts it through its normal launcher and asserts a mapped, painted
+      # window. Uploading the artifact keeps the check on the exact bytes this
+      # run built, without depending on the draft release being downloadable.
+      - name: Upload the AppImage for the packaged smoke lane
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-linux-x86_64
+          path: desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+          retention-days: 14
+          if-no-files-found: error
+
+      # ---- macOS: build, verify, then upload -------------------------------
+      # The macOS bundle is built WITHOUT uploading (no tagName/releaseName), so
+      # no macOS asset can reach the release before it has been verified. The
+      # verifier checks the Developer ID identity (not the ad-hoc
+      # `signingIdentity "-"` fallback), the hardened runtime, the stapled
+      # ticket and Gatekeeper's assessment, then notarizes + staples + validates
+      # the disk image, and prints the assets it accepted. Only those are
+      # uploaded below, so a signing, notarization or verification failure fails
+      # the job with nothing published (ticket 45).
+      - name: Clear stale macOS bundle output
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          # rust-cache restores `target/`, including bundle output from an earlier
+          # release. Only this build's artifacts may be verified and uploaded, so
+          # drop any previous bundle instead of trusting it (a stale
+          # `.app.tar.gz` keeps its name across versions).
+          rm -rf "${GITHUB_WORKSPACE}"/desktop/src-tauri/target/*/release/bundle
+
+      - name: Build macOS bundles (no release upload)
+        if: startsWith(matrix.platform, 'macos')
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        with:
+          projectPath: desktop
+          args: ${{ matrix.args }}
+          # No tagName/releaseName/releaseId on purpose: this invocation only
+          # builds. Uploading is the separate, post-verification step below.
+
+      - name: Verify signed and notarized macOS artifacts
+        id: verify_macos
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        env:
+          # Runner/target via env: no `${{ }}` expression is interpolated into
+          # the shell body (the same rule that applies to tag metadata).
+          MACOS_BUILD_ARGS: ${{ matrix.args }}
+        run: |
+          set -euo pipefail
+          # `matrix.args` is `--target <triple>`: the verifier needs the triple.
+          set -- $MACOS_BUILD_ARGS
+          if [ "$#" -ne 2 ] || [ "$1" != "--target" ]; then
+            echo "::error::unexpected macOS build args: ${MACOS_BUILD_ARGS}" >&2
+            exit 1
+          fi
+          TRIPLE="$2"
+          ASSETS="$("${GITHUB_WORKSPACE}/scripts/verify-macos-artifacts.sh" --target "$TRIPLE")"
+          if [ -z "$ASSETS" ]; then
+            echo "::error::the macOS verifier accepted nothing, so nothing may be uploaded" >&2
+            exit 1
+          fi
+          printf '%s\n' "$ASSETS"
+          {
+            echo "assets<<GRIDLINE_VERIFIED_ASSETS"
+            printf '%s\n' "$ASSETS"
+            echo "GRIDLINE_VERIFIED_ASSETS"
+          } >> "$GITHUB_OUTPUT"
+
+      # Uploads exactly the paths the verifier printed: the asset list IS the
+      # verification result, so a file that was not verified cannot be uploaded.
+      - name: Upload verified macOS installers
+        if: startsWith(matrix.platform, 'macos')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERIFIED_ASSETS: ${{ steps.verify_macos.outputs.assets }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          dmgs=(desktop/src-tauri/target/*/release/bundle/dmg/*.dmg)
-          if [ ${#dmgs[@]} -eq 0 ]; then
-            echo "no DMG produced" >&2
+          if [ -z "${VERIFIED_ASSETS:-}" ]; then
+            echo "::error::no verified macOS assets to upload" >&2
             exit 1
           fi
-          REL_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"${RELEASE_TAG}\") | .id" | head -1)
-          if [ -z "$REL_ID" ]; then
-            echo "could not resolve a release id for ${RELEASE_TAG}" >&2
-            exit 1
-          fi
-          for dmg in "${dmgs[@]}"; do
-            name=$(basename "$dmg")
-            echo ">> notarizing $name (this can take a few minutes)"
-            xcrun notarytool submit "$dmg" \
-              --key "$APPLE_API_KEY_PATH" \
-              --key-id "$APPLE_API_KEY" \
-              --issuer "$APPLE_API_ISSUER" \
-              --wait
-            # Apple's ticket delivery (api.apple-cloudkit.com) intermittently
-            # answers "The network connection was lost" (exit 68) and the
-            # staple fails even though notarization was ACCEPTED — that cost
-            # v0.8.4's Intel job a full rebuild. Stapling is idempotent, so
-            # retry a bounded number of times before failing the job.
-            stapled=0
-            for attempt in 1 2 3 4 5; do
-              if xcrun stapler staple "$dmg" && xcrun stapler validate "$dmg"; then
-                stapled=1
-                break
+          # Draft releases are not served by /releases/tags/<tag> (404), so
+          # resolve the release by listing and create the draft when no other
+          # matrix job has yet. The tag is compared as data in the shell, never
+          # spliced into the jq program.
+          resolve_release() {
+            local rel_tag rel_id
+            while IFS=$'\t' read -r rel_tag rel_id; do
+              if [ "$rel_tag" = "$RELEASE_TAG" ]; then
+                printf '%s\n' "$rel_id"
+                return 0
               fi
-              echo "stapler attempt ${attempt} failed; retrying in 20s" >&2
-              sleep 20
-            done
-            if [ "$stapled" -ne 1 ]; then
-              echo "could not staple ${name} after 5 attempts" >&2
+            done < <(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[] | "\(.tag_name)\t\(.id)"')
+            return 0
+          }
+          REL_ID="$(resolve_release)"
+          if [ -z "$REL_ID" ]; then
+            echo ">> no release for ${RELEASE_TAG} yet; creating the draft"
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
+              -f "tag_name=${RELEASE_TAG}" \
+              -f "name=Gridline ${RELEASE_TAG}" \
+              -F draft=true >/dev/null ||
+              echo ">> draft creation did not succeed; re-resolving (another matrix job may own it)"
+            REL_ID="$(resolve_release)"
+          fi
+          if [ -z "$REL_ID" ]; then
+            echo "::error::could not resolve or create a release for ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+            if [ ! -f "$asset" ]; then
+              echo "::error::verified asset is gone: ${asset}" >&2
               exit 1
             fi
-            # Replace the copy tauri-action uploaded, which carries no DMG ticket.
-            old=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets" \
-              --jq ".[] | select(.name == \"${name}\") | .id" | head -1)
+            name="$(basename "$asset")"
+            old=""
+            while IFS=$'\t' read -r asset_name asset_id; do
+              if [ "$asset_name" = "$name" ]; then
+                old="$asset_id"
+                break
+              fi
+            done < <(gh api "repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets?per_page=100" \
+              --jq '.[] | "\(.name)\t\(.id)"')
             if [ -n "$old" ]; then
               gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${old}"
             fi
-            echo ">> re-uploading stapled $name"
+            echo ">> uploading verified ${name}"
             curl -fsS -X POST \
               -H "Authorization: token ${GH_TOKEN}" \
               -H "Content-Type: application/octet-stream" \
-              --data-binary "@${dmg}" \
+              --data-binary "@${asset}" \
               "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets?name=${name}"
             echo
-          done
-          echo "all DMGs notarized and stapled"
+          done <<< "$VERIFIED_ASSETS"
+          echo "verified macOS artifacts uploaded"
 
   # After the installers are uploaded, refresh the Homebrew cask in the
   # AdrianBonpin/homebrew-gridline tap: hash the freshly-published DMGs,
@@ -535,8 +802,11 @@ jobs:
       - name: Check for tap deploy key
         id: tap
         shell: bash
+        # Secret via env, never through `${{ }}` inside the script body.
+        env:
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
-          if [ -n "${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}" ]; then
+          if [ -n "${HOMEBREW_TAP_DEPLOY_KEY:-}" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -545,7 +815,7 @@ jobs:
 
       - name: Checkout
         if: steps.tap.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Resolve version and DMG checksums
         id: meta
@@ -562,7 +832,7 @@ jobs:
 
       - name: Checkout tap repo
         if: steps.tap.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: AdrianBonpin/homebrew-gridline
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
@@ -575,8 +845,22 @@ jobs:
           SHA_ARM: ${{ steps.meta.outputs.sha_arm }}
           SHA_INTEL: ${{ steps.meta.outputs.sha_intel }}
         run: |
+          set -euo pipefail
           mkdir -p tap/Casks
-          ./scripts/render-cask.sh "$VERSION" "$SHA_ARM" "$SHA_INTEL" > tap/Casks/gridline.rb
+          # The renderer validates the version and both checksums, refuses a
+          # version that disagrees with the release tag, and re-hashes the two
+          # DMGs downloaded above, so the cask can only describe the artifacts
+          # this release actually published (ticket 46). Any failure aborts the
+          # step before anything is committed or pushed to the tap.
+          ./scripts/render-cask.sh \
+            --tag "$RELEASE_TAG" \
+            --dmg-arm /tmp/arm.dmg \
+            --dmg-intel /tmp/intel.dmg \
+            "$VERSION" "$SHA_ARM" "$SHA_INTEL" > tap/Casks/gridline.rb
+          [ -s tap/Casks/gridline.rb ] || {
+            echo "::error::scripts/render-cask.sh produced an empty cask"
+            exit 1
+          }
           cat tap/Casks/gridline.rb
           cd tap
           git config user.name "github-actions[bot]"

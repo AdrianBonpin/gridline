@@ -75,15 +75,29 @@ impl CancelRegistry {
         Self::default()
     }
 
+    /// Take the handle registry lock, tolerating a poisoned mutex.
+    ///
+    /// Panicking here would be strictly worse than proceeding: every mutation
+    /// is a single `insert`/`remove`/`get_mut` of an owned value, so a panic on
+    /// another thread cannot leave either map half-updated, and there is no
+    /// repair to perform. `cancel_query` runs precisely when a query is stuck —
+    /// refusing to hand out the cancel handle because an unrelated thread
+    /// panicked is the one failure mode this registry exists to avoid.
+    fn lock_handles(&self) -> std::sync::MutexGuard<'_, HashMap<String, CancelHandle>> {
+        self.map.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Take the cancel-flag registry lock, tolerating a poisoned mutex (see
+    /// [`Self::lock_handles`]). The flags are atomics, so they are never left
+    /// half-written by a panic either.
+    fn lock_flags(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<AtomicBool>>> {
+        self.flags.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Get (or create) the cancellation flag for a connection. Polling callers
     /// should clear it before starting and after finishing.
     pub fn cancel_flag(&self, id: &str) -> Arc<AtomicBool> {
-        self.flags
-            .lock()
-            .unwrap()
-            .entry(id.to_string())
-            .or_default()
-            .clone()
+        self.lock_flags().entry(id.to_string()).or_default().clone()
     }
 
     /// Mark a connection as cancel-requested. Called by `cancel_query` before
@@ -95,9 +109,7 @@ impl CancelRegistry {
 
     /// Whether a cancel has been requested for this connection.
     pub fn is_cancelled(&self, id: &str) -> bool {
-        self.flags
-            .lock()
-            .unwrap()
+        self.lock_flags()
             .get(id)
             .map(|f| f.load(Ordering::SeqCst))
             .unwrap_or(false)
@@ -105,7 +117,7 @@ impl CancelRegistry {
 
     /// Clear the cancel-requested flag for this connection.
     pub fn clear_cancelled(&self, id: &str) {
-        if let Some(f) = self.flags.lock().unwrap().get(id) {
+        if let Some(f) = self.lock_flags().get(id) {
             f.store(false, Ordering::SeqCst);
         }
     }
@@ -120,19 +132,35 @@ impl CancelRegistry {
         self.set(id, CancelHandle::Sqlite(c));
     }
     pub fn set_mysql_conn_id(&self, id: &str, conn_id: Option<i64>) {
-        let mut g = self.map.lock().unwrap();
+        let mut g = self.lock_handles();
         if let Some(CancelHandle::MySql(m)) = g.get_mut(id) {
             m.conn_id = conn_id;
         }
     }
-    fn set(&self, id: &str, h: CancelHandle) {
-        self.map.lock().unwrap().insert(id.to_string(), h);
+    /// Install a cancellation handle under `id`, replacing any previous one.
+    /// Used by the connection lifecycle when a verified session is published.
+    pub(crate) fn set(&self, id: &str, h: CancelHandle) {
+        self.lock_handles().insert(id.to_string(), h);
     }
     pub fn get(&self, id: &str) -> Option<CancelHandle> {
-        self.map.lock().unwrap().get(id).cloned()
+        self.lock_handles().get(id).cloned()
     }
     pub fn remove(&self, id: &str) {
-        self.map.lock().unwrap().remove(id);
+        self.lock_handles().remove(id);
+    }
+
+    /// Drop a connection's cancellation handle and clear its cancel-requested
+    /// flag.
+    ///
+    /// This is the teardown path (`db_disconnect`, connection deletion, demo
+    /// regeneration): the handle must not outlive the session it aborts, and a
+    /// stale `true` flag must not make the next session look pre-cancelled. The
+    /// flag entry itself is kept rather than removed, because a standalone
+    /// operation that is already running (e.g. a native restore) holds that
+    /// `Arc` and has to keep observing cancel requests until it finishes.
+    pub fn forget(&self, id: &str) {
+        self.remove(id);
+        self.clear_cancelled(id);
     }
 }
 
@@ -238,5 +266,29 @@ mod tests {
             .username("u")
             .password("p")
             .database("d")
+    }
+
+    #[test]
+    fn forget_drops_the_handle_and_clears_the_flag() {
+        let reg = CancelRegistry::new();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        reg.set_sqlite("c1", SqliteCancel::new(conn.get_interrupt_handle()));
+        reg.mark_cancelled("c1");
+        // A running operation may already hold this flag; teardown has to clear
+        // the value it observes, not just drop the map entry.
+        let observed = reg.cancel_flag("c1");
+
+        reg.forget("c1");
+
+        assert!(reg.get("c1").is_none(), "the handle is gone");
+        assert!(
+            !reg.is_cancelled("c1"),
+            "a torn-down connection leaves no cancel-requested flag behind"
+        );
+        assert!(
+            !observed.load(Ordering::SeqCst),
+            "an operation already holding the flag sees it cleared, not stuck cancelled"
+        );
+        drop(conn);
     }
 }

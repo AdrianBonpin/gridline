@@ -87,7 +87,7 @@ fn peek(chars: &[char], idx: usize) -> Option<char> {
 /// Copy a quoted region starting at the opening `quote` char. Doubled quotes
 /// are escapes and stay inside the region. Unterminated quotes consume the
 /// rest of the input (conservative).
-fn copy_quoted(chars: &[char], i: &mut usize, out: &mut String, quote: char) {
+pub(crate) fn copy_quoted(chars: &[char], i: &mut usize, out: &mut String, quote: char) {
     out.push(chars[*i]);
     *i += 1;
     while *i < chars.len() {
@@ -108,7 +108,12 @@ fn copy_quoted(chars: &[char], i: &mut usize, out: &mut String, quote: char) {
 
 /// Copy characters until `stop` matches (inclusive for `\n` handled by the
 /// caller's predicate) or input ends.
-fn copy_until(chars: &[char], i: &mut usize, out: &mut String, stop: impl Fn(char) -> bool) {
+pub(crate) fn copy_until(
+    chars: &[char],
+    i: &mut usize,
+    out: &mut String,
+    stop: impl Fn(char) -> bool,
+) {
     while *i < chars.len() {
         let c = chars[*i];
         out.push(c);
@@ -143,7 +148,7 @@ fn copy_block_comment(chars: &[char], i: &mut usize, out: &mut String) {
 /// the matching closing delimiter. Returns the index one past the closing
 /// delimiter, or None if this is not a well-formed (and closable) dollar
 /// quote — in which case the `$` is ordinary text.
-fn dollar_quote_end(chars: &[char], start: usize) -> Option<usize> {
+pub(crate) fn dollar_quote_end(chars: &[char], start: usize) -> Option<usize> {
     let mut j = start + 1;
     if j < chars.len() && chars[j] == '$' {
         // bare $$ body
@@ -210,7 +215,7 @@ pub fn has_executable_text(stmt: &str) -> bool {
     false
 }
 
-fn skip_until(chars: &[char], i: &mut usize, stop: impl Fn(char) -> bool) {
+pub(crate) fn skip_until(chars: &[char], i: &mut usize, stop: impl Fn(char) -> bool) {
     while *i < chars.len() {
         let c = chars[*i];
         *i += 1;
@@ -220,7 +225,7 @@ fn skip_until(chars: &[char], i: &mut usize, stop: impl Fn(char) -> bool) {
     }
 }
 
-fn skip_block_comment(chars: &[char], i: &mut usize) {
+pub(crate) fn skip_block_comment(chars: &[char], i: &mut usize) {
     *i += 2; // "/*"
     while *i < chars.len() {
         if chars[*i] == '*' && peek(chars, *i + 1) == Some('/') {

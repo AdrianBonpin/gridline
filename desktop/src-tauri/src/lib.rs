@@ -5,8 +5,12 @@
 mod cancel;
 mod commands;
 mod db;
+mod diagnostics;
+mod file_grant;
+mod job;
 mod keychain_acl;
 mod models;
+mod session_credential;
 mod store;
 
 use commands::ssh::{Ssh2Backend, SshTunnelManager};
@@ -16,15 +20,30 @@ use store::Store;
 use tauri::{Emitter, Manager};
 
 pub struct AppState {
-    pub db_store: StdMutex<Store>,
+    /// Shared so SSH host trust (ADR 0001) can read and write enrollments
+    /// through the same connection as every other command.
+    pub db_store: Arc<StdMutex<Store>>,
     pub pool_manager: tokio::sync::Mutex<ConnectionPoolManager>,
     pub ssh_manager: StdMutex<SshTunnelManager>,
     pub cancel_registry: crate::cancel::CancelRegistry,
+    /// Process-lifetime ownership of running tool jobs (backup / restore /
+    /// sync). Shared so a cancel command and the app-exit hook can reach a job
+    /// that is running on another thread.
+    pub jobs: Arc<crate::job::JobRegistry>,
+    /// Backend-issued File Grants. The only authorization a file-touching
+    /// command accepts; a renderer-supplied path authorizes nothing.
+    pub file_grants: Arc<crate::file_grant::FileGrantStore>,
+    /// Memory-only credentials for connections whose keychain persistence is
+    /// off, keyed by the saved connection (the Change Origin). Tool jobs that
+    /// cannot reach the OS keychain authenticate from here; a missing entry
+    /// prompts instead of running with an empty password.
+    pub session_credentials: Arc<crate::session_credential::SessionCredentialStore>,
 }
 
 use commands::{
-    backup, connections, db_viewer, demo, folders, import_export, keychain, maintenance, objects,
-    query, query_export, schema_diff, schema_graph, settings, tags,
+    backup, connections, credentials, db_viewer, demo, folders, import_export, import_file,
+    keychain, maintenance, objects, query, query_export, schema_diff, schema_graph, settings, ssh,
+    tags,
 };
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -40,8 +59,12 @@ pub fn run() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_fs::init())
+        // No `plugin-fs`: the renderer performs no filesystem call of its own.
+        // Every file read/write goes through a Rust command that consumes a
+        // File Grant (backup, restore, sync, data import, streamed export,
+        // settings, connection transfer, schema image). With the plugin
+        // unregistered there is no renderer fs IPC surface to scope at all —
+        // see `capabilities/default.json` and ADR 0002.
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_keyring_store::init())
         // OS "open with" paths are queued here before the webview exists.
@@ -68,31 +91,48 @@ pub fn run() {
         .setup(move |app| {
             // Open the local store under the OS app-data directory. When the
             // app is launched from Finder/LaunchServices the working directory
-            // is `/`, so a relative "gridline.db" path panics ("failed to
-            // open db", exit 101) before the UI ever starts. The demo DB uses
-            // the same directory (see commands/demo.rs).
+            // is `/`, so a relative "gridline.db" path cannot be resolved. The
+            // demo DB uses the same directory (see commands/demo.rs). A failure
+            // (unwritable directory, unopenable file, disabled referential
+            // enforcement) is reported like its neighbours rather than panicking
+            // out of the setup hook.
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
             std::fs::create_dir_all(&data_dir)
                 .map_err(|e| format!("failed to create app data dir: {e}"))?;
-            let store = Store::open(&data_dir.join("gridline.db").to_string_lossy())
-                .expect("failed to open db");
+            let store = Arc::new(StdMutex::new(
+                Store::open(&data_dir.join("gridline.db").to_string_lossy())
+                    .map_err(|e| format!("failed to open the local store: {e}"))?,
+            ));
+            // SSH host trust: system known-hosts files plus the enrollments this
+            // user accepted (non-secret metadata in the same local store).
+            let ssh_trust = Arc::new(commands::ssh_trust::StoreHostTrust::new(store.clone()));
 
             // Cold-start "open with": the path arrived as a process argument
             // before the webview existed, so queue it here. macOS uses
-            // RunEvent::Opened instead.
-            for arg in std::env::args().skip(1) {
-                let pending = app.state::<crate::commands::open_files::PendingOpenFiles>();
-                let _ = crate::commands::open_files::accept_path(&pending, &arg);
-            }
+            // RunEvent::Opened instead. `args_os`, never `args`: a Unix argv
+            // element is arbitrary bytes, and `args()` panics on a non-UTF-8
+            // one — before the UI exists, so the app would never start.
+            let pending_files = app.state::<crate::commands::open_files::PendingOpenFiles>();
+            let _ = crate::commands::open_files::accept_process_args(
+                &pending_files,
+                std::env::args_os().skip(1),
+            );
 
             app.manage(AppState {
-                db_store: StdMutex::new(store),
+                db_store: store.clone(),
                 pool_manager: tokio::sync::Mutex::new(ConnectionPoolManager::new()),
-                ssh_manager: StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend))),
+                ssh_manager: StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend::new(
+                    ssh_trust,
+                )))),
                 cancel_registry: crate::cancel::CancelRegistry::default(),
+                jobs: Arc::new(crate::job::JobRegistry::new()),
+                file_grants: Arc::new(crate::file_grant::FileGrantStore::new()),
+                session_credentials: Arc::new(
+                    crate::session_credential::SessionCredentialStore::new(),
+                ),
             });
 
             let state = app.state::<AppState>();
@@ -111,12 +151,18 @@ pub fn run() {
                 .blocking_lock()
                 .set_on_evict(Box::new(move |id: &str| {
                     if let Some(s) = handle.try_state::<AppState>() {
-                        if let Ok(mut mgr) = s.ssh_manager.lock() {
-                            mgr.close_tunnel(id);
-                        }
+                        // Take the tunnel out first and close it after the
+                        // manager lock is released: a close waits for the
+                        // forwarding worker to release its loopback listener.
+                        let tunnel = match s.ssh_manager.lock() {
+                            Ok(mut mgr) => mgr.take_tunnel(id),
+                            // A panic elsewhere must not leak the listener.
+                            Err(poisoned) => poisoned.into_inner().take_tunnel(id),
+                        };
+                        drop(tunnel);
                         // Drop the cancel handles for the evicted connection
                         // (tokens/interrupts outlive the pool otherwise).
-                        s.cancel_registry.remove(id);
+                        s.cancel_registry.forget(id);
                     }
                 }));
 
@@ -145,8 +191,8 @@ pub fn run() {
             settings::get_settings,
             settings::update_setting,
             import_export::import_connections,
-            import_export::export_connections,
             commands::test_connection::test_connection,
+            commands::test_connection::create_sqlite_database,
             db_viewer::db_connect,
             db_viewer::db_disconnect,
             db_viewer::get_databases,
@@ -155,6 +201,7 @@ pub fn run() {
             db_viewer::get_table_data,
             db_viewer::get_table_columns,
             db_viewer::get_fk_preview,
+            db_viewer::search_fk_options,
             db_viewer::execute_change,
             db_viewer::get_table_ddl,
             db_viewer::refresh_connection,
@@ -183,6 +230,11 @@ pub fn run() {
             keychain::save_connection_password,
             keychain::get_connection_password,
             keychain::delete_connection_password,
+            credentials::store_session_credential,
+            credentials::forget_session_credential,
+            ssh::ssh_host_trust_state,
+            ssh::ssh_host_trust_enroll,
+            ssh::ssh_host_trust_reenroll,
             keychain::save_connection_ssh_password,
             keychain::get_connection_ssh_password,
             keychain::delete_connection_ssh_password,
@@ -191,10 +243,12 @@ pub fn run() {
             keychain::delete_connection_ssh_passphrase,
             demo::recreate_demo_db,
             demo::regenerate_demo_db,
+            commands::file_grant::select_file_for_grant,
             backup::detect_pg_tools,
             backup::pg_dump,
             backup::pg_restore,
             backup::db_sync,
+            backup::cancel_tool_job,
             backup::detect_mysql_tools,
             backup::mysql_dump,
             backup::mysql_restore,
@@ -204,11 +258,17 @@ pub fn run() {
             backup::sqlite_sync,
             settings::export_settings,
             settings::import_settings,
+            settings::export_settings_to_file,
+            settings::read_settings_file,
+            commands::file_io::export_connections_to_file,
+            commands::file_io::read_connections_file,
+            commands::file_io::save_granted_bytes,
             schema_graph::get_schema_graph,
             schema_diff::compare_schemas,
             query::execute_query,
             query::execute_query_multi,
             query_export::export_query_to_file,
+            import_file::read_import_file,
             query::cancel_query,
             crate::commands::open_files::take_pending_sql_files,
             query::get_query_history,
@@ -228,11 +288,11 @@ pub fn run() {
                 let pending = app_handle.state::<crate::commands::open_files::PendingOpenFiles>();
                 let mut accepted = false;
                 for url in urls {
+                    // The file URL carries an OS path, not necessarily valid
+                    // UTF-8: hand the path itself to validation instead of a
+                    // lossy string that could name a different file.
                     if let Ok(path) = url.to_file_path() {
-                        if crate::commands::open_files::accept_path(
-                            &pending,
-                            &path.to_string_lossy(),
-                        ) {
+                        if crate::commands::open_files::accept_os_path(&pending, &path) {
                             accepted = true;
                         }
                     }
@@ -241,12 +301,20 @@ pub fn run() {
                     let _ = app_handle.emit("sql-file-opened", ());
                 }
             }
-            // Close all SSH tunnels on exit: ExitRequested fires before the
-            // event loop ends, Exit fires after it has.
+            // Close all SSH tunnels and terminate every running tool job on
+            // exit: ExitRequested fires before the event loop ends, Exit fires
+            // after it has. A cancelled job's whole child tree is terminated,
+            // so quitting cannot leave a pg_dump/pg_restore/mysqldump behind.
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-                if let Ok(mut mgr) = app_handle.state::<AppState>().ssh_manager.lock() {
-                    mgr.close_all();
-                }
+                // Take the tunnels out before closing them: each close waits
+                // for its forwarding worker to release the loopback listener,
+                // and that wait must not happen while the manager lock is held.
+                let tunnels = match app_handle.state::<AppState>().ssh_manager.lock() {
+                    Ok(mut mgr) => mgr.take_all(),
+                    Err(poisoned) => poisoned.into_inner().take_all(),
+                };
+                drop(tunnels);
+                app_handle.state::<AppState>().jobs.cancel_all();
             }
             _ => {}
         });

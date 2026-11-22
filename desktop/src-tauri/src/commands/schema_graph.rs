@@ -225,7 +225,7 @@ fn build_sqlite_schema_graph(
     let mut relationships: Vec<Relationship> = Vec::new();
 
     for (table_name, table_type) in &table_rows {
-        let pragma_sql = format!("PRAGMA table_info('{}')", table_name);
+        let pragma_sql = crate::db::introspection::sqlite_columns_query(table_name);
         let mut ps = conn.prepare(&pragma_sql).map_err(|e| e.to_string())?;
         let col_meta: Vec<(String, String, bool, bool)> = ps
             .query_map([], |row| {
@@ -240,7 +240,7 @@ fn build_sqlite_schema_graph(
             .filter_map(|r| r.ok())
             .collect();
 
-        let fk_sql = format!("PRAGMA foreign_key_list('{}')", table_name);
+        let fk_sql = crate::db::introspection::sqlite_foreign_keys_query(table_name);
         let fk_cols: HashMap<String, (String, String)> = if let Ok(mut fs) = conn.prepare(&fk_sql) {
             fs.query_map([], |row| {
                 Ok((
@@ -313,9 +313,10 @@ pub async fn get_schema_graph(
     let schema = schema.unwrap_or_else(|| "public".to_string());
     validate_schema_name(&schema)?;
 
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let query = build_pg_schema_graph_query(&schema);
             let rows = client
                 .query(&query, &[&schema])
@@ -337,9 +338,11 @@ pub async fn get_schema_graph(
                 relationships,
             })
         }
-        Some(DbHandle::Sqlite(conn)) => build_sqlite_schema_graph(conn, &schema),
-        Some(DbHandle::MySql(_)) => Err("Schema visualizer not supported for MySQL".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            build_sqlite_schema_graph(&conn, &schema)
+        }
+        DbHandle::MySql(_) => Err("Schema visualizer not supported for MySQL".to_string()),
     }
 }
 

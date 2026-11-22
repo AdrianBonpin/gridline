@@ -3,36 +3,41 @@
 //! This module provides pure functions that generate SQL query strings
 //! for database schema introspection. No actual DB connections are needed
 //! for testing — all functions are deterministic string builders.
+//!
+//! **Names are bound, never spliced in.** A schema, table, or role name is
+//! legal user data (it may contain quotes, spaces, or a backslash), so every
+//! builder that filters on a name emits a placeholder (`$n` for PostgreSQL,
+//! `?` for MySQL) and the caller binds the value. The one exception is SQLite,
+//! where `PRAGMA` arguments are *identifiers*, quoted through `db::ident`.
 
 // ---------------------------------------------------------------------------
 // PostgreSQL
 // ---------------------------------------------------------------------------
 
 /// Approximate row count for a table via `pg_class.reltuples`.
-pub fn pg_reltuples_query(schema: &str, table: &str) -> String {
-    format!(
-        "SELECT reltuples::bigint AS count FROM pg_class \
-         WHERE relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = '{}') \
-         AND relname = '{}'",
-        schema, table
-    )
+///
+/// Binds `$1` = schema and `$2` = table in that order.
+pub fn pg_reltuples_query() -> String {
+    "SELECT reltuples::bigint AS count FROM pg_class \
+     WHERE relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) \
+     AND relname = $2"
+        .to_string()
 }
 
 /// List tables and views in a schema (or all non-system schemata).
 ///
+/// When `schema` is `Some(_)` the query binds that value as `$1` (twice).
 /// When `schema` is `None` all schemata except the built-in system schemata
 /// (`pg_catalog`, `information_schema`) are included.
 pub fn pg_tables_query(schema: Option<&str>) -> String {
     match schema {
-        Some(s) => format!(
-            "SELECT table_name, table_type FROM information_schema.tables \
-             WHERE table_schema = '{}' \
+        Some(_) => "SELECT table_name, table_type FROM information_schema.tables \
+             WHERE table_schema = $1 \
              UNION ALL \
              SELECT matviewname AS table_name, 'MATERIALIZED VIEW' AS table_type \
-             FROM pg_matviews WHERE schemaname = '{}' \
-             ORDER BY table_name",
-            s, s
-        ),
+             FROM pg_matviews WHERE schemaname = $1 \
+             ORDER BY table_name"
+            .to_string(),
         None => {
             "SELECT table_name, table_type, table_schema FROM information_schema.tables \
              WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
@@ -61,10 +66,21 @@ pub fn pg_databases_query() -> String {
 /// Column details with primary-key and foreign-key annotations.
 ///
 /// Joins `information_schema.columns` with constraint metadata so that
-/// each row includes PK / FK information when applicable.
-pub fn pg_columns_query(schema: &str, table: &str) -> String {
-    format!(
-        r#"SELECT
+/// each row includes PK / FK information when applicable. Binds `$1` = schema
+/// and `$2` = table, so a legal name containing a quote cannot alter the
+/// predicate.
+///
+/// Row shape (indices are part of the contract for every caller):
+/// `0` name, `1` data type, `2` is_nullable, `3` character length,
+/// `4` numeric precision, `5` numeric scale, `6` default, `7` ordinal,
+/// `8` PK constraint type, `9` referenced **schema**, `10` referenced table,
+/// `11` referenced column, `12` `attgenerated`, `13` `attidentity`.
+///
+/// The referenced schema is selected explicitly: a foreign key may point into
+/// another schema, and reporting only the table name lets a caller fall back to
+/// the browsing schema and read a same-named local table instead.
+pub fn pg_columns_query() -> String {
+    r#"SELECT
     c.column_name,
     CASE WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name ELSE c.data_type END AS data_type,
     c.is_nullable,
@@ -76,7 +92,9 @@ pub fn pg_columns_query(schema: &str, table: &str) -> String {
     pk.constraint_type,
     fk.foreign_table_schema,
     fk.foreign_table_name,
-    fk.foreign_column_name
+    fk.foreign_column_name,
+    a.attgenerated,
+    a.attidentity
 FROM information_schema.columns c
 LEFT JOIN (
     SELECT kcu.column_name, kcu.table_schema, kcu.table_name, 'PRIMARY KEY' AS constraint_type
@@ -106,10 +124,28 @@ LEFT JOIN (
         AND tc.constraint_name = ccu.constraint_name
     WHERE tc.constraint_type = 'FOREIGN KEY'
 ) fk ON c.table_schema = fk.table_schema AND c.table_name = fk.table_name AND c.column_name = fk.column_name
-WHERE c.table_schema = '{}' AND c.table_name = '{}'
-ORDER BY c.ordinal_position"#,
-        schema, table
-    )
+LEFT JOIN pg_attribute a
+    ON a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass
+    AND a.attname = c.column_name
+    AND a.attnum > 0
+    AND NOT a.attisdropped
+WHERE c.table_schema = $1 AND c.table_name = $2
+ORDER BY c.ordinal_position"#
+        .to_string()
+}
+
+/// Whether a PostgreSQL relation is read-only for the viewer: a view or a
+/// materialized view.
+///
+/// Binds `$1` = schema, `$2` = relation name. Materialized views are absent
+/// from `information_schema.tables`, so they need their own catalog lookup —
+/// checking `table_type` alone reports them as ordinary (editable) tables.
+pub fn pg_relation_read_only_query() -> String {
+    "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
+     WHERE table_schema = $1 AND table_name = $2 AND table_type = 'VIEW') \
+     OR EXISTS(SELECT 1 FROM pg_matviews \
+     WHERE schemaname = $1 AND matviewname = $2)"
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -118,15 +154,14 @@ ORDER BY c.ordinal_position"#,
 
 /// List tables (and views) in the given schema.
 ///
-/// When `schema` is `None` all non-system schemata are included (excluding
-/// `information_schema`, `performance_schema`, `mysql`, and `sys`).
+/// When `schema` is `Some(_)` the value is bound as `?`. With `None` all
+/// non-system schemata are included (excluding `information_schema`,
+/// `performance_schema`, `mysql`, and `sys`).
 pub fn mysql_tables_query(schema: Option<&str>) -> String {
     match schema {
-        Some(s) => format!(
-            "SELECT table_name, table_type FROM information_schema.tables \
-             WHERE table_schema = '{}' ORDER BY table_name",
-            s
-        ),
+        Some(_) => "SELECT table_name, table_type FROM information_schema.tables \
+             WHERE table_schema = ? ORDER BY table_name"
+            .to_string(),
         None => {
             "SELECT table_name, table_type, table_schema FROM information_schema.tables \
              WHERE table_schema NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys') \
@@ -134,6 +169,18 @@ pub fn mysql_tables_query(schema: Option<&str>) -> String {
                 .to_string()
         }
     }
+}
+
+/// The relation's `information_schema.tables.table_type` (`BASE TABLE`,
+/// `VIEW`, or a system-view kind).
+///
+/// Binds `?` = schema, `?` = relation, in that order. Used to keep views
+/// read-only in the viewer: an edit offered on a view is an edit the engine
+/// will refuse.
+pub fn mysql_relation_type_query() -> String {
+    "SELECT table_type FROM information_schema.tables \
+     WHERE table_schema = ? AND table_name = ?"
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -148,13 +195,53 @@ pub fn sqlite_tables_query() -> String {
 }
 
 /// Column metadata via `PRAGMA table_info`.
+///
+/// The table name is a *quoted identifier*, not a string literal: a legal name
+/// containing a single quote (`o'brien`) would otherwise end the literal and
+/// either break the statement or change which table is introspected.
 pub fn sqlite_columns_query(table: &str) -> String {
-    format!("PRAGMA table_info('{}')", table)
+    format!(
+        "PRAGMA table_info({})",
+        crate::db::ident::quote(crate::db::ident::Engine::Sqlite, table)
+    )
 }
 
-/// Foreign-key metadata via `PRAGMA foreign_key_list`.
+/// Every column of a table including generated ones, via `PRAGMA table_xinfo`.
+///
+/// `table_info` omits generated columns entirely, so a table rebuild driven by it
+/// would drop them; `table_xinfo` adds the `hidden` flag (0 ordinary, 1 a virtual
+/// table's hidden column, 2 VIRTUAL generated, 3 STORED generated).
+pub fn sqlite_columns_xinfo_query(table: &str) -> String {
+    format!(
+        "PRAGMA table_xinfo({})",
+        crate::db::ident::quote(crate::db::ident::Engine::Sqlite, table)
+    )
+}
+
+/// Foreign-key metadata via `PRAGMA foreign_key_list` (see
+/// [`sqlite_columns_query`] for the quoting rule).
 pub fn sqlite_foreign_keys_query(table: &str) -> String {
-    format!("PRAGMA foreign_key_list('{}')", table)
+    format!(
+        "PRAGMA foreign_key_list({})",
+        crate::db::ident::quote(crate::db::ident::Engine::Sqlite, table)
+    )
+}
+
+/// Index metadata via `PRAGMA index_list` (see [`sqlite_columns_query`] for the
+/// quoting rule — the table name is a quoted identifier, never a literal).
+pub fn sqlite_index_list_query(table: &str) -> String {
+    format!(
+        "PRAGMA index_list({})",
+        crate::db::ident::quote(crate::db::ident::Engine::Sqlite, table)
+    )
+}
+
+/// Columns of a single index via `PRAGMA index_info` (quoted identifier).
+pub fn sqlite_index_info_query(index: &str) -> String {
+    format!(
+        "PRAGMA index_info({})",
+        crate::db::ident::quote(crate::db::ident::Engine::Sqlite, index)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -178,21 +265,17 @@ pub fn build_select_query(
     let cols = if columns.is_empty() {
         "*".to_string()
     } else {
-        let mut buf = String::new();
-        for (i, col) in columns.iter().enumerate() {
-            if i > 0 {
-                buf.push_str(", ");
-            }
-            buf.push('"');
-            buf.push_str(col);
-            buf.push('"');
-        }
-        buf
+        columns
+            .iter()
+            .map(|c| crate::db::ident::quote(crate::db::ident::Engine::PostgreSql, c))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     let sql = format!(
-        "SELECT {} FROM \"{}\".\"{}\" LIMIT $1 OFFSET $2",
-        cols, schema, table
+        "SELECT {} FROM {} LIMIT $1 OFFSET $2",
+        cols,
+        crate::db::ident::qualified_unchecked(crate::db::ident::Engine::PostgreSql, schema, table)
     );
 
     let params = vec![page_size, page * page_size];
@@ -202,7 +285,10 @@ pub fn build_select_query(
 
 /// Build a `COUNT(*)` query.
 pub fn build_count_query(schema: &str, table: &str) -> String {
-    format!("SELECT COUNT(*) FROM \"{}\".\"{}\"", schema, table)
+    format!(
+        "SELECT COUNT(*) FROM {}",
+        crate::db::ident::qualified_unchecked(crate::db::ident::Engine::PostgreSql, schema, table)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -253,9 +339,11 @@ pub fn pg_triggers_query(_schema: &str) -> String {
 }
 
 /// Query sequences in a schema via information_schema.
-pub fn pg_sequences_query(schema: &str) -> String {
-    format!(
-        "SELECT sequence_name, '{}' AS schema, \
+///
+/// Binds `$1` = schema (used both as the filter and as the echoed `schema`
+/// column, so the name is never spliced into the statement).
+pub fn pg_sequences_query(_schema: &str) -> String {
+    "SELECT sequence_name, $1::text AS schema, \
          COALESCE(start_value::text, '1'), \
          COALESCE(minimum_value::text, '1'), \
          COALESCE(maximum_value::text, '9223372036854775807'), \
@@ -264,9 +352,8 @@ pub fn pg_sequences_query(schema: &str) -> String {
          COALESCE(cycle_option::text, 'NO') \
          FROM information_schema.sequences \
          WHERE sequence_schema = $1 \
-         ORDER BY sequence_name",
-        schema
-    )
+         ORDER BY sequence_name"
+        .to_string()
 }
 
 /// Query enums in a schema.
@@ -376,77 +463,68 @@ pub fn pg_role_memberships_query() -> String {
 }
 
 /// Table/view/matview privileges for a grantee, grouped one row per object.
-pub fn pg_table_privileges_query(role: &str) -> String {
-    format!(
-        "SELECT table_schema AS schema, table_name AS name, \
-         array_agg(privilege_type::text) AS privileges, \
-         bool_or(is_grantable = 'YES') AS grantable \
-         FROM information_schema.table_privileges \
-         WHERE grantee = '{}' AND table_schema NOT IN ('pg_catalog','information_schema') \
-         GROUP BY table_schema, table_name \
-         ORDER BY table_schema, table_name",
-        role
-    )
+/// Binds `$1` = role name (a role name is legal user data).
+pub fn pg_table_privileges_query() -> String {
+    "SELECT table_schema AS schema, table_name AS name, \
+     array_agg(privilege_type::text) AS privileges, \
+     bool_or(is_grantable = 'YES') AS grantable \
+     FROM information_schema.table_privileges \
+     WHERE grantee = $1 AND table_schema NOT IN ('pg_catalog','information_schema') \
+     GROUP BY table_schema, table_name \
+     ORDER BY table_schema, table_name"
+        .to_string()
 }
 
 /// Sequence privileges for a grantee, grouped one row per sequence.
 /// aclexplode-based (role_sequence_grants was removed in PG 15).
-pub fn pg_sequence_privileges_query(role: &str) -> String {
-    format!(
-        "SELECT n.nspname AS schema, c.relname AS name, \
-         array_agg(p.privilege_type::text) AS privileges, \
-         bool_or(p.is_grantable) AS grantable \
-         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace, \
-         LATERAL aclexplode(c.relacl) p \
-         WHERE c.relkind = 'S' AND n.nspname NOT IN ('pg_catalog','information_schema') \
-         AND p.grantee = (SELECT oid FROM pg_roles WHERE rolname = '{}') \
-         GROUP BY n.nspname, c.relname \
-         ORDER BY n.nspname, c.relname",
-        role
-    )
+pub fn pg_sequence_privileges_query() -> String {
+    "SELECT n.nspname AS schema, c.relname AS name, \
+     array_agg(p.privilege_type::text) AS privileges, \
+     bool_or(p.is_grantable) AS grantable \
+     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace, \
+     LATERAL aclexplode(c.relacl) p \
+     WHERE c.relkind = 'S' AND n.nspname NOT IN ('pg_catalog','information_schema') \
+     AND p.grantee = (SELECT oid FROM pg_roles WHERE rolname = $1) \
+     GROUP BY n.nspname, c.relname \
+     ORDER BY n.nspname, c.relname"
+        .to_string()
 }
 
 /// Routine (function/procedure) privileges for a grantee.
-pub fn pg_routine_privileges_query(role: &str) -> String {
-    format!(
-        "SELECT routine_schema AS schema, routine_name AS name, \
-         array_agg(privilege_type::text) AS privileges, \
-         bool_or(is_grantable = 'YES') AS grantable \
-         FROM information_schema.routine_privileges \
-         WHERE grantee = '{}' \
-         GROUP BY routine_schema, routine_name \
-         ORDER BY routine_schema, routine_name",
-        role
-    )
+pub fn pg_routine_privileges_query() -> String {
+    "SELECT routine_schema AS schema, routine_name AS name, \
+     array_agg(privilege_type::text) AS privileges, \
+     bool_or(is_grantable = 'YES') AS grantable \
+     FROM information_schema.routine_privileges \
+     WHERE grantee = $1 \
+     GROUP BY routine_schema, routine_name \
+     ORDER BY routine_schema, routine_name"
+        .to_string()
 }
 
 /// Schema privileges for a grantee (USAGE/CREATE). aclexplode-based —
 /// information_schema has no schema_privileges view.
-pub fn pg_schema_privileges_query(role: &str) -> String {
-    format!(
-        "SELECT n.nspname AS name, \
-         array_agg(p.privilege_type::text) AS privileges, \
-         bool_or(p.is_grantable) AS grantable \
-         FROM pg_namespace n, LATERAL aclexplode(n.nspacl) p \
-         WHERE n.nspname NOT IN ('pg_catalog','information_schema') \
-         AND p.grantee = (SELECT oid FROM pg_roles WHERE rolname = '{}') \
-         GROUP BY n.nspname ORDER BY n.nspname",
-        role
-    )
+pub fn pg_schema_privileges_query() -> String {
+    "SELECT n.nspname AS name, \
+     array_agg(p.privilege_type::text) AS privileges, \
+     bool_or(p.is_grantable) AS grantable \
+     FROM pg_namespace n, LATERAL aclexplode(n.nspacl) p \
+     WHERE n.nspname NOT IN ('pg_catalog','information_schema') \
+     AND p.grantee = (SELECT oid FROM pg_roles WHERE rolname = $1) \
+     GROUP BY n.nspname ORDER BY n.nspname"
+        .to_string()
 }
 
 /// Database privileges for a grantee via aclexplode (broadly compatible; avoids PG15-only view).
-pub fn pg_database_privileges_query(role: &str) -> String {
-    format!(
-        "SELECT d.datname AS name, array_agg(a.privilege_type) AS privileges, \
-         bool_or(a.is_grantable) AS grantable \
-         FROM pg_database d, LATERAL aclexplode(d.datacl) a \
-         WHERE a.grantee = (SELECT oid FROM pg_roles WHERE rolname = '{}') \
-           AND d.datistemplate = false \
-         GROUP BY d.datname \
-         ORDER BY d.datname",
-        role
-    )
+pub fn pg_database_privileges_query() -> String {
+    "SELECT d.datname AS name, array_agg(a.privilege_type) AS privileges, \
+     bool_or(a.is_grantable) AS grantable \
+     FROM pg_database d, LATERAL aclexplode(d.datacl) a \
+     WHERE a.grantee = (SELECT oid FROM pg_roles WHERE rolname = $1) \
+       AND d.datistemplate = false \
+     GROUP BY d.datname \
+     ORDER BY d.datname"
+        .to_string()
 }
 
 /// Non-system tablespaces for the table-options picker.
@@ -531,14 +609,39 @@ mod tests {
 
     #[test]
     fn pg_count_approximation_query_is_valid() {
-        let sql = pg_reltuples_query("public", "users");
+        let sql = pg_reltuples_query();
         assert!(
             sql.contains("pg_class"),
             "should query pg_class for row estimates; got: {}",
             sql
         );
-        assert!(sql.contains("public"), "should contain schema name");
-        assert!(sql.contains("users"), "should contain table name");
+        assert!(
+            sql.contains("nspname = $1") && sql.contains("relname = $2"),
+            "schema/table must be bound, never spliced in as literals; got: {sql}"
+        );
+    }
+
+    /// Legal names containing a quote must never reach the SQL text: every
+    /// builder that filters on a name emits a placeholder instead.
+    #[test]
+    fn pg_name_filters_are_parameterized_not_interpolated() {
+        let awkward = "o'brien\"x";
+        for sql in [
+            pg_reltuples_query(),
+            pg_tables_query(Some(awkward)),
+            pg_columns_query(),
+            pg_sequences_query(awkward),
+            pg_table_privileges_query(),
+            pg_sequence_privileges_query(),
+            pg_routine_privileges_query(),
+            pg_schema_privileges_query(),
+            pg_database_privileges_query(),
+        ] {
+            assert!(
+                !sql.contains(awkward),
+                "a name must never be interpolated into the SQL text: {sql}"
+            );
+        }
     }
 
     #[test]
@@ -549,7 +652,10 @@ mod tests {
             "should query information_schema.tables; got: {}",
             sql
         );
-        assert!(sql.contains("public"), "should contain the given schema");
+        assert!(
+            sql.contains("table_schema = $1"),
+            "given schema must be bound; got: {sql}"
+        );
 
         // Without schema filter — should exclude system schemata
         let all_sql = pg_tables_query(None);
@@ -565,14 +671,16 @@ mod tests {
 
     #[test]
     fn pg_column_query_is_valid() {
-        let sql = pg_columns_query("public", "orders");
+        let sql = pg_columns_query();
         assert!(
             sql.contains("information_schema.columns"),
             "should query information_schema.columns; got: {}",
             sql
         );
-        assert!(sql.contains("public"), "should contain schema name");
-        assert!(sql.contains("orders"), "should contain table name");
+        assert!(
+            sql.contains("c.table_schema = $1") && sql.contains("c.table_name = $2"),
+            "schema/table must be bound; got: {sql}"
+        );
         assert!(
             sql.contains("FOREIGN KEY"),
             "should include FK constraint metadata"
@@ -654,9 +762,40 @@ mod tests {
         );
     }
 
+    /// Ticket 09: a read-only relation must be detected from the catalog for
+    /// both view kinds. `information_schema.tables` covers plain views;
+    /// materialized views live only in `pg_matviews`.
+    #[test]
+    fn pg_read_only_relation_query_covers_views_and_matviews() {
+        let sql = pg_relation_read_only_query();
+        assert!(
+            sql.contains("information_schema.tables") && sql.contains("table_type = 'VIEW'"),
+            "plain views must be detected; got: {sql}"
+        );
+        assert!(
+            sql.contains("pg_matviews"),
+            "materialized views are absent from information_schema.tables; got: {sql}"
+        );
+        assert!(
+            sql.contains("table_schema = $1") && sql.contains("table_name = $2"),
+            "names must be bound; got: {sql}"
+        );
+    }
+
     // ---------------------------------------------------------------
     // MySQL
     // ---------------------------------------------------------------
+
+    #[test]
+    fn mysql_relation_type_query_binds_names() {
+        let sql = mysql_relation_type_query();
+        assert!(sql.contains("table_type"), "got: {sql}");
+        assert!(
+            sql.contains("table_schema = ? AND table_name = ?"),
+            "both names must be bound; got: {sql}"
+        );
+        assert!(!sql.contains('\''), "no name may be a literal: {sql}");
+    }
 
     #[test]
     fn mysql_table_list_query_is_valid() {
@@ -666,7 +805,14 @@ mod tests {
             "should query information_schema.tables; got: {}",
             sql
         );
-        assert!(sql.contains("mydb"), "should contain the given schema");
+        assert!(
+            sql.contains("table_schema = ?"),
+            "the given schema must be bound; got: {sql}"
+        );
+        assert!(
+            !sql.contains("mydb"),
+            "the schema must not be a literal: {sql}"
+        );
 
         let all_sql = mysql_tables_query(None);
         assert!(all_sql.contains("information_schema.tables"));
@@ -755,8 +901,11 @@ mod tests {
             "should contain COUNT(*); got: {}",
             sql
         );
-        assert!(sql.contains("public"), "should contain schema name");
-        assert!(sql.contains("orders"), "should contain table name");
+        // A table/identifier is *quoted*, not bound — see `db::ident`.
+        assert!(
+            sql.contains("\"public\".\"orders\""),
+            "schema/table must be quoted identifiers; got: {sql}"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -780,7 +929,12 @@ mod tests {
     #[test]
     fn pg_sequences_query_filters_by_schema() {
         let sql = pg_sequences_query("myschema");
-        assert!(sql.contains("myschema"));
+        assert!(
+            !sql.contains("myschema"),
+            "schema must be bound, not interpolated: {sql}"
+        );
+        assert!(sql.contains("$1::text AS schema"));
+        assert!(sql.contains("WHERE sequence_schema = $1"));
     }
 
     #[test]
@@ -832,19 +986,25 @@ mod tests {
 
     #[test]
     fn pg_table_privileges_query_filters_grantee_and_aggregates() {
-        let sql = pg_table_privileges_query("appuser");
+        let sql = pg_table_privileges_query();
         assert!(sql.contains("information_schema.table_privileges"));
-        assert!(sql.contains("grantee = 'appuser'"));
+        assert!(
+            sql.contains("grantee = $1"),
+            "grantee must be bound; got: {sql}"
+        );
         assert!(sql.contains("array_agg"));
         assert!(sql.contains("GROUP BY"));
     }
 
     #[test]
     fn pg_database_privileges_query_uses_aclexplode() {
-        let sql = pg_database_privileges_query("appuser");
+        let sql = pg_database_privileges_query();
         assert!(sql.contains("aclexplode"));
         assert!(sql.contains("pg_database"));
-        assert!(sql.contains("appuser"));
+        assert!(
+            sql.contains("rolname = $1"),
+            "role must be bound; got: {sql}"
+        );
     }
 
     #[test]

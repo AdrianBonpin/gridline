@@ -13,6 +13,8 @@ vi.mock("../lib/commands", () => ({
   getConnectionPassword: vi.fn().mockResolvedValue("pw"),
   getConnectionSshPassword: vi.fn().mockResolvedValue(null),
   getConnectionSshPassphrase: vi.fn().mockResolvedValue(null),
+  sshHostTrustState: vi.fn().mockResolvedValue({ state: "trusted" }),
+  sshHostTrustEnroll: vi.fn(),
 }));
 
 const mockCommands = vi.mocked(commands);

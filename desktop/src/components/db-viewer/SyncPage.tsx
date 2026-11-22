@@ -19,6 +19,7 @@ import {
 } from "../../lib/commands";
 import type { PgToolStatus, MySqlToolStatus, BackupJob, DbType } from "../../lib/types";
 import { isMysqlFamily } from "../../lib/dbCapabilities";
+import { withSessionCredential } from "../../lib/sessionCredential";
 
 export function SyncPage() {
     const [sourceConnectionId, setSourceConnectionId] = useState("");
@@ -33,7 +34,6 @@ export function SyncPage() {
     const connections = useConnectionStore((s) => s.connections);
     const activeJobId = useBackupStore((s) => s.activeJobId);
     const jobs = useBackupStore((s) => s.jobs);
-    const startJob = useBackupStore((s) => s.startJob);
     const notify = useNotificationStore((s) => s.notify);
 
     const activeJob = jobs.find((j) => j.id === activeJobId);
@@ -53,6 +53,9 @@ export function SyncPage() {
 
         if (activeJob.status === "completed") {
             notify("Sync completed successfully", "success");
+            pendingJobRef.current = null;
+        } else if (activeJob.status === "cancelled") {
+            notify("Sync cancelled", "info");
             pendingJobRef.current = null;
         } else if (activeJob.status === "failed") {
             notify(
@@ -129,19 +132,24 @@ export function SyncPage() {
 
     const runWithProgress = useCallback(
         async (type: BackupJob["type"], action: () => Promise<unknown>) => {
-            const jobId = `${type}-${Date.now()}`;
-            startJob(jobId, type);
-            pendingJobRef.current = jobId;
-
-            try {
-                await action();
-            } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                useBackupStore.getState().failJob(jobId, msg);
-            }
+            // `runJob` adopts the job id the backend returns, so the progress
+            // events and the cancel command address the real job.
+            await useBackupStore.getState().runJob(type, action);
+            pendingJobRef.current = useBackupStore.getState().activeJobId;
         },
-        [startJob],
+        [],
     );
+
+    // Cancel a running sync. Both ends of the dump → restore pipe belong to the
+    // job, so cancelling terminates both process trees.
+    const handleCancelSync = useCallback(async () => {
+        const jobId = useBackupStore.getState().activeJobId;
+        if (!jobId) return;
+        const cancelled = await useBackupStore.getState().cancelJob(jobId);
+        if (!cancelled) {
+            notify("The sync had already finished", "info");
+        }
+    }, [notify]);
 
     const handleStartSync = useCallback(async () => {
         if (!sourceConnectionId || !targetConnectionId) {
@@ -165,11 +173,15 @@ export function SyncPage() {
             dbType,
         };
 
-        await runWithProgress("sync", () => {
-            if (isPg) return dbSync(options);
-            if (isMysql) return mysqlSync(options);
-            return sqliteSync(options);
-        });
+        // A sync resolves one credential per side. With keychain persistence off
+        // the backend asks for whichever side is missing; the prompt names it.
+        await runWithProgress("sync", () =>
+            withSessionCredential(sourceConnectionId, () => {
+                if (isPg) return dbSync(options);
+                if (isMysql) return mysqlSync(options);
+                return sqliteSync(options);
+            }),
+        );
     }, [
         sourceConnectionId,
         targetConnectionId,
@@ -392,6 +404,18 @@ export function SyncPage() {
                                     be undone.
                                 </span>
                             </label>
+                            {isPg && (
+                                <p
+                                    data-testid="sync-atomicity"
+                                    className="text-[11px] leading-relaxed text-text-muted/70"
+                                >
+                                    A PostgreSQL sync restores into the target in one
+                                    transaction: if the restore fails, everything it
+                                    applied is rolled back and the target is left
+                                    unchanged. A failure is reported as the target's
+                                    error, not as the dump's closed pipe.
+                                </p>
+                            )}
                         </div>
 
                         {/* Progress */}
@@ -402,6 +426,12 @@ export function SyncPage() {
                                     jobType="sync"
                                     status={activeJob.status}
                                     errorMessage={activeJob.error_message ?? undefined}
+                                    onCancel={
+                                        isRunning ? () => void handleCancelSync() : undefined
+                                    }
+                                    onRetry={
+                                        !isRunning ? () => void handleStartSync() : undefined
+                                    }
                                 />
                             </div>
                         )}

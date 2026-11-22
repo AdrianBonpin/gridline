@@ -4,6 +4,7 @@ use crate::db::object_crud::{
 };
 use crate::db::object_ddl::*;
 use crate::db::pool::{ConnectionPoolManager, DbHandle};
+use crate::db::sqlite_rebuild::{read_table_shape, SqliteTableShape};
 use crate::models::db_viewer::{DependencyInfo, ExtensionInfo, ObjectSearchHit};
 use tauri::State;
 
@@ -16,15 +17,17 @@ async fn exec_sql(
     connection_id: &str,
     sql: String,
 ) -> Result<(), String> {
-    let mut pm = pm.lock().await;
-    match pm.get(connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => client
-            .execute(&sql, &[])
-            .await
-            .map(|_| ())
-            .map_err(|e| sanitize(&e.to_string())),
-        Some(_) => Err("Schema CRUD is PostgreSQL-only".into()),
-        None => Err("Connection not found".into()),
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
+            client
+                .execute(&sql, &[])
+                .await
+                .map(|_| ())
+                .map_err(|e| sanitize(&e.to_string()))
+        }
+        _ => Err("Schema CRUD is PostgreSQL-only".into()),
     }
 }
 
@@ -86,9 +89,10 @@ pub(crate) async fn search_objects_inner(
     needle: &str,
 ) -> Result<Vec<ObjectSearchHit>, String> {
     let sql = pg_object_search_query();
-    let mut pm = pm.lock().await;
-    match pm.get(connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let rows = client
                 .query(&sql, &[&needle, &schema])
                 .await
@@ -102,8 +106,7 @@ pub(crate) async fn search_objects_inner(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) | Some(DbHandle::MySql(_)) => Ok(vec![]),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) | DbHandle::MySql(_) => Ok(vec![]),
     }
 }
 
@@ -124,12 +127,12 @@ pub(crate) async fn get_object_ddl_inner(
     object_type: &str,
     name: &str,
 ) -> Result<String, String> {
-    let mut pm = pm.lock().await;
-    let client = match pm.get(connection_id) {
-        Some(DbHandle::Postgresql(c, _)) => c,
-        Some(_) => return Err("Copy-as-DDL is PostgreSQL-only".into()),
-        None => return Err("Connection not found".into()),
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    let client = match db_handle {
+        DbHandle::Postgresql(c, _) => c,
+        _ => return Err("Copy-as-DDL is PostgreSQL-only".into()),
     };
+    let client = client.lock().await;
     match object_type {
         "function" | "procedure" => {
             let row = client.query_one("SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON p.pronamespace=n.oid WHERE p.proname=$1 AND n.nspname=$2 LIMIT 1", &[&name, &schema]).await.map_err(|e| sanitize(&e.to_string()))?;
@@ -232,12 +235,12 @@ pub(crate) async fn get_object_dependencies_inner(
     object_type: &str,
     name: &str,
 ) -> Result<Vec<DependencyInfo>, String> {
-    let mut pm = pm.lock().await;
-    let client = match pm.get(connection_id) {
-        Some(DbHandle::Postgresql(c, _)) => c,
-        Some(_) => return Err("Dependencies are PostgreSQL-only".into()),
-        None => return Err("Connection not found".into()),
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    let client = match db_handle {
+        DbHandle::Postgresql(c, _) => c,
+        _ => return Err("Dependencies are PostgreSQL-only".into()),
     };
+    let client = client.lock().await;
     if object_type.eq_ignore_ascii_case("schema") {
         let rows = client
             .query(&pg_schema_contents_query(), &[&name])
@@ -293,84 +296,21 @@ pub async fn get_object_dependencies(
     .await
 }
 
-/// Introspect the live columns of a SQLite table (for the edit/rebuild diff).
-/// Mirrors the `PRAGMA table_info` + `PRAGMA index_list`/`index_info` reads used
-/// elsewhere in db_viewer; `auto_increment` requires an INTEGER PK whose stored
-/// DDL (sqlite_master) actually says AUTOINCREMENT, and `unique` means a
-/// single-column unique index (excluding the PK autoindex).
-fn sqlite_live_columns(
-    conn: &rusqlite::Connection,
-    table: &str,
-) -> Result<Vec<SqliteColumn>, String> {
-    let pragma_query = format!("PRAGMA table_info('{}')", table);
-    let mut stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
-    let col_meta: Vec<(String, String, bool, bool, Option<String>)> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(1)?,         // name
-                row.get::<_, String>(2)?,         // type
-                row.get::<_, bool>(3)?,           // notnull
-                row.get::<_, bool>(5)?,           // pk
-                row.get::<_, Option<String>>(4)?, // dflt_value
-            ))
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    // AUTOINCREMENT only appears in the stored DDL of an INTEGER PK table.
-    let autoinc = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
-            [table],
-            |row| row.get::<_, String>(0),
-        )
-        .map(|sql| sql.to_uppercase().contains("AUTOINCREMENT"))
-        .unwrap_or(false);
-    // Columns covered by a single-column unique index (origin != 'pk').
-    let mut unique_cols: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if let Ok(mut idx_stmt) = conn.prepare(&format!("PRAGMA index_list('{}')", table)) {
-        let indexes: Vec<(String, bool, String)> = idx_stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(1)?, // name
-                    row.get::<_, bool>(2)?,   // unique
-                    row.get::<_, String>(3)?, // origin
-                ))
-            })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        for (idx_name, is_unique, origin) in indexes {
-            if !is_unique || origin == "pk" {
-                continue;
-            }
-            if let Ok(mut info_stmt) = conn.prepare(&format!(
-                "PRAGMA index_info('{}')",
-                idx_name.replace('\'', "''")
-            )) {
-                let cols: Vec<String> = info_stmt
-                    .query_map([], |row| row.get::<_, String>(2))
-                    .map_err(|e| e.to_string())?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                if cols.len() == 1 {
-                    unique_cols.insert(cols[0].clone());
-                }
-            }
-        }
+/// Refuse a rebuild of this table before any mutation, or `Ok(())` when the
+/// rebuild script can reproduce the live shape faithfully.
+///
+/// The shape's own blockers (a virtual table, an unreadable stored definition)
+/// are joined by the ones the edit creates (a preserved index, trigger, or
+/// constraint that names a column the submission drops), so the refusal reaches
+/// the editor as a reason instead of surfacing later as a queue error.
+fn guard_sqlite_rebuild(
+    shape: &SqliteTableShape,
+    columns: Option<&[SqliteColumn]>,
+) -> Result<(), String> {
+    match columns {
+        Some(columns) => shape.refusal_for(columns).map_or(Ok(()), Err),
+        None => shape.refusal().map_or(Ok(()), Err),
     }
-    Ok(col_meta
-        .iter()
-        .map(|(name, dtype, notnull, is_pk, default)| SqliteColumn {
-            name: name.clone(),
-            type_: dtype.clone(),
-            nullable: !notnull,
-            default: default.clone(),
-            is_pk: *is_pk,
-            auto_increment: autoinc && *is_pk && dtype.trim().eq_ignore_ascii_case("INTEGER"),
-            unique: unique_cols.contains(name),
-        })
-        .collect())
 }
 
 /// Build SQL for an object CRUD operation. The pool is resolved only to enforce
@@ -384,10 +324,11 @@ pub(crate) async fn build_object_ddl_inner(
     kind: &str,
     params: serde_json::Value,
 ) -> Result<Vec<String>, String> {
-    let mut pm = pm.lock().await;
-    match pm.get(connection_id) {
-        Some(DbHandle::Postgresql(_, _)) => build_ddl(kind, params),
-        Some(DbHandle::Sqlite(conn)) => {
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(_, _) => build_ddl(kind, params),
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
             // params: { schema, name, action: { op, columns: [...] } }
             let action = params.get("action").ok_or("missing action")?;
             let op = action
@@ -406,18 +347,24 @@ pub(crate) async fn build_object_ddl_inner(
             match op {
                 "create" => Ok(vec![sqlite_create_table_sql(&table, &cols, &[])?]),
                 "edit" => {
-                    let old = sqlite_live_columns(conn, &table)?;
-                    sqlite_column_diff_sql(&table, &old, &cols)
+                    let shape = read_table_shape(&conn, &table)?;
+                    // A submission that needs a rebuild goes through the rebuild
+                    // guard here, so the refusal reaches the editor as a reason
+                    // instead of surfacing later as a queue error.
+                    if sqlite_edit_requires_rebuild(&shape.columns, &cols)? {
+                        guard_sqlite_rebuild(&shape, Some(&cols))?;
+                    }
+                    sqlite_column_diff_sql(&table, &shape.columns, &cols, &shape.preserved)
                 }
                 "rebuild" => {
-                    let old = sqlite_live_columns(conn, &table)?;
-                    sqlite_rebuild_script(&table, &old, &cols)
+                    let shape = read_table_shape(&conn, &table)?;
+                    guard_sqlite_rebuild(&shape, Some(&cols))?;
+                    sqlite_rebuild_script(&table, &shape.columns, &cols, &shape.preserved)
                 }
                 _ => Err(format!("unknown op {op}")),
             }
         }
-        Some(_) => Err("Object management is PostgreSQL-only".into()),
-        None => Err("Connection not found".into()),
+        _ => Err("Object management is PostgreSQL-only".into()),
     }
 }
 
@@ -438,12 +385,12 @@ pub(crate) async fn get_available_extensions_inner(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     connection_id: &str,
 ) -> Result<Vec<ExtensionInfo>, String> {
-    let mut pm = pm.lock().await;
-    let client = match pm.get(connection_id) {
-        Some(DbHandle::Postgresql(c, _)) => c,
-        Some(_) => return Err("Extensions are PostgreSQL-only".into()),
-        None => return Err("Connection not found".into()),
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    let client = match db_handle {
+        DbHandle::Postgresql(c, _) => c,
+        _ => return Err("Extensions are PostgreSQL-only".into()),
     };
+    let client = client.lock().await;
     let rows = client
         .query(
             &crate::db::introspection::pg_available_extensions_query(),
@@ -482,18 +429,21 @@ pub(crate) async fn build_rebuild_script_inner(
     table: &str,
     new_columns: serde_json::Value,
 ) -> Result<String, String> {
-    let mut pm = pm.lock().await;
-    match pm.get(connection_id) {
-        Some(DbHandle::Sqlite(conn)) => {
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    match db_handle {
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
             let new_cols: Vec<SqliteColumn> =
                 serde_json::from_value(new_columns).map_err(|e| e.to_string())?;
-            let live = sqlite_live_columns(conn, table)?;
-            if let Some(reason) = sqlite_rebuild_refusal(&live) {
-                return Err(reason);
-            }
-            return Ok(sqlite_rebuild_script(table, &live, &new_cols)?.join(";\n"));
+            let shape = read_table_shape(&conn, table)?;
+            guard_sqlite_rebuild(&shape, Some(&new_cols))?;
+            return Ok(
+                sqlite_rebuild_script(table, &shape.columns, &new_cols, &shape.preserved)?
+                    .join(";\n"),
+            );
         }
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let new_cols: Vec<TableColumn> =
                 serde_json::from_value(new_columns).map_err(|e| e.to_string())?;
 
@@ -501,8 +451,8 @@ pub(crate) async fn build_rebuild_script_inner(
             //    unchanged (attribute edits belong in the diff path, not the rebuild).
             let live = client
                 .query(
-                    &crate::db::introspection::pg_columns_query(schema, table),
-                    &[],
+                    &crate::db::introspection::pg_columns_query(),
+                    &[&schema, &table],
                 )
                 .await
                 .map_err(|e| sanitize(&e.to_string()))?;
@@ -633,8 +583,7 @@ pub(crate) async fn build_rebuild_script_inner(
             };
             rebuild_script(&input, &new_cols)
         }
-        Some(_) => return Err("Rebuild is PostgreSQL-only".into()),
-        None => return Err("Connection not found".into()),
+        _ => return Err("Rebuild is PostgreSQL-only".into()),
     }
 }
 
@@ -665,12 +614,12 @@ pub(crate) async fn get_roles_inner(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     connection_id: &str,
 ) -> Result<Vec<crate::models::RoleInfo>, String> {
-    let mut pm = pm.lock().await;
-    let client = match pm.get(connection_id) {
-        Some(DbHandle::Postgresql(c, _)) => c,
-        Some(_) => return Err("Roles are PostgreSQL-only".into()),
-        None => return Err("Connection not found".into()),
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    let client = match db_handle {
+        DbHandle::Postgresql(c, _) => c,
+        _ => return Err("Roles are PostgreSQL-only".into()),
     };
+    let client = client.lock().await;
     let roles = client
         .query(&crate::db::introspection::pg_roles_query(), &[])
         .await
@@ -735,12 +684,12 @@ pub(crate) async fn get_role_privileges_inner(
     connection_id: &str,
     role: &str,
 ) -> Result<Vec<crate::models::PrivilegeEntry>, String> {
-    let mut pm = pm.lock().await;
-    let client = match pm.get(connection_id) {
-        Some(DbHandle::Postgresql(c, _)) => c,
-        Some(_) => return Err("Privileges are PostgreSQL-only".into()),
-        None => return Err("Connection not found".into()),
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    let client = match db_handle {
+        DbHandle::Postgresql(c, _) => c,
+        _ => return Err("Privileges are PostgreSQL-only".into()),
     };
+    let client = client.lock().await;
     validate_object_name(role)?; // role is interpolated into the privilege queries
     let mut out: Vec<crate::models::PrivilegeEntry> = Vec::new();
     let push = |out: &mut Vec<crate::models::PrivilegeEntry>,
@@ -759,8 +708,8 @@ pub(crate) async fn get_role_privileges_inner(
     };
     for row in client
         .query(
-            &crate::db::introspection::pg_table_privileges_query(role),
-            &[],
+            &crate::db::introspection::pg_table_privileges_query(),
+            &[&role],
         )
         .await
         .map_err(|e| sanitize(&e.to_string()))?
@@ -776,8 +725,8 @@ pub(crate) async fn get_role_privileges_inner(
     }
     for row in client
         .query(
-            &crate::db::introspection::pg_sequence_privileges_query(role),
-            &[],
+            &crate::db::introspection::pg_sequence_privileges_query(),
+            &[&role],
         )
         .await
         .map_err(|e| sanitize(&e.to_string()))?
@@ -793,8 +742,8 @@ pub(crate) async fn get_role_privileges_inner(
     }
     for row in client
         .query(
-            &crate::db::introspection::pg_routine_privileges_query(role),
-            &[],
+            &crate::db::introspection::pg_routine_privileges_query(),
+            &[&role],
         )
         .await
         .map_err(|e| sanitize(&e.to_string()))?
@@ -810,8 +759,8 @@ pub(crate) async fn get_role_privileges_inner(
     }
     for row in client
         .query(
-            &crate::db::introspection::pg_schema_privileges_query(role),
-            &[],
+            &crate::db::introspection::pg_schema_privileges_query(),
+            &[&role],
         )
         .await
         .map_err(|e| sanitize(&e.to_string()))?
@@ -827,8 +776,8 @@ pub(crate) async fn get_role_privileges_inner(
     }
     for row in client
         .query(
-            &crate::db::introspection::pg_database_privileges_query(role),
-            &[],
+            &crate::db::introspection::pg_database_privileges_query(),
+            &[&role],
         )
         .await
         .map_err(|e| sanitize(&e.to_string()))?
@@ -855,28 +804,48 @@ pub async fn get_role_privileges(
 }
 
 /// Check whether a table can be rebuilt (no triggers, policies, inheritance, partitioning, generated columns).
+///
+/// For SQLite the caller may pass the columns it is about to stage: the answer
+/// is then "would *this* submission need a rebuild, and can that rebuild be
+/// faithful?". Without columns the guard answers for the live table as-is,
+/// which is what a reorder-only rebuild needs.
 pub(crate) async fn get_table_rebuild_readiness_inner(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     connection_id: &str,
     schema: &str,
     table: &str,
+    columns: Option<serde_json::Value>,
 ) -> Result<crate::models::RebuildReadiness, String> {
-    let mut pm = pm.lock().await;
-    match pm.get(connection_id) {
-        Some(DbHandle::Sqlite(conn)) => {
-            let live = sqlite_live_columns(conn, table)?;
-            Ok(match sqlite_rebuild_refusal(&live) {
-                Some(reason) => crate::models::RebuildReadiness {
-                    ok: false,
-                    reasons: vec![reason],
-                },
-                None => crate::models::RebuildReadiness {
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    match db_handle {
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            let shape = read_table_shape(&conn, table)?;
+            let proposed: Option<Vec<SqliteColumn>> = match columns {
+                Some(value) => Some(serde_json::from_value(value).map_err(|e| e.to_string())?),
+                None => None,
+            };
+            let needs_rebuild = match &proposed {
+                Some(proposed) => sqlite_edit_requires_rebuild(&shape.columns, proposed)?,
+                None => true,
+            };
+            if !needs_rebuild {
+                return Ok(crate::models::RebuildReadiness {
                     ok: true,
                     reasons: vec![],
-                },
+                });
+            }
+            let reasons = match &proposed {
+                Some(proposed) => shape.blockers_for(proposed),
+                None => shape.blockers(),
+            };
+            Ok(crate::models::RebuildReadiness {
+                ok: reasons.is_empty(),
+                reasons,
             })
         }
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let row = client
                 .query_one(
                     &crate::db::introspection::pg_rebuild_readiness_query(),
@@ -905,8 +874,7 @@ pub(crate) async fn get_table_rebuild_readiness_inner(
                 reasons,
             })
         }
-        Some(_) => return Err("Rebuild is PostgreSQL-only".into()),
-        None => return Err("Connection not found".into()),
+        _ => return Err("Rebuild is PostgreSQL-only".into()),
     }
 }
 
@@ -915,9 +883,17 @@ pub async fn get_table_rebuild_readiness(
     connection_id: String,
     schema: String,
     table: String,
+    columns: Option<serde_json::Value>,
     state: State<'_, crate::AppState>,
 ) -> Result<crate::models::RebuildReadiness, String> {
-    get_table_rebuild_readiness_inner(&state.pool_manager, &connection_id, &schema, &table).await
+    get_table_rebuild_readiness_inner(
+        &state.pool_manager,
+        &connection_id,
+        &schema,
+        &table,
+        columns,
+    )
+    .await
 }
 
 /// List non-system tablespaces for the table-options picker.
@@ -925,12 +901,12 @@ pub(crate) async fn get_tablespaces_inner(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     connection_id: &str,
 ) -> Result<Vec<crate::models::TablespaceInfo>, String> {
-    let mut pm = pm.lock().await;
-    let client = match pm.get(connection_id) {
-        Some(DbHandle::Postgresql(c, _)) => c,
-        Some(_) => return Err("Tablespaces are PostgreSQL-only".into()),
-        None => return Err("Connection not found".into()),
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    let client = match db_handle {
+        DbHandle::Postgresql(c, _) => c,
+        _ => return Err("Tablespaces are PostgreSQL-only".into()),
     };
+    let client = client.lock().await;
     let rows = client
         .query(&crate::db::introspection::pg_tablespaces_query(), &[])
         .await

@@ -3,7 +3,9 @@
 //! This module provides pure SQL builder functions, pagination helpers,
 //! and Tauri commands for the database viewer.
 
+use crate::db::ident::{self, Engine};
 use crate::db::pool::{ConnectionPoolManager, DbConfig, DbHandle};
+use crate::models::connection::connection_not_found;
 use crate::models::db_viewer::{
     Change, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, HypertableInfo,
     HypertableListResponse, IndexInfo, QueryResult, SequenceInfo, TableInfo, TriggerInfo,
@@ -29,55 +31,19 @@ use tokio_postgres::types::{Format, IsNull, ToSql, Type};
 pub(crate) fn pg_error_message(err: &tokio_postgres::Error) -> String {
     // Prefer the Debug representation, which includes severity + message + code.
     let raw = format!("{:?}", err);
-    // Redact postgres URL fragments and password=... sequences.
-    let redacted = redact_secrets(&raw);
-    truncate(&redacted, 400)
+    // One shared, bounded, Unicode-safe redactor (see `crate::diagnostics`).
+    crate::diagnostics::redact(&raw, crate::diagnostics::MAX_ERROR_BYTES)
 }
 
-/// Redact credential-bearing substrings from an error/debug string so we
-/// never leak usernames/passwords/connection strings to the frontend.
-fn redact_secrets(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    // Replace `postgresql://user:password@host` style URLs with safely redacted text.
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if s[i..].to_lowercase().starts_with("postgres://")
-            || s[i..].to_lowercase().starts_with("postgresql://")
-        {
-            // Skip the scheme.
-            let scheme_end = i + s[i..].find("://").unwrap_or(0) + 3;
-            out.push_str("[redacted-url://");
-            // Find end of authority (next '/'. '/', or end).
-            let rest = &s[scheme_end..];
-            let end = match rest.find(['/', '?']) {
-                Some(pos) => scheme_end + pos,
-                None => s.len(),
-            };
-            i = end;
-        } else if s[i..].to_lowercase().starts_with("password=") {
-            out.push_str("[redacted]");
-            // Skip to next whitespace or end.
-            let rest = &s[i + "password=".len()..];
-            let skip = rest.find(char::is_whitespace).unwrap_or(rest.len());
-            i += "password=".len() + skip;
-        } else {
-            // Copy one char.
-            let ch = s[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
-        }
-    }
-    out
-}
+/// Largest page a table browse may request.
+///
+/// The bounds exist because the page window reaches the `LIMIT`/`OFFSET` of a
+/// generated statement: an unbounded size can exhaust memory, and an unbounded
+/// page can overflow the offset. 500 matches the largest page the grid offers.
+pub const MAX_TABLE_PAGE_SIZE: i64 = 500;
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max.saturating_sub(3)])
-    }
-}
+/// Default page size when the caller does not ask for one.
+pub const DEFAULT_TABLE_PAGE_SIZE: i64 = 50;
 
 /// Calculate the database offset for a given page and page size.
 ///
@@ -87,6 +53,35 @@ fn truncate(s: &str, max: usize) -> String {
 /// - page 5, page_size 25 => offset 100
 pub fn offset(page: i64, page_size: i64) -> i64 {
     (page - 1) * page_size
+}
+
+/// Resolve a requested page window into `(page, page_size, offset)`.
+///
+/// The page window is **untrusted input** from the renderer, so it is either
+/// used exactly as asked or rejected — it is never clamped, rounded, or
+/// silently replaced with a different window. Quietly turning `page_size: 0`
+/// into a default, or `page: 0` into page 1, would describe rows the caller did
+/// not ask for; turning a huge page into a wrapped offset would return a
+/// different page entirely.
+///
+/// * `page` must be 1 or greater (pages are 1-based).
+/// * `page_size` must be within `1..=MAX_TABLE_PAGE_SIZE`.
+/// * `(page - 1) * page_size` must be representable as an `i64`.
+pub fn page_window(page: Option<i64>, page_size: Option<i64>) -> Result<(i64, i64, i64), String> {
+    let page = page.unwrap_or(1);
+    if page < 1 {
+        return Err(format!("page {page} must be 1 or greater"));
+    }
+    let page_size = page_size.unwrap_or(DEFAULT_TABLE_PAGE_SIZE);
+    if !(1..=MAX_TABLE_PAGE_SIZE).contains(&page_size) {
+        return Err(format!(
+            "page size {page_size} must be between 1 and {MAX_TABLE_PAGE_SIZE}"
+        ));
+    }
+    let offset = (page - 1)
+        .checked_mul(page_size)
+        .ok_or_else(|| format!("page {page} with page size {page_size} is out of range"))?;
+    Ok((page, page_size, offset))
 }
 
 /// Split a `pg_get_indexdef(...,0,true)` / `pg_attribute` column CSV into a
@@ -142,38 +137,106 @@ pub fn get_sqlite_ddl(conn: &rusqlite::Connection, table: &str) -> Result<String
 /// single table. The password is intentionally NOT part of these args — it is
 /// passed via the `PGPASSWORD` environment variable so it never appears on
 /// the command line.
-pub fn build_pg_dump_ddl_args(schema: &str, table: &str) -> Vec<String> {
-    vec![
+///
+/// `--schema` / `--table` take *patterns*, not raw names: pg_dump parses them
+/// with psql's `\d` rules, so a legal name containing a space, a double quote,
+/// or a wildcard has to be identifier-quoted (`we ird "tbl"` →
+/// `"we ird ""tbl"""`) or the pattern simply matches no table. Quoting every
+/// name also stops a name like `user*` from selecting unrelated tables.
+pub fn build_pg_dump_ddl_args(schema: &str, table: &str) -> Result<Vec<String>, String> {
+    Ok(vec![
         "--schema-only".into(),
         "--no-owner".into(),
-        format!("--schema={schema}"),
-        format!("--table={table}"),
-    ]
+        format!(
+            "--schema={}",
+            ident::quote_checked(Engine::PostgreSql, schema)?
+        ),
+        format!(
+            "--table={}",
+            ident::quote_checked(Engine::PostgreSql, table)?
+        ),
+    ])
 }
 
 /// Check whether the `pg_dump` binary at the given path (bare name or
 /// absolute path) is executable and reports a version.
+///
+/// Bounded like every other tool probe: a `pg_dump` that hangs on `--version`
+/// used to block the DDL-copy caller indefinitely. A tool that cannot be
+/// launched or does not answer within the deadline is reported as unavailable.
 pub fn pg_dump_available_at(path: &str) -> bool {
-    std::process::Command::new(path)
-        .arg("--version")
-        .output()
-        .is_ok()
+    crate::db::tool_resolver::probe_outcome(
+        std::path::Path::new(path),
+        crate::db::tool_resolver::PROBE_TIMEOUT,
+    )
+    .map(|ok| ok)
+    .unwrap_or(false)
+}
+
+/// Interpret a finished `pg_dump` job: stdout is payload, stderr is a
+/// diagnostic.
+///
+/// **stdout is the copied DDL**, so on success its bytes are returned verbatim.
+/// Redacting them would rewrite legal SQL — a `DEFAULT 'postgresql://…'`, a
+/// comment, a check constraint — and the error-path size cap truncated every
+/// statement longer than a few hundred bytes. **stderr is a diagnostic**, so a
+/// failed job reports it redacted, Unicode-safe, and bounded, and carries no
+/// credentials from the connection `pg_dump` was given.
+///
+/// `target` (`schema.table`) is only used to name what failed.
+pub fn ddl_from_dump_output(
+    target: &str,
+    success: bool,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<String, String> {
+    if success {
+        let ddl = String::from_utf8_lossy(stdout).to_string();
+        if ddl.trim().is_empty() {
+            // A `--table=` pattern that matched nothing exits successfully with
+            // no output. Copying "" would look like a copied statement.
+            return Err(format!(
+                "pg_dump returned no DDL for {target}. Check that it still exists and that your role can read its definition."
+            ));
+        }
+        return Ok(ddl);
+    }
+    let raw = String::from_utf8_lossy(stderr);
+    let detail = sanitize_error(raw.trim());
+    Err(if detail.is_empty() {
+        format!("pg_dump failed while reading {target} and reported no diagnostic")
+    } else {
+        detail
+    })
+}
+
+/// Read shared state on the DDL path even if a lock was poisoned.
+///
+/// A panic while holding a `std::sync::Mutex` poisons it, and every later
+/// `lock()` then reports the poison — so one failed diagnostic path would make
+/// every subsequent DDL copy fail with a message about the lock instead of
+/// copying anything. The store and the SSH manager hold no invariant a panic
+/// could leave half-updated (an entry is either present or not), so a poisoned
+/// guard is recovered rather than turned into a permanent error.
+fn lock_recovering_poison<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Extract a single table's DDL from a PostgreSQL database by shelling out to
 /// `pg_dump` (system-first, bundled-fallback) with `--schema-only`.
+///
 /// Credentials are supplied via the `PGPASSWORD` environment variable only —
-/// never as argv — and are never logged. Execution requires a reachable
-/// PostgreSQL server plus an installed `pg_dump`; unit tests cover the
-/// argument construction instead.
+/// never as argv — and are never logged. The connection's own TLS decision is
+/// applied to this process (`PGSSLMODE` plus any certificate material) so a
+/// `verify-full` connection cannot be stripped back to libpq's plaintext-capable
+/// `prefer` by an on-path attacker; a tunnelled connection dials the tunnel's
+/// loopback endpoint while still verifying the saved server name. Execution
+/// requires a reachable PostgreSQL server plus an installed `pg_dump`; unit
+/// tests cover the argument and environment construction instead.
 pub fn get_pg_ddl_via_dump(
     schema: &str,
     table: &str,
-    host: &str,
-    port: u16,
-    user: &str,
-    db: &str,
-    password: &str,
+    conn: &crate::commands::backup::PgConnParams,
     pg_dump_path: &str,
 ) -> Result<String, String> {
     if !pg_dump_available_at(pg_dump_path) {
@@ -182,138 +245,166 @@ pub fn get_pg_ddl_via_dump(
         );
     }
     let mut cmd = std::process::Command::new(pg_dump_path);
-    cmd.args([
-        format!("--host={host}"),
-        format!("--port={port}"),
-        format!("--username={user}"),
-        format!("--dbname={db}"),
-    ]);
-    cmd.args(build_pg_dump_ddl_args(schema, table));
-    cmd.env("PGPASSWORD", password);
-    let out = cmd
-        .output()
+    cmd.args(crate::commands::backup::base_conn_args(conn));
+    cmd.args(build_pg_dump_ddl_args(schema, table)?);
+    cmd.env("PGPASSWORD", &conn.password);
+    // Same decision as the app's driver, and refused before spawning when the
+    // stored mode is not one libpq can enforce.
+    conn.apply_tool_env(&mut cmd)?;
+    // The probe above and this run both go through `job::spawn_tool` so a
+    // transient `ETXTBSY` (the tool's file still open for writing elsewhere)
+    // is retried instead of failing the copy.
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let out = crate::job::spawn_tool(&mut cmd)
+        .and_then(|child| child.wait_with_output())
         .map_err(|e| format!("pg_dump spawn failed: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).to_string());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    ddl_from_dump_output(
+        &format!("{schema}.{table}"),
+        out.status.success(),
+        &out.stdout,
+        &out.stderr,
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Filter / Sort → SQL helpers
 // ---------------------------------------------------------------------------
-
-/// Returns true when the column name contains only safe identifier characters.
-fn is_safe_identifier(col: &str) -> bool {
-    !col.is_empty() && col.chars().all(|c| c.is_alphanumeric() || c == '_')
-}
+//
+// Column names are legal user data: they may contain double quotes, spaces,
+// single quotes, or be SQL keywords. Every clause below quotes the name through
+// `db::ident` (one shared, tested helper per engine) and *fails* when a request
+// cannot be represented. Silently dropping a rule would return unfiltered or
+// unsorted rows under filter/sort controls that look active — a wrong-results
+// bug that no error message would explain.
 
 /// Build a WHERE clause from filter rules for PostgreSQL (parameterized $n).
 /// Returns `(where_clause, param_values)` where `where_clause` starts with
 /// " AND " (suitable for appending after WHERE 1=1).
-fn build_pg_filter_clause(
+///
+/// Values are always bound (`$n`), never interpolated.
+pub(crate) fn build_pg_filter_clause(
     filters: &[crate::models::db_viewer::FilterRule],
     param_start: &mut usize,
-) -> (String, Vec<String>) {
+) -> Result<(String, Vec<String>), String> {
     let mut clauses = String::new();
     let mut params: Vec<String> = Vec::new();
 
     for rule in filters {
-        let col = &rule.column;
-        if !is_safe_identifier(col) {
-            continue; // skip unsafe column names
-        }
+        let col = ident::quote_checked(Engine::PostgreSql, &rule.column)
+            .map_err(|e| format!("cannot apply filter on column {:?}: {e}", rule.column))?;
 
         let clause = match rule.operator.as_str() {
             "null" => {
-                format!(" AND \"{}\" IS NULL", col)
+                format!(" AND {col} IS NULL")
             }
             "notnull" => {
-                format!(" AND \"{}\" IS NOT NULL", col)
+                format!(" AND {col} IS NOT NULL")
             }
             op @ ("eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt") => {
                 *param_start += 1;
                 let p = *param_start;
                 params.push(rule.value.clone());
                 match op {
-                    "eq" => format!(" AND \"{}\"::text = ${}", col, p),
-                    "neq" => format!(" AND \"{}\"::text != ${}", col, p),
-                    "contains" => format!(" AND \"{}\"::text ILIKE '%' || ${} || '%'", col, p),
-                    "starts" => format!(" AND \"{}\"::text ILIKE ${} || '%'", col, p),
-                    "ends" => format!(" AND \"{}\"::text ILIKE '%' || ${}", col, p),
-                    "gt" => format!(" AND \"{}\"::numeric > ${}::numeric", col, p),
-                    "lt" => format!(" AND \"{}\"::numeric < ${}::numeric", col, p),
+                    "eq" => format!(" AND {col}::text = ${p}"),
+                    "neq" => format!(" AND {col}::text != ${p}"),
+                    "contains" => format!(" AND {col}::text ILIKE '%' || ${p} || '%'"),
+                    "starts" => format!(" AND {col}::text ILIKE ${p} || '%'"),
+                    "ends" => format!(" AND {col}::text ILIKE '%' || ${p}"),
+                    // The value arrives as a string from the UI. `$n::numeric`
+                    // would make PostgreSQL infer the *parameter* as numeric, and
+                    // the text value then fails to serialize; `$n::text::numeric`
+                    // keeps the parameter a string and casts inside the server.
+                    "gt" => format!(" AND {col}::numeric > ${p}::text::numeric"),
+                    "lt" => format!(" AND {col}::numeric < ${p}::text::numeric"),
                     _ => unreachable!(),
                 }
             }
-            _ => continue, // unknown operator → skip
+            other => {
+                return Err(format!(
+                    "cannot apply filter on column {:?}: unsupported operator {other:?}",
+                    rule.column
+                ))
+            }
         };
         clauses.push_str(&clause);
     }
 
-    (clauses, params)
+    Ok((clauses, params))
 }
 
 /// Build a WHERE clause from filter rules for SQLite (positional ? params).
 fn build_sqlite_filter_clause(
     filters: &[crate::models::db_viewer::FilterRule],
-) -> (String, Vec<String>) {
+) -> Result<(String, Vec<String>), String> {
     let mut clauses = String::new();
     let mut params: Vec<String> = Vec::new();
 
     for rule in filters {
-        let col = &rule.column;
-        if !is_safe_identifier(col) {
-            continue;
-        }
+        let col = ident::quote_checked(Engine::Sqlite, &rule.column)
+            .map_err(|e| format!("cannot apply filter on column {:?}: {e}", rule.column))?;
 
         let clause = match rule.operator.as_str() {
             "null" => {
-                format!(" AND \"{}\" IS NULL", col)
+                format!(" AND {col} IS NULL")
             }
             "notnull" => {
-                format!(" AND \"{}\" IS NOT NULL", col)
+                format!(" AND {col} IS NOT NULL")
             }
             op @ ("eq" | "neq" | "contains" | "starts" | "ends" | "gt" | "lt") => {
                 params.push(rule.value.clone());
                 match op {
-                    "eq" => format!(" AND \"{}\" = ?", col),
-                    "neq" => format!(" AND \"{}\" != ?", col),
-                    "contains" => format!(" AND \"{}\" LIKE '%' || ? || '%'", col),
-                    "starts" => format!(" AND \"{}\" LIKE ? || '%'", col),
-                    "ends" => format!(" AND \"{}\" LIKE '%' || ?", col),
-                    "gt" => format!(" AND CAST(\"{}\" AS REAL) > CAST(? AS REAL)", col),
-                    "lt" => format!(" AND CAST(\"{}\" AS REAL) < CAST(? AS REAL)", col),
+                    "eq" => format!(" AND {col} = ?"),
+                    "neq" => format!(" AND {col} != ?"),
+                    "contains" => format!(" AND {col} LIKE '%' || ? || '%'"),
+                    "starts" => format!(" AND {col} LIKE ? || '%'"),
+                    "ends" => format!(" AND {col} LIKE '%' || ?"),
+                    "gt" => format!(" AND CAST({col} AS REAL) > CAST(? AS REAL)"),
+                    "lt" => format!(" AND CAST({col} AS REAL) < CAST(? AS REAL)"),
                     _ => unreachable!(),
                 }
             }
-            _ => continue,
+            other => {
+                return Err(format!(
+                    "cannot apply filter on column {:?}: unsupported operator {other:?}",
+                    rule.column
+                ))
+            }
         };
         clauses.push_str(&clause);
     }
 
-    (clauses, params)
+    Ok((clauses, params))
 }
 
 /// Build an ORDER BY clause from sort rules.
-/// Returns an empty string when there are no valid sort rules.
-fn build_order_clause(sorts: &[crate::models::db_viewer::SortRule]) -> String {
+/// Returns an empty string when there are no sort rules; an unrepresentable
+/// column or direction is an error rather than a dropped sort.
+fn build_order_clause(
+    engine: Engine,
+    sorts: &[crate::models::db_viewer::SortRule],
+) -> Result<String, String> {
     let mut parts: Vec<String> = Vec::new();
     for rule in sorts {
-        if !is_safe_identifier(&rule.column) {
-            continue;
-        }
+        let col = ident::quote_checked(engine, &rule.column)
+            .map_err(|e| format!("cannot apply sort on column {:?}: {e}", rule.column))?;
         let dir = match rule.order.as_str() {
             "asc" | "ASC" => "ASC",
             "desc" | "DESC" => "DESC",
-            _ => continue,
+            other => {
+                return Err(format!(
+                    "cannot apply sort on column {:?}: unsupported direction {other:?}",
+                    rule.column
+                ))
+            }
         };
-        parts.push(format!("\"{}\" {}", rule.column, dir));
+        parts.push(format!("{col} {dir}"));
     }
     if parts.is_empty() {
-        String::new()
+        Ok(String::new())
     } else {
-        format!(" ORDER BY {}", parts.join(", "))
+        Ok(format!(" ORDER BY {}", parts.join(", ")))
     }
 }
 
@@ -348,17 +439,20 @@ fn build_pg_select_from_items(
     table: &str,
     items: Vec<String>,
     append_locator: bool,
-) -> String {
+) -> Result<String, String> {
     let mut all_cols = items;
     if append_locator {
-        all_cols.push("ctid".to_string());
+        // Cast to text: `ctid` is PostgreSQL's internal `tid` type, which the
+        // text decoders in `pg_value_to_json` reject (it would arrive as NULL),
+        // so the locator could never address a row. PostgreSQL parses the same
+        // textual "(block,offset)" back into a `tid` when the bound parameter is
+        // compared against `ctid` in the UPDATE/DELETE predicate.
+        all_cols.push("ctid::text".to_string());
     }
-    format!(
-        "SELECT {} FROM \"{}\".\"{}\"",
-        all_cols.join(", "),
-        schema,
-        table
-    )
+    // A schema/table that cannot be represented fails here, with a reason,
+    // instead of producing a statement aimed at the wrong object.
+    let from = ident::qualified(Engine::PostgreSql, schema, table)?;
+    Ok(format!("SELECT {} FROM {}", all_cols.join(", "), from))
 }
 
 /// Build the PG data SELECT, appending `ctid` only when `append_locator` is
@@ -368,13 +462,16 @@ pub(crate) fn build_pg_data_select(
     table: &str,
     visible_cols: &[String],
     append_locator: bool,
-) -> String {
-    let base_cols: Vec<String> = visible_cols.iter().map(|c| format!("\"{}\"", c)).collect();
+) -> Result<String, String> {
+    let base_cols: Vec<String> = visible_cols
+        .iter()
+        .map(|c| ident::quote(Engine::PostgreSql, c))
+        .collect();
     build_pg_select_from_items(schema, table, base_cols, append_locator)
 }
 
 /// Build the SQLite data SELECT, appending `rowid` when `append_locator` is
-/// true (a no-PK *physical table*) so later UPDATE/DELETE queue changes can
+/// true (no-PK *physical table*) so later UPDATE/DELETE queue changes can
 /// target the exact row. Views expose no `rowid`, so callers must pass `false`
 /// for them. The table is unqualified; SQLite browsing in this app is always
 /// scoped to the `main` schema, where an unqualified name resolves identically.
@@ -383,85 +480,92 @@ pub(crate) fn build_sqlite_data_select(
     visible_cols: &[String],
     append_locator: bool,
 ) -> String {
-    let base_cols: Vec<String> = visible_cols.iter().map(|c| format!("\"{}\"", c)).collect();
-    let mut all_cols = base_cols;
+    let mut all_cols: Vec<String> = visible_cols
+        .iter()
+        .map(|c| ident::quote(Engine::Sqlite, c))
+        .collect();
     if append_locator {
         all_cols.push("rowid".to_string());
     }
-    format!("SELECT {} FROM \"{}\"", all_cols.join(", "), table)
+    format!(
+        "SELECT {} FROM {}",
+        all_cols.join(", "),
+        ident::quote(Engine::Sqlite, table)
+    )
+}
+
+/// The statement for one SQLite single-row write.
+///
+/// The predicate is the complete Row Identity plus `guard` — the original
+/// values the user saw, which every engine binds the same way (see
+/// [`crate::db::row_write`]).
+fn sqlite_row_write(
+    kind: crate::db::row_write::WriteKind,
+    schema: &str,
+    table: &str,
+    identity: &[(String, serde_json::Value)],
+    new_data: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
+) -> Result<(String, Vec<serde_json::Value>), String> {
+    let stmt = crate::db::row_write::RowWrite {
+        engine: Engine::Sqlite,
+        schema,
+        table,
+        kind,
+        identity,
+        new_data,
+        guard: guard.to_vec(),
+    }
+    .statement()?;
+    Ok((stmt.sql, stmt.params))
 }
 
 /// Build a parameterized UPDATE SQL statement.
 ///
-/// The returned SQL uses `?` placeholders for both the SET values and the
-/// WHERE primary-key conditions.
+/// The returned SQL uses `?` placeholders for the SET values, then the
+/// primary-key conditions, then any original-value guards.
 ///
 /// Example output:
 /// ```sql
-/// UPDATE "public"."users" SET "name" = ?, "email" = ? WHERE "id" = ?
+/// UPDATE "public"."users" SET "name" = ? WHERE "id" = ? AND "name" = ?
 /// ```
 pub fn build_update_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
     new_data: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
 ) -> Result<(String, Vec<serde_json::Value>), String> {
-    if primary_key.is_empty() {
-        return Err("cannot update a row without a primary key or row locator".to_string());
-    }
-    let set_clause: Vec<String> = new_data
-        .iter()
-        .map(|(col, _)| format!("\"{}\" = ?", col))
-        .collect();
-    let where_clause: Vec<String> = primary_key
-        .iter()
-        .map(|(col, _)| format!("\"{}\" = ?", col))
-        .collect();
-    // Params must follow placeholder order: SET values first, then WHERE.
-    let params: Vec<serde_json::Value> = new_data
-        .iter()
-        .chain(primary_key.iter())
-        .map(|(_, v)| v.clone())
-        .collect();
-    Ok((
-        format!(
-            "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
-            schema,
-            table,
-            set_clause.join(", "),
-            where_clause.join(" AND ")
-        ),
-        params,
-    ))
+    sqlite_row_write(
+        crate::db::row_write::WriteKind::Update,
+        schema,
+        table,
+        primary_key,
+        new_data,
+        guard,
+    )
 }
 
 /// Build a parameterized DELETE SQL statement.
 ///
 /// Example output:
 /// ```sql
-/// DELETE FROM "public"."users" WHERE "id" = ?
+/// DELETE FROM "public"."users" WHERE "id" = ? AND "name" = ?
 /// ```
 pub fn build_delete_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
 ) -> Result<(String, Vec<serde_json::Value>), String> {
-    if primary_key.is_empty() {
-        return Err("cannot delete a row without a primary key or row locator".to_string());
-    }
-    let where_clause: Vec<String> = primary_key
-        .iter()
-        .map(|(col, _)| format!("\"{}\" = ?", col))
-        .collect();
-    Ok((
-        format!(
-            "DELETE FROM \"{}\".\"{}\" WHERE {}",
-            schema,
-            table,
-            where_clause.join(" AND ")
-        ),
-        primary_key.iter().map(|(_, v)| v.clone()).collect(),
-    ))
+    sqlite_row_write(
+        crate::db::row_write::WriteKind::Delete,
+        schema,
+        table,
+        primary_key,
+        &[],
+        guard,
+    )
 }
 
 /// Build a parameterized INSERT SQL statement.
@@ -470,13 +574,27 @@ pub fn build_delete_sql(
 /// ```sql
 /// INSERT INTO "public"."users" ("id", "name") VALUES (?, ?)
 /// ```
+///
+/// A table with no editable columns (every field left at its default — e.g. a
+/// row whose only editable columns are all `DEFAULT`) has nothing to bind, and
+/// `INSERT INTO t () VALUES ()` is a syntax error. `DEFAULT VALUES` is SQLite's
+/// valid spelling, mirroring the PostgreSQL builder.
 pub fn build_insert_sql(schema: &str, table: &str, columns: &[String]) -> String {
-    let cols: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c)).collect();
+    // `build_insert_sql` stays infallible for its many callers; a name that
+    // cannot be represented yields SQL the server rejects loudly (never a
+    // statement against a different object), while the filter/sort seams
+    // reject such names up front.
+    let into = ident::qualified_unchecked(Engine::Sqlite, schema, table);
+    if columns.is_empty() {
+        return format!("INSERT INTO {into} DEFAULT VALUES");
+    }
+    let cols: Vec<String> = columns
+        .iter()
+        .map(|c| ident::quote(Engine::Sqlite, c))
+        .collect();
     let placeholders: Vec<&str> = vec!["?"; columns.len()];
     format!(
-        "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({})",
-        schema,
-        table,
+        "INSERT INTO {into} ({}) VALUES ({})",
         cols.join(", "),
         placeholders.join(", ")
     )
@@ -501,35 +619,19 @@ pub fn build_pg_update_sql(
     table: &str,
     primary_key: &[(String, serde_json::Value)],
     new_data: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
 ) -> Result<(String, Vec<serde_json::Value>), String> {
-    if primary_key.is_empty() {
-        return Err("cannot update a row without a primary key or row locator".to_string());
+    let stmt = crate::db::row_write::RowWrite {
+        engine: Engine::PostgreSql,
+        schema,
+        table,
+        kind: crate::db::row_write::WriteKind::Update,
+        identity: primary_key,
+        new_data,
+        guard: guard.to_vec(),
     }
-    let mut params: Vec<serde_json::Value> = Vec::new();
-    let set_clause: Vec<String> = new_data
-        .iter()
-        .map(|(col, val)| {
-            params.push(val.clone());
-            format!("\"{}\" = ${}", col, params.len())
-        })
-        .collect();
-    let where_clause: Vec<String> = primary_key
-        .iter()
-        .map(|(col, val)| {
-            params.push(val.clone());
-            format!("\"{}\" = ${}", col, params.len())
-        })
-        .collect();
-    Ok((
-        format!(
-            "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
-            schema,
-            table,
-            set_clause.join(", "),
-            where_clause.join(" AND ")
-        ),
-        params,
-    ))
+    .statement()?;
+    Ok((stmt.sql, stmt.params))
 }
 
 /// Build a PostgreSQL DELETE statement.
@@ -537,27 +639,19 @@ pub fn build_pg_delete_sql(
     schema: &str,
     table: &str,
     primary_key: &[(String, serde_json::Value)],
+    guard: &[(String, serde_json::Value)],
 ) -> Result<(String, Vec<serde_json::Value>), String> {
-    if primary_key.is_empty() {
-        return Err("cannot delete a row without a primary key or row locator".to_string());
+    let stmt = crate::db::row_write::RowWrite {
+        engine: Engine::PostgreSql,
+        schema,
+        table,
+        kind: crate::db::row_write::WriteKind::Delete,
+        identity: primary_key,
+        new_data: &[],
+        guard: guard.to_vec(),
     }
-    let mut params: Vec<serde_json::Value> = Vec::new();
-    let where_clause: Vec<String> = primary_key
-        .iter()
-        .map(|(col, val)| {
-            params.push(val.clone());
-            format!("\"{}\" = ${}", col, params.len())
-        })
-        .collect();
-    Ok((
-        format!(
-            "DELETE FROM \"{}\".\"{}\" WHERE {}",
-            schema,
-            table,
-            where_clause.join(" AND ")
-        ),
-        params,
-    ))
+    .statement()?;
+    Ok((stmt.sql, stmt.params))
 }
 
 /// Build a PostgreSQL INSERT statement.
@@ -568,13 +662,14 @@ pub fn build_pg_insert_sql(
 ) -> (String, Vec<serde_json::Value>) {
     // A table with no editable columns (e.g. only a serial/identity PK) inserts
     // with all defaults — `INSERT ... () VALUES ()` is invalid SQL.
+    let into = ident::qualified_unchecked(Engine::PostgreSql, schema, table);
     if columns.is_empty() {
-        return (
-            format!("INSERT INTO \"{}\".\"{}\" DEFAULT VALUES", schema, table),
-            vec![],
-        );
+        return (format!("INSERT INTO {into} DEFAULT VALUES"), vec![]);
     }
-    let cols: Vec<String> = columns.iter().map(|(c, _)| format!("\"{}\"", c)).collect();
+    let cols: Vec<String> = columns
+        .iter()
+        .map(|(c, _)| ident::quote(Engine::PostgreSql, c))
+        .collect();
     let mut params: Vec<serde_json::Value> = Vec::new();
     let placeholders: Vec<String> = columns
         .iter()
@@ -585,9 +680,7 @@ pub fn build_pg_insert_sql(
         .collect();
     (
         format!(
-            "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({})",
-            schema,
-            table,
+            "INSERT INTO {into} ({}) VALUES ({})",
             cols.join(", "),
             placeholders.join(", ")
         ),
@@ -691,12 +784,14 @@ fn json_to_sqlite_value(v: &serde_json::Value) -> rusqlite::types::Value {
 /// Emits `$N` placeholders; callers bind one row of values per execution so
 /// the same statement can be reused for every row in the batch.
 pub fn build_pg_bulk_insert_sql(schema: &str, table: &str, columns: &[String]) -> String {
-    let cols: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c)).collect();
+    let cols: Vec<String> = columns
+        .iter()
+        .map(|c| ident::quote(Engine::PostgreSql, c))
+        .collect();
     let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
+    let into = ident::qualified_unchecked(Engine::PostgreSql, schema, table);
     format!(
-        "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({})",
-        schema,
-        table,
+        "INSERT INTO {into} ({}) VALUES ({})",
         cols.join(", "),
         placeholders.join(", ")
     )
@@ -705,13 +800,15 @@ pub fn build_pg_bulk_insert_sql(schema: &str, table: &str, columns: &[String]) -
 /// Build a `DROP TABLE` statement (schema-qualified). SQLite accepts the same
 /// qualified form against the `main` schema.
 pub fn build_drop_table_sql(schema: &str, table: &str) -> String {
-    format!("DROP TABLE \"{}\".\"{}\"", schema, table)
+    let target = ident::qualified_unchecked(Engine::PostgreSql, schema, table);
+    format!("DROP TABLE {target}")
 }
 
 /// Build a `DELETE FROM` (empty-table) statement (schema-qualified). SQLite
 /// accepts the same qualified form against the `main` schema.
 pub fn build_empty_table_sql(schema: &str, table: &str) -> String {
-    format!("DELETE FROM \"{}\".\"{}\"", schema, table)
+    let target = ident::qualified_unchecked(Engine::PostgreSql, schema, table);
+    format!("DELETE FROM {target}")
 }
 
 /// Apply a batch of rows to a SQLite table inside a single transaction.
@@ -790,9 +887,26 @@ pub async fn apply_bulk_insert_pg(
 }
 
 /// Sanitize a raw error string before it crosses the IPC boundary: redact
-/// credential-like fragments (connection URLs, `password=...`) and cap length.
+/// credential-like fragments (connection URLs, `password=...`, `user=...`,
+/// `secret…`) and cap length.
+///
+/// Diagnostics only. Payload — copied DDL, rows, exports — never goes through
+/// here; see [`ddl_from_dump_output`].
 pub(crate) fn sanitize_error(e: &str) -> String {
-    truncate(&redact_secrets(e), 400)
+    crate::diagnostics::redact(e, crate::diagnostics::MAX_ERROR_BYTES)
+}
+
+/// Original values of a queued write, where "absent" is legitimately empty.
+///
+/// `old_data` is optional in the payload (a delete staged before the field
+/// existed, or a caller that has no original values). An empty string is
+/// therefore *no originals*, not malformed JSON — a locator write that then has
+/// nothing to guard it still fails closed in `db::row_write`.
+fn parse_optional_json_pairs(json: &str) -> Result<Vec<(String, serde_json::Value)>, String> {
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    parse_json_pairs(json)
 }
 
 /// Parse a JSON object string (e.g. `{"id": 1}`) into ordered (column, value)
@@ -949,39 +1063,51 @@ where
 /// TLS in-process, where the bundled MariaDB client cannot.
 pub(crate) fn apply_mysql_tls(
     mut opts: sqlx::mysql::MySqlConnectOptions,
-    original_host: &str,
-    ssl_mode: Option<&str>,
+    tls: sqlx::mysql::MySqlSslMode,
     ssl_ca_path: Option<&str>,
-    via_tunnel: bool,
 ) -> sqlx::mysql::MySqlConnectOptions {
     use sqlx::mysql::MySqlSslMode;
 
-    // TLS: through a tunnel the peer is loopback, so verify-ca/verify-full
-    // degrade to encrypt-only `require`. Direct connections honor the mode.
-    let decision = crate::commands::ssh::effective_tls_decision(
-        crate::db::tls::tls_decision_for(original_host, ssl_mode),
-        via_tunnel,
-    );
-    match decision {
-        crate::db::tls::TlsDecision::Disable => {
-            opts = opts.ssl_mode(MySqlSslMode::Disabled);
-        }
-        crate::db::tls::TlsDecision::Require => {
-            opts = opts.ssl_mode(MySqlSslMode::Required);
-        }
-        crate::db::tls::TlsDecision::Verify => {
-            // sqlx 0.8 has no VerifyFull: verify-ca -> VerifyCa (chain only),
-            // verify-full -> VerifyIdentity (chain + hostname).
-            match ssl_mode {
-                Some("verify-ca") => opts = opts.ssl_mode(MySqlSslMode::VerifyCa),
-                _ => opts = opts.ssl_mode(MySqlSslMode::VerifyIdentity),
-            }
-            if let Some(ca) = ssl_ca_path {
-                opts = opts.ssl_ca(ca);
-            }
+    opts = opts.ssl_mode(tls);
+    if matches!(tls, MySqlSslMode::VerifyCa | MySqlSslMode::VerifyIdentity) {
+        if let Some(ca) = ssl_ca_path {
+            opts = opts.ssl_ca(ca);
         }
     }
     opts
+}
+
+/// Resolve a connection's `ssl_mode` into a sqlx `MySqlSslMode`.
+///
+/// An unrecognized mode is an error. sqlx 0.8 has no separate TLS hostname:
+/// `VerifyIdentity` checks the name it dials, and through a tunnel that name is
+/// loopback. So `verify-full` through a tunnel is refused (fail closed) rather
+/// than downgraded to encryption-only, while `verify-ca` maps to chain
+/// verification, which loopback forwarding can still establish.
+pub(crate) fn mysql_tls_mode(
+    original_host: &str,
+    ssl_mode: Option<&str>,
+    via_tunnel: bool,
+) -> Result<sqlx::mysql::MySqlSslMode, String> {
+    use sqlx::mysql::MySqlSslMode;
+
+    let decision = crate::db::tls::tls_decision_for(original_host, ssl_mode)?;
+    match decision {
+        crate::db::tls::TlsDecision::Disable => Ok(MySqlSslMode::Disabled),
+        crate::db::tls::TlsDecision::Require => Ok(MySqlSslMode::Required),
+        crate::db::tls::TlsDecision::Verify => {
+            let mode = crate::db::tls::parse_ssl_mode(ssl_mode)?;
+            match (mode, via_tunnel) {
+                // Chain verification survives loopback forwarding: the peer is
+                // still the real server, reached through the tunnel.
+                (Some(crate::db::tls::SslMode::VerifyCa), _) => Ok(MySqlSslMode::VerifyCa),
+                (_, false) => Ok(MySqlSslMode::VerifyIdentity),
+                _ => Err(format!(
+                    "verify-full through an SSH tunnel cannot verify the certificate against {original_host} (the MySQL driver verifies the address it dials, which is the tunnel's loopback endpoint); use verify-ca to verify the certificate chain through the tunnel, or connect without the tunnel"
+                )),
+            }
+        }
+    }
 }
 
 /// Build the final MySQL connect options (base params + TLS policy) for a
@@ -996,14 +1122,15 @@ pub(crate) fn mysql_connect_options(
     ssl_mode: Option<&str>,
     ssl_ca_path: Option<&str>,
     via_tunnel: bool,
-) -> sqlx::mysql::MySqlConnectOptions {
+) -> Result<sqlx::mysql::MySqlConnectOptions, String> {
+    let tls = mysql_tls_mode(original_host, ssl_mode, via_tunnel)?;
     let opts = sqlx::mysql::MySqlConnectOptions::new()
         .host(host)
         .port(port)
         .username(username)
         .password(password)
         .database(database);
-    apply_mysql_tls(opts, original_host, ssl_mode, ssl_ca_path, via_tunnel)
+    Ok(apply_mysql_tls(opts, tls, ssl_ca_path))
 }
 
 /// Open a single standalone MySQL connection for a non-browsing operation
@@ -1031,7 +1158,7 @@ pub(crate) async fn open_mysql_connection(
         ssl_mode,
         ssl_ca_path,
         via_tunnel,
-    );
+    )?;
     opts.connect()
         .await
         .map_err(|e| sanitize_error(&format!("MySQL connection failed: {e}")))
@@ -1041,6 +1168,10 @@ pub(crate) async fn open_mysql_connection(
 /// configured (binding 127.0.0.1 only), maps SSL modes, and registers a
 /// `DbHandle::MySql` pool. Errors are sanitized so no `mysql://user:pass@host`
 /// text leaks across the IPC boundary.
+///
+/// The tunnel, pool handle and cancellation handle are only published once the
+/// pool has actually connected, so a failed attempt cannot leave a half-built
+/// session behind or disturb the one it was replacing.
 pub(crate) async fn run_mysql_connect(
     connection_id: &str,
     config: &crate::db::pool::DbConfig,
@@ -1053,43 +1184,20 @@ pub(crate) async fn run_mysql_connect(
         return Err("host is required".to_string());
     }
 
-    let target_host: String;
-    let target_port: u16;
-    let via_tunnel: bool;
-
-    if let Some(ssh_cfg) = config.ssh_config() {
-        let key = connection_id.to_string();
-        let remote_host = config.host.clone();
-        let remote_port = config.port.unwrap_or(3306) as u16;
-        let pw = config.ssh_password.clone();
-        let pp = config.ssh_passphrase.clone();
-        let backend = ssh_manager.lock().unwrap().backend_clone();
-        let tunnel = tokio::task::spawn_blocking(move || {
-            backend.open(
-                &key,
-                &ssh_cfg,
-                &remote_host,
-                remote_port,
-                pw.as_deref(),
-                pp.as_deref(),
-            )
-        })
-        .await
-        .map_err(|e| format!("Connection failed: {e}"))?
+    let via_ssh = config.ssh_config().is_some();
+    // TLS first: an unknown mode, or verify-full through a tunnel (which MySQL
+    // cannot verify against the real hostname), is refused before any tunnel is
+    // opened on its behalf.
+    let tls = mysql_tls_mode(&config.host, config.ssl_mode.as_deref(), via_ssh)
         .map_err(|e| sanitize_error(&e))?;
-        let lp = tunnel.local_port;
-        ssh_manager
-            .lock()
-            .unwrap()
-            .insert_tunnel(connection_id.to_string(), tunnel);
-        target_host = "127.0.0.1".to_string();
-        target_port = lp;
-        via_tunnel = true;
-    } else {
-        target_host = config.host.clone();
-        target_port = config.port.unwrap_or(3306) as u16;
-        via_tunnel = false;
-    }
+
+    // The tunnel is opened privately and only published once the pool connects,
+    // so a failed attempt cannot disturb the session it was replacing.
+    let attempt =
+        crate::db::lifecycle::ConnectionAttempt::begin(connection_id, config, 3306, ssh_manager)
+            .await?;
+    // TLS is already resolved above, so only the endpoint is needed here.
+    let (target_host, target_port, _via_tunnel) = attempt.target(config, 3306);
 
     let opts = MySqlConnectOptions::new()
         .host(&target_host)
@@ -1100,13 +1208,7 @@ pub(crate) async fn run_mysql_connect(
 
     // TLS: shared with the native restore path so browsing and restore make
     // identical TLS decisions.
-    let opts = apply_mysql_tls(
-        opts,
-        &config.host,
-        config.ssl_mode.as_deref(),
-        config.ssl_ca_path.as_deref(),
-        via_tunnel,
-    );
+    let opts = apply_mysql_tls(opts, tls, config.ssl_ca_path.as_deref());
 
     // Clone the (already final) options before `connect_with` consumes them so
     // `cancel_query` can open its own connection to run `KILL QUERY ?`.
@@ -1119,28 +1221,191 @@ pub(crate) async fn run_mysql_connect(
         .await
     {
         Ok(pool) => {
-            pool_manager
-                .lock()
-                .await
-                .register(connection_id, crate::db::pool::DbHandle::MySql(pool));
-            cancel_registry.set_mysql(
-                connection_id,
-                crate::cancel::MySqlCancel {
-                    conn_id: None,
-                    connect_options: cancel_opts,
-                },
-            );
+            attempt
+                .commit(
+                    crate::db::pool::DbHandle::mysql(pool),
+                    Some(crate::cancel::CancelHandle::MySql(
+                        crate::cancel::MySqlCancel {
+                            conn_id: None,
+                            connect_options: cancel_opts,
+                        },
+                    )),
+                    pool_manager,
+                    ssh_manager,
+                    cancel_registry,
+                )
+                .await;
             Ok(())
         }
         Err(e) => {
-            if via_tunnel {
-                ssh_manager.lock().unwrap().close_tunnel(connection_id);
-            }
+            // Release only what this attempt opened; the previous session (if
+            // any) keeps its tunnel, pool and cancel handle.
+            attempt.abort();
             Err(format!(
                 "Connection failed: {}",
                 sanitize_error(&format!("{e}"))
             ))
         }
+    }
+}
+
+/// Headless PostgreSQL connect (no Tauri `State`).
+///
+/// Validates the TLS mode, opens a private SSH tunnel when configured (the
+/// tunnel is only the TCP endpoint: verification stays verification and is
+/// checked against the real host), and only publishes the pool handle, tunnel
+/// and cancel token once the server handshake succeeds. A failure returns the
+/// error and releases just what the attempt opened, so a reconnect that cannot
+/// be verified leaves the previously working session — pool handle, tunnel,
+/// listener, cancel token — intact.
+pub(crate) async fn run_pg_connect(
+    connection_id: &str,
+    config: &DbConfig,
+    ssh_manager: &std::sync::Mutex<crate::commands::ssh::SshTunnelManager>,
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    cancel_registry: &crate::cancel::CancelRegistry,
+) -> Result<(), String> {
+    let user = config.username.as_deref().unwrap_or("postgres");
+    let dbname = config.database.as_deref().unwrap_or("postgres");
+    let password = config.password.as_deref().unwrap_or("");
+
+    // TLS first: the mode is validated here, so an unknown mode is refused
+    // before any tunnel is opened and before a connection is attempted.
+    let decision = crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref())
+        .map_err(|e| sanitize_error(&e))?;
+    let tls = crate::db::tls::build_tls_config(
+        decision,
+        config.ssl_ca_path.as_deref(),
+        config.ssl_cert_path.as_deref(),
+        config.ssl_key_path.as_deref(),
+    )
+    .map_err(|e| sanitize_error(&e))?;
+    // Snapshot before `match tls` consumes the Option below.
+    let cancel_cfg = tls.clone();
+
+    // The tunnel is opened privately; it becomes the connection's tunnel only
+    // when `commit` runs.
+    let attempt =
+        crate::db::lifecycle::ConnectionAttempt::begin(connection_id, config, 5432, ssh_manager)
+            .await?;
+
+    // Endpoint plan: through a tunnel the TCP endpoint is the tunnel's loopback
+    // listener (`hostaddr`) while `host` stays the real database name, so
+    // verify-ca/verify-full authenticate the certificate against the host the
+    // user asked for instead of 127.0.0.1.
+    let plan = crate::db::tls::PgConnectPlan::new(
+        &config.host,
+        config.port,
+        decision,
+        attempt.tunnel_port(),
+    );
+
+    // Config builder: user/password/dbname are sent as-is (no URL
+    // percent-encoding needed), and the TLS connector is chosen explicitly.
+    let mut pgconfig = tokio_postgres::Config::new();
+    plan.apply(&mut pgconfig);
+    pgconfig
+        .user(user)
+        .password(password)
+        .dbname(dbname)
+        .connect_timeout(std::time::Duration::from_secs(10));
+
+    let result = match tls {
+        None => connect_pg_with(&pgconfig, tokio_postgres::NoTls).await,
+        Some(cc) => {
+            let connector = tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
+            connect_pg_with(&pgconfig, connector).await
+        }
+    };
+
+    match result {
+        Ok((client, handle)) => {
+            // Capture a cancel token + the exact TLS decision/config used to
+            // build the connection so `cancel_query` can open an identical
+            // (short-lived) cancel connection later.
+            let cancel = crate::cancel::CancelHandle::Pg(crate::cancel::PgCancel {
+                cancel_token: client.cancel_token(),
+                tls_decision: decision,
+                tls_config: cancel_cfg,
+            });
+            attempt
+                .commit(
+                    crate::db::pool::DbHandle::postgresql(client, handle),
+                    Some(cancel),
+                    pool_manager,
+                    ssh_manager,
+                    cancel_registry,
+                )
+                .await;
+            Ok(())
+        }
+        Err(e) => {
+            // Release only this attempt's tunnel: a failed reconnect must not
+            // tear down the session it was replacing.
+            attempt.abort();
+            Err(format!("Connection failed: {}", pg_error_message(&e)))
+        }
+    }
+}
+
+/// Headless SQLite connect (no Tauri `State`).
+///
+/// Registers the file handle and the interrupt handle taken from it. SQLite
+/// never tunnels, so any tunnel a previous target of this connection left
+/// behind is closed: an orphaned loopback proxy must not stay reachable.
+///
+/// The file must already exist. `rusqlite::Connection::open` creates on open,
+/// which would turn a mistyped path into a brand-new empty database that looks
+/// like a working connection (and hides the typo). Creating a database stays the
+/// separate, explicit [`crate::commands::test_connection::create_sqlite_database_at`]
+/// action, and the open itself is `READ_WRITE` **without** `CREATE`, so a file
+/// that disappears between the check and the open still fails instead of being
+/// conjured.
+pub(crate) async fn run_sqlite_connect(
+    connection_id: &str,
+    config: &DbConfig,
+    ssh_manager: &std::sync::Mutex<crate::commands::ssh::SshTunnelManager>,
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    cancel_registry: &crate::cancel::CancelRegistry,
+) -> Result<(), String> {
+    let path = std::path::Path::new(&config.host);
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => {
+            return Err(format!(
+                "Connection failed: not a database file: {}",
+                config.host
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "Connection failed: database file does not exist: {} — use Create database to \
+                 make a new one",
+                config.host
+            ))
+        }
+        Err(e) => {
+            return Err(format!(
+                "Connection failed: cannot access database file {}: {e}",
+                config.host
+            ))
+        }
+    }
+
+    match rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE) {
+        Ok(conn) => {
+            // Capture the per-connection interrupt handle so `cancel_query` can
+            // abort a running SQLite query from another thread.
+            let interrupt = conn.get_interrupt_handle();
+            pool_manager
+                .lock()
+                .await
+                .register(connection_id, crate::db::pool::DbHandle::sqlite(conn));
+            cancel_registry.set_sqlite(connection_id, crate::cancel::SqliteCancel::new(interrupt));
+            crate::db::lifecycle::close_tunnel(ssh_manager, connection_id);
+            Ok(())
+        }
+        Err(e) => Err(format!("Connection failed: {}", e)),
     }
 }
 
@@ -1151,133 +1416,23 @@ pub async fn db_connect(
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
     if config.db_type == "postgresql" {
-        let user = config.username.as_deref().unwrap_or("postgres");
-        let dbname = config.database.as_deref().unwrap_or("postgres");
-        let password = config.password.as_deref().unwrap_or("");
-        let default_port = config.port.unwrap_or(5432) as u16;
-
-        let ssh_cfg = config.ssh_config();
-        let will_tunnel = ssh_cfg.is_some();
-
-        // TLS first: through a tunnel the peer is loopback, so
-        // verify-ca/verify-full degrade to encrypt-only `require`; direct
-        // connections honor the user's mode. Building this before opening the
-        // tunnel means a config error can't leak the tunnel.
-        let decision = crate::commands::ssh::effective_tls_decision(
-            crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref()),
-            will_tunnel,
-        );
-        let tls = crate::db::tls::build_tls_config(
-            decision,
-            config.ssl_ca_path.as_deref(),
-            config.ssl_cert_path.as_deref(),
-            config.ssl_key_path.as_deref(),
+        run_pg_connect(
+            &connection_id,
+            &config,
+            &state.ssh_manager,
+            &state.pool_manager,
+            &state.cancel_registry,
         )
-        .map_err(|e| sanitize_error(&e))?;
-        // Snapshot before `match tls` consumes the Option below.
-        let cancel_cfg = tls.clone();
-
-        // SSH tunnel: if configured, open a loopback tunnel to the remote DB
-        // and connect through it. The blocking ssh2 handshake runs in
-        // `spawn_blocking` so it never blocks the async runtime.
-        let (connect_host, connect_port, via_tunnel) = match ssh_cfg {
-            Some(ssh) => {
-                let key = connection_id.clone();
-                let remote_host = config.host.clone();
-                let remote_port = config.port.unwrap_or(5432) as u16;
-                let pw = config.ssh_password.clone();
-                let pp = config.ssh_passphrase.clone();
-                let backend = state.ssh_manager.lock().unwrap().backend_clone();
-                let tunnel = tokio::task::spawn_blocking(move || {
-                    backend.open(
-                        &key,
-                        &ssh,
-                        &remote_host,
-                        remote_port,
-                        pw.as_deref(),
-                        pp.as_deref(),
-                    )
-                })
-                .await
-                .map_err(|e| format!("Connection failed: {e}"))?
-                .map_err(|e| sanitize_error(&e))?;
-                let lp = tunnel.local_port;
-                state
-                    .ssh_manager
-                    .lock()
-                    .unwrap()
-                    .insert_tunnel(connection_id.clone(), tunnel);
-                ("127.0.0.1".to_string(), lp, true)
-            }
-            None => (config.host.clone(), default_port, false),
-        };
-
-        // Config builder: user/password/dbname are sent as-is (no URL
-        // percent-encoding needed), and the TLS connector is chosen explicitly.
-        let mut pgconfig = tokio_postgres::Config::new();
-        pgconfig
-            .host(connect_host.clone())
-            .port(connect_port)
-            .user(user)
-            .password(password)
-            .dbname(dbname)
-            .connect_timeout(std::time::Duration::from_secs(10));
-
-        let result = match tls {
-            None => connect_pg_with(&pgconfig, tokio_postgres::NoTls).await,
-            Some(cc) => {
-                let connector = tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
-                connect_pg_with(&pgconfig, connector).await
-            }
-        };
-
-        match result {
-            Ok((client, handle)) => {
-                // Capture a cancel token + the exact TLS decision/config used to
-                // build the connection so `cancel_query` can open an identical
-                // (short-lived) cancel connection later.
-                let pgtoken = client.cancel_token();
-                state.cancel_registry.set_pg(
-                    &connection_id,
-                    crate::cancel::PgCancel {
-                        cancel_token: pgtoken,
-                        tls_decision: decision,
-                        tls_config: cancel_cfg,
-                    },
-                );
-                let mut pm = state.pool_manager.lock().await;
-                pm.register(
-                    &connection_id,
-                    crate::db::pool::DbHandle::Postgresql(client, handle),
-                );
-                Ok(())
-            }
-            Err(e) => {
-                if via_tunnel {
-                    state
-                        .ssh_manager
-                        .lock()
-                        .unwrap()
-                        .close_tunnel(&connection_id);
-                }
-                Err(format!("Connection failed: {}", pg_error_message(&e)))
-            }
-        }
+        .await
     } else if config.db_type == "sqlite" {
-        match rusqlite::Connection::open(&config.host) {
-            Ok(conn) => {
-                // Capture the per-connection interrupt handle so `cancel_query`
-                // can abort a running SQLite query from another thread.
-                let interrupt = conn.get_interrupt_handle();
-                let mut pm = state.pool_manager.lock().await;
-                pm.register(&connection_id, crate::db::pool::DbHandle::Sqlite(conn));
-                state
-                    .cancel_registry
-                    .set_sqlite(&connection_id, crate::cancel::SqliteCancel::new(interrupt));
-                Ok(())
-            }
-            Err(e) => Err(format!("Connection failed: {}", e)),
-        }
+        run_sqlite_connect(
+            &connection_id,
+            &config,
+            &state.ssh_manager,
+            &state.pool_manager,
+            &state.cancel_registry,
+        )
+        .await
     } else if config.db_type == "mysql" || config.db_type == "mariadb" {
         run_mysql_connect(
             &connection_id,
@@ -1295,14 +1450,23 @@ pub async fn db_connect(
     }
 }
 
+/// Close everything a viewer's connection owns.
+///
+/// Delegates to the single teardown path so disconnect cannot free a subset:
+/// the pool handle, the SSH tunnel (and its loopback listener) and the
+/// cancellation handles all go together.
 #[tauri::command]
 pub async fn db_disconnect(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    let mut pm = state.pool_manager.lock().await;
-    pm.remove(&connection_id);
-    state.cancel_registry.remove(&connection_id);
+    crate::db::lifecycle::teardown_connection(
+        &connection_id,
+        &state.pool_manager,
+        &state.ssh_manager,
+        &state.cancel_registry,
+    )
+    .await;
     Ok(())
 }
 
@@ -1311,9 +1475,10 @@ pub async fn get_databases(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<String>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let rows = client
                 .query(
                     "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname",
@@ -1323,16 +1488,19 @@ pub async fn get_databases(
                 .map_err(|e| e.to_string())?;
             Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
         }
-        Some(crate::db::pool::DbHandle::Sqlite(_)) => {
+        crate::db::pool::DbHandle::Sqlite(_) => {
             // SQLite has a single database per file; expose the catalog name.
             Ok(vec!["main".to_string()])
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-            let rows = sqlx::query(&crate::db::mysql::mysql_databases_query())
-                .fetch_all(pool)
-                .await
-                .map_err(|e| sanitize_error(&format!("{e}")))?;
+        crate::db::pool::DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
+            let rows = sqlx::query(sqlx::AssertSqlSafe(
+                crate::db::mysql::mysql_databases_query(),
+            ))
+            .fetch_all(pool)
+            .await
+            .map_err(|e| sanitize_error(&format!("{e}")))?;
             let mut dbs: Vec<String> = rows
                 .iter()
                 .map(|r| crate::db::mysql::mysql_row_string(r, 0))
@@ -1340,7 +1508,6 @@ pub async fn get_databases(
             dbs.retain(|d| !crate::db::mysql::MYSQL_SYSTEM_DBS.contains(&d.as_str()));
             Ok(dbs)
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -1349,9 +1516,10 @@ pub async fn get_schemas(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<String>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let rows = client
                 .query(
                     "SELECT nspname FROM pg_namespace WHERE nspname NOT IN ('information_schema', 'pg_catalog') AND nspname NOT LIKE 'pg_toast%' AND nspname NOT LIKE 'pg_temp%' ORDER BY nspname",
@@ -1361,7 +1529,12 @@ pub async fn get_schemas(
                 .map_err(|e| e.to_string())?;
             Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             let mut stmt = conn
                 .prepare("SELECT DISTINCT 'main' AS schema")
                 .map_err(|e| e.to_string())?;
@@ -1370,14 +1543,17 @@ pub async fn get_schemas(
                 .map_err(|e| e.to_string())?;
             Ok(rows.filter_map(|r| r.ok()).collect())
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+        crate::db::pool::DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // MySQL has no separate schema layer — databases play the role of
                                // schemas, so the schema selector mirrors the database list.
-            let rows = sqlx::query(&crate::db::mysql::mysql_databases_query())
-                .fetch_all(pool)
-                .await
-                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            let rows = sqlx::query(sqlx::AssertSqlSafe(
+                crate::db::mysql::mysql_databases_query(),
+            ))
+            .fetch_all(pool)
+            .await
+            .map_err(|e| sanitize_error(&format!("{e}")))?;
             let mut dbs: Vec<String> = rows
                 .iter()
                 .map(|r| crate::db::mysql::mysql_row_string(r, 0))
@@ -1385,7 +1561,6 @@ pub async fn get_schemas(
             dbs.retain(|d| !crate::db::mysql::MYSQL_SYSTEM_DBS.contains(&d.as_str()));
             Ok(dbs)
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -1396,9 +1571,10 @@ pub(crate) async fn get_tables_inner(
     connection_id: &str,
     schema: Option<&str>,
 ) -> Result<Vec<TableInfo>, String> {
-    let mut pm = pool_manager.lock().await;
-    match pm.get(connection_id) {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(pool_manager, connection_id).await?;
+    match db_handle {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let schema_filter = schema.unwrap_or("public").to_string();
             let rows = client
                 .query(
@@ -1416,7 +1592,12 @@ pub(crate) async fn get_tables_inner(
                 })
                 .collect())
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             let mut stmt = conn
                 .prepare(
                     "SELECT name, 'main', type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -1434,12 +1615,18 @@ pub(crate) async fn get_tables_inner(
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+        crate::db::pool::DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // 2 columns (name, type) when a schema is given; 3 (+ schema)
                                // when not — hence sqlx::query + try_get, not query_as.
             let query = crate::db::introspection::mysql_tables_query(schema);
-            let rows = sqlx::query(&query)
+            // The schema-filtered form binds `?`; the unfiltered form takes none.
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(query));
+            if let Some(s) = schema {
+                q = q.bind(s);
+            }
+            let rows = q
                 .fetch_all(pool)
                 .await
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -1465,7 +1652,6 @@ pub(crate) async fn get_tables_inner(
                 })
                 .collect())
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -1479,19 +1665,24 @@ pub async fn get_tables(
 }
 
 /// Load column metadata (name, type, nullability, PK, default, generated) for
-/// a MySQL table, then mark FK columns with their referenced (table, column).
+/// a MySQL table, then mark FK columns with their referenced
+/// `(schema, table, column)`.
 ///
 /// PK and generated columns are read-only (`editable: false`), mirroring the
-/// PostgreSQL rule. `fk_ref` carries the referenced table + column only — the
-/// same contract the frontend expects (MySQL FKs are assumed to live in the
-/// same database, matching how PostgreSQL's `fk_ref` assumes the same schema).
+/// PostgreSQL rule, and every column of a read-only relation (a view) is too.
+/// `fk_ref` carries the referenced schema reported by the catalog, because a
+/// foreign key may point into another database — assuming the browsing schema
+/// would follow a same-named local table instead.
 pub(crate) async fn mysql_load_columns(
     pool: &sqlx::MySqlPool,
     schema: &str,
     table: &str,
+    read_only_relation: bool,
 ) -> Result<Vec<ColumnInfo>, String> {
-    let col_query = crate::db::mysql::mysql_columns_query(schema, table);
-    let col_rows = sqlx::query(&col_query)
+    let col_query = crate::db::mysql::mysql_columns_query();
+    let col_rows = sqlx::query(sqlx::AssertSqlSafe(col_query))
+        .bind(schema)
+        .bind(table)
         .fetch_all(pool)
         .await
         .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -1518,25 +1709,36 @@ pub(crate) async fn mysql_load_columns(
                 is_fk: false,
                 fk_ref: None,
                 default_value,
-                editable: !is_pk && !is_generated,
+                editable: !is_pk && !is_generated && !read_only_relation,
                 is_generated,
+                is_unique: false,
+                is_auto_increment: false,
             }
         })
         .collect();
 
     // FK pass: mark is_fk + fk_ref for columns named in the FK metadata.
-    let fk_query = crate::db::mysql::mysql_fk_query(schema, table);
-    let fk_rows = sqlx::query(&fk_query)
+    let fk_query = crate::db::mysql::mysql_fk_query();
+    let fk_rows = sqlx::query(sqlx::AssertSqlSafe(fk_query))
+        .bind(schema)
+        .bind(table)
         .fetch_all(pool)
         .await
         .map_err(|e| sanitize_error(&format!("{e}")))?;
     for r in fk_rows {
         let col = crate::db::mysql::mysql_row_string(&r, 0);
+        let ref_schema = crate::db::mysql::mysql_row_string(&r, 1);
         let ref_table = crate::db::mysql::mysql_row_string(&r, 2);
         let ref_col = crate::db::mysql::mysql_row_string(&r, 3);
+        let target = crate::db::fk::target_from_catalog(
+            schema,
+            Some(ref_schema.as_str()),
+            &ref_table,
+            &ref_col,
+        )?;
         if let Some(c) = columns.iter_mut().find(|c| c.name == col) {
             c.is_fk = true;
-            c.fk_ref = Some((ref_table, ref_col));
+            c.fk_ref = Some((target.schema, target.table, target.column));
         }
     }
     Ok(columns)
@@ -1581,26 +1783,24 @@ pub(crate) async fn get_table_data_inner(
     filters: Option<Vec<crate::models::db_viewer::FilterRule>>,
     sorts: Option<Vec<crate::models::db_viewer::SortRule>>,
 ) -> Result<QueryResult, String> {
-    let p = page.unwrap_or(1);
-    let ps = page_size.unwrap_or(50);
-    let off = (p - 1) * ps;
+    // Untrusted page window: rejected, never clamped (see `page_window`).
+    let (p, ps, off) = page_window(page, page_size)?;
     let filters = filters.unwrap_or_default();
     let sorts = sorts.unwrap_or_default();
 
-    let mut pm = pool_manager.lock().await;
-    match pm.get(connection_id) {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(pool_manager, connection_id).await?;
+    match db_handle {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
+            let qualified = ident::qualified(Engine::PostgreSql, schema, table)?;
             // Build filter clause (shared by COUNT and data queries)
             let mut pg_param_idx: usize = 0;
             let (filter_clause, filter_params) =
-                build_pg_filter_clause(&filters, &mut pg_param_idx);
-            let order_clause = build_order_clause(&sorts);
+                build_pg_filter_clause(&filters, &mut pg_param_idx)?;
+            let order_clause = build_order_clause(Engine::PostgreSql, &sorts)?;
 
             // Get total count (with filters applied)
-            let count_query = format!(
-                "SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}",
-                schema, table, filter_clause
-            );
+            let count_query = format!("SELECT COUNT(*) FROM {qualified} WHERE 1=1{filter_clause}");
             let count_row = if filter_params.is_empty() {
                 client
                     .query_one(&count_query, &[])
@@ -1618,104 +1818,23 @@ pub(crate) async fn get_table_data_inner(
             };
             let total_rows: i64 = count_row.get(0);
 
-            // Views expose no `ctid`; detect them so no row-locator is appended
-            // to the data SELECT and columns stay read-only.
-            let is_view: bool = client
-                .query_one(
-                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
-                     WHERE table_schema = $1 AND table_name = $2 AND table_type = 'VIEW')",
+            // Views and materialized views expose no `ctid` and are read-only;
+            // detect them so no row-locator is appended to the data SELECT and
+            // columns never offer an edit.
+            let read_only_relation = pg_relation_is_read_only(&client, schema, table).await;
+
+            // Column metadata (PK/FK/read-only flags) is derived from the same
+            // shared query + mapper the column-introspection command uses, so a
+            // cross-schema foreign key keeps its referenced schema here too.
+            let col_rows = client
+                .query(
+                    &crate::db::introspection::pg_columns_query(),
                     &[&schema, &table],
                 )
                 .await
-                .map(|r| r.get::<_, bool>(0))
-                .unwrap_or(false);
-
-            // Get column info with FK detection and enum type names
-            let col_query = r#"SELECT
-    c.column_name,
-    CASE WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name ELSE c.data_type END AS data_type,
-    c.is_nullable,
-    COALESCE(pk.is_pk, false) AS is_pk,
-    COALESCE(fk.is_fk, false) AS is_fk,
-    fk.foreign_table_name,
-    fk.foreign_column_name,
-    c.column_default,
-    a.attgenerated,
-    a.attidentity
-FROM information_schema.columns c
-LEFT JOIN (
-    SELECT ku.column_name, true AS is_pk
-    FROM information_schema.table_constraints tc
-    JOIN information_schema.key_column_usage ku
-        ON tc.constraint_catalog = ku.constraint_catalog
-        AND tc.constraint_schema = ku.constraint_schema
-        AND tc.constraint_name = ku.constraint_name
-    WHERE tc.constraint_type = 'PRIMARY KEY'
-        AND tc.table_schema = $1
-        AND tc.table_name = $2
-) pk ON c.column_name = pk.column_name
-LEFT JOIN (
-    SELECT
-        ku.column_name,
-        true AS is_fk,
-        ccu.table_name AS foreign_table_name,
-        ccu.column_name AS foreign_column_name
-    FROM information_schema.table_constraints tc
-    JOIN information_schema.key_column_usage ku
-        ON tc.constraint_catalog = ku.constraint_catalog
-        AND tc.constraint_schema = ku.constraint_schema
-        AND tc.constraint_name = ku.constraint_name
-    JOIN information_schema.constraint_column_usage ccu
-        ON tc.constraint_catalog = ccu.constraint_catalog
-        AND tc.constraint_schema = ccu.constraint_schema
-        AND tc.constraint_name = ccu.constraint_name
-    WHERE tc.constraint_type = 'FOREIGN KEY'
-        AND tc.table_schema = $1
-        AND tc.table_name = $2
-) fk ON c.column_name = fk.column_name
-LEFT JOIN pg_attribute a
-    ON a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass
-    AND a.attname = c.column_name
-    AND a.attnum > 0
-    AND NOT a.attisdropped
-WHERE c.table_schema = $1 AND c.table_name = $2
-ORDER BY c.ordinal_position"#;
-            let col_rows = client
-                .query(col_query, &[&schema, &table])
-                .await
                 .map_err(|e| e.to_string())?;
-            let columns: Vec<ColumnInfo> = col_rows
-                .iter()
-                .map(|r| {
-                    let is_fk: bool = r.get(4);
-                    let fk_table: Option<String> = r.get(5);
-                    let fk_column: Option<String> = r.get(6);
-                    // pg_attribute.attgenerated/attidentity are PG's internal
-                    // "char" type (OID 18) → tokio-postgres delivers i8, not
-                    // String; deserializing as String panics. Convert safely.
-                    let attgenerated =
-                        pg_char_to_att(r.try_get::<_, Option<i8>>(8).unwrap_or(None));
-                    let attidentity = pg_char_to_att(r.try_get::<_, Option<i8>>(9).unwrap_or(None));
-                    let is_pk: bool = r.get(3);
-                    ColumnInfo {
-                        name: r.get(0),
-                        data_type: r.get(1),
-                        is_nullable: r.get::<_, String>(2) == "YES",
-                        is_pk,
-                        is_fk,
-                        fk_ref: if is_fk {
-                            Some((fk_table.unwrap_or_default(), fk_column.unwrap_or_default()))
-                        } else {
-                            None
-                        },
-                        default_value: r.get::<_, Option<String>>(7),
-                        editable: editable_from_att(&attgenerated, &attidentity)
-                            && !is_pk
-                            && !is_view,
-                        is_generated: !attgenerated.is_empty(),
-                    }
-                })
-                .collect();
+            let columns: Vec<ColumnInfo> =
+                pg_columns_from_rows(schema, &col_rows, read_only_relation)?;
 
             // Get data (with filters and sorts applied).
             // Custom/enum types need explicit ::text cast because tokio-postgres
@@ -1762,20 +1881,26 @@ ORDER BY c.ordinal_position"#;
                 .iter()
                 .map(|c| {
                     let lower = c.data_type.to_lowercase();
+                    let quoted = ident::quote(Engine::PostgreSql, &c.name);
                     if standard_pg_types.contains(&lower.as_str()) {
-                        format!("\"{}\"", c.name)
+                        quoted
                     } else {
                         // Custom type (enum, composite, domain) — cast to text
-                        format!("\"{}\"::text", c.name)
+                        format!("{quoted}::text")
                     }
                 })
                 .collect();
             // `ctid` is appended last for no-PK tables so later UPDATE/DELETE
             // queue changes can target the exact row. It stays out of `columns`.
-            // Views are excluded — they expose no ctid and are read-only.
+            // Views/materialized views are excluded — they are read-only.
             let data_query = format!(
                 "{} WHERE 1=1{} {} LIMIT {} OFFSET {}",
-                build_pg_select_from_items(&schema, &table, select_items, !has_pk && !is_view),
+                build_pg_select_from_items(
+                    &schema,
+                    &table,
+                    select_items,
+                    !has_pk && !read_only_relation
+                )?,
                 filter_clause,
                 order_clause,
                 ps,
@@ -1802,32 +1927,31 @@ ORDER BY c.ordinal_position"#;
                 .collect();
 
             Ok(QueryResult {
+                // A table page count is a COUNT over the table, not a replay of
+                // the user's statement, so the total is exact here.
+                has_more: (off + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page: p,
                 page_size: ps,
                 execution_time_ms: None,
             })
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
-            // Views expose no `rowid`; detect them so no row-locator is appended
-            // to the data SELECT and columns stay read-only.
-            let is_view: bool = conn
-                .query_row(
-                    "SELECT type = 'view' FROM sqlite_master WHERE name = ?1 AND type IN ('table', 'view')",
-                    rusqlite::params![table],
-                    |r| r.get::<_, bool>(0),
-                )
-                .unwrap_or(false);
-
+        crate::db::pool::DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             // Build filter clause (shared by COUNT and data queries)
-            let (filter_clause, filter_vals) = build_sqlite_filter_clause(&filters);
-            let order_clause = build_order_clause(&sorts);
+            let (filter_clause, filter_vals) = build_sqlite_filter_clause(&filters)?;
+            let order_clause = build_order_clause(Engine::Sqlite, &sorts)?;
 
             let count_query = format!(
-                "SELECT COUNT(*) FROM \"{}\".\"{}\" WHERE 1=1{}",
-                schema, table, filter_clause
+                "SELECT COUNT(*) FROM {} WHERE 1=1{}",
+                ident::qualified(Engine::Sqlite, schema, table)?,
+                filter_clause
             );
             let total_rows: i64 = if filter_vals.is_empty() {
                 conn.query_row(&count_query, [], |r| r.get(0))
@@ -1843,64 +1967,9 @@ ORDER BY c.ordinal_position"#;
                 .map_err(|e| e.to_string())?
             };
 
-            // Get column metadata via PRAGMA table_info
-            let pragma_query = format!("PRAGMA table_info('{}')", table);
-            let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
-            let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(1)?,         // name
-                        row.get::<_, String>(2)?,         // type
-                        row.get::<_, bool>(3)?,           // notnull
-                        row.get::<_, bool>(5)?,           // pk
-                        row.get::<_, Option<String>>(4)?, // dflt_value
-                    ))
-                })
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            // Get FK metadata via PRAGMA foreign_key_list
-            let fk_query = format!("PRAGMA foreign_key_list('{}')", table);
-            let fk_map: HashMap<String, (String, String)> =
-                if let Ok(mut fk_stmt) = conn.prepare(&fk_query) {
-                    fk_stmt
-                        .query_map([], |row| {
-                            Ok((
-                                row.get::<_, String>(3)?, // from (column)
-                                row.get::<_, String>(2)?, // table
-                                row.get::<_, String>(4)?, // to (column)
-                            ))
-                        })
-                        .map_err(|e| e.to_string())?
-                        .filter_map(|r| r.ok())
-                        .map(|(from, ref_table, ref_col)| (from, (ref_table, ref_col)))
-                        .collect()
-                } else {
-                    HashMap::new()
-                };
-
-            let columns: Vec<ColumnInfo> = col_meta
-                .iter()
-                .map(|(name, dtype, notnull, is_pk, default_val)| {
-                    let fk = fk_map.get(name);
-                    ColumnInfo {
-                        name: name.clone(),
-                        data_type: if dtype.is_empty() {
-                            "TEXT".to_string()
-                        } else {
-                            dtype.clone()
-                        },
-                        is_nullable: !notnull,
-                        is_pk: *is_pk,
-                        is_fk: fk.is_some(),
-                        fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
-                        default_value: default_val.clone(),
-                        editable: !*is_pk && !is_view,
-                        is_generated: false,
-                    }
-                })
-                .collect();
+            // Metadata comes from the catalog, never from a row page: SQLite
+            // column introspection is PRAGMA-based and has no `LIMIT`.
+            let (columns, is_view) = sqlite_column_metadata(&conn, table)?;
 
             // Get data (with filters and sorts applied).
             // `rowid` is appended last for no-PK tables so later UPDATE/DELETE
@@ -1948,25 +2017,37 @@ ORDER BY c.ordinal_position"#;
             };
 
             Ok(QueryResult {
+                // A table page count is a COUNT over the table, not a replay of
+                // the user's statement, so the total is exact here.
+                has_more: (off + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page: p,
                 page_size: ps,
                 execution_time_ms: None,
             })
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-            let columns = mysql_load_columns(pool, schema, table).await?;
+        crate::db::pool::DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
+            let read_only_relation = mysql_relation_is_read_only(&pool, schema, table).await;
+            let columns = mysql_load_columns(pool, schema, table, read_only_relation).await?;
 
-            // Total count (filters do not affect the count — MySQL has no
-            // per-filter count query, mirroring the select builder's scope).
-            let total_rows: i64 =
-                sqlx::query_scalar::<_, i64>(&crate::db::mysql::mysql_count_query(schema, table))
-                    .fetch_one(pool)
-                    .await
-                    .map_err(|e| sanitize_error(&format!("{e}")))?;
+            // Filtered total: the count carries exactly the WHERE clause (and
+            // the same bound values, in the same order) as the data query, so a
+            // filtered browse reports the filtered total and page count instead
+            // of the whole-table count.
+            let count_query =
+                crate::db::mysql::mysql_count_query_filtered(schema, table, &filters)?;
+            let mut count_q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(count_query));
+            for value in crate::db::mysql::mysql_filter_values(&filters) {
+                count_q = count_q.bind(value);
+            }
+            let total_rows: i64 = count_q
+                .fetch_one(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
 
             // mysql_select_data_query already embeds ORDER BY from `sorts`
             // (falling back to a smart default sort) — no shared order-clause
@@ -1979,15 +2060,11 @@ ORDER BY c.ordinal_position"#;
                 &filters,
                 &sorts,
                 &default_sort,
-            );
+            )?;
 
-            let mut q = sqlx::query(&data_query);
-            for f in &filters {
-                // null/notnull operators emit IS [NOT] NULL — no bound param.
-                if f.operator == "null" || f.operator == "notnull" {
-                    continue;
-                }
-                q = q.bind(&f.value);
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(data_query));
+            for value in crate::db::mysql::mysql_filter_values(&filters) {
+                q = q.bind(value);
             }
             let data_rows = q
                 .bind(ps)
@@ -2006,15 +2083,17 @@ ORDER BY c.ordinal_position"#;
                 .collect();
 
             Ok(QueryResult {
+                // A table page count is a COUNT over the table, not a replay of
+                // the user's statement, so the total is exact here.
+                has_more: (off + rows.len() as i64) < total_rows,
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
                 page: p,
                 page_size: ps,
                 execution_time_ms: None,
             })
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -2042,51 +2121,292 @@ pub async fn get_table_data(
     .await
 }
 
+/// Map `pg_columns_query` rows onto [`ColumnInfo`].
+///
+/// Shared by table browsing, column introspection and the FK preview so a
+/// foreign-key column's referenced `(schema, table, column)` is derived in
+/// exactly one place. Deriving it per call site is how the referenced schema
+/// went missing, leaving the viewer to substitute the browsing schema.
+///
+/// `source_schema` is only a fallback for catalog metadata that reports no
+/// referenced schema at all; a reported schema always wins.
+pub(crate) fn pg_columns_from_rows(
+    source_schema: &str,
+    rows: &[tokio_postgres::Row],
+    is_view: bool,
+) -> Result<Vec<ColumnInfo>, String> {
+    rows.iter()
+        .map(|r| {
+            let is_pk = r.get::<_, Option<String>>(8).as_deref() == Some("PRIMARY KEY");
+            let fk_schema: Option<String> = r.get(9);
+            let fk_table: Option<String> = r.get(10);
+            let fk_column: Option<String> = r.get(11);
+            // pg_attribute.attgenerated/attidentity are PG's internal "char"
+            // type (OID 18) → tokio-postgres delivers i8, not String;
+            // deserializing as String panics. Convert safely.
+            let attgenerated = pg_char_to_att(r.try_get::<_, Option<i8>>(12).unwrap_or(None));
+            let attidentity = pg_char_to_att(r.try_get::<_, Option<i8>>(13).unwrap_or(None));
+
+            let fk_ref = match (fk_table, fk_column) {
+                (Some(table), Some(column)) => {
+                    let target = crate::db::fk::target_from_catalog(
+                        source_schema,
+                        fk_schema.as_deref(),
+                        &table,
+                        &column,
+                    )?;
+                    Some((target.schema, target.table, target.column))
+                }
+                _ => None,
+            };
+
+            Ok(ColumnInfo {
+                name: r.get(0),
+                data_type: r.get(1),
+                is_nullable: r.get::<_, String>(2) == "YES",
+                is_pk,
+                is_fk: fk_ref.is_some(),
+                fk_ref,
+                default_value: r.get::<_, Option<String>>(6),
+                editable: editable_from_att(&attgenerated, &attidentity) && !is_pk && !is_view,
+                is_generated: !attgenerated.is_empty(),
+                is_unique: false,
+                is_auto_increment: false,
+            })
+        })
+        .collect()
+}
+
+/// Map SQLite `PRAGMA table_info` metadata plus `PRAGMA foreign_key_list`
+/// metadata onto [`ColumnInfo`].
+///
+/// `col_meta` is `(name, declared type, notnull, is_pk, default)`;
+/// `fk_map` is `(referenced table, referenced column)` keyed by the referencing
+/// column. SQLite resolves foreign keys within one database, but the referenced
+/// relation is still carried explicitly as `(main, table, column)` so the viewer
+/// never has to guess which table a value belongs to.
+pub(crate) fn sqlite_columns_from_rows(
+    col_meta: &[(String, String, bool, bool, Option<String>)],
+    fk_map: &HashMap<String, (String, String)>,
+    read_only_view: bool,
+) -> Result<Vec<ColumnInfo>, String> {
+    col_meta
+        .iter()
+        .map(|(name, dtype, notnull, is_pk, default_val)| {
+            let fk_ref = match fk_map.get(name) {
+                Some((ref_table, ref_col)) => {
+                    let target = crate::db::fk::target_from_catalog(
+                        "main",
+                        Some("main"),
+                        ref_table,
+                        ref_col,
+                    )?;
+                    Some((target.schema, target.table, target.column))
+                }
+                None => None,
+            };
+            Ok(ColumnInfo {
+                name: name.clone(),
+                data_type: if dtype.is_empty() {
+                    "TEXT".to_string()
+                } else {
+                    dtype.clone()
+                },
+                is_nullable: !notnull,
+                is_pk: *is_pk,
+                is_fk: fk_ref.is_some(),
+                fk_ref,
+                default_value: default_val.clone(),
+                editable: !*is_pk && !read_only_view,
+                is_generated: false,
+                is_unique: false,
+                is_auto_increment: false,
+            })
+        })
+        .collect()
+}
+
 /// Headless column introspection for a table, shared by the `get_table_columns`
 /// command and integration tests (thin-command principle — no Tauri `State`).
-/// Mirrors the `pg_columns_query` row mapping `get_table_data` uses.
+///
+/// **Metadata is not a row page.** This reads the catalog only: no `LIMIT`, no
+/// `OFFSET`, and no dependency on whatever page the grid happens to be showing,
+/// so introspecting a table can neither truncate its data nor consume a page of
+/// it. Browsers that need columns must call this instead of asking
+/// `get_table_data` for a zero-row page.
+///
+/// Read-only relations (views, materialized views) are reported with
+/// `editable: false`, so the viewer never offers an edit the engine would
+/// reject.
 pub(crate) async fn get_table_columns_inner(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     connection_id: &str,
     schema: &str,
     table: &str,
 ) -> Result<Vec<crate::models::ColumnInfo>, String> {
-    let mut pm = pm.lock().await;
-    let client = match pm.get(connection_id) {
-        Some(crate::db::pool::DbHandle::Postgresql(c, _)) => c,
-        Some(_) => return Err("Table columns are PostgreSQL-only".into()),
-        None => return Err("Connection not found".into()),
-    };
-    let rows = client
-        .query(
-            &crate::db::introspection::pg_columns_query(schema, table),
-            &[],
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    match db_handle {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
+            let read_only = pg_relation_is_read_only(&client, schema, table).await;
+            let rows = client
+                .query(
+                    &crate::db::introspection::pg_columns_query(),
+                    &[&schema, &table],
+                )
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            pg_columns_from_rows(schema, &rows, read_only)
+        }
+        crate::db::pool::DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
+            sqlite_column_metadata(&conn, table).map(|(columns, _)| columns)
+        }
+        crate::db::pool::DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
+            let read_only = mysql_relation_is_read_only(&pool, schema, table).await;
+            mysql_load_columns(&pool, schema, table, read_only).await
+        }
+    }
+}
+
+/// Whether a PostgreSQL relation is read-only for the viewer: a view or a
+/// materialized view.
+///
+/// Materialized views are *not* in `information_schema.tables`, so checking only
+/// `table_type = 'VIEW'` reported them as ordinary tables — offering edits the
+/// engine refuses and appending a `ctid` locator to their data SELECT.
+pub(crate) async fn pg_relation_is_read_only(
+    client: &tokio_postgres::Client,
+    schema: &str,
+    table: &str,
+) -> bool {
+    client
+        .query_one(
+            &crate::db::introspection::pg_relation_read_only_query(),
+            &[&schema, &table],
         )
         .await
-        .map_err(|e| sanitize_error(&format!("{e}")))?;
-    Ok(rows
-        .iter()
-        .map(|r| {
-            let is_fk: bool = r.get::<_, Option<String>>(10).is_some();
-            let fk_schema: Option<String> = r.get(9);
-            let fk_table: Option<String> = r.get(10);
-            crate::models::ColumnInfo {
-                name: r.get(0),
-                data_type: r.get(1),
-                is_nullable: r.get::<_, String>(2) == "YES",
-                is_pk: r.get::<_, Option<String>>(8).as_deref() == Some("PRIMARY KEY"),
-                is_fk,
-                fk_ref: if is_fk {
-                    Some((fk_schema.unwrap_or_default(), fk_table.unwrap_or_default()))
-                } else {
-                    None
-                },
-                default_value: r.get::<_, Option<String>>(6),
-                editable: true,
-                is_generated: false,
-            }
+        .map(|r| r.get::<_, bool>(0))
+        .unwrap_or(false)
+}
+
+/// Whether a MySQL relation is read-only for the viewer.
+///
+/// MySQL has no materialized views; a `VIEW` (or a system view) cannot be
+/// edited through the viewer's single-row statements. An unknown relation is
+/// treated as a table, which is the pre-existing behavior.
+pub(crate) async fn mysql_relation_is_read_only(
+    pool: &sqlx::MySqlPool,
+    schema: &str,
+    table: &str,
+) -> bool {
+    let relation_type_query = crate::db::introspection::mysql_relation_type_query();
+    let kind: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(relation_type_query))
+        .bind(schema)
+        .bind(table)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    match kind {
+        Some(kind) => !kind.eq_ignore_ascii_case("BASE TABLE"),
+        None => false,
+    }
+}
+
+/// SQLite column metadata, read straight from the catalog.
+///
+/// Returns the columns plus whether the relation is a view (so callers can skip
+/// the `rowid` locator and mark every column read-only). `PRAGMA table_info` has
+/// no page concept — introspection cannot truncate or consume row data.
+pub(crate) fn sqlite_column_metadata(
+    conn: &rusqlite::Connection,
+    table: &str,
+) -> Result<(Vec<ColumnInfo>, bool), String> {
+    let is_view: bool = conn
+        .query_row(
+            "SELECT type = 'view' FROM sqlite_master WHERE name = ?1 AND type IN ('table', 'view')",
+            rusqlite::params![table],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+
+    // `table_xinfo` rather than `table_info`: a generated column is a real column
+    // of the table, and a metadata reader that cannot see it hands the table
+    // editor a column list a rebuild would drop it from.
+    let pragma_query = crate::db::introspection::sqlite_columns_xinfo_query(table);
+    let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
+    let mut generated: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,         // name
+                row.get::<_, String>(2)?,         // type
+                row.get::<_, bool>(3)?,           // notnull
+                row.get::<_, bool>(5)?,           // pk
+                row.get::<_, Option<String>>(4)?, // dflt_value
+                row.get::<_, i64>(6)?,            // hidden
+            ))
         })
-        .collect())
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        // `hidden` 1 is a virtual table's own hidden column, which is not part of
+        // the row; 2 and 3 are VIRTUAL and STORED generated columns.
+        .filter(|(name, .., hidden)| {
+            if *hidden == 2 || *hidden == 3 {
+                generated.insert(name.clone());
+            }
+            *hidden != 1
+        })
+        .map(|(name, ty, notnull, pk, default, _)| (name, ty, notnull, pk, default))
+        .collect();
+
+    let fk_query = crate::db::introspection::sqlite_foreign_keys_query(table);
+    let fk_map: HashMap<String, (String, String)> = if let Ok(mut fk_stmt) = conn.prepare(&fk_query)
+    {
+        fk_stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(3)?, // from (column)
+                    row.get::<_, String>(2)?, // table
+                    row.get::<_, String>(4)?, // to (column)
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .map(|(from, ref_table, ref_col)| (from, (ref_table, ref_col)))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let mut columns = sqlite_columns_from_rows(&col_meta, &fk_map, is_view)?;
+    // The editor submits these back. Without them a rebuild would silently drop
+    // the column's unique key (or the table's AUTOINCREMENT sequence) because the
+    // form never showed it, and a generated column would offer edits that cannot
+    // be applied at all.
+    let flags: HashMap<String, crate::db::object_ddl::SqliteColumn> =
+        crate::db::sqlite_rebuild::live_columns(conn, table)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| (c.name.clone(), c))
+            .collect();
+    for column in columns.iter_mut() {
+        if let Some(live) = flags.get(&column.name) {
+            column.is_unique = live.unique;
+            column.is_auto_increment = live.auto_increment;
+        }
+        if generated.contains(&column.name) {
+            column.is_generated = true;
+            column.editable = false;
+        }
+    }
+    Ok((columns, is_view))
 }
 
 #[tauri::command]
@@ -2099,94 +2419,114 @@ pub async fn get_table_columns(
     get_table_columns_inner(&state.pool_manager, &connection_id, &schema, &table).await
 }
 
-#[tauri::command]
-pub async fn get_fk_preview(
-    connection_id: String,
-    schema: String,
-    table: String,
-    column: String,
-    value: String,
-    state: State<'_, crate::AppState>,
+/// Resolve the relation a foreign key points at, from engine metadata.
+///
+/// `schema`/`table`/`column` identify the **source** column. The referenced
+/// schema is what the catalog reports — never the browsing schema — so a
+/// same-named table elsewhere can never answer for the referenced one.
+pub(crate) async fn resolve_fk_target(
+    client: &tokio_postgres::Client,
+    schema: &str,
+    table: &str,
+    column: &str,
+) -> Result<crate::db::fk::FkTarget, String> {
+    let row = client
+        .query_opt(
+            crate::db::fk::pg_fk_target_query(),
+            &[&schema, &table, &column],
+        )
+        .await
+        .map_err(|e| pg_error_message(&e))?
+        .ok_or_else(|| {
+            format!(
+                "column {column:?} has no foreign key in {}.{}",
+                schema, table
+            )
+        })?;
+    let ref_schema: String = row.get(0);
+    let ref_table: String = row.get(1);
+    let ref_column: String = row.get(2);
+    crate::db::fk::target_from_catalog(schema, Some(&ref_schema), &ref_table, &ref_column)
+}
+
+/// SQLite form of [`resolve_fk_target`] (no schemas: the target is `main`).
+pub(crate) fn resolve_fk_target_sqlite(
+    conn: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+) -> Result<crate::db::fk::FkTarget, String> {
+    let query = crate::db::fk::sqlite_fk_target_query(table);
+    let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, String)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(2)?, // referenced table
+                row.get::<_, String>(3)?, // from column
+                row.get::<_, String>(4)?, // to column
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    crate::db::fk::sqlite_fk_target(&rows, column)
+}
+
+/// MySQL form of [`resolve_fk_target`] (the referenced database is reported by
+/// `information_schema`).
+pub(crate) async fn resolve_fk_target_mysql(
+    pool: &sqlx::MySqlPool,
+    schema: &str,
+    table: &str,
+    column: &str,
+) -> Result<crate::db::fk::FkTarget, String> {
+    let row = sqlx::query(crate::db::fk::mysql_fk_target_query())
+        .bind(schema)
+        .bind(table)
+        .bind(column)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?
+        .ok_or_else(|| {
+            format!(
+                "column {column:?} has no foreign key in {}.{}",
+                schema, table
+            )
+        })?;
+    let ref_schema = crate::db::mysql::mysql_row_string(&row, 0);
+    let ref_table = crate::db::mysql::mysql_row_string(&row, 1);
+    let ref_column = crate::db::mysql::mysql_row_string(&row, 2);
+    crate::db::fk::target_from_catalog(schema, Some(&ref_schema), &ref_table, &ref_column)
+}
+
+/// Headless FK preview shared by the `get_fk_preview` command and tests.
+///
+/// `schema`/`table`/`column` are the **source** column: the referenced relation
+/// is resolved from catalog metadata, then its row is read from that
+/// schema-qualified relation.
+pub(crate) async fn get_fk_preview_inner(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    connection_id: &str,
+    schema: &str,
+    table: &str,
+    column: &str,
+    value: &str,
 ) -> Result<QueryResult, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
-            // Get column info with FK detection
-            let col_query = r#"SELECT
-    c.column_name,
-    CASE WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name ELSE c.data_type END AS data_type,
-    c.is_nullable,
-    COALESCE(pk.is_pk, false) AS is_pk,
-    COALESCE(fk.is_fk, false) AS is_fk,
-    fk.foreign_table_name,
-    fk.foreign_column_name,
-    c.column_default
-FROM information_schema.columns c
-LEFT JOIN (
-    SELECT ku.column_name, true AS is_pk
-    FROM information_schema.table_constraints tc
-    JOIN information_schema.key_column_usage ku
-        ON tc.constraint_catalog = ku.constraint_catalog
-        AND tc.constraint_schema = ku.constraint_schema
-        AND tc.constraint_name = ku.constraint_name
-    WHERE tc.constraint_type = 'PRIMARY KEY'
-        AND tc.table_schema = $1
-        AND tc.table_name = $2
-) pk ON c.column_name = pk.column_name
-LEFT JOIN (
-    SELECT
-        ku.column_name,
-        true AS is_fk,
-        ccu.table_name AS foreign_table_name,
-        ccu.column_name AS foreign_column_name
-    FROM information_schema.table_constraints tc
-    JOIN information_schema.key_column_usage ku
-        ON tc.constraint_catalog = ku.constraint_catalog
-        AND tc.constraint_schema = ku.constraint_schema
-        AND tc.constraint_name = ku.constraint_name
-    JOIN information_schema.constraint_column_usage ccu
-        ON tc.constraint_catalog = ccu.constraint_catalog
-        AND tc.constraint_schema = ccu.constraint_schema
-        AND tc.constraint_name = ccu.constraint_name
-    WHERE tc.constraint_type = 'FOREIGN KEY'
-        AND tc.table_schema = $1
-        AND tc.table_name = $2
-) fk ON c.column_name = fk.column_name
-WHERE c.table_schema = $1 AND c.table_name = $2
-ORDER BY c.ordinal_position"#;
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    match db_handle {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
+            let target = resolve_fk_target(&client, schema, table, column).await?;
+            // Column metadata describes the *referenced* table.
             let col_rows = client
-                .query(col_query, &[&schema, &table])
+                .query(
+                    &crate::db::introspection::pg_columns_query(),
+                    &[&target.schema, &target.table],
+                )
                 .await
                 .map_err(|e| pg_error_message(&e))?;
-            let columns: Vec<ColumnInfo> = col_rows
-                .iter()
-                .map(|r| {
-                    let is_fk: bool = r.get(4);
-                    let fk_table: Option<String> = r.get(5);
-                    let fk_column: Option<String> = r.get(6);
-                    ColumnInfo {
-                        name: r.get(0),
-                        data_type: r.get(1),
-                        is_nullable: r.get::<_, String>(2) == "YES",
-                        is_pk: r.get(3),
-                        is_fk,
-                        fk_ref: if is_fk {
-                            Some((fk_table.unwrap_or_default(), fk_column.unwrap_or_default()))
-                        } else {
-                            None
-                        },
-                        default_value: r.get::<_, Option<String>>(7),
-                        editable: true,
-                        is_generated: false,
-                    }
-                })
-                .collect();
+            let columns: Vec<ColumnInfo> = pg_columns_from_rows(&target.schema, &col_rows, false)?;
 
-            // Fetch the referenced row
-            let data_query = format!(
-                "SELECT * FROM \"{}\".\"{}\" WHERE \"{}\"::text = $1 LIMIT 1",
-                schema, table, column
-            );
+            let data_query = crate::db::fk::preview_sql(Engine::PostgreSql, &target)?;
             let data_rows = client
                 .query(&data_query, &[&value])
                 .await
@@ -2199,77 +2539,22 @@ ORDER BY c.ordinal_position"#;
             Ok(QueryResult {
                 columns,
                 rows,
-                total_rows: 1,
+                total_rows: Some(1),
+                has_more: false,
                 page: 1,
                 page_size: 1,
                 execution_time_ms: None,
             })
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
-            // Get column metadata via PRAGMA table_info
-            let pragma_query = format!("PRAGMA table_info('{}')", table);
-            let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
-            let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, bool>(3)?,
-                        row.get::<_, bool>(5)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                })
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            // Get FK metadata
-            let fk_query = format!("PRAGMA foreign_key_list('{}')", table);
-            let fk_map: HashMap<String, (String, String)> =
-                if let Ok(mut fk_stmt) = conn.prepare(&fk_query) {
-                    fk_stmt
-                        .query_map([], |row| {
-                            Ok((
-                                row.get::<_, String>(3)?,
-                                row.get::<_, String>(2)?,
-                                row.get::<_, String>(4)?,
-                            ))
-                        })
-                        .map_err(|e| e.to_string())?
-                        .filter_map(|r| r.ok())
-                        .map(|(from, ref_table, ref_col)| (from, (ref_table, ref_col)))
-                        .collect()
-                } else {
-                    HashMap::new()
-                };
-
-            let columns: Vec<ColumnInfo> = col_meta
-                .iter()
-                .map(|(name, dtype, notnull, is_pk, default_val)| {
-                    let fk = fk_map.get(name);
-                    ColumnInfo {
-                        name: name.clone(),
-                        data_type: if dtype.is_empty() {
-                            "TEXT".to_string()
-                        } else {
-                            dtype.clone()
-                        },
-                        is_nullable: !notnull,
-                        is_pk: *is_pk,
-                        is_fk: fk.is_some(),
-                        fk_ref: fk.map(|(t, c)| (t.clone(), c.clone())),
-                        default_value: default_val.clone(),
-                        editable: true,
-                        is_generated: false,
-                    }
-                })
-                .collect();
-
-            // Fetch the referenced row
-            let data_query = format!(
-                "SELECT * FROM \"{}\".\"{}\" WHERE \"{}\" = ?1 LIMIT 1",
-                schema, table, column
-            );
+        crate::db::pool::DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
+            let target = resolve_fk_target_sqlite(&conn, table, column)?;
+            let columns = sqlite_table_columns(&conn, &target)?;
+            let data_query = crate::db::fk::preview_sql(Engine::Sqlite, &target)?;
             let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
             let col_count = stmt.column_count();
             let rows: Vec<Vec<serde_json::Value>> = stmt
@@ -2287,29 +2572,21 @@ ORDER BY c.ordinal_position"#;
             Ok(QueryResult {
                 columns,
                 rows,
-                total_rows: 1,
+                total_rows: Some(1),
+                has_more: false,
                 page: 1,
                 page_size: 1,
                 execution_time_ms: None,
             })
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-                               // The request already resolves the referenced table/column (the
-                               // frontend reads `fk_ref`); fetch the referenced row directly.
-            let columns = mysql_load_columns(pool, &schema, &table).await?;
-            let qualified = format!(
-                "{}.{}",
-                crate::db::mysql::mysql_quote_ident(&schema),
-                crate::db::mysql::mysql_quote_ident(&table)
-            );
-            let data_query = format!(
-                "SELECT * FROM {} WHERE {} = ? LIMIT 1",
-                qualified,
-                crate::db::mysql::mysql_quote_ident(&column)
-            );
-            let data_rows = sqlx::query(&data_query)
-                .bind(&value)
+        crate::db::pool::DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
+            let target = resolve_fk_target_mysql(pool, schema, table, column).await?;
+            let columns = mysql_load_columns(pool, &target.schema, &target.table, false).await?;
+            let data_query = crate::db::fk::preview_sql(Engine::MySql, &target)?;
+            let data_rows = sqlx::query(sqlx::AssertSqlSafe(data_query))
+                .bind(value)
                 .fetch_all(pool)
                 .await
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -2325,24 +2602,483 @@ ORDER BY c.ordinal_position"#;
             Ok(QueryResult {
                 columns,
                 rows,
-                total_rows,
+                total_rows: Some(total_rows),
+                has_more: false,
                 page: 1,
                 page_size: 1,
                 execution_time_ms: None,
             })
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
-/// Map a tokio_postgres/rusqlite affected-row count to a friendly error.
-/// Exactly 1 -> Ok (None). 0 -> stale; >1 -> ambiguous.
-pub(crate) fn affected_count_error(n: u64) -> Option<String> {
-    match n {
-        0 => Some("row was modified or removed by another session".to_string()),
-        1 => None,
-        _ => Some("ambiguous row match".to_string()),
+/// Read a SQLite table's column metadata (with its own FKs) for display.
+pub(crate) fn sqlite_table_columns(
+    conn: &rusqlite::Connection,
+    target: &crate::db::fk::FkTarget,
+) -> Result<Vec<ColumnInfo>, String> {
+    let pragma_query = crate::db::introspection::sqlite_columns_query(&target.table);
+    let mut pragma_stmt = conn.prepare(&pragma_query).map_err(|e| e.to_string())?;
+    let col_meta: Vec<(String, String, bool, bool, Option<String>)> = pragma_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+                row.get::<_, bool>(5)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let fk_query = crate::db::introspection::sqlite_foreign_keys_query(&target.table);
+    let fk_map: HashMap<String, (String, String)> = match conn.prepare(&fk_query) {
+        Ok(mut fk_stmt) => fk_stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .map(|(from, ref_table, ref_col)| (from, (ref_table, ref_col)))
+            .collect(),
+        Err(_) => HashMap::new(),
+    };
+
+    sqlite_columns_from_rows(&col_meta, &fk_map, false)
+}
+
+#[tauri::command]
+pub async fn get_fk_preview(
+    connection_id: String,
+    schema: String,
+    table: String,
+    column: String,
+    value: String,
+    state: State<'_, crate::AppState>,
+) -> Result<QueryResult, String> {
+    get_fk_preview_inner(
+        &state.pool_manager,
+        &connection_id,
+        &schema,
+        &table,
+        &column,
+        &value,
+    )
+    .await
+}
+
+/// Headless foreign-key option search, shared by the `search_fk_options`
+/// command and tests.
+///
+/// `schema`/`table`/`column` identify the **source** column; the referenced
+/// relation is resolved from catalog metadata. The search runs in the engine
+/// (`LIMIT`/`OFFSET` over the whole referenced table), so matches beyond an
+/// initial page are reachable — a client-side filter over page one is exactly
+/// the bug this replaces.
+pub(crate) async fn search_fk_options_inner(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    connection_id: &str,
+    schema: &str,
+    table: &str,
+    column: &str,
+    search: &str,
+    page: Option<i64>,
+    page_size: Option<i64>,
+) -> Result<QueryResult, String> {
+    let page = page.unwrap_or(1);
+    if page < 1 {
+        return Err(format!(
+            "foreign-key option search page {page} must be 1 or greater"
+        ));
     }
+    let page_size = page_size.unwrap_or(50);
+    if !(1..=crate::db::fk::MAX_FK_OPTION_PAGE_SIZE).contains(&page_size) {
+        return Err(format!(
+            "foreign-key option search page size {page_size} must be between 1 and {}",
+            crate::db::fk::MAX_FK_OPTION_PAGE_SIZE
+        ));
+    }
+    let offset = (page - 1)
+        .checked_mul(page_size)
+        .ok_or_else(|| "foreign-key option search page is too large".to_string())?;
+
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    match db_handle {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
+            let target = resolve_fk_target(&client, schema, table, column).await?;
+            let col_rows = client
+                .query(
+                    &crate::db::introspection::pg_columns_query(),
+                    &[&target.schema, &target.table],
+                )
+                .await
+                .map_err(|e| pg_error_message(&e))?;
+            let columns = pg_columns_from_rows(&target.schema, &col_rows, false)?;
+            let pairs: Vec<(String, String)> = columns
+                .iter()
+                .map(|c| (c.name.clone(), c.data_type.clone()))
+                .collect();
+            let search_columns = crate::db::fk::search_columns(&target, &pairs);
+            let sql = crate::db::fk::search_sql(
+                Engine::PostgreSql,
+                &target,
+                &search_columns,
+                page_size,
+                offset,
+            )?;
+
+            let data_rows = client
+                .query(&sql.rows, &[&search])
+                .await
+                .map_err(|e| pg_error_message(&e))?;
+            let rows: Vec<Vec<serde_json::Value>> = data_rows
+                .iter()
+                .map(|row| (0..row.len()).map(|i| pg_value_to_json(row, i)).collect())
+                .collect();
+            // The FK search count counts the referenced table, it does not
+            // replay the user's statement, so this total is exact.
+            let total_rows: i64 = client
+                .query_one(&sql.count, &[&search])
+                .await
+                .map_err(|e| pg_error_message(&e))?
+                .get(0);
+
+            Ok(QueryResult {
+                has_more: (offset + rows.len() as i64) < total_rows,
+                columns,
+                rows,
+                total_rows: Some(total_rows),
+                page,
+                page_size,
+                execution_time_ms: None,
+            })
+        }
+        crate::db::pool::DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
+            let target = resolve_fk_target_sqlite(&conn, table, column)?;
+            let columns = sqlite_table_columns(&conn, &target)?;
+            let pairs: Vec<(String, String)> = columns
+                .iter()
+                .map(|c| (c.name.clone(), c.data_type.clone()))
+                .collect();
+            let search_columns = crate::db::fk::search_columns(&target, &pairs);
+            let sql = crate::db::fk::search_sql(
+                Engine::Sqlite,
+                &target,
+                &search_columns,
+                page_size,
+                offset,
+            )?;
+
+            let mut stmt = conn.prepare(&sql.rows).map_err(|e| e.to_string())?;
+            let col_count = stmt.column_count();
+            let rows: Vec<Vec<serde_json::Value>> = stmt
+                .query_map([search], |row| {
+                    let mut vals = Vec::new();
+                    for i in 0..col_count {
+                        vals.push(sqlite_value_to_json(row, i));
+                    }
+                    Ok(vals)
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
+            // The FK search count counts the referenced table, it does not
+            // replay the user's statement, so this total is exact.
+            let total_rows: i64 = conn
+                .query_row(&sql.count, [search], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+
+            Ok(QueryResult {
+                has_more: (offset + rows.len() as i64) < total_rows,
+                columns,
+                rows,
+                total_rows: Some(total_rows),
+                page,
+                page_size,
+                execution_time_ms: None,
+            })
+        }
+        crate::db::pool::DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
+            let pool = &*pool;
+            let target = resolve_fk_target_mysql(pool, schema, table, column).await?;
+            let columns = mysql_load_columns(pool, &target.schema, &target.table, false).await?;
+            let pairs: Vec<(String, String)> = columns
+                .iter()
+                .map(|c| (c.name.clone(), c.data_type.clone()))
+                .collect();
+            let search_columns = crate::db::fk::search_columns(&target, &pairs);
+            let sql = crate::db::fk::search_sql(
+                Engine::MySql,
+                &target,
+                &search_columns,
+                page_size,
+                offset,
+            )?;
+
+            // MySQL placeholders are positional: one bind per searched column.
+            let mut rows_query = sqlx::query(sqlx::AssertSqlSafe(sql.rows.to_owned()));
+            for _ in 0..sql.binds {
+                rows_query = rows_query.bind(search);
+            }
+            let data_rows = rows_query
+                .fetch_all(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            let rows: Vec<Vec<serde_json::Value>> = data_rows
+                .iter()
+                .map(|row| {
+                    (0..row.len())
+                        .map(|i| crate::commands::query::mysql_cell_to_json(row, i))
+                        .collect()
+                })
+                .collect();
+            let mut count_query = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.count.to_owned()));
+            for _ in 0..sql.binds {
+                count_query = count_query.bind(search);
+            }
+            // The FK search count counts the referenced table, it does not
+            // replay the user's statement, so this total is exact.
+            let total_rows: i64 = count_query
+                .fetch_one(pool)
+                .await
+                .map_err(|e| sanitize_error(&format!("{e}")))?;
+
+            Ok(QueryResult {
+                has_more: (offset + rows.len() as i64) < total_rows,
+                columns,
+                rows,
+                total_rows: Some(total_rows),
+                page,
+                page_size,
+                execution_time_ms: None,
+            })
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn search_fk_options(
+    connection_id: String,
+    schema: String,
+    table: String,
+    column: String,
+    search: Option<String>,
+    page: Option<i64>,
+    page_size: Option<i64>,
+    state: State<'_, crate::AppState>,
+) -> Result<QueryResult, String> {
+    search_fk_options_inner(
+        &state.pool_manager,
+        &connection_id,
+        &schema,
+        &table,
+        &column,
+        search.as_deref().unwrap_or_default(),
+        page,
+        page_size,
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Single-row writes: one row or nothing (ticket 03)
+//
+// A queued update/delete addresses exactly one intended row. The predicate is
+// the Row Identity plus the original values the user saw, the statement runs in
+// a transaction, and only an exactly-one-row match is committed. Zero and
+// multiple matches roll back *before* the failure is reported, so a reported
+// failure can never conceal a durable write.
+// ---------------------------------------------------------------------------
+
+/// Describe a queued single-row write, computing the original-value guards it
+/// must carry (and failing closed when a physical locator has none).
+fn single_row_write<'a>(
+    engine: Engine,
+    schema: &'a str,
+    table: &'a str,
+    kind: crate::db::row_write::WriteKind,
+    identity: &'a [(String, serde_json::Value)],
+    new_data: &'a [(String, serde_json::Value)],
+    original: &[(String, serde_json::Value)],
+) -> Result<crate::db::row_write::RowWrite<'a>, String> {
+    let guard = crate::db::row_write::guards_for(kind, identity, original)?;
+    Ok(crate::db::row_write::RowWrite {
+        engine,
+        schema,
+        table,
+        kind,
+        identity,
+        new_data,
+        guard,
+    })
+}
+
+/// The error for a write that did not match exactly one row.
+fn single_row_failure(
+    w: &crate::db::row_write::RowWrite<'_>,
+    affected: u64,
+    identity_rows: Option<u64>,
+) -> Result<(), String> {
+    let guarded: Vec<String> = w.guard.iter().map(|(c, _)| c.clone()).collect();
+    match crate::db::row_write::failure_message(
+        affected,
+        identity_rows,
+        crate::db::row_write::is_physical_locator(w.identity),
+        &guarded,
+    ) {
+        Some(msg) => Err(msg),
+        None => Ok(()),
+    }
+}
+
+/// Box change values for `tokio-postgres` parameter binding.
+fn pg_bound(params: &[serde_json::Value]) -> Vec<Box<dyn ToSql + Send + Sync>> {
+    params.iter().map(pg_box_value).collect()
+}
+
+/// Borrow boxed parameters the way `tokio_postgres` expects them: `Send` is
+/// dropped from the auto-trait list because the slice is used within one await.
+fn pg_param_refs(boxed: &[Box<dyn ToSql + Send + Sync>]) -> Vec<&(dyn ToSql + Sync)> {
+    boxed
+        .iter()
+        .map(|b| {
+            let r: &(dyn ToSql + Sync) = &**b;
+            r
+        })
+        .collect()
+}
+
+/// Does a row still carry this Row Identity? `None` when the write carries no
+/// original-value guard, so there is nothing to explain beyond a stale row.
+async fn probe_identity_pg(
+    tx: &tokio_postgres::Transaction<'_>,
+    w: &crate::db::row_write::RowWrite<'_>,
+) -> Result<Option<u64>, String> {
+    if w.guard.is_empty() {
+        return Ok(None);
+    }
+    let probe = w.identity_probe()?;
+    let boxed = pg_bound(&probe.params);
+    let refs = pg_param_refs(&boxed);
+    let rows = tx
+        .query(&probe.sql, &refs)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(rows.len() as u64))
+}
+
+async fn apply_pg_single_row(
+    client: &mut tokio_postgres::Client,
+    w: &crate::db::row_write::RowWrite<'_>,
+) -> Result<(), String> {
+    let stmt = w.statement()?;
+    let tx = client
+        .build_transaction()
+        .start()
+        .await
+        .map_err(|e| e.to_string())?;
+    let affected = {
+        let boxed = pg_bound(&stmt.params);
+        let refs = pg_param_refs(&boxed);
+        tx.execute(&stmt.sql, &refs)
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    if affected == 1 {
+        return tx.commit().await.map_err(|e| e.to_string());
+    }
+    // Explain the failure from inside the same transaction, then roll back: the
+    // write is never durable unless it matched exactly one row.
+    let identity_rows = probe_identity_pg(&tx, w).await?;
+    tx.rollback().await.map_err(|e| e.to_string())?;
+    single_row_failure(w, affected, identity_rows)
+}
+
+fn apply_sqlite_single_row(
+    conn: &mut rusqlite::Connection,
+    w: &crate::db::row_write::RowWrite<'_>,
+) -> Result<(), String> {
+    let stmt = w.statement()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let params: Vec<rusqlite::types::Value> =
+        stmt.params.iter().map(json_to_sqlite_value).collect();
+    let affected = tx
+        .execute(&stmt.sql, rusqlite::params_from_iter(params))
+        .map_err(|e| e.to_string())? as u64;
+    if affected == 1 {
+        return tx.commit().map_err(|e| e.to_string());
+    }
+    let identity_rows = if w.guard.is_empty() {
+        None
+    } else {
+        let probe = w.identity_probe()?;
+        let probe_params: Vec<rusqlite::types::Value> =
+            probe.params.iter().map(json_to_sqlite_value).collect();
+        let mut statement = tx.prepare(&probe.sql).map_err(|e| e.to_string())?;
+        let mut rows = statement
+            .query(rusqlite::params_from_iter(probe_params))
+            .map_err(|e| e.to_string())?;
+        let found = rows.next().map_err(|e| e.to_string())?.is_some();
+        Some(u64::from(found))
+    };
+    tx.rollback().map_err(|e| e.to_string())?;
+    single_row_failure(w, affected, identity_rows)
+}
+
+async fn apply_mysql_single_row(
+    pool: &sqlx::MySqlPool,
+    w: &crate::db::row_write::RowWrite<'_>,
+) -> Result<(), String> {
+    let stmt = w.statement()?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?;
+    let affected = bind_mysql_params(
+        sqlx::query(sqlx::AssertSqlSafe(stmt.sql.to_owned())),
+        &stmt.params,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| sanitize_error(&format!("{e}")))?
+    .rows_affected();
+    if affected == 1 {
+        return tx
+            .commit()
+            .await
+            .map_err(|e| sanitize_error(&format!("{e}")));
+    }
+    let identity_rows = if w.guard.is_empty() {
+        None
+    } else {
+        let probe = w.identity_probe()?;
+        let found = bind_mysql_params(
+            sqlx::query(sqlx::AssertSqlSafe(probe.sql.to_owned())),
+            &probe.params,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?;
+        Some(u64::from(found.is_some()))
+    };
+    tx.rollback()
+        .await
+        .map_err(|e| sanitize_error(&format!("{e}")))?;
+    single_row_failure(w, affected, identity_rows)
 }
 
 /// Headless change-application shared by the `execute_change` command and
@@ -2352,21 +3088,32 @@ pub(crate) async fn execute_change_inner(
     connection_id: &str,
     change: Change,
 ) -> Result<(), String> {
-    let mut pm = pm.lock().await;
-    match pm.get(connection_id) {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
-            // Build the parameterized SQL + bound values from the change.
-            let (sql, params): (String, Vec<serde_json::Value>) = match &change {
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
+    match db_handle {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
+            let mut client = client.lock().await;
+            match &change {
                 Change::Update {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     new_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
                     let data = parse_json_pairs(new_data)?;
-                    build_pg_update_sql(schema, table, &pk, &data)?
+                    let w = single_row_write(
+                        Engine::PostgreSql,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Update,
+                        &identity,
+                        &data,
+                        &original,
+                    )?;
+                    return apply_pg_single_row(&mut *client, &w).await;
                 }
                 Change::Insert {
                     schema,
@@ -2375,16 +3122,34 @@ pub(crate) async fn execute_change_inner(
                     ..
                 } => {
                     let pairs = parse_json_pairs(data)?;
-                    build_pg_insert_sql(schema, table, &pairs)
+                    let (sql, params) = build_pg_insert_sql(schema, table, &pairs);
+                    let boxed = pg_bound(&params);
+                    let refs = pg_param_refs(&boxed);
+                    client
+                        .execute(&sql, &refs)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    return Ok(());
                 }
                 Change::Delete {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
-                    build_pg_delete_sql(schema, table, &pk)?
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
+                    let w = single_row_write(
+                        Engine::PostgreSql,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Delete,
+                        &identity,
+                        &[],
+                        &original,
+                    )?;
+                    return apply_pg_single_row(&mut *client, &w).await;
                 }
                 Change::AlterTable { sql, .. } => {
                     // Execute the raw DDL directly; no bound parameters.
@@ -2421,7 +3186,7 @@ pub(crate) async fn execute_change_inner(
                 } => {
                     // Single transaction for the whole batch; rolls back on the
                     // first failed row so no partial batch persists.
-                    return apply_bulk_insert_pg(client, schema, table, columns, rows)
+                    return apply_bulk_insert_pg(&client, schema, table, columns, rows)
                         .await
                         .map(|_| ());
                 }
@@ -2439,44 +3204,36 @@ pub(crate) async fn execute_change_inner(
                         .map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-            };
-
-            // Box each value for trait-object binding (`$N` placeholders). The
-            // boxed values must be `Send` so the async command future stays
-            // `Send` across the `.await`.
-            let boxed: Vec<Box<dyn ToSql + Send + Sync>> =
-                params.iter().map(pg_box_value).collect();
-            // Coerce each `&(dyn ToSql + Send + Sync)` reference down to
-            // `&(dyn ToSql + Sync)` (dropping the `Send` auto-trait) to match
-            // `tokio_postgres::Client::execute`'s expected slice type.
-            let refs: Vec<&(dyn ToSql + Sync)> = boxed
-                .iter()
-                .map(|b| {
-                    let r: &(dyn ToSql + Sync) = &**b;
-                    r
-                })
-                .collect();
-            let n = client
-                .execute(&sql, &refs)
-                .await
-                .map_err(|e| e.to_string())?;
-            if let Some(msg) = affected_count_error(n) {
-                return Err(msg);
             }
-            Ok(())
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
-            let (sql, params): (String, Vec<serde_json::Value>) = match &change {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
+            let mut conn = conn.lock().await;
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
+            match &change {
                 Change::Update {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     new_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
                     let data = parse_json_pairs(new_data)?;
-                    build_update_sql(schema, table, &pk, &data)?
+                    let w = single_row_write(
+                        Engine::Sqlite,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Update,
+                        &identity,
+                        &data,
+                        &original,
+                    )?;
+                    return apply_sqlite_single_row(&mut *conn, &w);
                 }
                 Change::Insert {
                     schema,
@@ -2486,19 +3243,36 @@ pub(crate) async fn execute_change_inner(
                 } => {
                     let pairs = parse_json_pairs(data)?;
                     let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
-                    (
-                        build_insert_sql(schema, table, &columns),
-                        pairs.iter().map(|(_, v)| v.clone()).collect(),
+                    let params: Vec<serde_json::Value> =
+                        pairs.iter().map(|(_, v)| v.clone()).collect();
+                    let sqlite_params: Vec<rusqlite::types::Value> =
+                        params.iter().map(json_to_sqlite_value).collect();
+                    conn.execute(
+                        &build_insert_sql(schema, table, &columns),
+                        rusqlite::params_from_iter(sqlite_params),
                     )
+                    .map_err(|e| e.to_string())?;
+                    return Ok(());
                 }
                 Change::Delete {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
-                    build_delete_sql(schema, table, &pk)?
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
+                    let w = single_row_write(
+                        Engine::Sqlite,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Delete,
+                        &identity,
+                        &[],
+                        &original,
+                    )?;
+                    return apply_sqlite_single_row(&mut *conn, &w);
                 }
                 Change::AlterTable { sql, .. } => {
                     conn.execute(sql, []).map_err(|e| e.to_string())?;
@@ -2509,9 +3283,19 @@ pub(crate) async fn execute_change_inner(
                     conn.execute_batch(sql).map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-                Change::RebuildTable { sql, .. } => {
-                    // Rebuild script (create tmp / copy / drop / rename).
-                    conn.execute_batch(sql).map_err(|e| e.to_string())?;
+                Change::RebuildTable { table, sql, .. } => {
+                    // One transaction, re-validated against the live table shape:
+                    // a rebuild whose table has since gained an index, trigger, or
+                    // other unpreserved feature is refused before its first
+                    // mutating statement, and any failure rolls the whole script
+                    // back (no temporary table, no dropped rows).
+                    if table.is_empty() {
+                        return Err(
+                            "Rebuild change does not name its table; refusing to apply it"
+                                .to_string(),
+                        );
+                    }
+                    crate::db::sqlite_rebuild::apply_rebuild(&mut *conn, table, sql)?;
                     return Ok(());
                 }
                 Change::BulkInsert {
@@ -2522,7 +3306,7 @@ pub(crate) async fn execute_change_inner(
                 } => {
                     // Single transaction for the whole batch; rolls back on the
                     // first failed row so no partial batch persists.
-                    return apply_bulk_insert_sqlite(conn, table, columns, rows).map(|_| ());
+                    return apply_bulk_insert_sqlite(&mut *conn, table, columns, rows).map(|_| ());
                 }
                 Change::DropTable { schema, table, .. } => {
                     conn.execute(&build_drop_table_sql(schema, table), [])
@@ -2534,31 +3318,33 @@ pub(crate) async fn execute_change_inner(
                         .map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-            };
-
-            let sqlite_params: Vec<rusqlite::types::Value> =
-                params.iter().map(json_to_sqlite_value).collect();
-            let n = conn
-                .execute(&sql, rusqlite::params_from_iter(sqlite_params))
-                .map_err(|e| e.to_string())?;
-            if let Some(msg) = affected_count_error(n as u64) {
-                return Err(msg);
             }
-            Ok(())
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-            let (sql, params): (String, Vec<serde_json::Value>) = match &change {
+        crate::db::pool::DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
+            match &change {
                 Change::Update {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     new_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
                     let data = parse_json_pairs(new_data)?;
-                    crate::db::mysql::mysql_build_update_sql(schema, table, &pk, &data)?
+                    let w = single_row_write(
+                        Engine::MySql,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Update,
+                        &identity,
+                        &data,
+                        &original,
+                    )?;
+                    return apply_mysql_single_row(pool, &w).await;
                 }
                 Change::Insert {
                     schema,
@@ -2567,20 +3353,37 @@ pub(crate) async fn execute_change_inner(
                     ..
                 } => {
                     let pairs = parse_json_pairs(data)?;
-                    crate::db::mysql::mysql_build_insert_sql(schema, table, &pairs)
+                    let (sql, params) =
+                        crate::db::mysql::mysql_build_insert_sql(schema, table, &pairs);
+                    bind_mysql_params(sqlx::query(sqlx::AssertSqlSafe(sql)), &params)
+                        .execute(pool)
+                        .await
+                        .map_err(|e| sanitize_error(&format!("{e}")))?;
+                    return Ok(());
                 }
                 Change::Delete {
                     schema,
                     table,
                     primary_key,
+                    old_data,
                     ..
                 } => {
-                    let pk = parse_json_pairs(primary_key)?;
-                    crate::db::mysql::mysql_build_delete_sql(schema, table, &pk)?
+                    let identity = parse_json_pairs(primary_key)?;
+                    let original = parse_optional_json_pairs(old_data)?;
+                    let w = single_row_write(
+                        Engine::MySql,
+                        schema,
+                        table,
+                        crate::db::row_write::WriteKind::Delete,
+                        &identity,
+                        &[],
+                        &original,
+                    )?;
+                    return apply_mysql_single_row(pool, &w).await;
                 }
                 Change::AlterTable { sql, .. } => {
                     // Raw DDL, no bound parameters.
-                    sqlx::query(sql)
+                    sqlx::query(sqlx::AssertSqlSafe(sql.to_owned()))
                         .execute(pool)
                         .await
                         .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -2611,38 +3414,32 @@ pub(crate) async fn execute_change_inner(
                     let params: Vec<serde_json::Value> = rows.iter().flatten().cloned().collect();
                     // Bulk insert affects many rows — skip the single-row
                     // affected-count guard.
-                    bind_mysql_params(sqlx::query(&sql), &params)
+                    bind_mysql_params(sqlx::query(sqlx::AssertSqlSafe(sql.to_owned())), &params)
                         .execute(pool)
                         .await
                         .map_err(|e| sanitize_error(&format!("{e}")))?;
                     return Ok(());
                 }
                 Change::DropTable { schema, table, .. } => {
-                    sqlx::query(&crate::db::mysql::mysql_build_drop_sql(schema, table))
-                        .execute(pool)
-                        .await
-                        .map_err(|e| sanitize_error(&format!("{e}")))?;
+                    sqlx::query(sqlx::AssertSqlSafe(crate::db::mysql::mysql_build_drop_sql(
+                        schema, table,
+                    )))
+                    .execute(pool)
+                    .await
+                    .map_err(|e| sanitize_error(&format!("{e}")))?;
                     return Ok(());
                 }
                 Change::EmptyTable { schema, table, .. } => {
-                    sqlx::query(&crate::db::mysql::mysql_build_empty_sql(schema, table))
-                        .execute(pool)
-                        .await
-                        .map_err(|e| sanitize_error(&format!("{e}")))?;
+                    sqlx::query(sqlx::AssertSqlSafe(
+                        crate::db::mysql::mysql_build_empty_sql(schema, table),
+                    ))
+                    .execute(pool)
+                    .await
+                    .map_err(|e| sanitize_error(&format!("{e}")))?;
                     return Ok(());
                 }
-            };
-
-            let result = bind_mysql_params(sqlx::query(&sql), &params)
-                .execute(pool)
-                .await
-                .map_err(|e| sanitize_error(&format!("{e}")))?;
-            if let Some(msg) = affected_count_error(result.rows_affected()) {
-                return Err(msg);
             }
-            Ok(())
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -2650,9 +3447,68 @@ pub(crate) async fn execute_change_inner(
 pub async fn execute_change(
     connection_id: String,
     change: Change,
+    origin: crate::db::change_target::ChangeOrigin,
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    execute_change_inner(&state.pool_manager, &connection_id, change).await
+    execute_staged_change(
+        &state.db_store,
+        &state.pool_manager,
+        &connection_id,
+        &origin,
+        change,
+    )
+    .await
+}
+
+/// Apply one staged change, resolving the connection it belongs to and refusing
+/// the write when the **staging origin** no longer matches the saved connection.
+///
+/// `staged_origin` must be the Change Origin the renderer recorded when the
+/// change was *staged* (`QueueItem.origin`), never one recomputed at commit
+/// time: the whole point of the check is that the backend — not the renderer —
+/// decides whether the connection still points where the work was staged. A
+/// renderer that hands over the current target would make the comparison
+/// tautological, and a reused connection id could then redirect a staged write
+/// even though neither the user nor the UI asked for it.
+///
+/// The saved connection is looked up here rather than trusted from the caller,
+/// so a change can only ever be applied through the configuration the store
+/// currently holds — and only if that configuration is the one it was staged
+/// against. A refusal writes nothing.
+pub(crate) async fn execute_staged_change(
+    store: &std::sync::Mutex<crate::store::Store>,
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    connection_id: &str,
+    staged_origin: &crate::db::change_target::ChangeOrigin,
+    change: Change,
+) -> Result<(), String> {
+    let stored = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        let connections = store.get_connections().map_err(|e| e.to_string())?;
+        connections
+            .into_iter()
+            .find(|c| c.id == connection_id)
+            .ok_or_else(|| connection_not_found(&connection_id))?
+    };
+    execute_change_for_origin(pm, &stored, connection_id, staged_origin, change).await
+}
+
+/// Apply one queued change, but only if its Change Origin still matches the saved
+/// connection.
+///
+/// Headless form of the `execute_change` command: the origin is validated first,
+/// so a retargeted connection (or an origin belonging to another connection)
+/// writes nothing. Callers must pass the **stored** connection, not the one the
+/// change claims to belong to.
+pub(crate) async fn execute_change_for_origin(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    stored: &crate::models::Connection,
+    connection_id: &str,
+    origin: &crate::db::change_target::ChangeOrigin,
+    change: Change,
+) -> Result<(), String> {
+    crate::db::change_target::validate_change_origin(stored, connection_id, origin)?;
+    execute_change_inner(pm, connection_id, change).await
 }
 
 #[tauri::command]
@@ -2663,22 +3519,29 @@ pub async fn refresh_connection(
     // Verify the connection is still alive by running a trivial query. The
     // frontend re-issues getDatabases/getSchemas/getTables separately after
     // this returns, so we only need to confirm reachability here.
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        crate::db::pool::DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             client
                 .query_one("SELECT 1", &[])
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(())
         }
-        Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+        crate::db::pool::DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            // One operation at a time on this connection: `rusqlite::Connection`
+            // is not `Sync`, so the driver needs this. `acquire_handle` released
+            // the pool registry before this match, so no other connection waits
+            // on this one.
             conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
                 .map_err(|e| e.to_string())?;
             Ok(())
         }
-        Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+        crate::db::pool::DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // Verify reachability (the sqlx pool reconnects transparently); the
                                // frontend re-issues getDatabases/getSchemas/getTables afterwards.
             sqlx::query_scalar::<_, i64>("SELECT 1")
@@ -2687,7 +3550,6 @@ pub async fn refresh_connection(
                 .map_err(|e| sanitize_error(&format!("{e}")))?;
             Ok(())
         }
-        None => Err("Connection not found".to_string()),
     }
 }
 
@@ -2697,9 +3559,10 @@ pub async fn get_functions(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<FunctionInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_functions_query(&schema);
             let rows = client
@@ -2721,9 +3584,8 @@ pub async fn get_functions(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL functions not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL functions not yet supported".to_string()),
     }
 }
 
@@ -2733,9 +3595,10 @@ pub async fn get_hypertables(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<HypertableListResponse, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let detected: bool = client
                 .query_one(&crate::db::introspection::pg_timescale_detect_query(), &[])
                 .await
@@ -2770,12 +3633,11 @@ pub async fn get_hypertables(
                     .collect(),
             })
         }
-        Some(DbHandle::Sqlite(_)) | Some(DbHandle::MySql(_)) => Ok(HypertableListResponse {
+        DbHandle::Sqlite(_) | DbHandle::MySql(_) => Ok(HypertableListResponse {
             available: false,
             reason: Some("Hypertables are a TimescaleDB (PostgreSQL) feature".into()),
             items: vec![],
         }),
-        None => Err("Connection not found".into()),
     }
 }
 
@@ -2785,9 +3647,10 @@ pub async fn get_indexes(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<IndexInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_indexes_query(&schema);
             let rows = client
@@ -2809,9 +3672,8 @@ pub async fn get_indexes(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL indexes not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL indexes not yet supported".to_string()),
     }
 }
 
@@ -2821,9 +3683,10 @@ pub async fn get_constraints(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<ConstraintInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_constraints_query(&schema);
             let rows = client
@@ -2857,9 +3720,8 @@ pub async fn get_constraints(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL constraints not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL constraints not yet supported".to_string()),
     }
 }
 
@@ -2869,9 +3731,10 @@ pub async fn get_triggers(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<TriggerInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_triggers_query(&schema);
             let rows = client
@@ -2893,9 +3756,8 @@ pub async fn get_triggers(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL triggers not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL triggers not yet supported".to_string()),
     }
 }
 
@@ -2905,9 +3767,10 @@ pub async fn get_sequences(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<SequenceInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_sequences_query(&schema);
             let rows = client
@@ -2931,9 +3794,8 @@ pub async fn get_sequences(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL sequences not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL sequences not yet supported".to_string()),
     }
 }
 
@@ -2943,9 +3805,10 @@ pub async fn get_enums(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<EnumInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_enums_query(&schema);
             let rows = client
@@ -2961,9 +3824,8 @@ pub async fn get_enums(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL enums not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL enums not yet supported".to_string()),
     }
 }
 
@@ -2972,9 +3834,10 @@ pub async fn get_extensions(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<ExtensionInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             let query = crate::db::introspection::pg_extensions_query();
             let rows = client.query(&query, &[]).await.map_err(|e| e.to_string())?;
             Ok(rows
@@ -2987,9 +3850,8 @@ pub async fn get_extensions(
                 })
                 .collect())
         }
-        Some(DbHandle::Sqlite(_)) => Ok(vec![]),
-        Some(DbHandle::MySql(_)) => Err("MySQL extensions not yet supported".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::Sqlite(_) => Ok(vec![]),
+        DbHandle::MySql(_) => Err("MySQL extensions not yet supported".to_string()),
     }
 }
 
@@ -3006,71 +3868,81 @@ pub async fn get_table_ddl(
     state: State<'_, crate::AppState>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Sqlite(conn)) => get_sqlite_ddl(conn, &table),
-        Some(DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
+    match db_handle {
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            get_sqlite_ddl(&conn, &table)
+        }
+        DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // SHOW CREATE TABLE returns (Table, Create Table); take the DDL.
-            let row = sqlx::query(&crate::db::mysql::mysql_ddl_query(&schema, &table))
-                .fetch_one(pool)
-                .await
-                .map_err(|e| sanitize_error(&format!("{e}")))?;
+            let row = sqlx::query(sqlx::AssertSqlSafe(crate::db::mysql::mysql_ddl_query(
+                &schema, &table,
+            )))
+            .fetch_one(pool)
+            .await
+            .map_err(|e| sanitize_error(&format!("{e}")))?;
             Ok(crate::db::mysql::mysql_row_string(&row, 1))
         }
-        Some(DbHandle::Postgresql(_client, _)) => {
+        DbHandle::Postgresql(_client, _) => {
             // Pull connection metadata so pg_dump reaches the same server the
             // pool is connected to (host/port/user/dbname + keychain password).
-            let conn_row = state
-                .db_store
-                .lock()
-                .map_err(|e| e.to_string())?
+            let conn_row = lock_recovering_poison(&state.db_store)
                 .get_connections()
                 .map_err(|e| e.to_string())?
                 .into_iter()
                 .find(|c| c.id == connection_id)
-                .ok_or_else(|| format!("connection {connection_id} not found"))?;
+                .ok_or_else(|| connection_not_found(&connection_id))?;
             let host = conn_row.host.clone();
             let port = conn_row.port.unwrap_or(5432) as u16;
             let user = conn_row.username.unwrap_or_else(|| "postgres".into());
             let db = conn_row.database.unwrap_or_else(|| "postgres".into());
-            let password =
+            // Same credential split as the tool jobs: a keychain-enabled
+            // connection reads the keychain exactly as before (and reports a
+            // keychain failure), while a keychain-off connection uses the
+            // session credential for this connection — or refuses so the UI can
+            // prompt instead of handing pg_dump an empty password.
+            let password = if conn_row.use_keychain {
                 crate::commands::keychain::get_connection_password_internal(&app, &connection_id)?
-                    .unwrap_or_default();
+                    .unwrap_or_default()
+            } else {
+                state.session_credentials.require(&connection_id)?
+            };
 
             // SSH-tunneled connections: pg_dump must reach the DB through the
             // same local loopback listener the app uses, not the remote host.
-            let tunnel_port = state
-                .ssh_manager
-                .lock()
-                .map_err(|e| e.to_string())?
-                .get_local_port(&connection_id);
-            let (dump_host, dump_port) = match tunnel_port {
-                Some(lp) => ("127.0.0.1".to_string(), lp),
-                None => (host, port),
-            };
+            // The saved host stays in `--host` so a `verify-*` connection
+            // authenticates the certificate against the server the user saved;
+            // only the dialed address moves to the tunnel (`PGHOSTADDR`), exactly
+            // as `db::tls::PgConnectPlan` does for the app's own driver.
+            let tunnel_port =
+                lock_recovering_poison(&state.ssh_manager).get_local_port(&connection_id);
+            let mut params =
+                crate::commands::backup::PgConnParams::new(host, port as i64, user, db, password)
+                    .with_tls(
+                        conn_row.ssl_mode.clone(),
+                        conn_row.ssl_ca_path.clone(),
+                        conn_row.ssl_cert_path.clone(),
+                        conn_row.ssl_key_path.clone(),
+                    );
+            if let Some(local_port) = tunnel_port {
+                params = params.through_tunnel(std::net::IpAddr::from([127, 0, 0, 1]), local_port);
+            }
 
             // pg_dump is blocking I/O; run it off the async runtime. Credentials
             // travel via PGPASSWORD, never argv. Resolve system-first,
             // bundled-fallback, before moving into the closure.
             let pg_dump_path = crate::commands::backup::resolve_tool(&app, "pg_dump").0;
             let ddl = tokio::task::spawn_blocking(move || {
-                get_pg_ddl_via_dump(
-                    &schema,
-                    &table,
-                    &dump_host,
-                    dump_port,
-                    &user,
-                    &db,
-                    &password,
-                    &pg_dump_path,
-                )
+                get_pg_ddl_via_dump(&schema, &table, &params, &pg_dump_path)
             })
             .await
             .map_err(|e| format!("pg_dump task failed: {e}"))??;
-            Ok(sanitize_error(&ddl))
+            // The DDL is payload, not an error: it is returned verbatim.
+            Ok(ddl)
         }
-        None => Err("Connection not found".into()),
     }
 }
 
@@ -3085,6 +3957,142 @@ mod tests {
     use crate::db::pool::{ConnectionPoolManager, DbConfig};
     use crate::models::db_viewer::Change;
     use std::sync::{Arc, Mutex as StdMutex};
+
+    /// SSH backend for tests that never reach a real SSH server: host trust is
+    /// an in-memory fake, so no endpoint needs enrolling.
+    fn test_ssh_backend() -> Ssh2Backend {
+        Ssh2Backend::new(Arc::new(
+            crate::commands::ssh_trust::fake::FakeHostTrust::default(),
+        ))
+    }
+
+    /// A tunnel backend that records every `open` and never touches the network.
+    fn recording_tunnel_backend() -> Arc<crate::commands::ssh_trust::fake::FakeTunnelBackend> {
+        Arc::new(crate::commands::ssh_trust::fake::FakeTunnelBackend::default())
+    }
+
+    fn mysql_config_with_tls(ssl_mode: Option<&str>, ssh_host: Option<&str>) -> DbConfig {
+        DbConfig {
+            db_type: "mysql".into(),
+            host: "db.internal".into(),
+            port: Some(3306),
+            username: Some("app".into()),
+            password: Some("pw".into()),
+            database: Some("appdb".into()),
+            ssl_mode: ssl_mode.map(str::to_string),
+            ssh_host: ssh_host.map(str::to_string),
+            ssh_port: ssh_host.map(|_| 22),
+            ssh_user: ssh_host.map(|_| "tunnel".to_string()),
+            ssh_auth_method: ssh_host.map(|_| "password".to_string()),
+            ssh_password: ssh_host.map(|_| "pw".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// sqlx's `MySqlSslMode` has no `PartialEq`; this names it for assertions.
+    fn mysql_mode_name(mode: sqlx::mysql::MySqlSslMode) -> &'static str {
+        use sqlx::mysql::MySqlSslMode;
+        match mode {
+            MySqlSslMode::Disabled => "disabled",
+            MySqlSslMode::Preferred => "preferred",
+            MySqlSslMode::Required => "required",
+            MySqlSslMode::VerifyCa => "verify-ca",
+            MySqlSslMode::VerifyIdentity => "verify-identity",
+        }
+    }
+
+    /// Every mode has a behavioral mapping onto the driver's TLS modes.
+    #[test]
+    fn mysql_tls_mode_maps_every_supported_mode() {
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", Some("disable"), false).unwrap()),
+            "disabled"
+        );
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", Some("require"), false).unwrap()),
+            "required"
+        );
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", Some("verify-ca"), false).unwrap()),
+            "verify-ca"
+        );
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", Some("verify-full"), false).unwrap()),
+            "verify-identity"
+        );
+        // No mode keeps the managed-provider default (encrypt-only), because
+        // those providers refuse plaintext.
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("x.us-east-2.psdb.cloud", None, false).unwrap()),
+            "required"
+        );
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", None, false).unwrap()),
+            "disabled"
+        );
+    }
+
+    /// Through a tunnel: chain verification still works (the peer is the real
+    /// server, reached through the tunnel), while hostname verification cannot
+    /// and is refused instead of silently downgraded to encryption-only.
+    #[test]
+    fn mysql_tunnel_verification_fails_closed_instead_of_downgrading() {
+        assert_eq!(
+            mysql_mode_name(mysql_tls_mode("db.internal", Some("verify-ca"), true).unwrap()),
+            "verify-ca",
+            "verify-ca verifies the chain through the tunnel"
+        );
+        let err = mysql_tls_mode("db.internal", Some("verify-full"), true)
+            .expect_err("verify-full cannot be honored through a tunnel");
+        assert!(err.contains("verify-full"), "got: {err}");
+        assert!(err.contains("db.internal"), "got: {err}");
+        assert!(
+            err.contains("verify-ca"),
+            "error should name the workable mode: {err}"
+        );
+        // An unknown mode is refused on both paths.
+        assert!(mysql_tls_mode("db.internal", Some("bogus"), false).is_err());
+        assert!(mysql_tls_mode("db.internal", Some("bogus"), true).is_err());
+    }
+
+    /// An unknown mode is refused before any SSH handshake: no tunnel may be
+    /// opened on behalf of a configuration that can never connect.
+    #[tokio::test]
+    async fn run_mysql_connect_refuses_an_unknown_ssl_mode_before_opening_a_tunnel() {
+        let backend = recording_tunnel_backend();
+        let ssh = StdMutex::new(SshTunnelManager::new(backend.clone()));
+        let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
+        let cfg = mysql_config_with_tls(Some("prefer"), Some("bastion.internal"));
+
+        let err = run_mysql_connect("mysql-bogus-tls", &cfg, &ssh, &pm, &reg)
+            .await
+            .expect_err("an unknown TLS mode must be refused");
+        assert!(err.contains("prefer"), "got: {err}");
+        assert!(
+            backend.opened().is_empty(),
+            "no tunnel may be opened for a rejected TLS mode"
+        );
+        assert_eq!(ssh.lock().unwrap().active_count(), 0);
+        assert!(pm.lock().await.get("mysql-bogus-tls").is_none());
+    }
+
+    /// verify-full through a tunnel is refused for the same reason, and equally
+    /// before the tunnel opens.
+    #[tokio::test]
+    async fn run_mysql_connect_refuses_verify_full_through_a_tunnel() {
+        let backend = recording_tunnel_backend();
+        let ssh = StdMutex::new(SshTunnelManager::new(backend.clone()));
+        let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
+        let cfg = mysql_config_with_tls(Some("verify-full"), Some("bastion.internal"));
+
+        let err = run_mysql_connect("mysql-tunnel-verify", &cfg, &ssh, &pm, &reg)
+            .await
+            .expect_err("verify-full through a tunnel must fail closed");
+        assert!(err.contains("verify-full"), "got: {err}");
+        assert!(backend.opened().is_empty());
+    }
 
     #[test]
     fn split_columns_csv_handles_commas_and_trims() {
@@ -3123,6 +4131,35 @@ mod tests {
         assert_eq!(offset(1, 50), 0, "page 1, size 50 => offset 0");
         assert_eq!(offset(2, 50), 50, "page 2, size 50 => offset 50");
         assert_eq!(offset(5, 25), 100, "page 5, size 25 => offset 100");
+    }
+
+    /// The page window is untrusted: absent values fall back to page 1 / 50, and
+    /// anything outside `page >= 1`, `1..=500` is rejected rather than clamped
+    /// into a different query.
+    #[test]
+    fn page_window_defaults_and_bounds() {
+        assert_eq!(
+            page_window(None, None).unwrap(),
+            (1, DEFAULT_TABLE_PAGE_SIZE, 0),
+            "an unspecified window is the first page"
+        );
+        assert_eq!(
+            page_window(Some(3), Some(MAX_TABLE_PAGE_SIZE)).unwrap(),
+            (3, MAX_TABLE_PAGE_SIZE, 2 * MAX_TABLE_PAGE_SIZE)
+        );
+
+        for bad_page in [0_i64, -1] {
+            let err = page_window(Some(bad_page), Some(10)).expect_err("page must be positive");
+            assert!(err.contains("page"), "got: {err}");
+        }
+        for bad_size in [0_i64, -1, MAX_TABLE_PAGE_SIZE + 1] {
+            let err =
+                page_window(Some(1), Some(bad_size)).expect_err("page size must be in 1..=500");
+            assert!(err.contains("page size"), "got: {err}");
+        }
+        let err = page_window(Some(i64::MAX), Some(MAX_TABLE_PAGE_SIZE))
+            .expect_err("an overflowing offset is not a page");
+        assert!(err.contains("out of range"), "got: {err}");
     }
 
     /// Verify that a `Change::Update` serializes with the correct `type` tag.
@@ -3197,7 +4234,7 @@ mod tests {
             ("email".to_string(), serde_json::json!("bob@example.com")),
         ];
 
-        let (sql, _params) = build_update_sql("public", "users", &pk, &data).unwrap();
+        let (sql, _params) = build_update_sql("public", "users", &pk, &data, &[]).unwrap();
 
         assert!(
             sql.to_uppercase().contains("UPDATE"),
@@ -3222,7 +4259,7 @@ mod tests {
     fn build_change_delete_sql_is_valid() {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
 
-        let (sql, _params) = build_delete_sql("public", "users", &pk).unwrap();
+        let (sql, _params) = build_delete_sql("public", "users", &pk, &[]).unwrap();
 
         assert!(
             sql.to_uppercase().contains("DELETE FROM"),
@@ -3285,17 +4322,35 @@ mod tests {
 
     /// Verify that the pg_dump argument builder emits schema-only DDL flags
     /// scoped to the requested schema and table.
+    ///
+    /// The patterns are identifier-quoted because pg_dump treats a bare
+    /// `--table=` value as a pattern: `--table=we ird "tbl"` matches nothing,
+    /// while `--table="we ird ""tbl"""` selects the table whose name really
+    /// does contain a space and a double quote (verified against pg_dump 18).
     #[test]
     fn pg_dump_ddl_args_built() {
-        let args = build_pg_dump_ddl_args("public", "users");
+        let args = build_pg_dump_ddl_args("public", "users").expect("args build");
         assert_eq!(
             args,
             vec![
                 "--schema-only".to_string(),
                 "--no-owner".to_string(),
-                "--schema=public".to_string(),
-                "--table=users".to_string()
+                "--schema=\"public\"".to_string(),
+                "--table=\"users\"".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn pg_dump_ddl_args_quote_legal_names() {
+        let args = build_pg_dump_ddl_args("my schema", "we ird \"tbl\"").expect("args build");
+        assert!(
+            args.contains(&"--schema=\"my schema\"".to_string()),
+            "schema pattern must be identifier-quoted: {args:?}"
+        );
+        assert!(
+            args.contains(&"--table=\"we ird \"\"tbl\"\"\"".to_string()),
+            "table pattern must double embedded quotes: {args:?}"
         );
     }
 
@@ -3409,7 +4464,8 @@ mod tests {
 
     #[test]
     fn pg_locator_select_adds_ctid() {
-        let sql = build_pg_data_select("public", "no_pk", &["id".into(), "name".into()], true);
+        let sql =
+            build_pg_data_select("public", "no_pk", &["id".into(), "name".into()], true).unwrap();
         assert!(
             sql.contains("ctid"),
             "no-PK table must select ctid; got: {}",
@@ -3424,7 +4480,8 @@ mod tests {
 
     #[test]
     fn pg_locator_select_omits_ctid_when_pk_present() {
-        let sql = build_pg_data_select("public", "with_pk", &["id".into(), "name".into()], false);
+        let sql = build_pg_data_select("public", "with_pk", &["id".into(), "name".into()], false)
+            .unwrap();
         assert!(
             !sql.contains("ctid"),
             "PK table must NOT select ctid; got: {}",
@@ -3435,7 +4492,8 @@ mod tests {
     #[test]
     fn pg_locator_select_omits_ctid_for_view() {
         // Views expose no ctid — the locator must never be appended for them.
-        let sql = build_pg_data_select("public", "order_summary", &["order_id".into()], false);
+        let sql =
+            build_pg_data_select("public", "order_summary", &["order_id".into()], false).unwrap();
         assert!(
             !sql.contains("ctid"),
             "view must NOT select ctid; got: {}",
@@ -3444,6 +4502,20 @@ mod tests {
         assert!(
             sql.contains("order_summary"),
             "view name must be present; got: {}",
+            sql
+        );
+    }
+
+    /// The physical locator must arrive from PostgreSQL as text: `ctid` is the
+    /// internal `tid` type, which the Rust text decoders reject, so an uncast
+    /// locator would reach the frontend as NULL and no no-PK row could ever be
+    /// edited or deleted.
+    #[test]
+    fn pg_locator_select_casts_ctid_to_text() {
+        let sql = build_pg_data_select("public", "no_pk", &["id".into()], true).expect("select");
+        assert!(
+            sql.contains("ctid::text"),
+            "the row locator must be selected as text; got: {}",
             sql
         );
     }
@@ -3483,7 +4555,7 @@ mod tests {
         // The frontend supplies ctid as the "primary_key" pair for no-PK rows.
         let locator = vec![("ctid".to_string(), serde_json::json!("(0,1)"))];
         let data = vec![("name".to_string(), serde_json::json!("Bob"))];
-        let (sql, params) = build_pg_update_sql("public", "no_pk", &locator, &data).unwrap();
+        let (sql, params) = build_pg_update_sql("public", "no_pk", &locator, &data, &[]).unwrap();
         assert!(
             sql.contains("\"ctid\" = $"),
             "locator update must WHERE on ctid; got: {}",
@@ -3496,7 +4568,7 @@ mod tests {
     fn pg_update_with_pk_uses_pk_where() {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
         let data = vec![("name".to_string(), serde_json::json!("Bob"))];
-        let (sql, _params) = build_pg_update_sql("public", "users", &pk, &data).unwrap();
+        let (sql, _params) = build_pg_update_sql("public", "users", &pk, &data, &[]).unwrap();
         assert!(
             sql.contains("\"id\" = $"),
             "PK update must WHERE on id; got: {}",
@@ -3514,24 +4586,30 @@ mod tests {
         // Defense-in-depth: an empty locator must NOT yield `UPDATE ... WHERE `.
         let pk: Vec<(String, serde_json::Value)> = vec![];
         let data = vec![("name".to_string(), serde_json::json!("Bob"))];
-        let result = build_pg_update_sql("public", "no_pk", &pk, &data);
+        let result = build_pg_update_sql("public", "no_pk", &pk, &data, &[]);
         assert!(
             result.is_err(),
             "empty primary_key must be rejected, not produce broken SQL"
         );
     }
 
+    /// The single-row outcome rules the engines share: one match commits, zero
+    /// is stale or conflicting, more than one is ambiguous. All three report
+    /// that nothing was written.
     #[test]
-    fn affected_row_count_message_for_zero_rows() {
+    fn single_row_outcome_messages() {
+        use crate::db::row_write::{failure_message, STALE_ROW};
+        assert_eq!(failure_message(1, None, false, &[]), None);
         assert_eq!(
-            affected_count_error(0u64),
-            Some("row was modified or removed by another session".to_string())
+            failure_message(0, None, false, &[]),
+            Some(STALE_ROW.to_string())
         );
-        assert_eq!(affected_count_error(1u64), None);
         assert_eq!(
-            affected_count_error(2u64),
-            Some("ambiguous row match".to_string())
+            failure_message(0, Some(0), false, &[]),
+            Some(STALE_ROW.to_string())
         );
+        let ambiguous = failure_message(2, None, false, &[]).expect("ambiguous message");
+        assert!(ambiguous.contains("ambiguous row match"), "{ambiguous}");
     }
 
     // -----------------------------------------------------------------------
@@ -3606,6 +4684,208 @@ mod tests {
         tokio::sync::Mutex::new(ConnectionPoolManager::new())
     }
 
+    fn reachable(port: u16) -> bool {
+        let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1)).is_ok()
+    }
+
+    /// Connecting to a path that does not exist must fail and must NOT leave a
+    /// database file behind: `rusqlite::Connection::open` creates on open, which
+    /// would report a mistyped path as a working, empty database. Creating one is
+    /// the separate `create_sqlite_database` action.
+    #[tokio::test]
+    async fn run_sqlite_connect_refuses_a_missing_file_without_creating_it() {
+        let id = "sqlite-missing";
+        let backend = Arc::new(crate::commands::ssh::fake::HangingUpPeerBackend::default());
+        let ssh = StdMutex::new(SshTunnelManager::new(backend.clone()));
+        let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
+
+        let path = std::env::temp_dir().join(format!(
+            "gridline-sqlite-missing-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::remove_file(&path).ok();
+        let cfg = DbConfig::sqlite(&path.to_string_lossy());
+
+        let err = run_sqlite_connect(id, &cfg, &ssh, &pm, &reg)
+            .await
+            .expect_err("a missing database file must not connect");
+        assert!(
+            err.contains("does not exist"),
+            "error must say the file is missing: {err}"
+        );
+        assert!(
+            pm.lock().await.get(id).is_none(),
+            "a refused connect registers no handle"
+        );
+        assert!(
+            !path.exists(),
+            "connecting must not create the database file"
+        );
+    }
+
+    /// A SQLite (never-tunnelled) reconnect closes a tunnel a previous target
+    /// of the same connection left behind: no orphaned loopback proxy stays
+    /// reachable.
+    #[tokio::test]
+    async fn run_sqlite_connect_closes_a_stale_tunnel() {
+        let id = "sqlite-after-tunnel";
+        let backend = Arc::new(crate::commands::ssh::fake::HangingUpPeerBackend::default());
+        let ssh = StdMutex::new(SshTunnelManager::new(backend.clone()));
+        let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
+
+        let stale = ssh
+            .lock()
+            .unwrap()
+            .backend_clone()
+            .open(
+                id,
+                &crate::models::SshConfig::new(
+                    "jump.internal".into(),
+                    22,
+                    "tunnel".into(),
+                    "password".into(),
+                ),
+                "db.internal",
+                5432,
+                None,
+                None,
+            )
+            .expect("open the previous target's tunnel");
+        let stale_port = stale.local_port;
+        ssh.lock().unwrap().insert_tunnel(id.to_string(), stale);
+        assert!(reachable(stale_port));
+
+        let path = std::env::temp_dir().join(format!(
+            "gridline-sqlite-lifecycle-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        // Connecting never creates a database, so the file is made explicitly
+        // first (the same deliberate action the UI offers).
+        crate::commands::test_connection::create_sqlite_database_at(&path.to_string_lossy())
+            .expect("create the database file");
+        let cfg = DbConfig::sqlite(&path.to_string_lossy());
+        run_sqlite_connect(id, &cfg, &ssh, &pm, &reg)
+            .await
+            .expect("sqlite connect");
+
+        assert!(matches!(pm.lock().await.get(id), Some(DbHandle::Sqlite(_))));
+        assert_eq!(
+            ssh.lock().unwrap().get_local_port(id),
+            None,
+            "the stale tunnel is no longer the connection's"
+        );
+        assert!(
+            !reachable(stale_port),
+            "the stale tunnel's loopback listener is closed"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Criterion: a failed reconnect preserves the previously working session
+    /// and reports the failure.
+    ///
+    /// The previous session is a real (SQLite) handle with a real loopback
+    /// tunnel and a real cancellation handle; the reconnect is a real
+    /// PostgreSQL handshake through a tunnel whose peer hangs up. Every part of
+    /// the old session must survive, and the failed attempt must not leave a
+    /// reachable proxy behind.
+    #[tokio::test]
+    async fn run_pg_connect_failure_keeps_the_previous_session() {
+        let id = "pg-reconnect-fails";
+        let backend = Arc::new(crate::commands::ssh::fake::HangingUpPeerBackend::default());
+        let ssh = StdMutex::new(SshTunnelManager::new(backend.clone()));
+        let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
+
+        // The previously working session.
+        let prior_tunnel = ssh
+            .lock()
+            .unwrap()
+            .backend_clone()
+            .open(
+                id,
+                &crate::models::SshConfig::new(
+                    "jump.internal".into(),
+                    22,
+                    "tunnel".into(),
+                    "password".into(),
+                ),
+                "db.internal",
+                5432,
+                None,
+                None,
+            )
+            .expect("open the working session's tunnel");
+        let prior_port = prior_tunnel.local_port;
+        ssh.lock()
+            .unwrap()
+            .insert_tunnel(id.to_string(), prior_tunnel);
+        let prior_conn = rusqlite::Connection::open_in_memory().unwrap();
+        let prior_interrupt = prior_conn.get_interrupt_handle();
+        pm.lock().await.register(id, DbHandle::sqlite(prior_conn));
+        reg.set_sqlite(id, crate::cancel::SqliteCancel::new(prior_interrupt));
+        assert!(reachable(prior_port), "the working session's proxy is live");
+
+        // A reconnect with a changed target: same id, tunneled, unreachable DB.
+        let cfg = DbConfig {
+            db_type: "postgresql".into(),
+            host: "db.internal".into(),
+            port: Some(5432),
+            username: Some("app".into()),
+            password: Some("pw".into()),
+            database: Some("appdb".into()),
+            ssh_host: Some("jump.internal".into()),
+            ssh_port: Some(22),
+            ssh_user: Some("tunnel".into()),
+            ssh_auth_method: Some("password".into()),
+            ssh_password: Some("pw".into()),
+            ..Default::default()
+        };
+        let attempt_port = {
+            let err = run_pg_connect(id, &cfg, &ssh, &pm, &reg)
+                .await
+                .expect_err("the hung-up peer must fail the reconnect");
+            assert!(
+                err.contains("Connection failed"),
+                "the failure is reported to the caller; got: {err}"
+            );
+            backend.last_port()
+        };
+
+        // The previously working session is intact...
+        let db_handle = pm.lock().await.acquire(id);
+        let still_live = match db_handle {
+            Some(DbHandle::Sqlite(conn)) => {
+                let conn = conn.try_lock().expect("sqlite connection free");
+                conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                    .is_ok()
+            }
+            _ => false,
+        };
+        assert!(still_live, "the working session still answers queries");
+        assert_eq!(
+            ssh.lock().unwrap().get_local_port(id),
+            Some(prior_port),
+            "the working session keeps its tunnel"
+        );
+        assert!(
+            reachable(prior_port),
+            "the working session's loopback listener is still reachable"
+        );
+        assert!(
+            reg.get(id).is_some(),
+            "the working session keeps its cancellation handle"
+        );
+        // ...and the failed attempt left no proxy behind.
+        assert!(
+            !reachable(attempt_port),
+            "the failed attempt's loopback listener was released"
+        );
+    }
+
     #[tokio::test]
     async fn run_mysql_connect_rejects_empty_host() {
         let cfg = DbConfig {
@@ -3627,7 +4907,7 @@ mod tests {
             ssh_private_key_path: None,
             ssh_passphrase: None,
         };
-        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(test_ssh_backend())));
         let pm = fresh_pool_manager().await;
         let reg = crate::cancel::CancelRegistry::new();
         let id = "mysql-empty-host";
@@ -3667,11 +4947,8 @@ mod tests {
         let pk = vec![("id".to_string(), serde_json::json!(1))];
         let data = vec![("name".to_string(), serde_json::json!("x"))];
         let (sql, _params) =
-            crate::db::mysql::mysql_build_update_sql("shop", "orders", &pk, &data).unwrap();
-        assert_eq!(
-            sql,
-            "UPDATE `shop`.`orders` SET `name` = ? WHERE `id` = ? LIMIT 1"
-        );
+            crate::db::mysql::mysql_build_update_sql("shop", "orders", &pk, &data, &[]).unwrap();
+        assert_eq!(sql, "UPDATE `shop`.`orders` SET `name` = ? WHERE `id` = ?");
     }
 
     #[tokio::test]
@@ -3697,7 +4974,7 @@ mod tests {
             ssh_private_key_path: None,
             ssh_passphrase: None,
         };
-        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(test_ssh_backend())));
         let pm = fresh_pool_manager().await;
         let reg = crate::cancel::CancelRegistry::new();
         let id = "mysql-unreachable";
@@ -3748,7 +5025,7 @@ mod tests {
             ssh_private_key_path: None,
             ssh_passphrase: None,
         };
-        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(Ssh2Backend)));
+        let ssh = StdMutex::new(SshTunnelManager::new(Arc::new(test_ssh_backend())));
         let pm = fresh_pool_manager().await;
         let reg = crate::cancel::CancelRegistry::new();
         let id = format!("mysql-it-{}", uuid::Uuid::new_v4());
@@ -3776,11 +5053,13 @@ mod tests {
         assert_eq!(data.page, 1);
         assert_eq!(data.page_size, 10);
         // Columns must be resolvable through the shared helper.
-        let pool = match pm.lock().await.get(&id) {
-            Some(crate::db::pool::DbHandle::MySql(p)) => p.clone(),
+        let db_handle = pm.lock().await.acquire(&id);
+        let pool = match db_handle {
+            Some(crate::db::pool::DbHandle::MySql(p)) => p,
             _ => panic!("mysql handle missing"),
         };
-        let cols = mysql_load_columns(&pool, &first.schema, &first.name)
+        let pool = pool.lock().await;
+        let cols = mysql_load_columns(&pool, &first.schema, &first.name, false)
             .await
             .expect("columns");
         assert_eq!(cols.len(), data.columns.len());
@@ -3792,8 +5071,171 @@ mod tests {
         assert!(pg_dump_available_at("pg_dump") || !pg_dump_available_at("pg_dump"));
         assert!(!pg_dump_available_at("/nonexistent/pg_dump_999999"));
     }
+
+    /// A `pg_dump` that never answers `--version` must report "unavailable"
+    /// within the probe deadline instead of wedging the caller.
+    #[cfg(unix)]
+    #[test]
+    fn pg_dump_availability_probe_is_bounded() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = std::env::temp_dir().join(format!(
+            "gridline_hanging_pg_dump_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&path, "#!/bin/sh\nsleep 30\n").unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let started = std::time::Instant::now();
+        assert!(!pg_dump_available_at(&path.to_string_lossy()));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(6),
+            "the availability probe was not bounded: {:?}",
+            started.elapsed()
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // -----------------------------------------------------------------------
+    // Legal identifiers: filter / sort (ticket 11)
+    // -----------------------------------------------------------------------
+
+    fn filter(column: &str, operator: &str, value: &str) -> crate::models::db_viewer::FilterRule {
+        crate::models::db_viewer::FilterRule {
+            id: "f1".into(),
+            column: column.into(),
+            operator: operator.into(),
+            value: value.into(),
+        }
+    }
+
+    fn sort(column: &str, order: &str) -> crate::models::db_viewer::SortRule {
+        crate::models::db_viewer::SortRule {
+            id: "s1".into(),
+            column: column.into(),
+            order: order.into(),
+        }
+    }
+
+    /// A legal-but-awkward column name is quoted, not skipped. Skipping it
+    /// would return unfiltered rows — the exact silent failure this guards.
+    #[test]
+    fn pg_filter_quotes_legal_column_names() {
+        for (column, quoted) in [
+            ("we ird", "\"we ird\""),
+            ("a\"b", "\"a\"\"b\""),
+            ("select", "\"select\""),
+            ("o'brien", "\"o'brien\""),
+        ] {
+            let mut idx = 0;
+            let (clause, params) =
+                build_pg_filter_clause(&[filter(column, "eq", "x")], &mut idx).unwrap();
+            assert_eq!(clause, format!(" AND {quoted}::text = $1"));
+            assert_eq!(params, vec!["x".to_string()]);
+        }
+    }
+
+    #[test]
+    fn sqlite_filter_quotes_legal_column_names() {
+        let (clause, params) =
+            build_sqlite_filter_clause(&[filter("a\"b c", "contains", "x")]).unwrap();
+        assert_eq!(clause, " AND \"a\"\"b c\" LIKE '%' || ? || '%'");
+        assert_eq!(params, vec!["x".to_string()]);
+    }
+
+    /// Values are bound, never interpolated — a value containing quotes is a
+    /// parameter, not SQL.
+    #[test]
+    fn filter_values_are_bound_not_interpolated() {
+        let mut idx = 0;
+        let (clause, params) =
+            build_pg_filter_clause(&[filter("col", "eq", "'; DROP TABLE t; --")], &mut idx)
+                .unwrap();
+        assert_eq!(clause, " AND \"col\"::text = $1");
+        assert_eq!(params, vec!["'; DROP TABLE t; --".to_string()]);
+    }
+
+    /// A column that cannot be represented fails visibly with the column named.
+    /// It must never be dropped from the clause (unfiltered rows) instead.
+    #[test]
+    fn filter_rejects_unrepresentable_column_instead_of_ignoring_it() {
+        for (column, reason) in [("", "empty"), ("a\0b", "NUL")] {
+            let mut idx = 0;
+            let err = build_pg_filter_clause(&[filter(column, "eq", "x")], &mut idx)
+                .expect_err("unrepresentable column must fail");
+            assert!(
+                err.contains("filter") && err.contains(reason),
+                "error must name the filter and the reason ({reason}): {err}"
+            );
+            let err = build_sqlite_filter_clause(&[filter(column, "eq", "x")])
+                .expect_err("unrepresentable column must fail");
+            assert!(
+                err.contains("filter") && err.contains(reason),
+                "error must name the filter and the reason ({reason}): {err}"
+            );
+        }
+    }
+
+    /// An operator the backend does not implement is an error, not a dropped
+    /// clause.
+    #[test]
+    fn filter_rejects_unknown_operator() {
+        let mut idx = 0;
+        let err = build_pg_filter_clause(&[filter("col", "regexp", "x")], &mut idx)
+            .expect_err("unknown operator must fail");
+        assert!(
+            err.contains("regexp"),
+            "error must name the operator: {err}"
+        );
+        assert!(build_sqlite_filter_clause(&[filter("col", "regexp", "x")]).is_err());
+    }
+
+    #[test]
+    fn order_clause_quotes_legal_column_names() {
+        let clause = build_order_clause(
+            crate::db::ident::Engine::PostgreSql,
+            &[sort("a\"b c", "desc"), sort("select", "asc")],
+        )
+        .unwrap();
+        assert_eq!(clause, " ORDER BY \"a\"\"b c\" DESC, \"select\" ASC");
+    }
+
+    /// A sort whose column or direction cannot be represented fails visibly
+    /// rather than returning unsorted rows.
+    #[test]
+    fn order_clause_rejects_unrepresentable_input() {
+        let engine = crate::db::ident::Engine::Sqlite;
+        let err = build_order_clause(engine, &[sort("", "asc")]).expect_err("empty column");
+        assert!(err.contains("sort"), "error must mention the sort: {err}");
+
+        let err =
+            build_order_clause(engine, &[sort("col", "sideways")]).expect_err("unknown direction");
+        assert!(
+            err.contains("sideways"),
+            "error must name the direction: {err}"
+        );
+
+        assert!(build_order_clause(engine, &[]).unwrap().is_empty());
+    }
 }
 
 #[cfg(test)]
 #[path = "db_viewer.test.rs"]
 mod db_viewer_extra_tests;
+
+#[cfg(test)]
+#[path = "db_viewer_ident_live.test.rs"]
+mod db_viewer_ident_live_tests;
+
+#[cfg(test)]
+#[path = "db_viewer_fk.test.rs"]
+mod db_viewer_fk_tests;
+
+#[cfg(test)]
+#[path = "db_viewer_pagination.test.rs"]
+mod db_viewer_pagination_tests;
+
+#[cfg(test)]
+#[path = "db_viewer_tool_ddl.test.rs"]
+mod db_viewer_tool_ddl_tests;

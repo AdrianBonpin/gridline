@@ -1,0 +1,83 @@
+# Automated dependency updates (ticket 48).
+#
+# Three resolved graphs have to stay current, and each one needs its own entry
+# because Dependabot updates exactly the lockfile in `directory`:
+#
+#   /                   bun  -> the workspace `bun.lock` (root manifest,
+#                               `desktop/` and `www/` workspace manifests)
+#   /www                bun  -> the STANDALONE `www/bun.lock`, which is what the
+#                               Railpack/Dokploy build of the website resolves
+#                               (see AGENTS.md "Website (www/) deps")
+#   /desktop/src-tauri  cargo -> `Cargo.lock` for the Rust backend
+#
+# Coverage notes (verified, not assumed):
+#
+#   * Dependabot's `bun` ecosystem updates the text `bun.lock` only; a legacy
+#     binary `bun.lockb` is not supported. `scripts/check-lockfiles.sh` (run by
+#     the `checks` CI job) fails if either lockfile stops being a text lockfile,
+#     so that coverage cannot silently disappear.
+#   * The two bun entries are both required and are NOT redundant: the root
+#     entry cannot update `www/bun.lock`, and the `/www` entry cannot update the
+#     root `bun.lock`. A dependency bump in `www/package.json` therefore needs
+#     both lockfiles regenerated in the same change — the root lockfile must
+#     still satisfy `www/package.json` or `bun install --frozen-lockfile` fails,
+#     which is exactly what `scripts/check-lockfiles.sh` reports.
+#   * `overrides` (root `dompurify` / `fflate`, website `fflate`) are NOT
+#     updated by Dependabot — no ecosystem support exists for override maps.
+#     Those pins are security floors added by ticket 47 and are reviewed by
+#     hand; `scripts/check-advisories.py` is what fails when a floor stops being
+#     sufficient.
+#   * GitHub Actions pins are deliberately not configured here: every action SHA
+#     is asserted by `scripts/check-workflows.sh`, and rewriting a pinned SHA is
+#     a release-pipeline change that should arrive as a reviewed commit rather
+#     than as bot churn.
+#
+# Minor/patch updates are grouped to keep PR volume low; majors arrive as
+# individual PRs because a major React/Tauri/Astro bump is a decision, not a
+# routine merge. Security updates use the same three entries, and
+# `scripts/check-advisories.py` is the backstop that does not depend on
+# Dependabot at all.
+
+version: 2
+updates:
+  # Root Bun workspace -> `bun.lock`.
+  - package-ecosystem: 'bun'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      bun-workspace-minor-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+
+  # Standalone website install -> `www/bun.lock` (the deployed build's graph).
+  - package-ecosystem: 'bun'
+    directory: '/www'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(www-deps)'
+    groups:
+      www-standalone-minor-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+
+  # Rust backend -> `desktop/src-tauri/Cargo.lock`.
+  - package-ecosystem: 'cargo'
+    directory: '/desktop/src-tauri'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      cargo-patch:
+        patterns: ['*']
+        update-types: ['patch']

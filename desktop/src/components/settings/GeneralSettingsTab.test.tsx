@@ -7,16 +7,6 @@ import { useConnectionStore } from "../../stores/connectionStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import * as commands from "../../lib/commands";
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  save: vi.fn(),
-  open: vi.fn(),
-}));
-
-vi.mock("@tauri-apps/plugin-fs", () => ({
-  readTextFile: vi.fn(),
-  writeTextFile: vi.fn(),
-}));
-
 vi.mock("../../lib/commands", () => ({
   getSettings: vi.fn().mockResolvedValue({
     theme: "system",
@@ -37,6 +27,9 @@ vi.mock("../../lib/commands", () => ({
   }),
   updateSetting: vi.fn().mockResolvedValue(undefined),
   exportSettings: vi.fn().mockResolvedValue('{"schemaVersion":1,"settings":{}}'),
+  exportSettingsToFile: vi.fn().mockResolvedValue("/tmp/gridline-settings.json"),
+  readSettingsFile: vi.fn().mockResolvedValue('{"schemaVersion":1,"settings":{}}'),
+  selectFileForGrant: vi.fn(),
   importSettings: vi.fn().mockResolvedValue(undefined),
   recreateDemoDb: vi.fn().mockResolvedValue("Demo re-added"),
   regenerateDemoDb: vi.fn().mockResolvedValue("Demo regenerated"),
@@ -60,6 +53,16 @@ const baseSettings = {
   editor_tab_size: 4,
 };
 
+const grant = (intent: "read" | "write", id = "grant-1") => ({
+  id,
+  path: "/tmp/gridline-settings.json",
+  displayName: "gridline-settings.json",
+  intent,
+  expiresInSeconds: 300,
+});
+
+const mocked = commands as unknown as Record<string, ReturnType<typeof vi.fn>>;
+
 describe("GeneralSettingsTab settings export/import", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -81,55 +84,94 @@ describe("GeneralSettingsTab settings export/import", () => {
     expect(screen.getByRole("button", { name: /import settings/i })).toBeInTheDocument();
   });
 
-  it("exports settings to the chosen file and shows a success toast", async () => {
+  it("exports settings through a File Grant, never a renderer-supplied path", async () => {
     const user = userEvent.setup();
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-    const exportedJson = JSON.stringify({ schemaVersion: 1, settings: baseSettings });
-    (commands.exportSettings as ReturnType<typeof vi.fn>).mockResolvedValue(exportedJson);
-    (save as ReturnType<typeof vi.fn>).mockResolvedValue("/tmp/gridline-settings.json");
-    (writeTextFile as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    mocked.selectFileForGrant.mockResolvedValue(grant("write", "grant-export"));
 
     render(<GeneralSettingsTab />);
     await user.click(screen.getByRole("button", { name: /export settings/i }));
 
-    await waitFor(() => {
-      expect(writeTextFile).toHaveBeenCalledWith("/tmp/gridline-settings.json", exportedJson);
-    });
+    await waitFor(() => expect(mocked.exportSettingsToFile).toHaveBeenCalledWith("grant-export"));
+    // The dialog is Rust's: the renderer asks for a grant, it never picks a path.
+    expect(mocked.selectFileForGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ intent: "write" }),
+    );
+    expect(mocked.selectFileForGrant.mock.calls[0][0]).not.toHaveProperty("path");
     expect(useNotificationStore.getState().notifications).toContainEqual(
       expect.objectContaining({ type: "success", message: expect.stringMatching(/exported/i) })
     );
   });
 
-  it("imports settings from the chosen file, reloads settings, and shows a success toast", async () => {
+  it("writes nothing when the export picker is cancelled (no grant)", async () => {
     const user = userEvent.setup();
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const { readTextFile } = await import("@tauri-apps/plugin-fs");
+    mocked.selectFileForGrant.mockResolvedValue(null);
+
+    render(<GeneralSettingsTab />);
+    await user.click(screen.getByRole("button", { name: /export settings/i }));
+
+    await waitFor(() => expect(mocked.selectFileForGrant).toHaveBeenCalled());
+    expect(mocked.exportSettingsToFile).not.toHaveBeenCalled();
+    expect(useNotificationStore.getState().notifications).toHaveLength(0);
+  });
+
+  it("imports settings read through a File Grant and shows a success toast", async () => {
+    const user = userEvent.setup();
     const importedJson = JSON.stringify({ schemaVersion: 1, settings: baseSettings });
-    (open as ReturnType<typeof vi.fn>).mockResolvedValue("/tmp/gridline-settings.json");
-    (readTextFile as ReturnType<typeof vi.fn>).mockResolvedValue(importedJson);
+    mocked.selectFileForGrant.mockResolvedValue(grant("read", "grant-import"));
+    mocked.readSettingsFile.mockResolvedValue(importedJson);
 
     render(<GeneralSettingsTab />);
     await user.click(screen.getByRole("button", { name: /import settings/i }));
 
     await waitFor(() => {
-      expect(commands.importSettings).toHaveBeenCalledWith(importedJson);
+      expect(mocked.importSettings).toHaveBeenCalledTimes(1);
     });
+    // The validated document is what reaches the backend (never a raw file with
+    // a value the validator already changed).
+    expect(JSON.parse(mocked.importSettings.mock.calls[0][0])).toEqual(
+      JSON.parse(importedJson),
+    );
+    expect(mocked.selectFileForGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ intent: "read" }),
+    );
+    expect(mocked.readSettingsFile).toHaveBeenCalledWith("grant-import");
     expect(useNotificationStore.getState().notifications).toContainEqual(
       expect.objectContaining({ type: "success", message: expect.stringMatching(/imported/i) })
     );
   });
 
+  it("clamps an out-of-range page size before handing the document to the backend", async () => {
+    // `importSettings` used to receive the raw file text, so the validator's
+    // clamp lived in dead code: a file with `table_page_size: 100000` was
+    // "validated" and then imported verbatim, leaving every browse broken.
+    const user = userEvent.setup();
+    mocked.selectFileForGrant.mockResolvedValue(grant("read", "grant-clamp"));
+    mocked.readSettingsFile.mockResolvedValue(
+      JSON.stringify({
+        schemaVersion: 1,
+        settings: { ...baseSettings, table_page_size: 100000 },
+      }),
+    );
+
+    render(<GeneralSettingsTab />);
+    await user.click(screen.getByRole("button", { name: /import settings/i }));
+
+    await waitFor(() => expect(mocked.importSettings).toHaveBeenCalledTimes(1));
+    const sent = JSON.parse(mocked.importSettings.mock.calls[0][0]);
+    expect(sent.settings.table_page_size).toBe(500);
+    expect(useNotificationStore.getState().notifications).toContainEqual(
+      expect.objectContaining({ type: "success" }),
+    );
+  });
+
   it("surfaces an error toast when importing an invalid settings file", async () => {
     const user = userEvent.setup();
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const { readTextFile } = await import("@tauri-apps/plugin-fs");
     const invalidJson = JSON.stringify({
       schemaVersion: 1,
       settings: { ...baseSettings, theme: "purple" },
     });
-    (open as ReturnType<typeof vi.fn>).mockResolvedValue("/tmp/bad.json");
-    (readTextFile as ReturnType<typeof vi.fn>).mockResolvedValue(invalidJson);
+    mocked.selectFileForGrant.mockResolvedValue(grant("read", "grant-bad"));
+    mocked.readSettingsFile.mockResolvedValue(invalidJson);
 
     render(<GeneralSettingsTab />);
     await user.click(screen.getByRole("button", { name: /import settings/i }));
@@ -146,10 +188,8 @@ describe("GeneralSettingsTab settings export/import", () => {
 
   it("surfaces an error toast when importing malformed JSON", async () => {
     const user = userEvent.setup();
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const { readTextFile } = await import("@tauri-apps/plugin-fs");
-    (open as ReturnType<typeof vi.fn>).mockResolvedValue("/tmp/bad.json");
-    (readTextFile as ReturnType<typeof vi.fn>).mockResolvedValue("not-json");
+    mocked.selectFileForGrant.mockResolvedValue(grant("read", "grant-json"));
+    mocked.readSettingsFile.mockResolvedValue("not-json");
 
     render(<GeneralSettingsTab />);
     await user.click(screen.getByRole("button", { name: /import settings/i }));

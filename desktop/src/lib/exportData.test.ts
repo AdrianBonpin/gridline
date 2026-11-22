@@ -71,3 +71,64 @@ describe("qualifiedTableSql", () => {
     expect(qualifiedTableSql("mariadb", "app", "users")).toBe("SELECT * FROM `app`.`users`");
   });
 });
+describe("exportData projects only declared columns", () => {
+  // page_views (no primary key): the backend appends `rowid` as a trailing cell
+  // that is not a declared column. It must never reach any writer's output.
+  const noPkColumns: ColumnInfo[] = [
+    { name: "url", data_type: "text", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    { name: "session_id", data_type: "text", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+  ];
+  const noPkRow = ["/products", "sess-001", 17];
+
+  async function exportedText(format: string): Promise<string> {
+    const origCreateObjectURL = URL.createObjectURL;
+    const origRevokeObjectURL = URL.revokeObjectURL;
+    let blob: Blob | null = null;
+    globalThis.URL.createObjectURL = vi.fn((b: any) => {
+      blob = b as Blob;
+      return "blob:x";
+    }) as any;
+    globalThis.URL.revokeObjectURL = vi.fn() as any;
+    const a = { click: vi.fn(), href: "", download: "" };
+    vi.spyOn(document, "createElement").mockReturnValue(a as any);
+    try {
+      exportData([noPkRow], noPkColumns, format, "page_views");
+    } finally {
+      globalThis.URL.createObjectURL = origCreateObjectURL;
+      globalThis.URL.revokeObjectURL = origRevokeObjectURL;
+    }
+    return await blob!.text();
+  }
+
+  it("rows stay aligned with the header in every writer", async () => {
+    for (const format of ["csv", "sql", "md"]) {
+      const text = await exportedText(format);
+      expect(text).not.toContain("17");
+    }
+  });
+
+  it("csv keeps one cell per declared column", async () => {
+    const text = await exportedText("csv");
+    const [header, row] = text.split("\n");
+    expect(header).toBe("url,session_id");
+    expect(row).toBe("/products,sess-001");
+  });
+
+  it("json keeps exactly the declared keys", async () => {
+    const text = await exportedText("json");
+    expect(JSON.parse(text)).toEqual([{ url: "/products", session_id: "sess-001" }]);
+  });
+
+  it("sql replays with matching column and value counts", async () => {
+    const text = await exportedText("sql");
+    const values = text.split("\n")[1];
+    // Identifiers are quoted for replay; the count still matches the header.
+    expect(values).toBe('INSERT INTO "page_views" ("url", "session_id") VALUES (\'/products\', \'sess-001\');');
+  });
+
+  it("markdown keeps one cell per declared column", async () => {
+    const lines = (await exportedText("md")).split("\n");
+    expect(lines[0]).toBe("| url | session_id |");
+    expect(lines[2]).toBe("| /products | sess-001 |");
+  });
+});

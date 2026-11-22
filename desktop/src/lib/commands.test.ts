@@ -391,8 +391,18 @@ describe("v0.7.7 command wrappers", () => {
 
     const result = await getTableRebuildReadiness("c1", "public", "users");
 
-    expect(invoke).toHaveBeenCalledWith("get_table_rebuild_readiness", { connectionId: "c1", schema: "public", table: "users" });
+    expect(invoke).toHaveBeenCalledWith("get_table_rebuild_readiness", { connectionId: "c1", schema: "public", table: "users", columns: undefined });
     expect(result).toEqual(mockReadiness);
+  });
+
+  it("getTableRebuildReadiness forwards the columns about to be staged", async () => {
+    const mockReadiness = { ok: false, reasons: ["the table declares a CHECK constraint, which a rebuild would drop"] };
+    vi.mocked(invoke).mockResolvedValueOnce(mockReadiness);
+    const columns = [{ name: "id", type: "INTEGER", nullable: true, default: null, is_pk: true, auto_increment: false, unique: false }];
+
+    await getTableRebuildReadiness("c1", "main", "t", columns);
+
+    expect(invoke).toHaveBeenCalledWith("get_table_rebuild_readiness", { connectionId: "c1", schema: "main", table: "t", columns });
   });
 
   it("runMaintenance calls run_maintenance with action", async () => {
@@ -442,5 +452,28 @@ describe("tool detection wrappers forward the force flag", () => {
     expect(invoke).toHaveBeenCalledWith("detect_mysql_tools", { force: true });
     await detectPgTools(true);
     expect(invoke).toHaveBeenCalledWith("detect_pg_tools", { force: true });
+  });
+});
+describe("SSH host trust commands (ticket 22)", () => {
+  it("re-enrollment forwards only the endpoint and the presented fingerprint", async () => {
+    const { sshHostTrustReenroll } = await import("./commands");
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValueOnce({ state: "trusted" });
+
+    await sshHostTrustReenroll("db.example.com", 2222, {
+      key_type: "ssh-ed25519",
+      fingerprint: "SHA256:rotated",
+    });
+
+    expect(invoke).toHaveBeenCalledWith("ssh_host_trust_reenroll", {
+      host: "db.example.com",
+      port: 2222,
+      keyType: "ssh-ed25519",
+      fingerprint: "SHA256:rotated",
+    });
+    // No credential-bearing argument is part of the re-enrollment contract.
+    const calls = vi.mocked(invoke).mock.calls;
+    const args = calls[calls.length - 1]?.[1] as Record<string, unknown>;
+    expect(Object.keys(args).sort()).toEqual(["fingerprint", "host", "keyType", "port"]);
   });
 });

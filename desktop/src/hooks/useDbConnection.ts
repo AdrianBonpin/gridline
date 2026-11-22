@@ -4,6 +4,7 @@ import { useDbViewerStore } from "../stores/dbViewerStore";
 import { useNotificationStore } from "../stores/notificationStore";
 import * as cmd from "../lib/commands";
 import { pickDefaultSchema } from "../lib/utils";
+import { useSshHostTrust } from "./useSshHostTrust";
 import type { ConnectionInput, TableInfo } from "../lib/types";
 
 export function useDbConnection(connectionId: string) {
@@ -14,6 +15,16 @@ export function useDbConnection(connectionId: string) {
   const setCurrentDatabase = useDbViewerStore((s) => s.setCurrentDatabase);
   const setCurrentSchema = useDbViewerStore((s) => s.setCurrentSchema);
   const notify = useNotificationStore((s) => s.notify);
+  // `check` is stable, so it is safe in `connect`'s dependency list; the state
+  // it exposes is rendered by the enrollment dialog.
+  const {
+    trustState: sshHostTrustState,
+    busy: sshHostTrustBusy,
+    error: sshHostTrustError,
+    check: checkSshHostTrust,
+    accept: acceptSshHostTrust,
+    dismiss: dismissSshHostTrust,
+  } = useSshHostTrust();
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [passwordPromptOpen, setPasswordPromptOpen] = useState(false);
   const inputRef = useRef<ConnectionInput | null>(null);
@@ -75,6 +86,9 @@ export function useDbConnection(connectionId: string) {
       };
       await cmd.dbConnect(connectionId, input);
       setConnectionError(null);
+      // A (re)connect may point at another server/database: every cached
+      // column mapping from the previous session is no longer evidence.
+      useDbViewerStore.getState().invalidateMetadata();
       inputRef.current = input;
       connectedDbRef.current =
         input.db_type === "sqlite"
@@ -113,8 +127,12 @@ export function useDbConnection(connectionId: string) {
       const msg = e instanceof Error ? e.message : String(e);
       setConnectionError(msg);
       notify(`Failed to connect: ${msg}`, "error");
+      // A tunneled connect that failed may have stopped on SSH host trust:
+      // probe the endpoint (handshake only) so the fingerprint can be shown
+      // and accepted instead of leaving a dead end.
+      void checkSshHostTrust(conn.ssh_host, conn.ssh_port);
     }
-  }, [connectionId, populate, setCurrentDatabase, setCurrentSchema, setSchemaTreeLoading, notify]);
+  }, [connectionId, populate, setCurrentDatabase, setCurrentSchema, setSchemaTreeLoading, notify, checkSshHostTrust]);
 
   useEffect(() => {
     connect();
@@ -141,6 +159,8 @@ export function useDbConnection(connectionId: string) {
         await cmd.dbConnect(connectionId, input);
         if (cancelled) return;
         connectedDbRef.current = currentDatabase;
+        // The database changed, so cached columns belong to another environment.
+        useDbViewerStore.getState().invalidateMetadata();
         const schemas = await cmd
           .getSchemas(connectionId)
           .catch(() => [] as string[]);
@@ -178,5 +198,16 @@ export function useDbConnection(connectionId: string) {
 
   const cancelPassword = useCallback(() => setPasswordPromptOpen(false), []);
 
-  return { connectionError, connect, passwordPromptOpen, submitPassword, cancelPassword };
+  return {
+    connectionError,
+    connect,
+    passwordPromptOpen,
+    submitPassword,
+    cancelPassword,
+    sshHostTrustState,
+    sshHostTrustBusy,
+    sshHostTrustError,
+    acceptSshHostTrust,
+    dismissSshHostTrust,
+  };
 }

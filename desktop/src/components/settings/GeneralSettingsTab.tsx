@@ -10,7 +10,6 @@ import * as cmd from "../../lib/commands";
 import { validateSettingsExport } from "../../lib/settingsImport";
 import type { FontSize } from "../../lib/types";
 import { useState } from "react";
-import { save, open } from "@tauri-apps/plugin-dialog";
 
 const FONT_SIZE_OPTIONS: { value: FontSize; label: string }[] = [
   { value: "small", label: "Small" },
@@ -74,16 +73,19 @@ export function GeneralSettingsTab() {
     }
   };
 
+  // Both directions are authorized by a Rust-brokered File Grant: the renderer
+  // never names a path, and the grant (intent-scoped, single-use, expiring) is
+  // consumed by the command that touches the file.
   const handleExport = async () => {
     try {
-      const json = await cmd.exportSettings();
-      const path = await save({
-        defaultPath: "gridline-settings.json",
+      const picked = await cmd.selectFileForGrant({
+        intent: "write",
+        title: "Export settings as",
+        defaultName: "gridline-settings.json",
         filters: [{ name: "JSON", extensions: ["json"] }],
       });
-      if (!path) return;
-      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-      await writeTextFile(path, json);
+      if (!picked) return; // cancelled: nothing was authorized
+      await cmd.exportSettingsToFile(picked.id);
       notify("Settings exported", "success");
     } catch (e) {
       notify(e instanceof Error ? e.message : String(e), "error");
@@ -92,12 +94,13 @@ export function GeneralSettingsTab() {
 
   const handleImport = async () => {
     try {
-      const p = await open({
+      const picked = await cmd.selectFileForGrant({
+        intent: "read",
+        title: "Import settings from",
         filters: [{ name: "JSON", extensions: ["json"] }],
       });
-      if (!p || Array.isArray(p)) return;
-      const { readTextFile } = await import("@tauri-apps/plugin-fs");
-      const text = await readTextFile(p);
+      if (!picked) return; // cancelled: nothing was authorized
+      const text = await cmd.readSettingsFile(picked.id);
       let parsed: unknown;
       try {
         parsed = JSON.parse(text);
@@ -113,7 +116,15 @@ export function GeneralSettingsTab() {
         );
         return;
       }
-      await cmd.importSettings(text);
+      // Import the VALIDATED document, not the raw file. Sending `text` threw
+      // the clamp away: a file with `table_page_size: 100000` was validated
+      // (clamped to 500 in `r.settings`) and then imported verbatim, which left
+      // every table browse failing on a page size the backend must reject. The
+      // backend validates/clamps again — it is the boundary — but this side must
+      // not hand it a document it already knows is out of range.
+      await cmd.importSettings(
+        JSON.stringify({ schemaVersion: 1, settings: r.settings }),
+      );
       await load();
       notify("Settings imported", "success");
     } catch (e) {

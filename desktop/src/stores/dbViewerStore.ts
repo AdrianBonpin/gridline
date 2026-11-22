@@ -2,6 +2,17 @@ import { create } from "zustand";
 import type { QueryResult, TableInfo, ChangeItemType, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, HypertableInfo, IndexInfo, ConstraintInfo, ObjectType, RoleInfo, MultiQueryResult, DiffItem } from "../lib/types";
 import { getDatabases, getSchemas, getTables } from "../lib/commands";
 import type { ObjectKind, DdlParams } from "../lib/objectCrud";
+import { changeOriginFor, isSameChangeOrigin, isSameChangeTarget, type ChangeOrigin } from "../lib/changeOrigin";
+import {
+  isSameTab,
+  outOfOriginReason,
+  sameTabOrigin,
+  type TabIdentity,
+} from "../lib/tabIdentity";
+import { invalidateColumnCache } from "../lib/sqlCompletion";
+import type { RowDetailRef } from "../lib/rowDetail";
+import { useUiStore } from "./uiStore";
+import { useConnectionStore } from "./connectionStore";
 
 // ─── Local types ────────────────────────────────────────────────
 
@@ -37,6 +48,12 @@ export interface QueueItem {
   error?: string | null;
   description?: string | null;
   createdAt: number;
+  /**
+   * The Change Origin this change was staged against (GLOSSARY.md). Immutable
+   * once staged: only the origin it belongs to may commit it. `null` means the
+   * change has no origin at all, so it is never committed anywhere.
+   */
+  origin: ChangeOrigin | null;
 }
 
 /** Payload carried by an "objectForm" tab — the kind + params for the
@@ -57,6 +74,22 @@ export interface ViewerTab {
   pageSize: number;
   loading: boolean;
   error: string | null;
+  /**
+   * Monotonic token for this tab's outstanding data request. Every new intent
+   * (a run, a page/filter/sort change, a refresh) takes the next token, and
+   * only the holder of the current token may write `data`/`error`. A slower
+   * response for an older intent is dropped instead of being rendered under
+   * newer controls.
+   *
+   * Optional so hand-built tabs (fixtures/tests) stay valid; every tab the
+   * store creates starts at 0.
+   */
+  requestSeq?: number;
+  /**
+   * True when `data` predates the last failed/cancelled request: the rows stay
+   * on screen (so the user keeps context) but are never presented as current.
+   */
+  stale?: boolean;
   data: QueryResult | null;
   multi?: MultiQueryResult | null;
   columnFilter?: { column: string; value: string };
@@ -66,6 +99,52 @@ export interface ViewerTab {
   smartSortApplied: boolean;
   tabType: "table" | "query" | "object" | "objectForm";
   query?: string;
+  /**
+   * The Change Origin this tab was opened on: the saved connection, the
+   * database selected at open time, and that connection's target
+   * configuration. Tab identity is never keyed on the display label, and the
+   * same table name in two databases/connections is two distinct tabs.
+   *
+   * Optional so hand-built tabs (fixtures/tests) stay valid; every tab the
+   * store opens is stamped from live state.
+   */
+  origin?: ChangeOrigin | null;
+  /**
+   * Why the rows on screen are not current, when the reason is not a failed
+   * request (e.g. the database selector moved to another database).
+   */
+  staleReason?: string | null;
+  /**
+   * True when this tab's Change Origin no longer matches the viewer's live
+   * target. Its rows stay visible but are never presented as current, and no
+   * request for it may reach the database until the target comes back.
+   */
+  outOfOrigin?: boolean;
+  /**
+   * Selected rows, as selection keys derived from Row Identity (see
+   * `lib/rowSelection.ts`) — never grid positions.
+   *
+   * A selection belongs to one tab, one result set, and one Change Origin, so
+   * the store clears it on every page, page-size, filter, sort, tab, origin,
+   * and dataset change. It is stored per tab so switching tabs cannot carry it
+   * to another table, and it never survives leaving the tab it was made in.
+   *
+   * Optional so hand-built tabs (fixtures/tests) stay valid.
+   */
+  selection?: string[];
+  /**
+   * The row whose detail drawer is open in this tab, or `null`/absent when it
+   * is closed.
+   *
+   * Bound to the row's Row Identity and its result set rather than a grid
+   * position: a position means nothing outside the result set it was recorded
+   * in, so a drawer left open across a page, filter, sort, tab, origin, or
+   * dataset change would show another row's (or another table's) content. The
+   * store clears it on every one of those lifecycle changes, and the drawer is
+   * rendered only when the reference resolves against the rows currently
+   * displayed.
+   */
+  rowDetail?: RowDetailRef | null;
   /** Set when the tab's text came from an OS-opened `.sql` file. */
   filePath?: string;
   objectType?: ObjectType | null;
@@ -78,6 +157,26 @@ export interface ViewerTab {
 let tabCounter = 0;
 let changeCounter = 0;
 
+/**
+ * The Change Origin of whatever the viewer is currently showing: the active
+ * saved connection, the selected database, and that connection's target
+ * configuration right now. Derived from live state (never cached) so staging
+ * always belongs to the connection the user is actually looking at, and a
+ * saved connection retargeted mid-session is observed immediately.
+ *
+ * `null` when no saved connection is active or the record is unknown — staged
+ * work with no origin is never committed.
+ */
+export function currentChangeOrigin(): ChangeOrigin | null {
+  const connectionId = useUiStore.getState().activeConnectionId;
+  if (!connectionId) return null;
+  const connection = useConnectionStore
+    .getState()
+    .connections.find((c) => c.id === connectionId);
+  if (!connection) return null;
+  return changeOriginFor(connection, useDbViewerStore.getState().currentDatabase);
+}
+
 const initialTab = (schema: string, table: string, defaultPageSize?: number): ViewerTab => ({
   id: `tab-${++tabCounter}`,
   schema,
@@ -86,14 +185,45 @@ const initialTab = (schema: string, table: string, defaultPageSize?: number): Vi
   pageSize: defaultPageSize ?? 50,
   loading: true,
   error: null,
+  requestSeq: 0,
+  stale: false,
+  staleReason: null,
+  outOfOrigin: false,
+  origin: currentChangeOrigin(),
   data: null,
   filterRules: [],
   sortRules: [],
   hiddenColumns: [],
+  selection: [],
+  rowDetail: null,
   smartSortApplied: false,
   tabType: "table",
   query: undefined,
 });
+
+/**
+ * Drop one tab's row-bound context: its selection and any open row detail.
+ *
+ * A selection and a row detail are both only meaningful for the rows and
+ * context they were made in, so every lifecycle change that replaces those
+ * rows (page, page size, filter, sort, tab, origin, dataset) clears them rather
+ * than carrying them forward. Keeping the two in one helper means no lifecycle
+ * path can remember one and forget the other.
+ */
+const withoutRowContext = (tab: ViewerTab): ViewerTab => {
+  const hasSelection = (tab.selection?.length ?? 0) > 0;
+  const hasRowDetail = (tab.rowDetail ?? null) !== null;
+  if (!hasSelection && !hasRowDetail) return tab;
+  return { ...tab, selection: [], rowDetail: null };
+};
+
+/** Drop every tab's row-bound context (a tab or origin change invalidates all of them). */
+const withoutRowContexts = (tabs: ViewerTab[]): ViewerTab[] =>
+  tabs.some(
+    (t) => (t.selection?.length ?? 0) > 0 || (t.rowDetail ?? null) !== null,
+  )
+    ? tabs.map(withoutRowContext)
+    : tabs;
 
 // ─── State interface ────────────────────────────────────────────
 
@@ -126,6 +256,12 @@ interface DbViewerState {
   setSchemaTreeLoading: (loading: boolean) => void;
   constraints: ConstraintInfo[] | null;
   roles: RoleInfo[];
+  /**
+   * Monotonic counter bumped whenever schema metadata is invalidated (DDL,
+   * rebuild, reconnect). Components that cache metadata include it in their
+   * cache scope, so a bump makes every cached entry unreachable.
+   */
+  metadataRev: number;
 
   // Actions
   openTab: (schema: string, table: string, forceNew?: boolean) => void;
@@ -144,14 +280,90 @@ interface DbViewerState {
   setDefaultPageSize: (size: number) => void;
   closeTab: (tabId: string) => void;
   reorderTab: (fromIndex: number, toIndex: number) => void;
-  closeTabsForTable: (schema: string, table: string) => void;
+  closeTabsForTable: (
+    schema: string,
+    table: string,
+    origin?: ChangeOrigin | null,
+  ) => void;
   setActiveTab: (tabId: string) => void;
+  /** Toggle one row's selection key in a tab. */
+  toggleRowSelection: (tabId: string, key: string) => void;
+  /** Replace a tab's selection with these keys (select-all / select-none). */
+  setRowSelection: (tabId: string, keys: string[]) => void;
+  clearRowSelection: (tabId: string) => void;
+  /**
+   * Open a tab's row detail for the row with this Row Identity key in this
+   * result set. Only a reference that resolves against the rows currently
+   * displayed is shown.
+   */
+  openRowDetail: (tabId: string, rowDetail: RowDetailRef) => void;
+  /** Close a tab's row detail drawer. */
+  clearRowDetail: (tabId: string) => void;
   setPage: (tabId: string, page: number) => void;
   setPageSize: (tabId: string, pageSize: number) => void;
   setTabData: (tabId: string, data: QueryResult) => void;
   setTabMulti: (tabId: string, multi: MultiQueryResult | null) => void;
   setTabLoading: (tabId: string, loading: boolean) => void;
   setTabError: (tabId: string, error: string) => void;
+  /**
+   * Claim the newest request token for `tabId` and mark it loading. Callers
+   * keep the returned token and hand it back to `applyTabResult` /
+   * `applyTabError`; a result whose token is no longer current is ignored.
+   */
+  beginTabRequest: (tabId: string) => number;
+  /**
+   * Publish a result only if `token` is still the tab's newest request.
+   * Returns whether it was applied, so callers can skip follow-up state.
+   */
+  applyTabResult: (
+    tabId: string,
+    token: number,
+    data: QueryResult,
+  ) => boolean;
+  /**
+   * Publish a failure only if `token` is still the tab's newest request,
+   * resolving loading and marking any earlier rows stale.
+   */
+  applyTabError: (tabId: string, token: number, error: string) => boolean;
+  /**
+   * Finalise a cancelled request: take a new token so the cancelled response
+   * can never land, resolve loading, and report the cancellation.
+   */
+  cancelTabRequest: (tabId: string, message: string) => void;
+  /**
+   * Report an error about the tab's current request *without* resolving its
+   * loading state (e.g. a cancellation attempt that failed while the query is
+   * still running).
+   */
+  reportTabError: (tabId: string, error: string) => void;
+  /**
+   * Mark a tab whose data cannot be produced from the live target as visibly
+   * stale, with the reason. Its rows stay on screen but never as current, and
+   * any request still in flight for it is sealed off.
+   */
+  markTabOutOfOrigin: (tabId: string, reason: string) => void;
+  /**
+   * Reconcile every tab with the live target: tabs belonging to another
+   * connection/database become visibly stale (never re-queried against the new
+   * target), and tabs that come back into context are cleared and reported so
+   * the caller can re-query them from their own database.
+   */
+  syncTabOrigins: (live: ChangeOrigin | null) => string[];
+  /**
+   * Drop the committed optimistic markers of a table that has just been
+   * refreshed, so committed values stop being re-applied over the fresh rows.
+   */
+  pruneCommittedOptimisticMarkers: (
+    origin: ChangeOrigin | null,
+    schema: string,
+    table: string,
+  ) => void;
+  /**
+   * Schema metadata changed (DDL/rebuild/reconnect): invalidate the caches that
+   * map an origin to columns so autocomplete and the tree never offer stale
+   * columns.
+   */
+  invalidateMetadata: () => void;
   setColumnFilter: (tabId: string, column: string, value: string) => void;
   clearColumnFilter: (tabId: string) => void;
   setFilterRules: (tabId: string, rules: FilterRule[]) => void;
@@ -170,12 +382,14 @@ interface DbViewerState {
     columns?: string[];
     rows?: unknown[][];
     description?: string | null;
+    origin?: ChangeOrigin | null;
   }) => void;
   addDiffItems: (items: DiffItem[]) => void;
   cancelChange: (changeId: string) => void;
   removeChange: (changeId: string) => void;
   updateChange: (changeId: string, patch: Partial<QueueItem>) => void;
   clearChanges: () => void;
+  clearChangesForTarget: (origin: ChangeOrigin | null) => void;
   markChangeCommitted: (changeId: string) => void;
   markChangeFailed: (changeId: string, error: string) => void;
   toggleChangesPanel: () => void;
@@ -239,6 +453,7 @@ const initialState = {
   constraints: null as ConstraintInfo[] | null,
   roles: [] as RoleInfo[],
   schemaTreeLoading: false,
+  metadataRev: 0,
 };
 
 // ─── Store ──────────────────────────────────────────────────────
@@ -249,19 +464,25 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   openTab: (schema, table, forceNew = false) => {
     const { tabs } = get();
 
-    // Dedup: if not forceNew and an identical tab exists, just activate it
+    // Dedup on (kind, origin, schema, table): an identical *table* tab of the
+    // same connection + database is focused, while a query or object tab that
+    // happens to share the label is a different tab.
     if (!forceNew) {
-      const existing = tabs.find(
-        (t) => t.schema === schema && t.table === table,
-      );
+      const identity: TabIdentity = {
+        tabType: "table",
+        origin: currentChangeOrigin(),
+        schema,
+        table,
+      };
+      const existing = tabs.find((t) => isSameTab(t, identity));
       if (existing) {
-        set({ activeTabId: existing.id });
+        set({ tabs: withoutRowContexts(tabs), activeTabId: existing.id });
         return;
       }
     }
 
     const tab = initialTab(schema, table, get().defaultPageSize);
-    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+    set({ tabs: [...withoutRowContexts(tabs), tab], activeTabId: tab.id });
   },
 
   openQueryTab: (initial) => {
@@ -270,9 +491,14 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     // Re-opening the same file focuses its tab instead of duplicating it, and
     // deliberately does NOT overwrite the text — the user may have edited it.
     if (initial?.filePath) {
-      const existing = tabs.find((t) => t.filePath === initial.filePath);
+      const identity: TabIdentity = {
+        tabType: "query",
+        origin: currentChangeOrigin(),
+        filePath: initial.filePath,
+      };
+      const existing = tabs.find((t) => isSameTab(t, identity));
       if (existing) {
-        set({ activeTabId: existing.id });
+        set({ tabs: withoutRowContexts(tabs), activeTabId: existing.id });
         return;
       }
     }
@@ -286,6 +512,11 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       pageSize: get().defaultPageSize,
       loading: false,
       error: null,
+      requestSeq: 0,
+      stale: false,
+      staleReason: null,
+      outOfOrigin: false,
+      origin: currentChangeOrigin(),
       data: null,
       filterRules: [],
       sortRules: [],
@@ -295,23 +526,24 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       query: initial?.sql ?? "",
       filePath: initial?.filePath,
     };
-    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+    set({ tabs: [...withoutRowContexts(tabs), tab], activeTabId: tab.id });
   },
 
   openObjectTab: (objectType, schema, name, item) => {
     const { tabs } = get();
 
-    // Dedup on the object's identity (objectType + schema + name); an object
-    // tab is distinct from a table tab of the same name.
-    const existing = tabs.find(
-      (t) =>
-        t.tabType === "object" &&
-        t.objectType === objectType &&
-        t.schema === schema &&
-        t.table === name,
-    );
+    // Dedup on the object's identity (kind + origin + objectType + schema +
+    // name); an object tab is distinct from a table tab of the same label.
+    const identity: TabIdentity = {
+      tabType: "object",
+      origin: currentChangeOrigin(),
+      schema,
+      table: name,
+      objectType,
+    };
+    const existing = tabs.find((t) => isSameTab(t, identity));
     if (existing) {
-      set({ activeTabId: existing.id });
+      set({ tabs: withoutRowContexts(tabs), activeTabId: existing.id });
       return;
     }
 
@@ -323,6 +555,11 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       pageSize: get().defaultPageSize,
       loading: false,
       error: null,
+      requestSeq: 0,
+      stale: false,
+      staleReason: null,
+      outOfOrigin: false,
+      origin: currentChangeOrigin(),
       data: null,
       filterRules: [],
       sortRules: [],
@@ -332,11 +569,12 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       objectType,
       objectItem: item,
     };
-    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+    set({ tabs: [...withoutRowContexts(tabs), tab], activeTabId: tab.id });
   },
 
   openFormTab: ({ kind, schema, name, title, description, mode, params }) => {
     const { tabs } = get();
+    const origin = currentChangeOrigin();
 
     // Resolve the effective schema before building the tab: an explicit schema
     // wins, otherwise fall back to the viewer's current schema, then "public".
@@ -354,6 +592,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     const existing = tabs.find(
       (t) =>
         t.tabType === "objectForm" &&
+        sameTabOrigin(t.origin ?? null, origin) &&
         t.form?.kind === kind &&
         t.form?.mode === mode &&
         (mode === "create" ||
@@ -362,7 +601,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     if (existing) {
       // Re-clicking the same form focuses the tab and never clobbers its
       // in-progress params.
-      set({ activeTabId: existing.id });
+      set({ tabs: withoutRowContexts(tabs), activeTabId: existing.id });
       return;
     }
 
@@ -374,6 +613,11 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       pageSize: get().defaultPageSize,
       loading: false,
       error: null,
+      requestSeq: 0,
+      stale: false,
+      staleReason: null,
+      outOfOrigin: false,
+      origin: currentChangeOrigin(),
       data: null,
       filterRules: [],
       sortRules: [],
@@ -383,7 +627,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       objectType: null,
       form: { kind, params, title, description, mode },
     };
-    set({ tabs: [...tabs, tab], activeTabId: tab.id });
+    set({ tabs: [...withoutRowContexts(tabs), tab], activeTabId: tab.id });
   },
 
   updateFormTabParams: (tabId, params) =>
@@ -406,7 +650,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
           ? remaining[remaining.length - 1].id
           : null
         : activeTabId;
-    set({ tabs: remaining, activeTabId: newActiveId });
+    set({ tabs: withoutRowContexts(remaining), activeTabId: newActiveId });
   },
 
   // Move a tab to a new index (drag-to-reorder). The active tab is tracked by
@@ -428,10 +672,18 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set({ tabs: next });
   },
 
-  closeTabsForTable: (schema, table) => {
+  closeTabsForTable: (schema, table, origin) => {
     const { tabs, activeTabId } = get();
     const remaining = tabs.filter(
-      (t) => !(t.tabType === "table" && t.schema === schema && t.table === table),
+      (t) =>
+        !(
+          t.tabType === "table" &&
+          t.schema === schema &&
+          t.table === table &&
+          // A committed drop belongs to one origin: another database's tab for
+          // the same table name is a different object and stays open.
+          (origin === undefined || sameTabOrigin(t.origin ?? null, origin))
+        ),
     );
     if (remaining.length === tabs.length) return;
     const newActiveId =
@@ -440,16 +692,80 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
           ? remaining[remaining.length - 1].id
           : null
         : activeTabId;
-    set({ tabs: remaining, activeTabId: newActiveId });
+    set({ tabs: withoutRowContexts(remaining), activeTabId: newActiveId });
   },
 
-  setActiveTab: (tabId) => set({ activeTabId: tabId }),
+  // Switching tabs invalidates every tab's row-bound context: a selection or an
+  // open row detail made in one tab is never applied to another tab's rows.
+  // Re-activating the already-active tab is not a change, so it keeps them.
+  setActiveTab: (tabId) =>
+    set((state) => ({
+      tabs:
+        tabId === state.activeTabId
+          ? state.tabs
+          : withoutRowContexts(state.tabs),
+      activeTabId: tabId,
+    })),
+
+  toggleRowSelection: (tabId, key) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) => {
+        if (t.id !== tabId) return t;
+        const selection = t.selection ?? [];
+        return {
+          ...t,
+          selection: selection.includes(key)
+            ? selection.filter((k) => k !== key)
+            : [...selection, key],
+        };
+      }),
+    })),
+
+  setRowSelection: (tabId, keys) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, selection: [...keys] } : t,
+      ),
+    })),
+
+  clearRowSelection: (tabId) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId && (t.selection?.length ?? 0) > 0
+          ? { ...t, selection: [] }
+          : t,
+      ),
+    })),
+
+  openRowDetail: (tabId, rowDetail) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, rowDetail } : t,
+      ),
+    })),
+
+  clearRowDetail: (tabId) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId && (t.rowDetail ?? null) !== null
+          ? { ...t, rowDetail: null }
+          : t,
+      ),
+    })),
 
   setPage: (tabId, page) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? { ...t, page, loading: true, error: null }
+          ? withoutRowContext({
+                ...t,
+                page,
+                loading: true,
+                error: null,
+                // A page change is a new intent: any response still in flight
+                // for the previous page is no longer allowed to land.
+                requestSeq: (t.requestSeq ?? 0) + 1,
+            })
           : t,
       ),
     })),
@@ -458,7 +774,14 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? { ...t, pageSize, page: 1, loading: true, error: null }
+          ? withoutRowContext({
+                ...t,
+                pageSize,
+                page: 1,
+                loading: true,
+                error: null,
+                requestSeq: (t.requestSeq ?? 0) + 1,
+            })
           : t,
       ),
     })),
@@ -466,13 +789,25 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setTabData: (tabId, data) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, data, multi: null, loading: false, error: null } : t,
+        t.id === tabId
+          ? withoutRowContext({
+                ...t,
+                data,
+                multi: null,
+                loading: false,
+                error: null,
+                stale: false,
+                staleReason: null,
+            })
+          : t,
       ),
     })),
 
   setTabMulti: (tabId, multi) =>
     set((s) => ({
-      tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, multi } : t)),
+      tabs: s.tabs.map((t) =>
+        t.id === tabId ? withoutRowContext({ ...t, multi }) : t,
+      ),
     })),
 
   setTabLoading: (tabId, loading) =>
@@ -485,35 +820,218 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setTabError: (tabId, error) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, error, loading: false } : t,
+        t.id === tabId
+          ? {
+                ...t,
+                error,
+                loading: false,
+                // Rows that are still displayed did not come from the run that
+                // just failed, so they are stale, not current.
+                stale: t.data !== null,
+            }
+          : t,
       ),
     })),
+
+  beginTabRequest: (tabId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    const token = (tab?.requestSeq ?? 0) + 1;
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? { ...t, requestSeq: token, loading: true, error: null }
+          : t,
+      ),
+    }));
+    return token;
+  },
+
+  applyTabResult: (tabId, token, data) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab || (tab.requestSeq ?? 0) !== token) return false;
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? withoutRowContext({
+                ...t,
+                data,
+                multi: null,
+                loading: false,
+                error: null,
+                stale: false,
+                staleReason: null,
+            })
+          : t,
+      ),
+    }));
+    return true;
+  },
+
+  applyTabError: (tabId, token, error) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab || (tab.requestSeq ?? 0) !== token) return false;
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? { ...t, error, loading: false, stale: t.data !== null }
+          : t,
+      ),
+    }));
+    return true;
+  },
+
+  cancelTabRequest: (tabId, message) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? {
+                ...t,
+                // A new token seals the cancelled request: whatever it does
+                // next, it can no longer write this tab.
+                requestSeq: (t.requestSeq ?? 0) + 1,
+                loading: false,
+                error: message,
+                stale: t.data !== null,
+            }
+          : t,
+      ),
+    })),
+
+  reportTabError: (tabId, error) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, error } : t,
+      ),
+    })),
+
+  markTabOutOfOrigin: (tabId, reason) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? withoutRowContext({
+                ...t,
+                outOfOrigin: true,
+                // The rows stay on screen so the user keeps context, but they
+                // are never presented as the current target's data.
+                stale: true,
+                staleReason: reason,
+                loading: false,
+                // Seal off whatever is still in flight for this tab.
+                requestSeq: (t.requestSeq ?? 0) + 1,
+            })
+          : t,
+      ),
+    })),
+
+  syncTabOrigins: (live) => {
+    const restored: string[] = [];
+    let changed = false;
+    const tabs = get().tabs.map((t) => {
+      const origin = t.origin ?? null;
+      // Only a recorded origin can prove a tab belongs elsewhere; a tab with
+      // no origin carries nothing to contradict.
+      const foreign = origin !== null && live !== null && !sameTabOrigin(origin, live);
+      if (foreign) {
+        if (t.outOfOrigin) return t;
+        changed = true;
+        return {
+          ...t,
+          outOfOrigin: true,
+          stale: true,
+          staleReason: outOfOriginReason(origin, live),
+          loading: false,
+          requestSeq: (t.requestSeq ?? 0) + 1,
+        };
+      }
+      if (t.outOfOrigin) {
+        changed = true;
+        restored.push(t.id);
+        return {
+          ...t,
+          outOfOrigin: false,
+          stale: false,
+          staleReason: null,
+          error: null,
+          // Only a table tab re-queries itself automatically; a query tab's
+          // text is an Execution Entry Point and runs when the user runs it.
+          loading: t.tabType === "table",
+        };
+      }
+      return t;
+    });
+    // Moving the viewer's target invalidates every tab's row-bound context, in
+    // both directions: a restored tab's rows come from a re-query, and a
+    // foreign tab's rows belong to another origin now.
+    if (changed) set({ tabs: withoutRowContexts(tabs) });
+    return restored;
+  },
+
+  pruneCommittedOptimisticMarkers: (origin, schema, table) =>
+    set((state) => ({
+      changesQueue: state.changesQueue.filter(
+        (c) =>
+          !(
+            c.status === "committed" &&
+            c.type === "update" &&
+            c.schema === schema &&
+            c.table === table &&
+            sameTabOrigin(c.origin, origin)
+          ),
+      ),
+    })),
+
+  invalidateMetadata: () => {
+    // Autocomplete's column cache lives outside the store; clear it with the
+    // revision bump so every origin's suggestions are rebuilt.
+    invalidateColumnCache();
+    set((state) => ({ metadataRev: state.metadataRev + 1 }));
+  },
 
   setColumnFilter: (tabId, column, value) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, columnFilter: { column, value } } : t,
+        t.id === tabId
+          ? withoutRowContext({ ...t, columnFilter: { column, value } })
+          : t,
       ),
     })),
 
   clearColumnFilter: (tabId) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, columnFilter: undefined } : t,
+        t.id === tabId ? withoutRowContext({ ...t, columnFilter: undefined }) : t,
       ),
     })),
 
   setFilterRules: (tabId, rules) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, filterRules: rules, page: 1, loading: true, error: null } : t,
+        t.id === tabId
+          ? withoutRowContext({
+                ...t,
+                filterRules: rules,
+                page: 1,
+                loading: true,
+                error: null,
+                requestSeq: (t.requestSeq ?? 0) + 1,
+            })
+          : t,
       ),
     })),
 
   setSortRules: (tabId, rules) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, sortRules: rules, page: 1, loading: true, error: null } : t,
+        t.id === tabId
+          ? withoutRowContext({
+                ...t,
+                sortRules: rules,
+                page: 1,
+                loading: true,
+                error: null,
+                requestSeq: (t.requestSeq ?? 0) + 1,
+            })
+          : t,
       ),
     })),
 
@@ -541,7 +1059,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setSmartSortApplied: (tabId) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? { ...t, smartSortApplied: true } : t,
+        t.id === tabId ? withoutRowContext({ ...t, smartSortApplied: true }) : t,
       ),
     })),
 
@@ -560,6 +1078,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       status: "pending",
       description: input.description ?? null,
       createdAt: Date.now(),
+      origin: input.origin ?? currentChangeOrigin(),
     };
     set((state) => ({ changesQueue: [...state.changesQueue, item] }));
   },
@@ -598,6 +1117,16 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
 
   clearChanges: () => set({ changesQueue: [] }),
 
+  /** Clear All: only the active origin's pending work, never another origin's. */
+  clearChangesForTarget: (origin) => {
+    if (!origin) return;
+    set((state) => ({
+      changesQueue: state.changesQueue.filter(
+        (c) => !isSameChangeTarget(c.origin, origin),
+      ),
+    }));
+  },
+
   markChangeCommitted: (changeId) =>
     set((state) => ({
       changesQueue: state.changesQueue.map((c) =>
@@ -617,7 +1146,14 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   toggleChangesPanel: () =>
     set((state) => ({ changesPanelExpanded: !state.changesPanelExpanded })),
 
-  setCurrentDatabase: (db) => set({ currentDatabase: db }),
+  // The selected database is part of every tab's Change Origin: moving it
+  // re-points the whole viewer, so no selection made in the old context may
+  // survive.
+  setCurrentDatabase: (db) =>
+    set((state) => ({
+      currentDatabase: db,
+      tabs: withoutRowContexts(state.tabs),
+    })),
   setCurrentSchema: (schema) => set({ currentSchema: schema }),
   setObjectSearchOpen: (open) => set({ objectSearchOpen: open }),
   setSelectedObjectType: (t) => set({ selectedObjectType: t }),
@@ -637,7 +1173,9 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   stageCellEdit: (input) => {
     // Re-staging the same cell replaces the existing pending entry (keeps the
     // original oldData so revert restores the DB value) instead of stacking
-    // a second queue item.
+    // a second queue item. Matching is scoped to the active Change Origin, so
+    // an edit can never replace another origin's staged value.
+    const origin = currentChangeOrigin();
     const colName = Object.keys(input.newData)[0];
     const existing = get().changesQueue.find(
       (c) =>
@@ -647,7 +1185,8 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
         c.table === input.table &&
         c.primaryKey &&
         JSON.stringify(c.primaryKey) === JSON.stringify(input.primaryKey) &&
-        Object.keys(c.newData ?? {})[0] === colName,
+        Object.keys(c.newData ?? {})[0] === colName &&
+        (origin ? isSameChangeOrigin(c.origin, origin) : c.origin === null),
     );
     if (existing) {
       set((state) => ({
@@ -671,6 +1210,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       oldData: input.oldData,
       newData: input.newData,
       description: input.description ?? `Edit ${input.table}`,
+      origin,
     });
   },
 

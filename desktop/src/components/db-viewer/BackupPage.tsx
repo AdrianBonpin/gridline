@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Download, FolderOpen, HardDrive } from "lucide-react";
-import { save } from "@tauri-apps/plugin-dialog";
 import { CopyButton } from "../ui/CopyButton";
 import { BackupProgress } from "./BackupProgress";
 import {
@@ -19,9 +18,18 @@ import {
     detectMysqlTools,
     mysqlDump,
     sqliteDump,
+    selectFileForGrant,
 } from "../../lib/commands";
 import type { PgToolStatus, MySqlToolStatus, BackupJob } from "../../lib/types";
+import type { FileFilter, FileGrant } from "../../lib/fileGrant";
+import {
+    FILE_GRANT_STATE,
+    fileGrantErrorKind,
+    fileGrantErrorMessage,
+    type FileGrantErrorKind,
+} from "../../lib/fileGrant";
 import { isMysqlFamily } from "../../lib/dbCapabilities";
+import { withSessionCredential } from "../../lib/sessionCredential";
 
 interface BackupPageProps {
     connectionId: string;
@@ -61,10 +69,17 @@ export function BackupPage({ connectionId }: BackupPageProps) {
     const database = connection?.database ?? null;
     const isPg = dbType === "postgresql";
     const isMysql = isMysqlFamily(dbType);
-    const isSqlite = dbType === "sqlite";
 
     const [format, setFormat] = useState<BackupFormat>("custom");
-    const [filePath, setFilePath] = useState("");
+    /**
+     * The File Grant authorizing the write, plus the path it covers (display
+     * only). Nothing typed into the UI can authorize a backup: without a grant
+     * the Start button stays disabled.
+     */
+    const [grant, setGrant] = useState<FileGrant | null>(null);
+    const [selectedPath, setSelectedPath] = useState("");
+    /** A visible expired/consumed/invalid-grant state with its recovery action. */
+    const [grantError, setGrantError] = useState<FileGrantErrorKind | null>(null);
     const [schema, setSchema] = useState("");
     const [noOwner, setNoOwner] = useState(true);
     const [singleTransaction, setSingleTransaction] = useState(true);
@@ -79,7 +94,6 @@ export function BackupPage({ connectionId }: BackupPageProps) {
 
     const activeJobId = useBackupStore((s) => s.activeJobId);
     const jobs = useBackupStore((s) => s.jobs);
-    const startJob = useBackupStore((s) => s.startJob);
     const notify = useNotificationStore((s) => s.notify);
 
     const activeJob = jobs.find((j) => j.id === activeJobId);
@@ -101,6 +115,9 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                 `Backup failed: ${activeJob.error_message || "Unknown error"}`,
                 "error",
             );
+            pendingJobRef.current = null;
+        } else if (activeJob.status === "cancelled") {
+            notify("Backup cancelled", "info");
             pendingJobRef.current = null;
         }
     }, [activeJob, notify]);
@@ -158,8 +175,11 @@ export function BackupPage({ connectionId }: BackupPageProps) {
         }
     }, [connectionId, isPg, isMysql, checkTools]);
 
+    // The native dialog is brokered by Rust: the backend shows it and issues a
+    // File Grant for whatever the user chose, so the path never originates in
+    // the renderer. Same dialog, same suggested name and filters as before.
     const handlePickFile = useCallback(async () => {
-        let defaultPath = "backup";
+        let defaultName = "backup";
         let extensions: string[] = [];
 
         if (isPg) {
@@ -170,7 +190,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                 directory: [],
             };
             extensions = pgExtensions[format];
-            defaultPath = `backup.${
+            defaultName = `backup.${
                 format === "custom"
                     ? "dump"
                     : format === "plain"
@@ -179,42 +199,55 @@ export function BackupPage({ connectionId }: BackupPageProps) {
             }`;
         } else if (isMysql) {
             extensions = ["sql"];
-            defaultPath = "backup.sql";
+            defaultName = "backup.sql";
         } else {
             extensions = ["db", "sqlite", "sql"];
-            defaultPath = "backup.db";
+            defaultName = "backup.db";
         }
 
-        const picked = await save({
-            defaultPath,
-            filters: [{ name: "Backup", extensions }],
-        });
-        if (picked) setFilePath(picked);
-    }, [format, isPg, isMysql, isSqlite]);
+        const filters: FileFilter[] = [{ name: "Backup", extensions }];
+        try {
+            const picked = await selectFileForGrant({
+                intent: "write",
+                title: "Save backup as",
+                defaultName,
+                filters,
+            });
+            if (!picked) return; // cancelled: nothing to authorize
+            setGrant(picked);
+            setSelectedPath(picked.path);
+            setGrantError(null);
+        } catch (e) {
+            const kind = fileGrantErrorKind(e);
+            if (kind) setGrantError(kind);
+            notify(fileGrantErrorMessage(e) ?? String(e), "error");
+        }
+    }, [format, isPg, isMysql, notify]);
 
     const runWithProgress = useCallback(
         async (type: BackupJob["type"], action: () => Promise<unknown>) => {
-            const jobId = `${type}-${Date.now()}`;
-            startJob(jobId, type);
-            pendingJobRef.current = jobId;
-
-            try {
-                // Command returns the job ID immediately — completion
-                // comes via Tauri events handled by the backupStore
-                await action();
-            } catch (e) {
-                // If the command itself fails (e.g. connection not found),
-                // the event won't fire — handle here
-                const msg = e instanceof Error ? e.message : String(e);
-                useBackupStore.getState().failJob(jobId, msg);
-            }
+            // `runJob` adopts the job id the backend returns, so the progress
+            // events and the cancel command address the real job.
+            await useBackupStore.getState().runJob(type, action);
+            pendingJobRef.current = useBackupStore.getState().activeJobId;
         },
-        [startJob],
+        [],
     );
 
+    // Cancel a running backup. The backend terminates the tool's whole process
+    // tree, so nothing is left running behind the UI.
+    const handleCancelBackup = useCallback(async () => {
+        const jobId = useBackupStore.getState().activeJobId;
+        if (!jobId) return;
+        const cancelled = await useBackupStore.getState().cancelJob(jobId);
+        if (!cancelled) {
+            notify("The backup had already finished", "info");
+        }
+    }, [notify]);
+
     const handleStartBackup = useCallback(async () => {
-        if (!filePath) {
-            notify("Please select a file path", "error");
+        if (!grant) {
+            notify("Please select an output file", "error");
             return;
         }
         if (isMysql && !database) {
@@ -222,35 +255,59 @@ export function BackupPage({ connectionId }: BackupPageProps) {
             return;
         }
 
-        await runWithProgress("dump", () => {
-            if (isPg) {
-                return pgDump(connectionId, {
-                    format,
-                    filePath,
-                    schema: schema || undefined,
-                    tables: undefined,
-                    noOwner,
+        // A grant is single-use: this selection is spent by the attempt, so the
+        // next job must choose the file again (a replayed id is rejected).
+        const grantId = grant.id;
+        setGrant(null);
+
+        await runWithProgress("dump", async () => {
+            try {
+                // A keychain-off connection supplies its session password
+                // through a prompt if the backend does not have it yet. The
+                // command resolves the credential before it consumes `grantId`,
+                // so retrying with the same grant is safe.
+                return await withSessionCredential(connectionId, async () => {
+                    if (isPg) {
+                        return await pgDump(
+                            connectionId,
+                            {
+                                format,
+                                schema: schema || undefined,
+                                tables: undefined,
+                                noOwner,
+                            },
+                            grantId,
+                        );
+                    }
+                    if (isMysql) {
+                        return await mysqlDump(
+                            connectionId,
+                            {
+                                database: database!,
+                                singleTransaction,
+                                noData,
+                                routines,
+                                triggers,
+                                events,
+                            },
+                            grantId,
+                        );
+                    }
+                    return await sqliteDump(connectionId, grantId);
                 });
+            } catch (e) {
+                const kind = fileGrantErrorKind(e);
+                if (!kind) throw e;
+                // Surface the grant state instead of a generic tool failure.
+                setGrantError(kind);
+                throw new Error(fileGrantErrorMessage(e) ?? String(e));
             }
-            if (isMysql) {
-                return mysqlDump(connectionId, {
-                    database: database!,
-                    filePath,
-                    singleTransaction,
-                    noData,
-                    routines,
-                    triggers,
-                    events,
-                });
-            }
-            return sqliteDump(connectionId, { filePath });
         });
     }, [
-        filePath,
+        grant,
         database,
         isPg,
         isMysql,
-        isSqlite,
         format,
         schema,
         noOwner,
@@ -263,6 +320,16 @@ export function BackupPage({ connectionId }: BackupPageProps) {
         notify,
         runWithProgress,
     ]);
+
+    // Retry after a failure: without a live grant the retry starts by choosing
+    // the file again, because the previous selection is spent.
+    const handleRetry = useCallback(() => {
+        if (grant) {
+            void handleStartBackup();
+            return;
+        }
+        void handlePickFile();
+    }, [grant, handleStartBackup, handlePickFile]);
 
     const toolsMissing = isPg
         ? pgToolStatus && !pgToolStatus.pg_dump_found
@@ -287,6 +354,11 @@ export function BackupPage({ connectionId }: BackupPageProps) {
     const bundledPresent = isPg
         ? pgToolStatus?.pg_dump_bundled_available
         : mysqlToolStatus?.mysqldumpBundledAvailable;
+    // A probe that timed out is a different failure from "not installed": the
+    // tool exists but did not answer, so installing another copy will not help.
+    const probeError = isPg
+        ? pgToolStatus?.pg_dump_probe_error
+        : mysqlToolStatus?.mysqldumpProbeError;
     const dumpFallbackName = isPg ? "pg_dump" : "mysqldump";
     const installInstructions = getPlatformInstructions(
         isPg ? PG_INSTALL_INSTRUCTIONS : MYSQL_INSTALL_INSTRUCTIONS,
@@ -329,7 +401,7 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                         <button
                             type="button"
                             onClick={() => void handleStartBackup()}
-                            disabled={isRunning || !filePath}
+                            disabled={isRunning || !grant}
                             className="inline-flex items-center rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                         >
                             <Download size={14} className="mr-1.5" />
@@ -341,6 +413,31 @@ export function BackupPage({ connectionId }: BackupPageProps) {
 
             {/* Content */}
             <div className="flex-1 overflow-auto">
+                {/* File Grant state: expired, already used, or missing. Each has
+                    a recovery action, so the flow never fails only in logs. */}
+                {grantError && (
+                    <div
+                        data-testid={`file-grant-${grantError}`}
+                        role="alert"
+                        className="flex items-start justify-between gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3"
+                    >
+                        <div className="min-w-0 space-y-1">
+                            <p className="text-sm font-semibold text-amber-300">
+                                {FILE_GRANT_STATE[grantError].title}
+                            </p>
+                            <p className="text-xs leading-relaxed text-amber-200/80">
+                                {FILE_GRANT_STATE[grantError].detail}
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => void handlePickFile()}
+                            className="shrink-0 rounded-lg border border-amber-500/40 px-3 py-1 text-xs font-medium text-amber-200 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                        >
+                            Choose file
+                        </button>
+                    </div>
+                )}
                 {/* Tool check */}
                 {checkingTools && checkingMessage && (
                     <div className="px-4 py-3 text-sm text-text-muted">
@@ -358,6 +455,14 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                             tools. This build could not locate or run them, so a manual
                             install is needed:
                         </p>
+                        {probeError && (
+                            <p
+                                data-testid="tool-probe-error"
+                                className="text-amber-200/80 text-xs leading-relaxed font-mono break-all"
+                            >
+                                {probeError}
+                            </p>
+                        )}
                         {bundledPresent && (
                             <p className="text-amber-200/80 text-xs leading-relaxed">
                                 A bundled copy is present but could not run — reinstall
@@ -414,13 +519,18 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                             </FormRow>
                         ) : null}
 
-                        {/* Output file */}
+                        {/* Output file. Display only: the write is authorized by
+                            the File Grant behind it, so the field is read-only
+                            and Start stays disabled until a file is chosen. */}
                         <FormRow label="Output file">
                             <input
                                 type="text"
-                                value={filePath}
-                                onChange={(e) => setFilePath(e.target.value)}
-                                placeholder="/path/to/backup.dump"
+                                value={selectedPath}
+                                readOnly
+                                aria-label="Output file"
+                                data-testid="backup-output-path"
+                                placeholder="Choose an output file…"
+                                title="Chosen with Browse — the path alone does not authorize a write"
                                 className={inputClass}
                             />
                             <button
@@ -553,6 +663,10 @@ export function BackupPage({ connectionId }: BackupPageProps) {
                                     jobType="dump"
                                     status={activeJob.status}
                                     errorMessage={activeJob.error_message ?? undefined}
+                                    onCancel={
+                                        isRunning ? () => void handleCancelBackup() : undefined
+                                    }
+                                    onRetry={!isRunning ? handleRetry : undefined}
                                 />
                             </div>
                         )}

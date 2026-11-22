@@ -15,6 +15,8 @@ import {
 import { getProviderById, type ProviderId } from "../../lib/providers";
 import { validateConnectionInput } from "../../lib/utils";
 import { testConnection } from "../../lib/commands";
+import { useSshHostTrust } from "../../hooks/useSshHostTrust";
+import { SshHostTrustDialog } from "./SshHostTrustDialog";
 import { INPUT_ROUNDING } from "../../lib/uiConstants";
 import type { ConnectionInput, Folder, Tag } from "../../lib/types";
 import type { ConnectionFormData } from "./connectionFormData";
@@ -224,6 +226,15 @@ export function NewConnectionScreen({
         [],
     );
 
+    const {
+        trustState: sshHostTrustState,
+        busy: sshHostTrustBusy,
+        error: sshHostTrustError,
+        check: checkSshHostTrust,
+        accept: acceptSshHostTrust,
+        dismiss: dismissSshHostTrust,
+    } = useSshHostTrust();
+
     const buildPayload = useCallback((): ConnectionInput => {
         return {
             name: form.name.trim() || suggestedName,
@@ -289,6 +300,9 @@ export function NewConnectionScreen({
                 notify("Connection successful", "success");
             } else {
                 notify(result.error ?? "Connection failed", "error");
+                // An SSH tunnel can stop on host trust: show the fingerprint and
+                // let the user accept it before any credential is sent.
+                void checkSshHostTrust(form.ssh_host, form.ssh_port);
             }
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
@@ -296,7 +310,7 @@ export function NewConnectionScreen({
         } finally {
             setTestLoading(false);
         }
-    }, [validate, notify, testConnection, buildPayload]);
+    }, [validate, notify, testConnection, buildPayload, checkSshHostTrust, form.ssh_host, form.ssh_port]);
 
     const isEntry = stage === "entry";
     const showEntryUri = isEntry || form.db_type !== "sqlite";
@@ -376,6 +390,16 @@ export function NewConnectionScreen({
                     />
                 </>
             )}
+
+            <SshHostTrustDialog
+                state={sshHostTrustState}
+                busy={sshHostTrustBusy}
+                error={sshHostTrustError}
+                onAccept={async () => {
+                    if (await acceptSshHostTrust()) handleTest();
+                }}
+                onClose={dismissSshHostTrust}
+            />
         </ConnectionFormShell>
     );
 }

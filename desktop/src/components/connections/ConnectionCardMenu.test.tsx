@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ConnectionCardMenu } from "./ConnectionCardMenu";
 import { useConnectionStore } from "../../stores/connectionStore";
+import { useNotificationStore } from "../../stores/notificationStore";
 import * as commands from "../../lib/commands";
 import type { Connection } from "../../lib/types";
 
@@ -236,5 +237,74 @@ describe("ConnectionCardMenu", () => {
       "postgresql://prod.example.com:5432",
     );
     expect(screen.queryByText("Manage")).not.toBeInTheDocument();
+  });
+
+  it("Copy connection URL reports a keychain failure and copies nothing", async () => {
+    vi.mocked(commands.getConnectionPassword).mockRejectedValue(
+      new Error("keychain locked"),
+    );
+    const notify = vi.spyOn(useNotificationStore.getState(), "notify");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    renderMenu();
+    await openMenu();
+
+    await userEvent.click(screen.getByText("Copy connection URL"));
+
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringMatching(/keychain/i),
+        "error",
+      ),
+    );
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("Copy connection URL reports a clipboard failure instead of claiming success", async () => {
+    vi.mocked(commands.getConnectionPassword).mockResolvedValue("s3cret");
+    const notify = vi.spyOn(useNotificationStore.getState(), "notify");
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard unavailable"));
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    renderMenu();
+    await openMenu();
+
+    await userEvent.click(screen.getByText("Copy connection URL"));
+
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringMatching(/clipboard/i),
+        "error",
+      ),
+    );
+    expect(notify).not.toHaveBeenCalledWith(
+      expect.stringMatching(/copied/i),
+      "success",
+    );
+  });
+
+  it("Copy connection URL (no password) reports a clipboard failure", async () => {
+    const notify = vi.spyOn(useNotificationStore.getState(), "notify");
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard unavailable"));
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    renderMenu();
+    await openMenu();
+
+    await userEvent.click(screen.getByText("Copy connection URL (no password)"));
+
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringMatching(/clipboard/i),
+        "error",
+      ),
+    );
   });
 });

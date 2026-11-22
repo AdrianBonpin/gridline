@@ -2,9 +2,15 @@ import { useState, useEffect, useRef } from "react";
 import { AnimatedModal } from "../ui/AnimatedModal";
 import { Button } from "../ui/Button";
 import { Select } from "../ui/Select";
-import { save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
-import { exportQueryToFile, cancelQuery } from "../../lib/commands";
+import { exportQueryToFile, cancelQuery, selectFileForGrant } from "../../lib/commands";
+import type { FileFilter, FileGrant } from "../../lib/fileGrant";
+import {
+  FILE_GRANT_STATE,
+  fileGrantErrorKind,
+  fileGrantErrorMessage,
+  type FileGrantErrorKind,
+} from "../../lib/fileGrant";
 
 interface StreamExportDialogProps {
   connectionId: string;
@@ -26,6 +32,10 @@ const EXTENSIONS: Record<string, string> = {
 
 export function StreamExportDialog({ connectionId, sql, onClose }: StreamExportDialogProps) {
   const [format, setFormat] = useState("csv");
+  // The destination is authorized by a backend-issued File Grant; `path` is
+  // display metadata only, and `grant.id` is what the export consumes.
+  const [grant, setGrant] = useState<FileGrant | null>(null);
+  const [grantError, setGrantError] = useState<FileGrantErrorKind | null>(null);
   const [path, setPath] = useState("");
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -47,13 +57,32 @@ export function StreamExportDialog({ connectionId, sql, onClose }: StreamExportD
     };
   }, []);
 
-  const handleChooseFile = async () => {
+  /** Ask Rust for a native save dialog and adopt the grant it issues. */
+  const chooseFile = async (): Promise<FileGrant | null> => {
     const ext = EXTENSIONS[format] ?? "csv";
-    const picked = await save({
-      defaultPath: `export.${ext}`,
-      filters: [{ name: format.toUpperCase(), extensions: [ext] }],
-    });
-    if (picked) setPath(picked);
+    const filters: FileFilter[] = [{ name: format.toUpperCase(), extensions: [ext] }];
+    try {
+      const picked = await selectFileForGrant({
+        intent: "write",
+        title: "Export all rows as",
+        defaultName: `export.${ext}`,
+        filters,
+      });
+      if (!picked) return null; // cancelled: nothing to authorize
+      setGrant(picked);
+      setPath(picked.path);
+      setGrantError(null);
+      return picked;
+    } catch (e) {
+      const kind = fileGrantErrorKind(e);
+      if (kind) setGrantError(kind);
+      setError(fileGrantErrorMessage(e) ?? (e instanceof Error ? e.message : String(e)));
+      return null;
+    }
+  };
+
+  const handleChooseFile = async () => {
+    await chooseFile();
   };
 
   const handleExport = async () => {
@@ -62,26 +91,25 @@ export function StreamExportDialog({ connectionId, sql, onClose }: StreamExportD
     setDone(false);
     setProgress(0);
     try {
-      let target = path;
-      if (!target) {
-        const ext = EXTENSIONS[format] ?? "csv";
-        target = (await save({
-          defaultPath: `export.${ext}`,
-          filters: [{ name: format.toUpperCase(), extensions: [ext] }],
-        })) ?? "";
-        if (!target) {
-          setRunning(false);
-          return;
-        }
-        setPath(target);
+      // Choosing the destination is part of starting the export when nothing is
+      // authorized yet, exactly as the previous flow opened the dialog here.
+      const active = grant ?? (await chooseFile());
+      if (!active) {
+        setRunning(false);
+        return;
       }
+      // A grant is single-use: this selection is spent by the attempt.
+      setGrant(null);
+
       jobIdRef.current = `export-${Date.now()}`;
-      const res = await exportQueryToFile(connectionId, sql, format, target);
+      const res = await exportQueryToFile(connectionId, sql, format, active.id);
       setDone(true);
       setProgress(100);
       setRowsWritten(res.rows_written);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const kind = fileGrantErrorKind(e);
+      if (kind) setGrantError(kind);
+      setError(fileGrantErrorMessage(e) ?? (e instanceof Error ? e.message : String(e)));
     } finally {
       setRunning(false);
     }
@@ -113,6 +141,30 @@ export function StreamExportDialog({ connectionId, sql, onClose }: StreamExportD
             Choose file…
           </Button>
         </div>
+
+        {grantError && (
+          <div
+            data-testid={`export-file-grant-${grantError}`}
+            role="alert"
+            className="flex items-start justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2"
+          >
+            <div className="min-w-0 space-y-1">
+              <p className="text-xs font-semibold text-amber-300">
+                {FILE_GRANT_STATE[grantError].title}
+              </p>
+              <p className="text-[11px] leading-relaxed text-amber-200/80">
+                {FILE_GRANT_STATE[grantError].detail}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleChooseFile()}
+              className="shrink-0 rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] font-medium text-amber-200 hover:bg-amber-500/10 transition-colors cursor-pointer"
+            >
+              Choose file
+            </button>
+          </div>
+        )}
 
         {path && (
           <p className="text-xs text-text-muted break-all" data-testid="export-path">

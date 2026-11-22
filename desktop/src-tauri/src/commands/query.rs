@@ -1,21 +1,175 @@
-//! Arbitrary SQL query execution with subquery-based pagination and
-//! query‑history recording.
+//! Arbitrary SQL query execution.
 //!
-//! Architecture:
-//! 1. Subquery wrapping is attempted first:
-//!    `SELECT * FROM (user_query) AS _gridline_data LIMIT x OFFSET y`
-//!    `SELECT COUNT(*) FROM (user_query) AS _gridline_cnt`
-//! 2. If wrapping fails (CTEs, multi‑statement), fall back to raw
-//!    execution with client‑side slicing.
-//! 3. Every query is recorded in the local `query_history` table.
+//! ## One execution per request (the rule this module is built around)
+//!
+//! A `SELECT` is not necessarily read-only: `nextval()`, `pg_sleep()`,
+//! `setval()`, a volatile function, or a sequence in a DEFAULT all make a
+//! statement side-effecting even though it is classified `Read`. So an accepted
+//! run or page request executes the user's statement **exactly once**.
+//!
+//! How that one execution is shaped is decided from the statement's *shape*, by
+//! [`plan_page`], and never by trying something and watching it fail:
+//!
+//! * [`PagePlan::Paged`] wraps a paging-safe single statement in a subquery, so
+//!   one execution returns the page and its column description. The exact total
+//!   is reported as unknown (`total_rows: None`) — counting would run the
+//!   statement a second time. One row past the page is fetched in the same
+//!   execution, so `has_more` stays exact and pagination keeps working.
+//! * [`PagePlan::Verbatim`] runs anything that cannot be wrapped (EXPLAIN,
+//!   SHOW, PRAGMA, DML/DDL, multi-statement scripts) as-is and slices the page
+//!   client-side. That single execution reveals every row, so the total is
+//!   exact.
+//!
+//! Consequences, each covered by a test:
+//!
+//! * There is no count-then-data round trip and no "empty result, re-run to
+//!   discover columns" step — columns come from the statement description of
+//!   the one execution.
+//! * A failed (or cancelled) execution reports its error; it is never retried
+//!   as a raw fallback, which for SQLite would also consume the interrupt flag
+//!   and let the cancelled query run to completion.
+//! * Every query is recorded in the local `query_history` table.
 
 use crate::db::pool::DbHandle;
+use crate::db::read_only::ReadOnlyEngine;
+use crate::db::sql_classify::scan_words;
+use crate::db::sql_split::split_statements;
 use crate::models::db_viewer::{ColumnInfo, MultiQueryResult, QueryResult, StatementNotice};
 use serde::{Deserialize, Serialize};
 use sqlx::{Column, Row};
 use std::time::Instant;
 use tauri::State;
 use uuid::Uuid;
+
+// ---------------------------------------------------------------------------
+// Execution planning: one statement, one execution
+// ---------------------------------------------------------------------------
+
+/// The single execution a run or page request is allowed to perform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PagePlan {
+    /// Wrap the statement in a paging subquery: one execution yields the page
+    /// **and** its column description. Exact total unknown.
+    Paged { statement: String },
+    /// Run the statement verbatim and slice the page client-side: one execution
+    /// yields the page, the columns and the exact total.
+    Verbatim { sql: String },
+}
+
+/// Decide how a request executes, from the statement's shape alone.
+///
+/// Shape — not a trial execution — because the only way to learn "can this be
+/// wrapped?" by trying is to run the user's SQL, and the retry that follows a
+/// failure runs it again. Shape also cannot be tricked by a parse error into a
+/// second execution: an unwrappable verb is planned as verbatim from the start.
+pub(crate) fn plan_page(engine: ReadOnlyEngine, sql: &str) -> PagePlan {
+    let trimmed = sql.trim();
+    let statements = split_statements(trimmed);
+    // A script is never wrapped: the wrapper would contain more than one
+    // statement. Verbatim executes it once per statement, as written.
+    if statements.len() != 1 {
+        return PagePlan::Verbatim {
+            sql: trimmed.to_string(),
+        };
+    }
+    let statement = statements
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| trimmed.to_string());
+    if is_subquery_wrappable(engine, &statement) {
+        PagePlan::Paged { statement }
+    } else {
+        PagePlan::Verbatim {
+            sql: trimmed.to_string(),
+        }
+    }
+}
+
+/// Verbs whose statement this engine accepts as a derived table.
+///
+/// Deliberately conservative: anything not listed runs verbatim, which is
+/// always safe (one execution) and even reports an exact total. The cost of a
+/// false negative is a page materialized client-side; the cost of a false
+/// positive would be an error where the query used to work.
+fn is_subquery_wrappable(engine: ReadOnlyEngine, statement: &str) -> bool {
+    let Some(verb) = scan_words(statement).into_iter().next() else {
+        return false; // comments only — nothing to wrap
+    };
+    match engine {
+        ReadOnlyEngine::PostgreSql => {
+            matches!(verb.as_str(), "SELECT" | "VALUES" | "TABLE" | "WITH")
+        }
+        // MySQL only accepts a CTE inside a derived table from 8.0.19, so a
+        // `WITH` statement runs verbatim (one execution, exact total).
+        ReadOnlyEngine::MySql => matches!(verb.as_str(), "SELECT" | "VALUES" | "TABLE"),
+        ReadOnlyEngine::Sqlite => verb == "SELECT",
+    }
+}
+
+/// Rows to fetch for one page: the page plus one row, so a single execution
+/// proves whether another page exists without a count query.
+fn page_probe_limit(page_size: i64) -> i64 {
+    page_size.max(0).saturating_add(1)
+}
+
+fn page_offset(page: i64, page_size: i64) -> i64 {
+    page.saturating_sub(1)
+        .max(0)
+        .saturating_mul(page_size.max(0))
+}
+
+/// The page produced by a wrapped execution: the fetched rows are capped at
+/// `page_size`, the extra probe row only sets `has_more`, and the total stays
+/// unknown because knowing it would mean running the statement again.
+fn paged_result(
+    columns: Vec<ColumnInfo>,
+    rows: Vec<Vec<serde_json::Value>>,
+    page: i64,
+    page_size: i64,
+) -> QueryResult {
+    let limit = page_size.max(0) as usize;
+    let mut rows = rows;
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    QueryResult {
+        columns,
+        rows,
+        total_rows: None,
+        has_more,
+        page,
+        page_size,
+        execution_time_ms: None,
+    }
+}
+
+/// The page produced by a verbatim execution: every row was fetched, so the
+/// total is exact and the page is a client-side slice of it.
+fn verbatim_result(
+    columns: Vec<ColumnInfo>,
+    rows: Vec<Vec<serde_json::Value>>,
+    page: i64,
+    page_size: i64,
+    offset: i64,
+) -> QueryResult {
+    let total_rows = rows.len() as i64;
+    let uoff = offset.max(0) as usize;
+    let ulimit = page_size.max(0) as usize;
+    let has_more = uoff.saturating_add(ulimit) < rows.len();
+    let rows: Vec<Vec<serde_json::Value>> = if uoff < rows.len() {
+        rows.into_iter().skip(uoff).take(ulimit).collect()
+    } else {
+        Vec::new()
+    };
+    QueryResult {
+        columns,
+        rows,
+        total_rows: Some(total_rows),
+        has_more,
+        page,
+        page_size,
+        execution_time_ms: None,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Cancel-error classification
@@ -109,7 +263,7 @@ impl From<crate::store::SavedQueryRow> for SavedQueryCommand {
 /// Returns `(QueryResult, Option<QueryHistoryEntry>)` so the caller can
 /// write the history record through the store.
 pub(crate) async fn execute_query_inner(
-    pool_manager: &mut crate::db::pool::ConnectionPoolManager,
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
     db_store: &std::sync::Mutex<crate::store::Store>,
     cancel_registry: &crate::cancel::CancelRegistry,
     connection_id: &str,
@@ -120,13 +274,39 @@ pub(crate) async fn execute_query_inner(
     let start = Instant::now();
     let history_id = Uuid::new_v4().to_string();
 
-    // Try subquery-wrapped execution first; fall back to raw on failure.
-    let mut result = match pool_manager.get(connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
-            execute_pg_query(client, query, page, page_size).await
+    // Take a shareable handle and RELEASE the pool registry before running
+    // anything: a slow statement here must not stall another connection.
+    let handle = match crate::db::pool::acquire_handle(pool_manager, connection_id).await {
+        Ok(handle) => handle,
+        Err(err) => {
+            let elapsed = start.elapsed().as_millis() as i64;
+            insert_history(
+                db_store,
+                &history_id,
+                connection_id,
+                query,
+                Some(elapsed),
+                None,
+                "error",
+                Some(&err),
+            );
+            return Err(err);
         }
-        Some(DbHandle::Sqlite(conn)) => execute_sqlite_query(conn, query, page, page_size),
-        Some(DbHandle::MySql(pool)) => {
+    };
+
+    // Try subquery-wrapped execution first; fall back to raw on failure.
+    let mut result = match handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
+            execute_pg_query(&client, query, page, page_size).await
+        }
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            // One statement at a time on this connection (rusqlite requirement).
+            execute_sqlite_query(&conn, query, page, page_size)
+        }
+        DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
             // Run on a dedicated pooled connection so the query's MySQL
             // CONNECTION_ID can be tracked for cancellation (`KILL QUERY ?`).
             let mut conn = pool
@@ -144,21 +324,6 @@ pub(crate) async fn execute_query_inner(
             let result = execute_mysql_query_on(&mut *conn, query, page, page_size).await;
             cancel_registry.set_mysql_conn_id(connection_id, None);
             result
-        }
-        None => {
-            let elapsed = start.elapsed().as_millis() as i64;
-            let err = "Connection not found".to_string();
-            insert_history(
-                db_store,
-                &history_id,
-                connection_id,
-                query,
-                Some(elapsed),
-                None,
-                "error",
-                Some(&err),
-            );
-            return Err(err);
         }
     };
 
@@ -228,8 +393,32 @@ fn insert_history(
 // PostgreSQL execution
 // ---------------------------------------------------------------------------
 
-/// Try subquery‑wrapped pagination for PostgreSQL. Falls back to raw
-/// execution via `simple_query` if wrapping produces a parse error.
+/// The shared PostgreSQL error mapping: a cancellation says so, everything else
+/// keeps the server's own message (redacted by `pg_error_message`).
+fn pg_error_text(e: &tokio_postgres::Error) -> String {
+    if is_pg_cancel_error(e) {
+        "Query cancelled".to_string()
+    } else {
+        crate::commands::db_viewer::pg_error_message(e)
+    }
+}
+
+fn pg_column_info(c: &tokio_postgres::Column) -> ColumnInfo {
+    ColumnInfo {
+        name: c.name().to_string(),
+        data_type: format!("{:?}", c.type_()),
+        is_nullable: true,
+        is_pk: false,
+        is_fk: false,
+        fk_ref: None,
+        default_value: None,
+        editable: true,
+        is_generated: false,
+        is_unique: false,
+        is_auto_increment: false,
+    }
+}
+
 async fn execute_pg_query(
     client: &tokio_postgres::Client,
     query: &str,
@@ -241,59 +430,43 @@ async fn execute_pg_query(
         return Err("Query cannot be empty".to_string());
     }
 
-    let off = (page.saturating_sub(1).max(0)) * page_size;
+    let off = page_offset(page, page_size);
+    match plan_page(ReadOnlyEngine::PostgreSql, trimmed) {
+        PagePlan::Paged { statement } => {
+            execute_pg_page(client, &statement, page, page_size, off).await
+        }
+        PagePlan::Verbatim { sql } => execute_pg_raw(client, &sql, page, page_size, off).await,
+    }
+}
 
-    // Attempt subquery wrapping.
-    let wrapped_data = format!(
+/// One execution of the statement, wrapped for paging.
+///
+/// `prepare` is a *description* round trip — it runs no rows — so the columns
+/// are known even when the page is empty, without re-running the statement to
+/// find out. The page itself is the only execution, and it fetches one row past
+/// the page so `has_more` is exact.
+async fn execute_pg_page(
+    client: &tokio_postgres::Client,
+    statement: &str,
+    page: i64,
+    page_size: i64,
+    offset: i64,
+) -> Result<QueryResult, String> {
+    let wrapped = format!(
         "SELECT * FROM ({}) AS _gridline_data LIMIT $1 OFFSET $2",
-        trimmed
+        statement
     );
-    let wrapped_count = format!("SELECT COUNT(*) FROM ({}) AS _gridline_cnt", trimmed);
+    let prepared = client
+        .prepare(&wrapped)
+        .await
+        .map_err(|e| pg_error_text(&e))?;
+    let columns: Vec<ColumnInfo> = prepared.columns().iter().map(pg_column_info).collect();
+    let limit = page_probe_limit(page_size);
+    let data_rows = client
+        .query(&prepared, &[&limit, &offset])
+        .await
+        .map_err(|e| pg_error_text(&e))?;
 
-    // Try the wrapped count query first — if this fails we fall back to raw.
-    let total_rows: i64 = match client.query_one(&wrapped_count, &[]).await {
-        Ok(row) => row.get::<_, i64>(0),
-        Err(e) if is_pg_cancel_error(&e) => return Err("Query cancelled".to_string()),
-        Err(_) => {
-            // Wrapping failed — fall back to raw execution.
-            return execute_pg_raw(client, trimmed, page, page_size, off).await;
-        }
-    };
-
-    // Now execute the wrapped data query.
-    let data_rows = match client.query(&wrapped_data, &[&page_size, &off]).await {
-        Ok(rows) => rows,
-        Err(e) if is_pg_cancel_error(&e) => return Err("Query cancelled".to_string()),
-        Err(_) => {
-            return execute_pg_raw(client, trimmed, page, page_size, off).await;
-        }
-    };
-
-    // Build column info from the data rows.
-    let columns: Vec<ColumnInfo> = match data_rows.first() {
-        Some(first) => first
-            .columns()
-            .iter()
-            .map(|c| ColumnInfo {
-                name: c.name().to_string(),
-                data_type: format!("{:?}", c.type_()),
-                is_nullable: true,
-                is_pk: false,
-                is_fk: false,
-                fk_ref: None,
-                default_value: None,
-                editable: true,
-                is_generated: false,
-            })
-            .collect(),
-        None => {
-            // No rows — fall back to raw execution which handles
-            // column metadata via simple_query.
-            return execute_pg_raw(client, trimmed, page, page_size, off).await;
-        }
-    };
-
-    // Convert rows to JSON.
     let rows: Vec<Vec<serde_json::Value>> = data_rows
         .iter()
         .map(|row| {
@@ -303,22 +476,19 @@ async fn execute_pg_query(
         })
         .collect();
 
-    Ok(QueryResult {
-        columns,
-        rows,
-        total_rows,
-        page,
-        page_size,
-        execution_time_ms: None,
-    })
+    Ok(paged_result(columns, rows, page, page_size))
 }
 
 // ---------------------------------------------------------------------------
-// PostgreSQL raw fallback (simple_query)
+// PostgreSQL verbatim execution (simple_query)
 // ---------------------------------------------------------------------------
 
-/// Execute a raw SQL string via `simple_query`, collecting all result rows
-/// and slicing them on the client side for pagination.
+/// Execute the statement(s) exactly as written via `simple_query`, collecting
+/// every result row for client-side paging.
+///
+/// This is the only path for statements that cannot be a derived table
+/// (EXPLAIN, SHOW, DML/DDL, scripts), so it must never be reached as a *retry*
+/// of something that already ran.
 async fn execute_pg_raw(
     client: &tokio_postgres::Client,
     query: &str,
@@ -326,19 +496,27 @@ async fn execute_pg_raw(
     page_size: i64,
     offset: i64,
 ) -> Result<QueryResult, String> {
+    let (columns, all_rows) = pg_verbatim_rows(client, query).await?;
+    Ok(verbatim_result(columns, all_rows, page, page_size, offset))
+}
+
+/// Run one verbatim execution and return its columns and rows.
+async fn pg_verbatim_rows(
+    client: &tokio_postgres::Client,
+    query: &str,
+) -> Result<(Vec<ColumnInfo>, Vec<Vec<serde_json::Value>>), String> {
     let messages = client
         .simple_query(query)
         .await
-        .map_err(|e| crate::commands::db_viewer::pg_error_message(&e))?;
+        .map_err(|e| pg_error_text(&e))?;
 
     let mut columns: Vec<ColumnInfo> = Vec::new();
     let mut all_rows: Vec<Vec<serde_json::Value>> = Vec::new();
-    let mut saw_columns = false;
 
     for msg in messages {
         match msg {
             tokio_postgres::SimpleQueryMessage::Row(row) => {
-                if !saw_columns {
+                if columns.is_empty() {
                     columns = row
                         .columns()
                         .iter()
@@ -352,9 +530,10 @@ async fn execute_pg_raw(
                             default_value: None,
                             editable: true,
                             is_generated: false,
+                            is_unique: false,
+                            is_auto_increment: false,
                         })
                         .collect();
-                    saw_columns = true;
                 }
                 let values: Vec<serde_json::Value> = (0..row.len())
                     .map(|i| {
@@ -369,40 +548,30 @@ async fn execute_pg_raw(
                     .collect();
                 all_rows.push(values);
             }
-            tokio_postgres::SimpleQueryMessage::CommandComplete(..) => {
-                // DML statements like INSERT, UPDATE, DELETE, etc.
-                // Return empty result with row count from the tag.
-            }
+            // DML/DDL command tags carry the affected count; the row-less
+            // shape is what the multi-statement walker reports as a notice.
+            tokio_postgres::SimpleQueryMessage::CommandComplete(..) => {}
             _ => {}
         }
     }
 
-    let total_rows = all_rows.len() as i64;
-    let uoffset = offset as usize;
-    let ulimit = page_size as usize;
-
-    let rows: Vec<Vec<serde_json::Value>> = if uoffset < all_rows.len() {
-        all_rows.into_iter().skip(uoffset).take(ulimit).collect()
-    } else {
-        Vec::new()
-    };
-
-    Ok(QueryResult {
-        columns,
-        rows,
-        total_rows,
-        page,
-        page_size,
-        execution_time_ms: None,
-    })
+    Ok((columns, all_rows))
 }
 
 // ---------------------------------------------------------------------------
 // SQLite execution
 // ---------------------------------------------------------------------------
 
-/// Try subquery‑wrapped pagination for SQLite. Falls back to raw execution
-/// if wrapping produces a parse error.
+/// Map a rusqlite error: an interrupt is the user's cancellation, and must be
+/// reported as such so no caller mistakes it for "try another way".
+fn sqlite_error_text(e: &rusqlite::Error) -> String {
+    if is_sqlite_cancel_error(e) {
+        "Query cancelled".to_string()
+    } else {
+        e.to_string()
+    }
+}
+
 fn execute_sqlite_query(
     conn: &rusqlite::Connection,
     query: &str,
@@ -414,55 +583,51 @@ fn execute_sqlite_query(
         return Err("Query cannot be empty".to_string());
     }
 
-    let off = (page.saturating_sub(1).max(0)) * page_size;
+    let off = page_offset(page, page_size);
+    match plan_page(ReadOnlyEngine::Sqlite, trimmed) {
+        PagePlan::Paged { statement } => {
+            execute_sqlite_page(conn, &statement, page, page_size, off)
+        }
+        PagePlan::Verbatim { sql } => execute_sqlite_raw(conn, &sql, page, page_size, off),
+    }
+}
 
-    // Attempt subquery wrapping.
-    let wrapped_data = format!(
+/// One execution of the statement, wrapped for paging. The prepared statement's
+/// description supplies the columns, so an empty page needs no second run.
+fn execute_sqlite_page(
+    conn: &rusqlite::Connection,
+    statement: &str,
+    page: i64,
+    page_size: i64,
+    offset: i64,
+) -> Result<QueryResult, String> {
+    let wrapped = format!(
         "SELECT * FROM ({}) AS _gridline_data LIMIT {} OFFSET {}",
-        trimmed, page_size, off
+        statement,
+        page_probe_limit(page_size),
+        offset
     );
-    let wrapped_count = format!("SELECT COUNT(*) FROM ({}) AS _gridline_cnt", trimmed);
-
-    // Try the wrapped count query first.
-    let total_rows: i64 = match conn.query_row(&wrapped_count, [], |row| row.get::<_, i64>(0)) {
-        Ok(n) => n,
-        Err(e) if is_sqlite_cancel_error(&e) => return Err("Query cancelled".to_string()),
-        Err(_) => {
-            // Wrapping failed — fall back to raw execution.
-            return execute_sqlite_raw(conn, trimmed, page, page_size, off);
-        }
-    };
-
-    // Execute the wrapped data query.
-    let (columns, all_rows) = match execute_sqlite_with_query(conn, &wrapped_data) {
-        Ok(result) => result,
-        // The data-step error is already a String (mapped inside
-        // execute_sqlite_with_query); classify by the interrupt message.
-        Err(e) if e.to_lowercase().contains("interrupted") => {
-            return Err("Query cancelled".to_string());
-        }
-        Err(_) => {
-            return execute_sqlite_raw(conn, trimmed, page, page_size, off);
-        }
-    };
-
-    Ok(QueryResult {
-        columns,
-        rows: all_rows,
-        total_rows,
-        page,
-        page_size,
-        execution_time_ms: None,
-    })
+    let (columns, rows) = execute_sqlite_with_query(conn, &wrapped)?;
+    Ok(paged_result(columns, rows, page, page_size))
 }
 
 /// Execute a SQL string on SQLite and return `(columns, rows)`.
+///
+/// One statement, one execution: the columns describe the *same* statement the
+/// rows come from, and a row error aborts the request instead of being dropped
+/// (a silently truncated result is not a successful run).
 fn execute_sqlite_with_query(
     conn: &rusqlite::Connection,
     sql: &str,
 ) -> Result<(Vec<ColumnInfo>, Vec<Vec<serde_json::Value>>), String> {
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(sql).map_err(|e| sqlite_error_text(&e))?;
+    collect_sqlite_rows(&mut stmt)
+}
 
+/// Drain a prepared SQLite statement: its column description plus every row.
+fn collect_sqlite_rows(
+    stmt: &mut rusqlite::Statement<'_>,
+) -> Result<(Vec<ColumnInfo>, Vec<Vec<serde_json::Value>>), String> {
     let columns: Vec<ColumnInfo> = (0..stmt.column_count())
         .map(|i| {
             let name = stmt.column_name(i).unwrap_or("?").to_string();
@@ -476,32 +641,31 @@ fn execute_sqlite_with_query(
                 default_value: None,
                 editable: true,
                 is_generated: false,
+                is_unique: false,
+                is_auto_increment: false,
             }
         })
         .collect();
 
     let col_count = stmt.column_count();
-    let rows: Vec<Vec<serde_json::Value>> = stmt
-        .query_map([], |row| {
-            let mut vals = Vec::with_capacity(col_count);
-            for i in 0..col_count {
-                vals.push(sqlite_value_to_json(row, i));
-            }
-            Ok(vals)
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+    let mut rows_out: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut rows = stmt.query([]).map_err(|e| sqlite_error_text(&e))?;
+    while let Some(row) = rows.next().map_err(|e| sqlite_error_text(&e))? {
+        rows_out.push(
+            (0..col_count)
+                .map(|i| sqlite_value_to_json(row, i))
+                .collect(),
+        );
+    }
 
-    Ok((columns, rows))
+    Ok((columns, rows_out))
 }
 
 // ---------------------------------------------------------------------------
-// SQLite raw fallback
+// SQLite verbatim execution
 // ---------------------------------------------------------------------------
 
-/// Execute raw SQL on SQLite without subquery wrapping, paginating
-/// client‑side.
+/// Execute one statement exactly as written and slice the page client-side.
 fn execute_sqlite_raw(
     conn: &rusqlite::Connection,
     query: &str,
@@ -510,25 +674,7 @@ fn execute_sqlite_raw(
     offset: i64,
 ) -> Result<QueryResult, String> {
     let (columns, all_rows) = execute_sqlite_with_query(conn, query)?;
-
-    let total_rows = all_rows.len() as i64;
-    let uoffset = offset as usize;
-    let ulimit = page_size as usize;
-
-    let rows: Vec<Vec<serde_json::Value>> = if uoffset < all_rows.len() {
-        all_rows.into_iter().skip(uoffset).take(ulimit).collect()
-    } else {
-        Vec::new()
-    };
-
-    Ok(QueryResult {
-        columns,
-        rows,
-        total_rows,
-        page,
-        page_size,
-        execution_time_ms: None,
-    })
+    Ok(verbatim_result(columns, all_rows, page, page_size, offset))
 }
 
 // ---------------------------------------------------------------------------
@@ -560,10 +706,10 @@ pub(crate) fn mysql_wrap_data(query: &str) -> String {
     )
 }
 
-/// Wrap a user query for counting: `SELECT COUNT(*) FROM (<q>) AS _gridline_cnt`.
-pub(crate) fn mysql_wrap_count(query: &str) -> String {
-    format!("SELECT COUNT(*) FROM ({}) AS _gridline_cnt", query.trim())
-}
+// There is deliberately no `mysql_wrap_count` helper: wrapping the statement in
+// a `COUNT(*)` is what executed it twice (once to count, once for data), and a
+// `SELECT` may have side effects. Pagination uses `mysql_wrap_data` plus the one
+// extra probe row instead, and reports the total as unknown.
 
 /// How a MySQL column value must be decoded, decided from the column's
 /// declared type name.
@@ -669,6 +815,91 @@ pub(crate) fn mysql_cell_kind(type_name: &str) -> MysqlCellKind {
     }
 }
 
+/// The cell-level reads [`decode_mysql_cell`] needs, one method per sqlx
+/// decoder it may pick.
+///
+/// The type name plus these typed reads *are* the decoder's whole contract, and
+/// expressing it as a trait is what makes the #41 regression testable without a
+/// live server: sqlx publishes no constructor for `MySqlRow`, `MySqlValue` or
+/// `MySqlTypeInfo` (their fields are `pub(crate)`), so a fixture row could not
+/// be built otherwise. [`MySqlRowCells`] is the only production implementation;
+/// the test module supplies one built from declared types and decoded values.
+pub(crate) trait MysqlCellSource {
+    /// Declared type name of column `i` (see [`mysql_cell_kind`]), or `None`
+    /// for a genuine SQL NULL / a column that cannot be described.
+    fn declared_type(&self, i: usize) -> Option<String>;
+    fn as_i64(&self, i: usize) -> Option<i64>;
+    fn as_u64(&self, i: usize) -> Option<u64>;
+    fn as_f32(&self, i: usize) -> Option<f32>;
+    fn as_f64(&self, i: usize) -> Option<f64>;
+    fn as_decimal(&self, i: usize) -> Option<sqlx::types::BigDecimal>;
+    fn as_date(&self, i: usize) -> Option<chrono::NaiveDate>;
+    fn as_time(&self, i: usize) -> Option<chrono::NaiveTime>;
+    fn as_datetime(&self, i: usize) -> Option<chrono::NaiveDateTime>;
+    fn as_json(&self, i: usize) -> Option<serde_json::Value>;
+    fn as_string(&self, i: usize) -> Option<String>;
+    fn as_bytes(&self, i: usize) -> Option<Vec<u8>>;
+}
+
+/// [`MysqlCellSource`] over a real sqlx row. Every method is the exact
+/// `try_get` the pre-seam code called, so the production decode is unchanged.
+struct MySqlRowCells<'a> {
+    row: &'a sqlx::mysql::MySqlRow,
+}
+
+impl MysqlCellSource for MySqlRowCells<'_> {
+    fn declared_type(&self, i: usize) -> Option<String> {
+        use sqlx::Row as _;
+        use sqlx::{TypeInfo, ValueRef};
+        // `MySqlTypeInfo.r#type`/`.flags` are `pub(crate)`, so the declared type
+        // is read through the public `name()`, which already distinguishes
+        // `INT UNSIGNED`, `BIGINT UNSIGNED` and `BOOLEAN` (TINYINT(1)).
+        match self.row.try_get_raw(i) {
+            Ok(v) if !v.is_null() => Some(v.type_info().name().to_string()),
+            _ => None,
+        }
+    }
+
+    fn as_i64(&self, i: usize) -> Option<i64> {
+        sqlx::Row::try_get::<i64, _>(self.row, i).ok()
+    }
+    fn as_u64(&self, i: usize) -> Option<u64> {
+        sqlx::Row::try_get::<u64, _>(self.row, i).ok()
+    }
+    fn as_f32(&self, i: usize) -> Option<f32> {
+        sqlx::Row::try_get::<f32, _>(self.row, i).ok()
+    }
+    fn as_f64(&self, i: usize) -> Option<f64> {
+        sqlx::Row::try_get::<f64, _>(self.row, i).ok()
+    }
+    fn as_decimal(&self, i: usize) -> Option<sqlx::types::BigDecimal> {
+        sqlx::Row::try_get::<sqlx::types::BigDecimal, _>(self.row, i).ok()
+    }
+    fn as_date(&self, i: usize) -> Option<chrono::NaiveDate> {
+        sqlx::Row::try_get::<chrono::NaiveDate, _>(self.row, i).ok()
+    }
+    fn as_time(&self, i: usize) -> Option<chrono::NaiveTime> {
+        sqlx::Row::try_get::<chrono::NaiveTime, _>(self.row, i).ok()
+    }
+    fn as_datetime(&self, i: usize) -> Option<chrono::NaiveDateTime> {
+        // `try_get_unchecked` (not `try_get`) because sqlx's `NaiveDateTime`
+        // `Type`/`Compatible` impl matches `ColumnType::Datetime` only, so the
+        // checked path rejects a TIMESTAMP column even though both share the
+        // exact same wire format and `Decode` impl. Only the type-compat gate
+        // is bypassed here; the decode is the same one DATETIME uses.
+        sqlx::Row::try_get_unchecked::<chrono::NaiveDateTime, _>(self.row, i).ok()
+    }
+    fn as_json(&self, i: usize) -> Option<serde_json::Value> {
+        sqlx::Row::try_get::<serde_json::Value, _>(self.row, i).ok()
+    }
+    fn as_string(&self, i: usize) -> Option<String> {
+        sqlx::Row::try_get::<String, _>(self.row, i).ok()
+    }
+    fn as_bytes(&self, i: usize) -> Option<Vec<u8>> {
+        sqlx::Row::try_get::<Vec<u8>, _>(self.row, i).ok()
+    }
+}
+
 /// Convert a sqlx MySql row cell to serde_json::Value, driven by the column's
 /// **declared** type (see [`mysql_cell_kind`]).
 ///
@@ -678,92 +909,89 @@ pub(crate) fn mysql_cell_kind(type_name: &str) -> MysqlCellKind {
 /// would emit different JSON types for different rows of one column.
 /// Shared with the DB-viewer commands (pub(crate)).
 pub(crate) fn mysql_cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
-    use sqlx::{Row, TypeInfo, ValueRef};
+    decode_mysql_cell(&MySqlRowCells { row }, i)
+}
 
-    // `MySqlTypeInfo.r#type`/`.flags` are `pub(crate)`, so the declared type is
-    // read through the public `name()`, which already distinguishes
-    // `INT UNSIGNED`, `BIGINT UNSIGNED` and `BOOLEAN` (TINYINT(1)).
-    let type_name = match row.try_get_raw(i) {
-        Ok(v) if !v.is_null() => v.type_info().name().to_string(),
+/// The declared-type → JSON policy itself, over any [`MysqlCellSource`].
+///
+/// This is the function the v0.8.2 fix (#41: 21 of 30 column types rendering as
+/// NULL) lives in, and it is exercised directly — with a fixture row — by
+/// `mysql_cell_to_json_decodes_every_declared_type`, so a wrong arm fails a test
+/// that runs everywhere instead of only where a MySQL server exists.
+pub(crate) fn decode_mysql_cell<S: MysqlCellSource + ?Sized>(
+    cell: &S,
+    i: usize,
+) -> serde_json::Value {
+    let Some(type_name) = cell.declared_type(i) else {
         // Genuine SQL NULL, or a column we cannot even describe.
-        _ => return serde_json::Value::Null,
+        return serde_json::Value::Null;
     };
 
     match mysql_cell_kind(&type_name) {
         MysqlCellKind::Int { bits, signed } => {
             if signed {
-                match row.try_get::<i64, _>(i) {
+                match cell.as_i64(i) {
                     // <=32-bit fits a JS Number exactly; 64-bit is stringified
                     // so the value survives the IPC boundary (matches PG).
-                    Ok(v) if bits <= 32 => serde_json::json!(v),
-                    Ok(v) => crate::commands::db_viewer::i64_to_json(v),
-                    Err(_) => serde_json::Value::Null,
+                    Some(v) if bits <= 32 => serde_json::json!(v),
+                    Some(v) => crate::commands::db_viewer::i64_to_json(v),
+                    None => serde_json::Value::Null,
                 }
             } else {
-                match row.try_get::<u64, _>(i) {
-                    Ok(v) if bits <= 32 => serde_json::json!(v),
-                    Ok(v) => serde_json::Value::String(v.to_string()),
-                    Err(_) => serde_json::Value::Null,
+                match cell.as_u64(i) {
+                    Some(v) if bits <= 32 => serde_json::json!(v),
+                    Some(v) => serde_json::Value::String(v.to_string()),
+                    None => serde_json::Value::Null,
                 }
             }
         }
-        MysqlCellKind::Bit => match row.try_get::<u64, _>(i) {
-            Ok(v) => serde_json::json!(v),
-            Err(_) => serde_json::Value::Null,
+        MysqlCellKind::Bit => match cell.as_u64(i) {
+            Some(v) => serde_json::json!(v),
+            None => serde_json::Value::Null,
         },
-        MysqlCellKind::Float => match row.try_get::<f32, _>(i) {
-            Ok(v) => serde_json::json!(v),
-            Err(_) => serde_json::Value::Null,
+        MysqlCellKind::Float => match cell.as_f32(i) {
+            Some(v) => serde_json::json!(v),
+            None => serde_json::Value::Null,
         },
-        MysqlCellKind::Double => match row.try_get::<f64, _>(i) {
-            Ok(v) => serde_json::json!(v),
-            Err(_) => serde_json::Value::Null,
+        MysqlCellKind::Double => match cell.as_f64(i) {
+            Some(v) => serde_json::json!(v),
+            None => serde_json::Value::Null,
         },
-        MysqlCellKind::Decimal => match row.try_get::<sqlx::types::BigDecimal, _>(i) {
+        MysqlCellKind::Decimal => match cell.as_decimal(i) {
             // Stringified for the same reason as 64-bit ints: exact digits.
-            Ok(v) => serde_json::Value::String(v.to_string()),
-            Err(_) => serde_json::Value::Null,
+            Some(v) => serde_json::Value::String(v.to_string()),
+            None => serde_json::Value::Null,
         },
         // Temporal values are emitted naive, never as an instant: MySQL
         // converts TIMESTAMP to and from the *session* time zone, so an
         // explicit `Z` would assert something the value does not support.
-        MysqlCellKind::Date => match row.try_get::<chrono::NaiveDate, _>(i) {
-            Ok(v) => serde_json::Value::String(v.to_string()),
-            Err(_) => serde_json::Value::Null,
+        MysqlCellKind::Date => match cell.as_date(i) {
+            Some(v) => serde_json::Value::String(v.to_string()),
+            None => serde_json::Value::Null,
         },
-        MysqlCellKind::Time => match row.try_get::<chrono::NaiveTime, _>(i) {
-            Ok(v) => serde_json::Value::String(v.to_string()),
-            Err(_) => serde_json::Value::Null,
+        MysqlCellKind::Time => match cell.as_time(i) {
+            Some(v) => serde_json::Value::String(v.to_string()),
+            None => serde_json::Value::Null,
         },
-        MysqlCellKind::DateTime => {
-            // `try_get_unchecked` (not `try_get`) because sqlx's `NaiveDateTime`
-            // `Type`/`Compatible` impl matches `ColumnType::Datetime` only, so the
-            // checked path rejects a TIMESTAMP column even though both share the
-            // exact same wire format and `Decode` impl. Only the type-compat gate
-            // is bypassed here; the decode is the same one DATETIME uses.
-            match row.try_get_unchecked::<chrono::NaiveDateTime, _>(i) {
-                Ok(v) => serde_json::Value::String(v.to_string()),
-                Err(_) => serde_json::Value::Null,
-            }
-        }
-        MysqlCellKind::Json => row
-            .try_get::<serde_json::Value, _>(i)
-            .unwrap_or(serde_json::Value::Null),
-        MysqlCellKind::Text => mysql_text_to_json(row, i),
-        MysqlCellKind::Bytes => mysql_bytes_to_json(row, i),
+        MysqlCellKind::DateTime => match cell.as_datetime(i) {
+            Some(v) => serde_json::Value::String(v.to_string()),
+            None => serde_json::Value::Null,
+        },
+        MysqlCellKind::Json => cell.as_json(i).unwrap_or(serde_json::Value::Null),
+        MysqlCellKind::Text => mysql_text_to_json(cell, i),
+        MysqlCellKind::Bytes => mysql_bytes_to_json(cell, i),
         MysqlCellKind::Null => serde_json::Value::Null,
-        MysqlCellKind::Unknown => mysql_unknown_to_json(row, i),
+        MysqlCellKind::Unknown => mysql_unknown_to_json(cell, i),
     }
 }
 
 /// Char/varchar/text/enum/set: a UTF-8 string, falling back to a lossy
 /// decode for the odd VARBINARY-shaped metadata column.
-fn mysql_text_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
-    use sqlx::Row;
-    if let Ok(v) = row.try_get::<String, _>(i) {
+fn mysql_text_to_json<S: MysqlCellSource + ?Sized>(cell: &S, i: usize) -> serde_json::Value {
+    if let Some(v) = cell.as_string(i) {
         return serde_json::Value::String(v);
     }
-    if let Ok(b) = row.try_get::<Vec<u8>, _>(i) {
+    if let Some(b) = cell.as_bytes(i) {
         return serde_json::Value::String(String::from_utf8_lossy(&b).into_owned());
     }
     serde_json::Value::Null
@@ -771,23 +999,47 @@ fn mysql_text_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Valu
 
 /// Binary/blob columns. Preserves the pre-existing lossy-UTF-8 rendering;
 /// changing binary presentation is explicitly out of scope (spec §3).
-fn mysql_bytes_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
-    use sqlx::Row;
-    if let Ok(b) = row.try_get::<Vec<u8>, _>(i) {
+fn mysql_bytes_to_json<S: MysqlCellSource + ?Sized>(cell: &S, i: usize) -> serde_json::Value {
+    if let Some(b) = cell.as_bytes(i) {
         return serde_json::Value::String(String::from_utf8_lossy(&b).into_owned());
     }
-    mysql_text_to_json(row, i)
+    mysql_text_to_json(cell, i)
 }
 
 /// Conservative fallback for a type we do not recognise — exactly the three
 /// decoders that were safe before this change, so an unknown type can never
 /// be worse than before (`GEOMETRY` lands here and stays null).
-fn mysql_unknown_to_json(row: &sqlx::mysql::MySqlRow, i: usize) -> serde_json::Value {
-    use sqlx::Row;
-    if let Ok(v) = row.try_get::<serde_json::Value, _>(i) {
+fn mysql_unknown_to_json<S: MysqlCellSource + ?Sized>(cell: &S, i: usize) -> serde_json::Value {
+    if let Some(v) = cell.as_json(i) {
         return v;
     }
-    mysql_text_to_json(row, i)
+    mysql_text_to_json(cell, i)
+}
+
+/// The shared MySQL error mapping: a killed statement is the user's
+/// cancellation, everything else keeps the server's sanitized message.
+fn mysql_error_text(e: &sqlx::Error) -> String {
+    if is_mysql_cancel_error(e) {
+        "Query cancelled".to_string()
+    } else {
+        crate::commands::db_viewer::sanitize_error(&format!("{e}"))
+    }
+}
+
+fn mysql_column_info(c: &sqlx::mysql::MySqlColumn) -> ColumnInfo {
+    ColumnInfo {
+        name: c.name().to_string(),
+        data_type: c.type_info().to_string(),
+        is_nullable: true,
+        is_pk: false,
+        is_fk: false,
+        fk_ref: None,
+        default_value: None,
+        editable: true,
+        is_generated: false,
+        is_unique: false,
+        is_auto_increment: false,
+    }
 }
 
 async fn execute_mysql_query_on(
@@ -800,66 +1052,62 @@ async fn execute_mysql_query_on(
     if trimmed.is_empty() {
         return Err("Query cannot be empty".to_string());
     }
-    let off = (page.saturating_sub(1).max(0)) * page_size;
+    let off = page_offset(page, page_size);
 
-    // Try the wrapped count first; fall back to raw on failure.
-    let total_rows: i64 = match sqlx::query_scalar::<_, i64>(&mysql_wrap_count(trimmed))
-        .fetch_one(&mut *conn)
+    match plan_page(ReadOnlyEngine::MySql, trimmed) {
+        PagePlan::Paged { statement } => {
+            execute_mysql_page(&mut *conn, &statement, page, page_size, off).await
+        }
+        PagePlan::Verbatim { sql } => {
+            execute_mysql_raw(&mut *conn, &sql, page, page_size, off).await
+        }
+    }
+}
+
+/// One execution of the statement, wrapped for paging.
+///
+/// `prepare` returns the statement description only (no rows run), so the
+/// columns are known for an empty page without a second execution. The page
+/// itself is the single execution, fetching one row past it for `has_more`.
+async fn execute_mysql_page(
+    conn: &mut sqlx::mysql::MySqlConnection,
+    statement: &str,
+    page: i64,
+    page_size: i64,
+    offset: i64,
+) -> Result<QueryResult, String> {
+    use sqlx::Executor as _;
+    use sqlx::SqlSafeStr as _;
+    use sqlx::Statement as _;
+    // sqlx 0.9 requires an explicitly asserted-safe SQL string; `wrapped` is
+    // built by this module from an already-validated statement.
+    let wrapped = mysql_wrap_data(statement);
+    let prepared = (&mut *conn)
+        .prepare(sqlx::AssertSqlSafe(wrapped).into_sql_str())
         .await
-    {
-        Ok(n) => n,
-        Err(e) if is_mysql_cancel_error(&e) => return Err("Query cancelled".to_string()),
-        Err(_) => return execute_mysql_raw(&mut *conn, trimmed, page, page_size, off).await,
-    };
-
-    let data_rows = match sqlx::query(&mysql_wrap_data(trimmed))
-        .bind(page_size)
-        .bind(off)
+        .map_err(|e| mysql_error_text(&e))?;
+    let columns: Vec<ColumnInfo> = prepared.columns().iter().map(mysql_column_info).collect();
+    let data_rows = prepared
+        .query()
+        .bind(page_probe_limit(page_size))
+        .bind(offset)
         .fetch_all(&mut *conn)
         .await
-    {
-        Ok(rows) => rows,
-        Err(e) if is_mysql_cancel_error(&e) => return Err("Query cancelled".to_string()),
-        Err(_) => return execute_mysql_raw(&mut *conn, trimmed, page, page_size, off).await,
-    };
-
-    let columns: Vec<ColumnInfo> = match data_rows.first() {
-        Some(first) => first
-            .columns()
-            .iter()
-            .map(|c| ColumnInfo {
-                name: c.name().to_string(),
-                data_type: c.type_info().to_string(),
-                is_nullable: true,
-                is_pk: false,
-                is_fk: false,
-                fk_ref: None,
-                default_value: None,
-                editable: true,
-                is_generated: false,
-            })
-            .collect(),
-        None => return execute_mysql_raw(&mut *conn, trimmed, page, page_size, off).await,
-    };
+        .map_err(|e| mysql_error_text(&e))?;
 
     let rows: Vec<Vec<serde_json::Value>> = data_rows
         .iter()
         .map(|r| (0..r.len()).map(|i| mysql_cell_to_json(r, i)).collect())
         .collect();
 
-    Ok(QueryResult {
-        columns,
-        rows,
-        total_rows,
-        page,
-        page_size,
-        execution_time_ms: None,
-    })
+    Ok(paged_result(columns, rows, page, page_size))
 }
 
-/// Raw fallback (no wrapping). Runs the query as-is and slices client-side,
-/// mirroring the PG `simple_query` raw path. Used when wrapping fails
-/// (e.g., multi-statement or non-selectable SQL).
+/// Execute the statement exactly as written and slice the page client-side.
+///
+/// This is the only path for statements that cannot be a derived table
+/// (EXPLAIN/SHOW/DESCRIBE, DML/DDL, scripts), so it must never be reached as a
+/// *retry* of something that already ran.
 async fn execute_mysql_raw(
     conn: &mut sqlx::mysql::MySqlConnection,
     query: &str,
@@ -867,27 +1115,13 @@ async fn execute_mysql_raw(
     page_size: i64,
     off: i64,
 ) -> Result<QueryResult, String> {
-    let rows = sqlx::query(query)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(query.to_owned()))
         .fetch_all(&mut *conn)
         .await
-        .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
+        .map_err(|e| mysql_error_text(&e))?;
 
     let columns: Vec<ColumnInfo> = match rows.first() {
-        Some(first) => first
-            .columns()
-            .iter()
-            .map(|c| ColumnInfo {
-                name: c.name().to_string(),
-                data_type: c.type_info().to_string(),
-                is_nullable: true,
-                is_pk: false,
-                is_fk: false,
-                fk_ref: None,
-                default_value: None,
-                editable: true,
-                is_generated: false,
-            })
-            .collect(),
+        Some(first) => first.columns().iter().map(mysql_column_info).collect(),
         None => Vec::new(),
     };
 
@@ -895,32 +1129,19 @@ async fn execute_mysql_raw(
         .iter()
         .map(|r| (0..r.len()).map(|i| mysql_cell_to_json(r, i)).collect())
         .collect();
-    let total_rows = all_rows.len() as i64;
-    let uoff = off as usize;
-    let ulimit = page_size as usize;
-    let sliced: Vec<Vec<serde_json::Value>> = if uoff < all_rows.len() {
-        all_rows.into_iter().skip(uoff).take(ulimit).collect()
-    } else {
-        Vec::new()
-    };
 
-    Ok(QueryResult {
-        columns,
-        rows: sliced,
-        total_rows,
-        page,
-        page_size,
-        execution_time_ms: None,
-    })
+    Ok(verbatim_result(columns, all_rows, page, page_size, off))
 }
 
 // ---------------------------------------------------------------------------
 // Multiple result sets (execute_query_multi)
 // ---------------------------------------------------------------------------
-// Per the spec: statements execute sequentially; SELECT-producing statements
-// get wrapped pagination (first page per set + total count — per-set paging is
-// deliberately omitted because re-running a script would re-execute DML);
-// DML/DDL produce notices; the first error stops the run, prior sets survive.
+// Statements execute sequentially. Each one is planned by `plan_page`, so a
+// SELECT-producing statement runs exactly once: paged (page + `has_more`, total
+// unknown) when its shape allows wrapping, verbatim (client-side slice, exact
+// total) otherwise. Per-set paging is deliberately omitted because re-running a
+// script would re-execute DML. DML/DDL produce notices; the first error stops the
+// run and prior result sets survive.
 
 /// Hard safety cap for an interactive multi-statement Run. Raised from 50
 /// because opening a `.sql` file and pressing Run is now a supported flow, and
@@ -997,38 +1218,36 @@ pub(crate) fn execute_sqlite_statement(
     page: i64,
     page_size: i64,
 ) -> Result<StatementOutcome, String> {
-    match conn.execute(stmt, []) {
-        Ok(n) => Ok(StatementOutcome::Notice {
-            kind: if statement_kind(stmt) == "ddl" {
-                "ddl"
-            } else {
-                "dml"
-            },
-            text: format!("OK — {n} rows affected"),
-            affected: Some(n as i64),
-        }),
-        Err(rusqlite::Error::ExecuteReturnedResults) => {
-            let (columns, all_rows) = execute_sqlite_with_query(conn, stmt)?;
-            let total_rows = all_rows.len() as i64;
-            let rows: Vec<Vec<serde_json::Value>> = all_rows
-                .into_iter()
-                .take(page_size.max(0) as usize)
-                .collect();
-            Ok(StatementOutcome::Set(QueryResult {
-                columns,
-                rows,
-                total_rows,
-                page,
-                page_size,
-                execution_time_ms: None,
-            }))
+    let off = page_offset(page, page_size);
+    match plan_page(ReadOnlyEngine::Sqlite, stmt) {
+        PagePlan::Paged { statement } => Ok(StatementOutcome::Set(execute_sqlite_page(
+            conn, &statement, page, page_size, off,
+        )?)),
+        PagePlan::Verbatim { sql } => {
+            // What the statement *is* decides how it runs — never a trial run.
+            // `prepare` is a description-only step, so a write is not executed
+            // to discover whether it returns rows (`conn.execute` on a SELECT
+            // would step it once, and the retry that followed would run it
+            // again).
+            let mut prepared = conn.prepare(&sql).map_err(|e| sqlite_error_text(&e))?;
+            if prepared.column_count() > 0 {
+                let (columns, all_rows) = collect_sqlite_rows(&mut prepared)?;
+                return Ok(StatementOutcome::Set(verbatim_result(
+                    columns, all_rows, page, page_size, off,
+                )));
+            }
+            drop(prepared);
+            let n = conn.execute(&sql, []).map_err(|e| sqlite_error_text(&e))?;
+            Ok(StatementOutcome::Notice {
+                kind: if statement_kind(stmt) == "ddl" {
+                    "ddl"
+                } else {
+                    "dml"
+                },
+                text: format!("OK — {n} rows affected"),
+                affected: Some(n as i64),
+            })
         }
-        Err(rusqlite::Error::SqliteFailure(e, _))
-            if e.code == rusqlite::ErrorCode::OperationInterrupted =>
-        {
-            Err("Query cancelled".to_string())
-        }
-        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -1072,137 +1291,81 @@ pub(crate) async fn execute_pg_statement(
     page_size: i64,
 ) -> Result<StatementOutcome, String> {
     let trimmed = stmt.trim();
-    let off = (page.saturating_sub(1).max(0)) * page_size;
+    let off = page_offset(page, page_size);
 
-    // 1. Try wrapped pagination — a parse error here executes nothing.
-    let wrapped_count = format!("SELECT COUNT(*) FROM ({}) AS _gridline_cnt", trimmed);
-    if let Ok(row) = client.query_one(&wrapped_count, &[]).await {
-        let total_rows: i64 = row.get(0);
-        let wrapped_data = format!(
-            "SELECT * FROM ({}) AS _gridline_data LIMIT $1 OFFSET $2",
-            trimmed
-        );
-        let data_rows = client
-            .query(&wrapped_data, &[&page_size, &off])
-            .await
-            .map_err(|e| {
-                if is_pg_cancel_error(&e) {
-                    "Query cancelled".to_string()
-                } else {
-                    format!("{e}")
+    match plan_page(ReadOnlyEngine::PostgreSql, trimmed) {
+        // A paging-safe statement runs once, wrapped: the page and its column
+        // description come from that one execution.
+        PagePlan::Paged { statement } => Ok(StatementOutcome::Set(
+            execute_pg_page(client, &statement, page, page_size, off).await?,
+        )),
+        // Everything else runs once, verbatim, via simple_query — which also
+        // captures the CommandComplete tag so DML notices carry affected counts.
+        PagePlan::Verbatim { sql } => {
+            let messages = client
+                .simple_query(&sql)
+                .await
+                .map_err(|e| pg_error_text(&e))?;
+
+            let mut columns: Vec<ColumnInfo> = Vec::new();
+            let mut all_rows: Vec<Vec<serde_json::Value>> = Vec::new();
+            let mut last_tag: Option<String> = None;
+            for msg in messages {
+                match msg {
+                    tokio_postgres::SimpleQueryMessage::Row(row) => {
+                        if columns.is_empty() {
+                            columns = row
+                                .columns()
+                                .iter()
+                                .map(|c| ColumnInfo {
+                                    name: c.name().to_string(),
+                                    data_type: "text".to_string(),
+                                    is_nullable: true,
+                                    is_pk: false,
+                                    is_fk: false,
+                                    fk_ref: None,
+                                    default_value: None,
+                                    editable: true,
+                                    is_generated: false,
+                                    is_unique: false,
+                                    is_auto_increment: false,
+                                })
+                                .collect();
+                        }
+                        let values: Vec<serde_json::Value> = (0..row.len())
+                            .map(|i| match row.try_get::<usize>(i) {
+                                Ok(Some(s)) => serde_json::Value::String(s.to_string()),
+                                _ => serde_json::Value::Null,
+                            })
+                            .collect();
+                        all_rows.push(values);
+                    }
+                    tokio_postgres::SimpleQueryMessage::CommandComplete(tag) => {
+                        last_tag = Some(tag.to_string());
+                    }
+                    _ => {}
                 }
-            })?;
-        let columns: Vec<ColumnInfo> = match data_rows.first() {
-            Some(first) => first
-                .columns()
-                .iter()
-                .map(|c| ColumnInfo {
-                    name: c.name().to_string(),
-                    data_type: format!("{:?}", c.type_()),
-                    is_nullable: true,
-                    is_pk: false,
-                    is_fk: false,
-                    fk_ref: None,
-                    default_value: None,
-                    editable: true,
-                    is_generated: false,
-                })
-                .collect(),
-            None => Vec::new(),
-        };
-        let rows: Vec<Vec<serde_json::Value>> = data_rows
-            .iter()
-            .map(|row| {
-                (0..row.len())
-                    .map(|i| crate::commands::db_viewer::pg_value_to_json(row, i))
-                    .collect()
-            })
-            .collect();
-        return Ok(StatementOutcome::Set(QueryResult {
-            columns,
-            rows,
-            total_rows,
-            page,
-            page_size,
-            execution_time_ms: None,
-        }));
-    }
-
-    // 2. Raw single-statement execution via simple_query (captures the
-    //    CommandComplete tag so DML notices carry affected counts).
-    let messages = client.simple_query(trimmed).await.map_err(|e| {
-        if is_pg_cancel_error(&e) {
-            "Query cancelled".to_string()
-        } else {
-            crate::commands::db_viewer::pg_error_message(&e)
-        }
-    })?;
-
-    let mut columns: Vec<ColumnInfo> = Vec::new();
-    let mut all_rows: Vec<Vec<serde_json::Value>> = Vec::new();
-    let mut last_tag: Option<String> = None;
-    for msg in messages {
-        match msg {
-            tokio_postgres::SimpleQueryMessage::Row(row) => {
-                if columns.is_empty() {
-                    columns = row
-                        .columns()
-                        .iter()
-                        .map(|c| ColumnInfo {
-                            name: c.name().to_string(),
-                            data_type: "text".to_string(),
-                            is_nullable: true,
-                            is_pk: false,
-                            is_fk: false,
-                            fk_ref: None,
-                            default_value: None,
-                            editable: true,
-                            is_generated: false,
-                        })
-                        .collect();
-                }
-                let values: Vec<serde_json::Value> = (0..row.len())
-                    .map(|i| match row.try_get::<usize>(i) {
-                        Ok(Some(s)) => serde_json::Value::String(s.to_string()),
-                        _ => serde_json::Value::Null,
-                    })
-                    .collect();
-                all_rows.push(values);
             }
-            tokio_postgres::SimpleQueryMessage::CommandComplete(tag) => {
-                last_tag = Some(tag.to_string());
+
+            if all_rows.is_empty() {
+                let tag = last_tag.clone().unwrap_or_else(|| "OK".to_string());
+                let affected = last_tag.as_deref().and_then(affected_from_tag);
+                return Ok(StatementOutcome::Notice {
+                    kind: if statement_kind(stmt) == "ddl" {
+                        "ddl"
+                    } else {
+                        "dml"
+                    },
+                    text: tag,
+                    affected,
+                });
             }
-            _ => {}
+
+            Ok(StatementOutcome::Set(verbatim_result(
+                columns, all_rows, page, page_size, off,
+            )))
         }
     }
-
-    if all_rows.is_empty() {
-        let tag = last_tag.clone().unwrap_or_else(|| "OK".to_string());
-        let affected = last_tag.as_deref().and_then(affected_from_tag);
-        return Ok(StatementOutcome::Notice {
-            kind: if statement_kind(stmt) == "ddl" {
-                "ddl"
-            } else {
-                "dml"
-            },
-            text: tag,
-            affected,
-        });
-    }
-
-    let total_rows = all_rows.len() as i64;
-    let rows: Vec<Vec<serde_json::Value>> = all_rows
-        .into_iter()
-        .take(page_size.max(0) as usize)
-        .collect();
-    Ok(StatementOutcome::Set(QueryResult {
-        columns,
-        rows,
-        total_rows,
-        page,
-        page_size,
-        execution_time_ms: None,
-    }))
 }
 
 pub(crate) async fn run_pg_statements(
@@ -1245,75 +1408,32 @@ async fn execute_mysql_statement_on(
     page_size: i64,
 ) -> Result<StatementOutcome, String> {
     let trimmed = stmt.trim();
-    let off = (page.saturating_sub(1).max(0)) * page_size;
+    let off = page_offset(page, page_size);
 
-    let total_rows: i64 = match sqlx::query_scalar::<_, i64>(&mysql_wrap_count(trimmed))
-        .fetch_one(&mut *conn)
-        .await
-    {
-        Ok(n) => n,
-        Err(e) if is_mysql_cancel_error(&e) => return Err("Query cancelled".to_string()),
-        Err(_) => {
-            return execute_mysql_raw(conn, trimmed, page, page_size, off)
-                .await
-                .map(|qr| {
-                    if qr.columns.is_empty() {
-                        StatementOutcome::Notice {
-                            kind: if statement_kind(stmt) == "ddl" {
-                                "ddl"
-                            } else {
-                                "dml"
-                            },
-                            text: "OK".to_string(),
-                            affected: None,
-                        }
+    match plan_page(ReadOnlyEngine::MySql, trimmed) {
+        PagePlan::Paged { statement } => Ok(StatementOutcome::Set(
+            execute_mysql_page(conn, &statement, page, page_size, off).await?,
+        )),
+        PagePlan::Verbatim { sql } => {
+            // No count probe and no retry: a statement that cannot be a derived
+            // table runs once, and its (empty) column list is what says it was a
+            // DML/DDL notice rather than a result set.
+            let qr = execute_mysql_raw(conn, &sql, page, page_size, off).await?;
+            if qr.columns.is_empty() {
+                Ok(StatementOutcome::Notice {
+                    kind: if statement_kind(stmt) == "ddl" {
+                        "ddl"
                     } else {
-                        StatementOutcome::Set(qr)
-                    }
-                });
+                        "dml"
+                    },
+                    text: "OK".to_string(),
+                    affected: None,
+                })
+            } else {
+                Ok(StatementOutcome::Set(qr))
+            }
         }
-    };
-
-    let data_rows = match sqlx::query(&mysql_wrap_data(trimmed))
-        .bind(page_size)
-        .bind(off)
-        .fetch_all(&mut *conn)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) if is_mysql_cancel_error(&e) => return Err("Query cancelled".to_string()),
-        Err(e) => return Err(crate::commands::db_viewer::sanitize_error(&format!("{e}"))),
-    };
-    let columns: Vec<ColumnInfo> = match data_rows.first() {
-        Some(first) => first
-            .columns()
-            .iter()
-            .map(|c| ColumnInfo {
-                name: c.name().to_string(),
-                data_type: c.type_info().to_string(),
-                is_nullable: true,
-                is_pk: false,
-                is_fk: false,
-                fk_ref: None,
-                default_value: None,
-                editable: true,
-                is_generated: false,
-            })
-            .collect(),
-        None => Vec::new(),
-    };
-    let rows: Vec<Vec<serde_json::Value>> = data_rows
-        .iter()
-        .map(|r| (0..r.len()).map(|i| mysql_cell_to_json(r, i)).collect())
-        .collect();
-    Ok(StatementOutcome::Set(QueryResult {
-        columns,
-        rows,
-        total_rows,
-        page,
-        page_size,
-        execution_time_ms: None,
-    }))
+    }
 }
 
 async fn run_mysql_statements(
@@ -1369,11 +1489,34 @@ pub async fn execute_query_multi(
     page_size: Option<i64>,
     state: State<'_, crate::AppState>,
 ) -> Result<MultiQueryResult, String> {
+    execute_query_multi_inner(
+        &state.pool_manager,
+        &state.db_store,
+        &state.cancel_registry,
+        &connection_id,
+        &query,
+        page,
+        page_size,
+    )
+    .await
+}
+
+/// Headless core of `execute_query_multi` (thin-command principle — no Tauri
+/// `State`), so the tool-job seam tests can drive it directly.
+pub(crate) async fn execute_query_multi_inner(
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    db_store: &std::sync::Mutex<crate::store::Store>,
+    cancel_registry: &crate::cancel::CancelRegistry,
+    connection_id: &str,
+    query: &str,
+    page: Option<i64>,
+    page_size: Option<i64>,
+) -> Result<MultiQueryResult, String> {
     let start = Instant::now();
     let p = page.unwrap_or(1);
     let ps = page_size.unwrap_or(50);
 
-    let statements = crate::db::sql_split::split_statements(&query);
+    let statements = crate::db::sql_split::split_statements(query);
     if statements.is_empty() {
         return Err("Query cannot be empty".to_string());
     }
@@ -1382,18 +1525,25 @@ pub async fn execute_query_multi(
     let mut result_sets: Vec<QueryResult> = Vec::new();
     let mut notices: Vec<StatementNotice> = Vec::new();
 
+    // `acquire_handle` takes the registry lock, clones the handle and drops the
+    // guard before returning: a long script on one connection cannot block
+    // another connection's commands.
+    let db_handle = crate::db::pool::acquire_handle(pool_manager, connection_id).await?;
     let err_text: Option<String>;
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Postgresql(client, _)) => {
+    match db_handle {
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
             err_text =
-                run_pg_statements(client, &statements, p, ps, &mut result_sets, &mut notices).await;
+                run_pg_statements(&client, &statements, p, ps, &mut result_sets, &mut notices)
+                    .await;
         }
-        Some(DbHandle::Sqlite(conn)) => {
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
             err_text =
-                run_sqlite_statements(conn, &statements, p, ps, &mut result_sets, &mut notices);
+                run_sqlite_statements(&conn, &statements, p, ps, &mut result_sets, &mut notices);
         }
-        Some(DbHandle::MySql(pool)) => {
+        DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
             let mut conn = pool
                 .acquire()
                 .await
@@ -1405,12 +1555,11 @@ pub async fn execute_query_multi(
                 ps,
                 &mut result_sets,
                 &mut notices,
-                &state.cancel_registry,
-                &connection_id,
+                cancel_registry,
+                connection_id,
             )
             .await;
         }
-        None => return Err("Connection not found".to_string()),
     }
 
     let elapsed = start.elapsed().as_millis() as i64;
@@ -1421,10 +1570,10 @@ pub async fn execute_query_multi(
     let history_id = Uuid::new_v4().to_string();
     if let Some(e) = &err_text {
         insert_history(
-            &state.db_store,
+            db_store,
             &history_id,
-            &connection_id,
-            &query,
+            connection_id,
+            query,
             Some(elapsed),
             Some(row_count),
             "error",
@@ -1432,10 +1581,10 @@ pub async fn execute_query_multi(
         );
     } else {
         insert_history(
-            &state.db_store,
+            db_store,
             &history_id,
-            &connection_id,
-            &query,
+            connection_id,
+            query,
             Some(elapsed),
             Some(row_count),
             "success",
@@ -1542,9 +1691,8 @@ pub async fn execute_query(
 ) -> Result<QueryResult, String> {
     let p = page.unwrap_or(1);
     let ps = page_size.unwrap_or(50);
-    let mut pm = state.pool_manager.lock().await;
     execute_query_inner(
-        &mut pm,
+        &state.pool_manager,
         &state.db_store,
         &state.cancel_registry,
         &connection_id,
@@ -1568,8 +1716,21 @@ pub async fn cancel_query(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
+    cancel_query_inner(&state.cancel_registry, &connection_id).await
+}
+
+/// Headless cancellation dispatch.
+///
+/// It reads the process-wide [`crate::cancel::CancelRegistry`] and nothing else:
+/// no pool registry lock, no per-connection handle. Cancellation therefore stays
+/// deliverable while a long query or export holds its connection, which is why
+/// neither of those may ever be part of this path.
+pub(crate) async fn cancel_query_inner(
+    cancel_registry: &crate::cancel::CancelRegistry,
+    connection_id: &str,
+) -> Result<(), String> {
     use sqlx::ConnectOptions;
-    match state.cancel_registry.get(&connection_id) {
+    match cancel_registry.get(connection_id) {
         Some(crate::cancel::CancelHandle::Pg(pg)) => {
             // A Verify/Require decision always carries a built rustls config,
             // so the unwrap on the non-Disable branch is safe by construction.
@@ -1590,7 +1751,7 @@ pub async fn cancel_query(
             // Record the request before the KILL lands: the in-process restore
             // engine polls this flag between statements, and the killed
             // statement's error is the only other signal.
-            state.cancel_registry.mark_cancelled(&connection_id);
+            cancel_registry.mark_cancelled(connection_id);
             let id = m
                 .conn_id
                 .ok_or_else(|| "No active query on this connection".to_string())?;
@@ -1599,7 +1760,7 @@ pub async fn cancel_query(
                 .connect()
                 .await
                 .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
-            sqlx::query(&format!("KILL QUERY {id}"))
+            sqlx::query(sqlx::AssertSqlSafe(format!("KILL QUERY {id}")))
                 .execute(&mut c)
                 .await
                 .map_err(|e| crate::commands::db_viewer::sanitize_error(&format!("{e}")))?;
@@ -1714,7 +1875,7 @@ mod tests {
             [],
         )
         .unwrap();
-        Mutex::new(Store::from_connection(conn))
+        Mutex::new(Store::from_connection(conn).expect("test store"))
     }
 
     /// Open an in‑memory SQLite database and return a DbHandle.
@@ -1727,7 +1888,7 @@ mod tests {
              INSERT INTO users VALUES (3, 'Charlie', 'charlie@example.com');",
         )
         .unwrap();
-        DbHandle::Sqlite(conn)
+        DbHandle::sqlite(conn)
     }
 
     /// Open an in‑memory SQLite database for CTE testing.
@@ -1742,7 +1903,7 @@ mod tests {
              INSERT INTO items VALUES (5, 50);",
         )
         .unwrap();
-        DbHandle::Sqlite(conn)
+        DbHandle::sqlite(conn)
     }
 
     // ------------------------------------------------------------------
@@ -1786,7 +1947,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.total_rows, 3);
+        // A paged request executes the statement once, so the exact total is
+        // unknown; `has_more` is exact because one row past the page is fetched
+        // in that same execution.
+        assert_eq!(result.total_rows, None);
+        assert!(result.has_more);
         assert_eq!(result.rows.len(), 2);
         assert_eq!(result.rows[0][1], serde_json::json!("Alice"));
         assert_eq!(result.rows[1][1], serde_json::json!("Bob"));
@@ -1802,7 +1967,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result2.total_rows, 3);
+        assert_eq!(result2.total_rows, None);
+        assert!(!result2.has_more, "the last page has nothing after it");
         assert_eq!(result2.rows.len(), 1);
         assert_eq!(result2.rows[0][1], serde_json::json!("Charlie"));
     }
@@ -1812,20 +1978,25 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn cte_falls_back_to_raw_execution() {
+    fn explain_runs_verbatim_with_client_side_paging() {
         let _store = test_store();
         let conn = test_sqlite_cte_handle();
 
-        // EXPLAIN cannot be wrapped in a subquery:
-        // SELECT * FROM (EXPLAIN SELECT ...) is a syntax error.
-        // This forces the fallback to raw execution.
+        // EXPLAIN cannot be a derived table
+        // (`SELECT * FROM (EXPLAIN SELECT ...)` is a syntax error), so its
+        // shape plans a verbatim execution — decided before running, never by
+        // trying the wrapper and retrying after it fails.
         let query = "EXPLAIN SELECT * FROM items WHERE val > 20";
 
         let result = execute_sqlite_query(&unwrap_sqlite(&conn), query, 1, 10).unwrap();
 
-        // Should fall back to raw — all rows fetched, client‑slice.
+        // Verbatim: every row is fetched and the page is a client-side slice,
+        // so this single execution also reveals the exact total.
         // EXPLAIN returns rows (addr, opcode, p1, p2, p3, p4, p5, comment).
-        assert!(result.total_rows > 0, "EXPLAIN should return rows");
+        assert!(
+            result.total_rows.unwrap_or_default() > 0,
+            "EXPLAIN should return rows"
+        );
         assert!(result.rows.len() <= 10, "page_size should limit rows");
         assert_eq!(result.columns.len(), 8, "EXPLAIN has 8 columns");
     }
@@ -1910,7 +2081,7 @@ mod tests {
         use crate::models::ConnectionInput;
         let conn = SqliteConnection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
-        let store = Mutex::new(Store::from_connection(conn));
+        let store = Mutex::new(Store::from_connection(conn).expect("test store"));
         let sc2 = store
             .lock()
             .unwrap()
@@ -1976,9 +2147,9 @@ mod tests {
     // Helper: unwrap a DbHandle::Sqlite to get the connection reference
     // ------------------------------------------------------------------
 
-    fn unwrap_sqlite(handle: &DbHandle) -> &SqliteConnection {
+    fn unwrap_sqlite(handle: &DbHandle) -> tokio::sync::MutexGuard<'_, SqliteConnection> {
         match handle {
-            DbHandle::Sqlite(conn) => conn,
+            DbHandle::Sqlite(conn) => conn.try_lock().expect("sqlite connection is free"),
             _ => panic!("Expected Sqlite handle"),
         }
     }
@@ -1993,12 +2164,6 @@ mod tests {
         let q = mysql_wrap_data("SELECT * FROM t");
         assert!(q.contains("LIMIT ? OFFSET ?"));
         assert!(q.contains("AS _gridline_data"));
-    }
-
-    #[test]
-    fn mysql_wrapped_count_shape_uses_subquery_alias() {
-        let q = mysql_wrap_count("SELECT * FROM t");
-        assert_eq!(q, "SELECT COUNT(*) FROM (SELECT * FROM t) AS _gridline_cnt");
     }
 
     // ------------------------------------------------------------------
@@ -2122,7 +2287,7 @@ mod tests {
         });
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let mut killer = opts.connect().await.expect("killer connect");
-        sqlx::query(&format!("KILL QUERY {conn_id}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("KILL QUERY {conn_id}")))
             .execute(&mut killer)
             .await
             .expect("kill");
@@ -2137,4 +2302,6 @@ mod tests {
 
 #[cfg(test)]
 #[path = "query.test.rs"]
-mod query_tests;
+// `pub(crate)` so the other MySQL/MariaDB test modules reuse the one
+// live-server gate instead of each re-reading the env vars.
+pub(crate) mod query_tests;

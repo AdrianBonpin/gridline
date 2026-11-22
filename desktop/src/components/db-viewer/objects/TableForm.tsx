@@ -88,6 +88,12 @@ interface TableFormColumn {
     params?: string;
     auto_increment?: boolean;
     unique?: boolean;
+    /**
+     * The live column this row represents in edit mode (undefined for a row the
+     * user just added). Column Identity lives here, not in the row's position:
+     * only a row with an `original_name` whose name changed is a rename.
+     */
+    original_name?: string | null;
     /** transient: true when a FK was just assigned to this column */
     fk?: boolean;
 }
@@ -98,8 +104,16 @@ interface SqlColumn {
     nullable: boolean;
     default: string | null;
     is_pk: boolean;
-    unique?: boolean;
-    auto_increment?: boolean;
+    /**
+     * Always sent, never omitted: the backend column models are strict
+     * (`SqliteColumn` requires `unique` and `auto_increment`, and PostgreSQL's
+     * `TableColumn` reads `unique` as an explicit tri-state), so a payload that
+     * drops a falsy field fails to deserialize instead of meaning "false".
+     */
+    unique: boolean;
+    auto_increment: boolean;
+    /** Explicit rename intent: the live column name this entry replaces. */
+    renamed_from?: string;
 }
 
 interface TableFormAction {
@@ -115,6 +129,19 @@ interface TableFormParams {
     name: string;
     action: TableFormAction;
 }
+
+/**
+ * The editor's knowledge of whether this submission may be staged.
+ *
+ * `checking` and `failed` are first-class states, not "no refusal": a guard
+ * whose answer is unknown must hold the submission, never wave it through.
+ */
+type ReadinessState =
+    | { status: "idle" }
+    | { status: "checking" }
+    | { status: "ok" }
+    | { status: "blocked"; reasons: string }
+    | { status: "failed"; message: string };
 
 function toSqlColumn(
     c: TableFormColumn,
@@ -132,17 +159,25 @@ function toSqlColumn(
     if (c.params && c.params.trim()) {
         type = `${type}(${c.params.trim()})`;
     }
+    // Every required field is emitted, falsy or not. The backend models are
+    // strict (`db::object_ddl::SqliteColumn` has no serde default on
+    // `auto_increment`/`unique`), so an omitted field is a deserialization
+    // error — and an error here used to be swallowed into "no rebuild
+    // refusal", which is the one answer this guard must never invent.
     const out: SqlColumn = {
         name: c.name,
         type,
         nullable: c.nullable,
         default: c.default,
         is_pk: c.is_pk,
-        unique: c.unique ?? undefined,
+        unique: c.unique === true,
+        auto_increment: c.auto_increment === true,
     };
-    if (dbType === "sqlite" && c.auto_increment) {
-        out.auto_increment = true;
-    }
+    // Column Identity: a rename is sent only when this row came from a live
+    // column and the user changed that row's name. A newly added row carries no
+    // `original_name`, so adding or moving a column is never read as a rename.
+    const original = c.original_name;
+    if (original && original !== c.name) out.renamed_from = original;
     return out;
 }
 
@@ -272,16 +307,52 @@ export function TableForm({
     const action = params.action;
     const mode = form.mode;
 
+    // Does this submission carry rename intent? Only a row that came from a live
+    // column and now has a different name does — see `toSqlColumn`.
+    const carriesRename = action.columns.some(
+        (c) => c.original_name !== undefined && c.original_name !== c.name,
+    );
+
+    // A set-equal column list is the rebuild shape — but only when the rebuild
+    // can actually carry what was asked. A rename keeps the name SET unchanged
+    // (`a→b` with `b→a` is a permutation), so it used to fall through here and
+    // the rebuild's identity copy (`INSERT INTO tmp (b, a) SELECT b, a FROM
+    // original`) silently dropped both renames: the table came back with the old
+    // names and nothing said so. PostgreSQL re-creates the preserved
+    // constraints/indexes/FKs from definitions that still name the old columns,
+    // so a rebuild genuinely cannot carry a rename there — the edit path can
+    // (`ALTER TABLE ... RENAME COLUMN`), and it refuses a swap with a reason
+    // when one pass cannot express it. SQLite's rebuild DOES carry renames (it
+    // copies each new column from its `renamed_from` source and rewrites the
+    // stored index/trigger text), so it keeps the path — provided the payload is
+    // converted (see `rebuildColumns`).
+    const rebuildCanCarryThis = dbType === "sqlite" || !carriesRename;
+
     const isRebuild =
         mode === "edit" &&
         action.old_columns !== undefined &&
+        rebuildCanCarryThis &&
         sameColumnNames(action.columns, action.old_columns) &&
         namesInOrder(action.columns) !== namesInOrder(action.old_columns);
+
+    // The column model a rebuild must be asked with.
+    //
+    // The form's own rows carry rename intent as `original_name`; the backend
+    // structs read `renamed_from`, and only `toSqlColumn` produces it. Sending
+    // the raw rows is what made a SQLite permutation rename a silent no-op: the
+    // script builder received `renamed_from: null` for every column, so its copy
+    // fell back to an identity `SELECT` and the renames were never applied. The
+    // readiness check below already converts this way, and so does the edit
+    // path — the rebuild call was the one place that did not.
+    const rebuildColumns = useMemo(
+        () => action.columns.map((c) => toSqlColumn(c, "edit", dbType)),
+        [action.columns, dbType],
+    );
 
     const [view, setView] = useState<"visual" | "sql">("visual");
     const [preview, setPreview] = useState("");
     const [error, setError] = useState<string | null>(null);
-    const [refusal, setRefusal] = useState<string | null>(null);
+    const [readiness, setReadiness] = useState<ReadinessState>({ status: "idle" });
     const [staging, setStaging] = useState(false);
 
     const [fkPanel, setFkPanel] = useState<{
@@ -309,24 +380,63 @@ export function TableForm({
         }
     }, [dbType, params.schema]);
 
-    // Rebuild readiness check
+    // Rebuild readiness check.
+    //
+    // A SQLite edit asks with the columns it is about to stage, so the backend
+    // answers the question the editor actually has: would *this* submission
+    // need a rebuild, and can that rebuild be faithful? A PostgreSQL reorder is
+    // always a rebuild, so it asks about the live table.
+    //
+    // The guard fails closed. A rebuild drops and recreates the table, so "I
+    // could not tell whether this is safe" must never be reported as "safe": an
+    // unanswered check keeps Stage disabled and says why, both when the backend
+    // refuses and when the question could not be asked at all.
+    const sqliteEdit = mode === "edit" && dbType === "sqlite";
+    const readinessApplies = isRebuild || sqliteEdit;
     useEffect(() => {
-        if (!isRebuild) {
-            setRefusal(null);
+        if (!readinessApplies) {
+            setReadiness({ status: "idle" });
             return;
         }
         let active = true;
-        cmd.getTableRebuildReadiness(connectionId, params.schema, params.name)
+        setReadiness({ status: "checking" });
+        const proposed = sqliteEdit
+            ? action.columns.map((c) => toSqlColumn(c, "edit", dbType))
+            : undefined;
+        cmd.getTableRebuildReadiness(connectionId, params.schema, params.name, proposed)
             .then((r) => {
-                if (active) setRefusal(r.ok ? null : r.reasons.join("; "));
+                if (!active) return;
+                setReadiness(
+                    r.ok
+                        ? { status: "ok" }
+                        : { status: "blocked", reasons: r.reasons.join("; ") },
+                );
             })
-            .catch(() => {
-                if (active) setRefusal(null);
+            .catch((e: unknown) => {
+                if (!active) return;
+                setReadiness({
+                    status: "failed",
+                    message: e instanceof Error ? e.message : String(e),
+                });
             });
         return () => {
             active = false;
         };
-    }, [isRebuild, connectionId, params.schema, params.name]);
+    }, [
+        readinessApplies,
+        sqliteEdit,
+        connectionId,
+        params.schema,
+        params.name,
+        action.columns,
+        dbType,
+    ]);
+
+    const refusal = readiness.status === "blocked" ? readiness.reasons : null;
+    const readinessFailed =
+        readiness.status === "failed" ? readiness.message : null;
+    // Nothing may be staged while a rebuild is possible and unanswered.
+    const readinessBlocks = readinessApplies && readiness.status !== "ok";
 
     // Edit mode: mark columns that participate in FKs (from the constraint list).
     useEffect(() => {
@@ -364,7 +474,7 @@ export function TableForm({
                   connectionId,
                   params.schema,
                   params.name,
-                  action.columns,
+                  rebuildColumns,
               )
             : cmd.buildObjectDdl(
                   connectionId,
@@ -398,6 +508,8 @@ export function TableForm({
         params.schema,
         params.name,
         createFks,
+        // Stable per column list (`useMemo`), so this cannot loop.
+        rebuildColumns,
     ]);
 
     const patchColumns = (cols: TableFormColumn[]) =>
@@ -449,13 +561,29 @@ export function TableForm({
         setStaging(true);
         setError(null);
         try {
+            if (isRebuild || sqliteEdit) {
+                // Fail closed: only a completed, permissive readiness answer may
+                // reach the rebuild path.
+                if (readiness.status === "checking") {
+                    setError(
+                        "The rebuild safety check is still running — nothing is staged until it answers",
+                    );
+                    return;
+                }
+                if (readiness.status === "failed") {
+                    setError(
+                        `The rebuild safety check could not run (${readiness.message}), so nothing is staged`,
+                    );
+                    return;
+                }
+                if (readiness.status === "blocked") return;
+            }
             if (isRebuild) {
-                if (refusal) return;
                 const sql = await cmd.buildRebuildScript(
                     connectionId,
                     params.schema,
                     params.name,
-                    action.columns,
+                    rebuildColumns,
                 );
                 useDbViewerStore.getState().addChange({
                     type: "rebuild_table",
@@ -582,8 +710,12 @@ export function TableForm({
                     <button
                         type="button"
                         onClick={stage}
+                        data-testid="table-form-stage"
                         disabled={
-                            !!error || !!refusal || staging || cols.length === 0
+                            !!error ||
+                            readinessBlocks ||
+                            staging ||
+                            cols.length === 0
                         }
                         className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                     >
@@ -597,10 +729,33 @@ export function TableForm({
                 style={{ overscrollBehavior: "none" }}
             >
                 {refusal && (
-                    <div className="border-b border-border px-4 py-2">
+                    <div
+                        className="border-b border-border px-4 py-2"
+                        data-testid="rebuild-refusal"
+                    >
                         <p className="text-xs text-amber-400">
-                            Cannot reorder: {refusal}. Use the Query tab with
-                            pg_dump for these tables.
+                            Rebuild blocked — {refusal}. Nothing will be
+                            staged, so the table and its data stay as they are.
+                        </p>
+                    </div>
+                )}
+
+                {/*
+                 * A readiness probe that could not run is its own visible
+                 * state, distinct from a named blocker: the guard cannot vouch
+                 * for the rebuild, so it holds the submission instead of
+                 * silently reporting "no refusal".
+                 */}
+                {readinessFailed && (
+                    <div
+                        className="border-b border-border px-4 py-2"
+                        data-testid="rebuild-readiness-error"
+                        role="alert"
+                    >
+                        <p className="text-xs text-red-400">
+                            Rebuild safety check failed — {readinessFailed}.
+                            Nothing will be staged, because a rebuild this
+                            editor cannot verify is never applied.
                         </p>
                     </div>
                 )}

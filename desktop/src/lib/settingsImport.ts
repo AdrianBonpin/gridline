@@ -10,6 +10,21 @@ const FONT_SIZES = ["small", "medium", "large"];
 const FONT_FAMILIES = ["Space Mono", "Fira Code", "Menlo", "Monaco", "Consolas", "JetBrains Mono", "monospace"];
 const WORD_WRAPS = ["off", "on"];
 
+/**
+ * Bounds of the table page size, mirroring the backend.
+ *
+ * `commands/db_viewer.rs` (`MAX_TABLE_PAGE_SIZE`) rejects a page size outside
+ * `1..=500` instead of clamping it, because the page window reaches the generated
+ * `LIMIT`/`OFFSET`. An imported settings file is untrusted input on its own, so
+ * it is clamped into that range here — and the clamped document is what gets
+ * imported (`GeneralSettingsTab` sends `r.settings`, never the raw file).
+ * `commands/settings.rs` (`validate_imported_settings`) enforces the same range
+ * again at the IPC boundary, so a renderer that skips this cannot store a page
+ * size that breaks every browse.
+ */
+const TABLE_PAGE_SIZE_MIN = 1;
+const TABLE_PAGE_SIZE_MAX = 500;
+
 function clamp(n: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, n)); }
 
 export function validateSettingsExport(input: unknown): ValidationResult {
@@ -39,7 +54,8 @@ export function validateSettingsExport(input: unknown): ValidationResult {
   if (typeof s.editor_minimap === "boolean") out.editor_minimap = s.editor_minimap;
   else errors.push({ field: "editor_minimap", message: "must be boolean" });
 
-  if (typeof s.table_page_size === "number" && s.table_page_size > 0) out.table_page_size = Math.trunc(s.table_page_size);
+  if (typeof s.table_page_size === "number" && s.table_page_size > 0)
+    out.table_page_size = clamp(Math.trunc(s.table_page_size), TABLE_PAGE_SIZE_MIN, TABLE_PAGE_SIZE_MAX);
   else errors.push({ field: "table_page_size", message: "must be positive" });
   if (typeof s.table_refresh_rate === "number" && s.table_refresh_rate >= 0) out.table_refresh_rate = s.table_refresh_rate;
   else errors.push({ field: "table_refresh_rate", message: "must be non-negative" });

@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
 import tauriConf from "../../src-tauri/tauri.conf.json";
 
-describe("tauri bundle config (v0.8.4)", () => {
+// The version number itself is asserted once, in version.test.ts (which reads
+// this file among every other version statement); this file covers the bundle
+// configuration around it.
+describe("tauri bundle config", () => {
   it("declares bundled pg_tools resources", () => {
     expect(tauriConf.bundle.resources).toContain("resources/pg_tools/*");
-  });
-  it("version is 0.8.4", () => {
-    expect(tauriConf.version).toBe("0.8.4");
   });
   it("declares a .sql file association with alternate rank", () => {
     const assoc = tauriConf.bundle.fileAssociations;

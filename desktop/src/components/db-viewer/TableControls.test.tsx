@@ -156,6 +156,119 @@ describe("TableControls query variant", () => {
     expect(screen.getByLabelText(/next page/i)).toBeInTheDocument();
   });
 
+  it("never arms an auto-refresh timer, even when a rate is passed in", () => {
+    vi.useFakeTimers();
+    try {
+      seed([makeTab({ tabType: "query" })], "tab-1");
+      const onRefresh = vi.fn();
+      // A query tab's text is reviewed per execution; a hidden timer re-running
+      // it would execute SQL nobody asked to run again.
+      renderControls({ variant: "query", onRefresh, defaultRefreshRate: 5000 });
+
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(onRefresh).not.toHaveBeenCalled();
+      expect(screen.queryByLabelText(/auto-refresh/i)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("routes paging through onRequestPage instead of the store when provided", () => {
+    seed(
+      [
+        makeTab({
+          tabType: "query",
+          data: { columns, rows: [[1]], total_rows: 120, page: 1, page_size: 50 },
+        }),
+      ],
+      "tab-1",
+    );
+    const onRequestPage = vi.fn();
+    renderControls({ variant: "query", onRequestPage });
+
+    fireEvent.click(screen.getByLabelText(/next page/i));
+    expect(onRequestPage).toHaveBeenCalledWith(2);
+    // The tab must not be left loading by an unguarded store-side page bump.
+    const tab = useDbViewerStore.getState().tabs.find((t) => t.id === "tab-1");
+    expect(tab?.page).toBe(1);
+    expect(tab?.loading).toBe(false);
+  });
+
+  it("reports an unknown total as unknown instead of inventing one", () => {
+    // A paged query executes its statement once, so the exact total is
+    // unavailable. The toolbar says so rather than recomputing it (which would
+    // run the statement again and repeat its side effects).
+    seed(
+      [
+        makeTab({
+          tabType: "query",
+          data: {
+            columns,
+            rows: [[1], [2]],
+            total_rows: null,
+            has_more: true,
+            page: 1,
+            page_size: 2,
+          },
+        }),
+      ],
+      "tab-1",
+    );
+    renderControls({ variant: "query", rows: [[1], [2]] });
+
+    expect(screen.getByText(/total unknown/i)).toBeInTheDocument();
+    // Page navigation stays usable: `has_more` is exact, so Next is enabled and
+    // the page label does not pretend to know the last page.
+    const next = screen.getByLabelText(/next page/i);
+    expect(next).not.toBeDisabled();
+    expect(screen.queryByText(/^1\//)).toBeNull();
+  });
+
+  it("disables Next on the last page when the total is unknown", () => {
+    seed(
+      [
+        makeTab({
+          tabType: "query",
+          page: 3,
+          data: {
+            columns,
+            rows: [[1]],
+            total_rows: null,
+            has_more: false,
+            page: 3,
+            page_size: 2,
+          },
+        }),
+      ],
+      "tab-1",
+    );
+    renderControls({ variant: "query", rows: [[1]] });
+
+    expect(screen.getByLabelText(/next page/i)).toBeDisabled();
+    expect(screen.getByLabelText(/previous page/i)).not.toBeDisabled();
+  });
+
+  it("routes page-size changes through onRequestPageSize when provided", () => {
+    seed(
+      [
+        makeTab({
+          tabType: "query",
+          data: { columns, rows: [[1]], total_rows: 120, page: 1, page_size: 50 },
+        }),
+      ],
+      "tab-1",
+    );
+    const onRequestPageSize = vi.fn();
+    renderControls({ variant: "query", onRequestPageSize });
+
+    fireEvent.change(screen.getByDisplayValue("50"), { target: { value: "100" } });
+    expect(onRequestPageSize).toHaveBeenCalledWith(100);
+    const tab = useDbViewerStore.getState().tabs.find((t) => t.id === "tab-1");
+    expect(tab?.pageSize).toBe(50);
+  });
+
   it("table variant has no queue button (moved to tab bar) and no execution time", () => {
     seed(
       [
@@ -458,5 +571,122 @@ describe("TableControls", () => {
     expect(
       st.notifications.some((n) => n.message.toLowerCase().includes("exported")),
     ).toBe(true);
+  });
+});
+describe("bulk delete stages complete Row Identities", () => {
+  // order_items (demo SQLite): composite primary key (order_id, product_id).
+  const compositeColumns = [
+    { name: "order_id", data_type: "INTEGER", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+    { name: "product_id", data_type: "INTEGER", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+    { name: "quantity", data_type: "INTEGER", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+  ];
+  // page_views (demo SQLite): no primary key; the backend appends `rowid`.
+  const noPkColumns = [
+    { name: "url", data_type: "TEXT", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    { name: "session_id", data_type: "TEXT", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+  ];
+
+  function deleteSelected() {
+    fireEvent.click(screen.getByText("Actions"));
+    fireEvent.click(screen.getByText("Delete selected rows"));
+  }
+
+  it("stages one delete per selected row, each carrying every key column", () => {
+    seed([makeTab({ data: { columns: compositeColumns, rows: [[1, 1, 2], [1, 3, 1]], total_rows: 2, page: 1, page_size: 50 } as any })], "tab-1");
+    renderControls({
+      columns: compositeColumns as any,
+      rows: [[1, 1, 2], [1, 3, 1]],
+      selectedCount: 2,
+      selectedRows: [[1, 1, 2], [1, 3, 1]],
+      dbType: "sqlite",
+    });
+    deleteSelected();
+
+    const queue = useDbViewerStore.getState().changesQueue;
+    expect(queue).toHaveLength(2);
+    expect(queue.map((c) => c.type)).toEqual(["delete", "delete"]);
+    // Sibling rows share order_id — a single-column key would delete both.
+    expect(queue.map((c) => c.primaryKey)).toEqual([
+      { order_id: 1, product_id: 1 },
+      { order_id: 1, product_id: 3 },
+    ]);
+  });
+
+  it("stages a no-PK delete against rowid and never against a displayed cell", () => {
+    seed([makeTab({ data: { columns: noPkColumns, rows: [["/products", "sess-001", 17]], total_rows: 1, page: 1, page_size: 50 } as any })], "tab-1");
+    renderControls({
+      columns: noPkColumns as any,
+      rows: [["/products", "sess-001", 17]],
+      selectedCount: 1,
+      selectedRows: [["/products", "sess-001", 17]],
+      dbType: "sqlite",
+    });
+    deleteSelected();
+
+    const queue = useDbViewerStore.getState().changesQueue;
+    expect(queue).toHaveLength(1);
+    expect(queue[0].primaryKey).toEqual({ rowid: 17 });
+    // the row locator is not data: it must not leak into the change's row data
+    expect(queue[0].oldData).toEqual({ url: "/products", session_id: "sess-001" });
+  });
+});
+
+describe("bulk copy writers emit declared columns with format-correct quoting", () => {
+  // page_views (no primary key): `rowid` is appended to every row by the
+  // backend and is not a declared column.
+  const noPkColumns = [
+    { name: "url", data_type: "TEXT", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    { name: "note", data_type: "TEXT", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+  ];
+  const nastyRow = ["/products", 'a,b"c\nQ'];
+
+  function copyAs(label: string): string {
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    Object.assign(navigator, { clipboard: { writeText } });
+    fireEvent.click(screen.getByText("Actions"));
+    fireEvent.click(screen.getByText(label));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    return writeText.mock.calls[0][0] as string;
+  }
+
+  function seedNoPkRow(row: unknown[] = nastyRow) {
+    seed([makeTab({ data: { columns: noPkColumns, rows: [row], total_rows: 1, page: 1, page_size: 50 } as any })], "tab-1");
+    renderControls({
+      table: "page_views",
+      columns: noPkColumns as any,
+      rows: [row],
+      selectedCount: 1,
+      selectedRows: [row],
+      dbType: "postgresql",
+    });
+  }
+
+  it("Copy as CSV drops the locator and quotes commas, quotes and newlines", () => {
+    seedNoPkRow([...nastyRow, 17]);
+    const csv = copyAs("Copy as CSV");
+    // RFC 4180: the comma/quote/newline cell is quoted and its quote doubled.
+    expect(csv.split("\n")).toEqual(["url,note", '/products,"a,b""c', 'Q"']);
+    expect(csv.endsWith('Q"')).toBe(true);
+    expect(csv).not.toContain("17");
+  });
+
+  it("Copy as CSV marks a NULL explicitly", () => {
+    seedNoPkRow(["/products", null, 17]);
+    expect(copyAs("Copy as CSV").split("\n")[1]).toBe("/products,NULL");
+  });
+
+  it("Copy as JSON keeps exactly the declared keys and a real null", () => {
+    seedNoPkRow(["/products", null, 17]);
+    const json = copyAs("Copy as JSON");
+    expect(JSON.parse(json)).toEqual([{ url: "/products", note: null }]);
+  });
+
+  it("Copy as SQL INSERT is replayable for every value", () => {
+    seedNoPkRow(["/products", null, 17]);
+    const sql = copyAs("Copy as SQL INSERT");
+    expect(sql).toBe(
+      'INSERT INTO "public"."page_views" ("url", "note") VALUES (\'/products\', NULL);',
+    );
+    expect(sql).not.toContain("17");
   });
 });

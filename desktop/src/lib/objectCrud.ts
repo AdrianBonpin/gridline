@@ -63,7 +63,15 @@ export interface CrudItem {
   // constraint (ConstraintInfo)
   contype?: "CHECK" | "UNIQUE" | "EXCLUSION";
   // table (columnMeta carries the snapshot for edit diffs)
-  columnMeta?: { name: string; type: string; nullable: boolean; is_pk: boolean; default: string | null }[];
+  columnMeta?: {
+    name: string;
+    type: string;
+    nullable: boolean;
+    is_pk: boolean;
+    default: string | null;
+    unique?: boolean;
+    auto_increment?: boolean;
+  }[];
   // role (RoleInfo shape used for prefill)
   superuser?: boolean;
   inherit?: boolean;
@@ -214,10 +222,17 @@ export function initialCrudParams(
         name: mode === "edit" ? item.name : "",
         action: {
           op: mode === "edit" ? "edit" : "create",
+          // Column Identity: each row remembers the live column it came from,
+          // so a name the user later edits is an explicit rename and a row they
+          // add is not.
           columns: mode === "edit"
             ? (item.columnMeta ?? []).map((c) => ({
                 name: c.name, type: c.type, nullable: c.nullable,
                 default: c.default ?? null, is_pk: c.is_pk,
+                // Explicit booleans: the backend column models are strict, so an
+                // omitted field is a deserialization error, not `false`.
+                unique: c.unique === true, auto_increment: c.auto_increment === true,
+                original_name: c.name,
               }))
             : [],
           old_columns: mode === "edit" ? (item.columnMeta ?? []) : undefined,

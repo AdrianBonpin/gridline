@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, RestoreOptions, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreOptions, SqliteBackupOptions, SqliteRestoreOptions, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult, PendingSqlFile } from "./types";
+import type { ChangeOrigin } from "./changeOrigin";
+import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, PgRestoreRequest, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreRequest, SqliteRestoreRequest, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult, PendingSqlFile, HostKeyFingerprint, SshHostTrustState, ImportSource } from "./types";
+import type { FileGrant, FileGrantRequest } from "./fileGrant";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
 import type { ChangePayload } from "./changePayload";
 import type { DiffReport } from "./types";
@@ -36,9 +38,14 @@ export async function updateTag(id: string, input: TagInput): Promise<Tag> { ret
 export async function getSettings(): Promise<Settings> { return invoke<Settings>("get_settings"); }
 export async function updateSetting(key: string, value: string): Promise<void> { return invoke<void>("update_setting", { key, value }); }
 export async function importConnections(json: string): Promise<ImportResult> { return invoke<ImportResult>("import_connections", { json }); }
-export async function exportConnections(): Promise<string> { return invoke<string>("export_connections"); }
 export async function testConnection(input: ConnectionInput): Promise<ConnectionTestResult> {
   return invoke<ConnectionTestResult>("test_connection", { config: input });
+}
+
+/** Create a new SQLite database file. Explicit user action only: testing a
+ *  SQLite connection never creates the file. */
+export async function createSqliteDatabase(path: string): Promise<void> {
+  return invoke<void>("create_sqlite_database", { path });
 }
 
 // ─── Keychain ──────────────────────────────────────────────────
@@ -53,6 +60,24 @@ export async function getConnectionPassword(connectionId: string): Promise<strin
 
 export async function deleteConnectionPassword(connectionId: string): Promise<void> {
   return invoke<void>("delete_connection_password", { connectionId });
+}
+
+// ─── Session-only credentials (keychain persistence off) ──────
+//
+// Tool jobs (`pg_dump`, `pg_restore`, `psql`, `mariadb-dump`) and DDL copy run
+// in Rust and cannot read the renderer's session map. The password entered for
+// a keychain-off connection is handed to backend memory here; it is never
+// persisted to the OS keychain, the local store, or a log line.
+
+export async function storeSessionCredential(
+  connectionId: string,
+  password: string,
+): Promise<void> {
+  return invoke<void>("store_session_credential", { connectionId, password });
+}
+
+export async function forgetSessionCredential(connectionId: string): Promise<void> {
+  return invoke<void>("forget_session_credential", { connectionId });
 }
 
 // ─── Keychain: SSH secrets ────────────────────────────────────
@@ -89,6 +114,49 @@ export async function regenerateDemoDb(): Promise<string> {
   return invoke<string>("regenerate_demo_db");
 }
 
+// ─── SSH Host Trust ────────────────────────────────────────────
+// The probe handshakes only — no password, key or passphrase is sent — so the
+// UI can show a fingerprint and ask for acceptance before a connection attempt
+// carries credentials.
+
+export async function sshHostTrustState(host: string, port: number): Promise<SshHostTrustState> {
+  return invoke<SshHostTrustState>("ssh_host_trust_state", { host, port });
+}
+
+export async function sshHostTrustEnroll(
+  host: string,
+  port: number,
+  accepted: HostKeyFingerprint,
+): Promise<SshHostTrustState> {
+  return invoke<SshHostTrustState>("ssh_host_trust_enroll", {
+    host,
+    port,
+    keyType: accepted.key_type,
+    fingerprint: accepted.fingerprint,
+  });
+}
+
+/**
+ * Deliberately replace stale host trust for an endpoint (ADR 0001).
+ *
+ * Only reachable from the connection's trust state: the connect path has no
+ * way to call it, so a changed host key stays a dead end during authentication.
+ * Carries the endpoint and the fingerprint the user confirmed — never a
+ * credential.
+ */
+export async function sshHostTrustReenroll(
+  host: string,
+  port: number,
+  confirmed: HostKeyFingerprint,
+): Promise<SshHostTrustState> {
+  return invoke<SshHostTrustState>("ssh_host_trust_reenroll", {
+    host,
+    port,
+    keyType: confirmed.key_type,
+    fingerprint: confirmed.fingerprint,
+  });
+}
+
 // ─── DB Viewer Lifecycle ────────────────────────────────────────
 
 export async function dbConnect(connectionId: string, input: ConnectionInput): Promise<void> {
@@ -123,14 +191,36 @@ export async function getTableData(
   return invoke<QueryResult>("get_table_data", { connectionId, schema, table, page, pageSize, filters, sorts });
 }
 
-export async function executeChange(connectionId: string, change: ChangePayload): Promise<void> {
-  return invoke<void>("execute_change", { connectionId, change });
+/**
+ * Apply one queued change.
+ *
+ * `origin` is the Change Origin the work was **staged** against (the value
+ * recorded on the queue item), never one recomputed at commit time. The backend
+ * resolves the saved connection itself and refuses the change when its target no
+ * longer matches, so a reused connection id can never redirect a staged write.
+ * Passing the live target here would make that comparison tautological and hand
+ * the decision back to the renderer, which is what the backend check exists to
+ * prevent.
+ */
+export async function executeChange(
+  connectionId: string,
+  change: ChangePayload,
+  origin: ChangeOrigin,
+): Promise<void> {
+  return invoke<void>("execute_change", { connectionId, change, origin });
 }
 
 export async function getTableDdl(connectionId: string, schema: string, table: string): Promise<string> {
   return invoke<string>("get_table_ddl", { connectionId, schema, table });
 }
 
+/**
+ * Fetch the row an FK cell points at.
+ *
+ * `schema`/`table`/`column` identify the **source** column (the one holding the
+ * value). The backend resolves the referenced relation from engine metadata, so
+ * the caller cannot substitute a same-named table from another schema.
+ */
 export async function getFkPreview(
   connectionId: string,
   schema: string,
@@ -139,6 +229,25 @@ export async function getFkPreview(
   value: string,
 ): Promise<QueryResult> {
   return invoke<QueryResult>("get_fk_preview", { connectionId, schema, table, column, value });
+}
+
+/**
+ * Search the referenced table for FK options.
+ *
+ * `schema`/`table`/`column` identify the **source** column; the backend resolves
+ * the referenced relation and searches it in the engine over the requested page,
+ * so matches past an initial small page are reachable.
+ */
+export async function searchFkOptions(
+  connectionId: string,
+  schema: string,
+  table: string,
+  column: string,
+  search?: string,
+  page?: number,
+  pageSize?: number,
+): Promise<QueryResult> {
+  return invoke<QueryResult>("search_fk_options", { connectionId, schema, table, column, search, page, pageSize });
 }
 
 export async function refreshConnection(connectionId: string): Promise<void> {
@@ -151,16 +260,58 @@ export async function detectPgTools(force = false): Promise<PgToolStatus> {
   return invoke<PgToolStatus>("detect_pg_tools", { force });
 }
 
-export async function pgDump(connectionId: string, options: BackupOptions): Promise<string> {
-  return invoke<string>("pg_dump", { connectionId, options });
+// ─── File Grants ──────────────────────────────────────────────
+//
+// The native dialog is brokered by Rust so the chosen path never originates in
+// the renderer. The returned grant id is the only thing that authorizes a
+// file-touching command; `path` is display metadata.
+
+export async function selectFileForGrant(request: FileGrantRequest): Promise<FileGrant | null> {
+  return invoke<FileGrant | null>("select_file_for_grant", { request });
 }
 
-export async function pgRestore(connectionId: string, options: RestoreOptions): Promise<string> {
-  return invoke<string>("pg_restore", { connectionId, options });
+/**
+ * Start a PostgreSQL backup.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant}; it is consumed by this
+ * call, so the next backup needs its own selection.
+ */
+export async function pgDump(
+  connectionId: string,
+  options: BackupOptions,
+  fileGrant: string,
+): Promise<string> {
+  return invoke<string>("pg_dump", { connectionId, options, fileGrant });
+}
+
+/**
+ * Start a PostgreSQL restore.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (read intent) and is
+ * consumed by this call, so the next restore needs its own selection. The
+ * request carries no path: the file is whatever the grant authorized.
+ */
+export async function pgRestore(
+  connectionId: string,
+  request: PgRestoreRequest,
+  fileGrant: string,
+): Promise<string> {
+  return invoke<string>("pg_restore", { connectionId, request, fileGrant });
 }
 
 export async function dbSync(options: SyncOptions): Promise<string> {
   return invoke<string>("db_sync", { options });
+}
+
+/**
+ * Cancel a running backup/restore/sync job.
+ *
+ * The backend terminates the job's whole child process tree, so cancelling a
+ * `pg_dump`/`pg_restore`/`mysqldump` leaves no helper process behind. Resolves
+ * to whether a job with that id was still running.
+ */
+export async function cancelToolJob(jobId: string): Promise<boolean> {
+  return invoke<boolean>("cancel_tool_job", { jobId });
 }
 
 // ─── v0.7.8: Cancel / MySQL / SQLite / Settings export-import ────
@@ -173,24 +324,40 @@ export async function detectMysqlTools(force = false): Promise<MySqlToolStatus> 
   return invoke<MySqlToolStatus>("detect_mysql_tools", { force });
 }
 
-export async function mysqlDump(connectionId: string, options: MySqlBackupOptions): Promise<string> {
-  return invoke<string>("mysql_dump", { connectionId, options });
+/** Start a MySQL backup. `fileGrant` is consumed by this call. */
+export async function mysqlDump(
+  connectionId: string,
+  options: MySqlBackupOptions,
+  fileGrant: string,
+): Promise<string> {
+  return invoke<string>("mysql_dump", { connectionId, options, fileGrant });
 }
 
-export async function mysqlRestore(connectionId: string, options: MySqlRestoreOptions): Promise<string> {
-  return invoke<string>("mysql_restore", { connectionId, options });
+/** Start a MySQL restore. `fileGrant` is consumed by this call. */
+export async function mysqlRestore(
+  connectionId: string,
+  request: MySqlRestoreRequest,
+  fileGrant: string,
+): Promise<string> {
+  return invoke<string>("mysql_restore", { connectionId, request, fileGrant });
 }
 
 export async function mysqlSync(options: SyncOptions): Promise<string> {
   return invoke<string>("mysql_sync", { options });
 }
 
-export async function sqliteDump(connectionId: string, options: SqliteBackupOptions): Promise<string> {
-  return invoke<string>("sqlite_dump", { connectionId, options });
+/** Start a SQLite backup. `fileGrant` is consumed by this call. */
+export async function sqliteDump(connectionId: string, fileGrant: string): Promise<string> {
+  return invoke<string>("sqlite_dump", { connectionId, fileGrant });
 }
 
-export async function sqliteRestore(connectionId: string, options: SqliteRestoreOptions): Promise<string> {
-  return invoke<string>("sqlite_restore", { connectionId, options });
+/** Start a SQLite restore. `fileGrant` is consumed by this call. */
+export async function sqliteRestore(
+  connectionId: string,
+  request: SqliteRestoreRequest,
+  fileGrant: string,
+): Promise<string> {
+  return invoke<string>("sqlite_restore", { connectionId, request, fileGrant });
 }
 
 export async function sqliteSync(options: SyncOptions): Promise<string> {
@@ -199,6 +366,66 @@ export async function sqliteSync(options: SyncOptions): Promise<string> {
 
 export async function exportSettings(): Promise<string> {
   return invoke<string>("export_settings");
+}
+
+/**
+ * Export settings into the file a File Grant authorized.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (write intent) and is
+ * consumed by this call: the renderer never supplies a path, so a bare path
+ * authorizes nothing.
+ */
+export async function exportSettingsToFile(fileGrant: string): Promise<string> {
+  return invoke<string>("export_settings_to_file", { fileGrant });
+}
+
+/**
+ * Read a settings file through a File Grant.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (read intent) and is
+ * consumed by this call. The returned text is validated before it is applied.
+ */
+export async function readSettingsFile(fileGrant: string): Promise<string> {
+  return invoke<string>("read_settings_file", { fileGrant });
+}
+
+/**
+ * Export connections into the file a File Grant authorized.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (write intent) and is
+ * consumed by this call. The transfer document is rendered in Rust and
+ * published atomically to the granted path; the renderer never names one, so a
+ * bare path authorizes nothing.
+ */
+export async function exportConnectionsToFile(fileGrant: string): Promise<string> {
+  return invoke<string>("export_connections_to_file", { fileGrant });
+}
+
+/**
+ * Read a connection transfer file through a File Grant.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (read intent) and is
+ * consumed by this call. The returned text goes to {@link importConnections},
+ * which validates it exactly as before.
+ */
+export async function readConnectionsFile(fileGrant: string): Promise<string> {
+  return invoke<string>("read_connections_file", { fileGrant });
+}
+
+/**
+ * Publish bytes the renderer produced (a rendered schema image) to the file a
+ * File Grant authorized.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (write intent) and is
+ * consumed by this call: the destination is the grant's, never an argument. The
+ * backend writes it atomically, so a failed save leaves an existing file
+ * intact.
+ */
+export async function saveGrantedBytes(
+  fileGrant: string,
+  bytes: Uint8Array,
+): Promise<string> {
+  return invoke<string>("save_granted_bytes", { fileGrant, bytes });
 }
 
 export async function importSettings(json: string): Promise<void> {
@@ -301,13 +528,31 @@ export async function takePendingSqlFiles(): Promise<PendingSqlFile[]> {
   return invoke<PendingSqlFile[]>("take_pending_sql_files");
 }
 
+/**
+ * Stream a full query result to disk.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (write intent) and is
+ * consumed by this call: the destination is whatever the grant authorized, and
+ * the backend publishes a temporary sibling atomically, so a failed export
+ * never damages an existing file.
+ */
 export async function exportQueryToFile(
   connectionId: string,
   sql: string,
   format: string,
-  path: string,
+  fileGrant: string,
 ): Promise<{ rows_written: number; path: string }> {
-  return invoke("export_query_to_file", { connectionId, sql, format, path });
+  return invoke<{ rows_written: number; path: string }>("export_query_to_file", { connectionId, sql, format, fileGrant });
+}
+
+/**
+ * Read a data-import source (CSV/JSON) named by a `read` File Grant.
+ *
+ * `fileGrant` is consumed by this call. The backend enforces the 100 MB limit
+ * before reading, so an oversized file is never buffered.
+ */
+export async function readImportFile(fileGrant: string): Promise<ImportSource> {
+  return invoke<ImportSource>("read_import_file", { fileGrant });
 }
 
 export async function getQueryHistory(
@@ -413,8 +658,21 @@ export async function getRolePrivileges(connectionId: string, role: string): Pro
 export async function getTableColumns(connectionId: string, schema: string, table: string): Promise<ColumnInfo[]> {
   return invoke<ColumnInfo[]>("get_table_columns", { connectionId, schema, table });
 }
-export async function getTableRebuildReadiness(connectionId: string, schema: string, table: string): Promise<RebuildReadiness> {
-  return invoke<RebuildReadiness>("get_table_rebuild_readiness", { connectionId, schema, table });
+/**
+ * Can this table be rebuilt — and, when `columns` is supplied, would staging
+ * those columns need a rebuild at all?
+ *
+ * The table editor asks with the columns it is about to stage, so an ALTER-only
+ * submission on a table that could not be rebuilt is not refused, while a
+ * submission that *would* rebuild one is refused with every blocker named.
+ */
+export async function getTableRebuildReadiness(
+  connectionId: string,
+  schema: string,
+  table: string,
+  columns?: unknown,
+): Promise<RebuildReadiness> {
+  return invoke<RebuildReadiness>("get_table_rebuild_readiness", { connectionId, schema, table, columns });
 }
 export async function runMaintenance(connectionId: string, schema: string, table: string, action: "vacuum" | "analyze" | "reindex"): Promise<MaintenanceResult> {
   return invoke<MaintenanceResult>("run_maintenance", { connectionId, schema, table, action });

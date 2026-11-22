@@ -246,15 +246,22 @@ pub(crate) async fn capture_snapshot(
     schema: &str,
 ) -> Result<SchemaSnapshot, String> {
     match handle {
-        DbHandle::Postgresql(client, _) => capture_pg(client, engine, schema).await,
+        DbHandle::Postgresql(client, _) => {
+            let client = client.lock().await;
+            capture_pg(&client, engine, schema).await
+        }
         DbHandle::MySql(pool) => {
+            let pool = pool.lock().await;
             let mut conn = pool
                 .acquire()
                 .await
                 .map_err(|e| format!("source/target connection failed: {e}"))?;
             capture_mysql(&mut *conn, engine, schema).await
         }
-        DbHandle::Sqlite(conn) => capture_sqlite(conn),
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            capture_sqlite(&conn)
+        }
     }
 }
 
@@ -408,7 +415,7 @@ pub(crate) mod capture {
         let mut tables: BTreeMap<String, SnapshotTable> = BTreeMap::new();
         let mut views: Vec<SnapshotView> = Vec::new();
 
-        let rows = sqlx::query(&mysql_snapshot_columns_query(schema))
+        let rows = sqlx::query(sqlx::AssertSqlSafe(mysql_snapshot_columns_query(schema)))
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| format!("columns query failed: {e}"))?;
@@ -430,10 +437,12 @@ pub(crate) mod capture {
             });
         }
 
-        let rows = sqlx::query(&mysql_snapshot_constraints_query(schema))
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|e| format!("constraints query failed: {e}"))?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(mysql_snapshot_constraints_query(
+            schema,
+        )))
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| format!("constraints query failed: {e}"))?;
         for r in rows {
             let tname = mysql_row_string(&r, 0);
             let cname = mysql_row_string(&r, 1);
@@ -496,7 +505,7 @@ pub(crate) mod capture {
             }
         }
 
-        let rows = sqlx::query(&mysql_snapshot_indexes_query(schema))
+        let rows = sqlx::query(sqlx::AssertSqlSafe(mysql_snapshot_indexes_query(schema)))
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| format!("indexes query failed: {e}"))?;
@@ -519,7 +528,7 @@ pub(crate) mod capture {
             }
         }
 
-        let rows = sqlx::query(&mysql_snapshot_views_query(schema))
+        let rows = sqlx::query(sqlx::AssertSqlSafe(mysql_snapshot_views_query(schema)))
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| format!("views query failed: {e}"))?;
@@ -548,8 +557,10 @@ pub(crate) mod capture {
 }
 
 /// Double-quote an identifier (PG/SQLite) with embedded-quote doubling.
+///
+/// Delegates to `db::ident` — one quoting implementation per engine.
 pub(crate) fn quote_double(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
+    crate::db::ident::quote(crate::db::ident::Engine::Sqlite, name)
 }
 
 // ---------------------------------------------------------------------------
@@ -570,23 +581,22 @@ pub(crate) fn engine_family(engine: &str) -> &'static str {
 
 fn quote(family: &str, name: &str) -> String {
     match family {
-        "mysql" => format!("`{}`", name.replace('`', "``")),
-        _ => format!("\"{}\"", name.replace('"', "\"\"")),
+        "mysql" => crate::db::ident::quote(crate::db::ident::Engine::MySql, name),
+        _ => crate::db::ident::quote(crate::db::ident::Engine::PostgreSql, name),
     }
 }
 
 fn qualified(family: &str, schema: &str, name: &str) -> String {
     match family {
-        "mysql" => format!(
-            "`{}`.`{}`",
-            schema.replace('`', "``"),
-            name.replace('`', "``")
-        ),
+        "mysql" => {
+            crate::db::ident::qualified_unchecked(crate::db::ident::Engine::MySql, schema, name)
+        }
+        // A SQLite diff identifies a table by name only (one schema per file).
         "sqlite" => quote(family, name),
-        _ => format!(
-            "\"{}\".\"{}\"",
-            schema.replace('"', "\"\""),
-            name.replace('"', "\"\"")
+        _ => crate::db::ident::qualified_unchecked(
+            crate::db::ident::Engine::PostgreSql,
+            schema,
+            name,
         ),
     }
 }
@@ -1033,7 +1043,7 @@ fn constraint_fk_sql(family: &str, _schema: &str, qtn: &str, fk: &SnapshotFk) ->
         .collect::<Vec<_>>()
         .join(", ");
     let ref_qualified = match family {
-        "mysql" => format!("`{}`", fk.ref_table.replace('`', "``")),
+        "mysql" => crate::db::ident::quote(crate::db::ident::Engine::MySql, &fk.ref_table),
         "sqlite" => quote(family, &fk.ref_table),
         _ => qualified(family, &fk.ref_schema, &fk.ref_table),
     };

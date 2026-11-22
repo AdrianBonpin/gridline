@@ -1,22 +1,15 @@
-use crate::db::tls::TlsDecision;
+use crate::commands::ssh_trust::{
+    enroll_host_trust, establish_trusted_session, host_key_from_blob, probe_host_trust,
+    reenroll_host_trust, HostTrustProvider, SshTransport, SshTunnelError,
+};
+use crate::models::ssh_trust::{HostKey, HostKeyFingerprint, SshHostTrustState};
 use crate::models::SshConfig;
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-
-/// Through a tunnel the TLS peer is loopback (`127.0.0.1`), so certificate
-/// verification is meaningless: `verify-ca`/`verify-full` degrade to
-/// encrypt-only `require`. A direct (non-tunneled) connection honors the
-/// user's mode unchanged.
-pub fn effective_tls_decision(d: TlsDecision, via_tunnel: bool) -> TlsDecision {
-    if via_tunnel && matches!(d, TlsDecision::Verify) {
-        TlsDecision::Require
-    } else {
-        d
-    }
-}
 
 /// A live tunnel handle. `closer` drops the listener + ssh session when called.
 pub struct Tunnel {
@@ -32,6 +25,18 @@ impl Tunnel {
             closer: None,
         }
     }
+
+    /// Create a tunnel handle whose `closer` runs when the tunnel is closed.
+    ///
+    /// Backends that own real resources (a listener, a session) hand their
+    /// teardown in here, so closing the tunnel actually ends them — which is
+    /// what makes "the tunnel stayed open for this query" observable.
+    pub fn with_closer(local_port: u16, closer: Box<dyn FnOnce() + Send>) -> Self {
+        Tunnel {
+            local_port,
+            closer: Some(closer),
+        }
+    }
 }
 
 impl Drop for Tunnel {
@@ -42,6 +47,80 @@ impl Drop for Tunnel {
     }
 }
 
+/// How long a close waits for the forwarding worker to confirm it dropped the
+/// listener. The worker polls its shutdown request between forwarding rounds
+/// (backing off to one round per 20 ms when idle), so a healthy close acks in
+/// milliseconds; the bound only exists so a wedged worker cannot hang quit or
+/// disconnect forever.
+const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Worker-side half of a tunnel shutdown handshake.
+///
+/// The worker that owns the loopback listener polls [`ShutdownWorker::requested`]
+/// between forwarding rounds, and calls [`ShutdownWorker::complete`] *after* it
+/// has dropped the listener. That acknowledgement is what makes "closed" mean
+/// the loopback port refuses connections, rather than "a message was queued".
+pub(crate) struct ShutdownWorker {
+    request: std::sync::mpsc::Receiver<()>,
+    done: std::sync::mpsc::Sender<()>,
+}
+
+impl ShutdownWorker {
+    /// Whether the tunnel handle has been closed (or dropped).
+    ///
+    /// A disconnected channel counts as closed: the closer only goes away
+    /// without requesting when it was dropped, and either way the worker's
+    /// resources must not outlive it.
+    pub(crate) fn requested(&self) -> bool {
+        !matches!(
+            self.request.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        )
+    }
+
+    /// Confirm that the worker has released the listener and session.
+    pub(crate) fn complete(self) {
+        let _ = self.done.send(());
+    }
+}
+
+/// Closer-side half of a tunnel shutdown handshake.
+pub(crate) struct ShutdownCloser {
+    request: std::sync::mpsc::Sender<()>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+impl ShutdownCloser {
+    /// Ask the worker to stop and wait (bounded) for it to confirm teardown.
+    ///
+    /// Returns `true` when the worker acknowledged, i.e. the listener has been
+    /// dropped by the time this returns.
+    pub(crate) fn close(self) -> bool {
+        if self.request.send(()).is_err() {
+            // The worker is already gone (it stopped on its own), so nothing
+            // is left holding the listener.
+            return true;
+        }
+        matches!(self.done.recv_timeout(SHUTDOWN_ACK_TIMEOUT), Ok(()))
+    }
+}
+
+/// Create the two halves of a tunnel shutdown handshake.
+pub(crate) fn shutdown_pair() -> (ShutdownWorker, ShutdownCloser) {
+    let (request_tx, request_rx) = std::sync::mpsc::channel::<()>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    (
+        ShutdownWorker {
+            request: request_rx,
+            done: done_tx,
+        },
+        ShutdownCloser {
+            request: request_tx,
+            done: done_rx,
+        },
+    )
+}
+
 /// Backend that actually establishes SSH tunnels.
 ///
 /// The manager only does bookkeeping; opening/closing the OS-level tunnel is
@@ -49,6 +128,9 @@ impl Drop for Tunnel {
 pub trait TunnelBackend: Send + Sync {
     /// Open a tunnel to `remote_host:remote_port` via `cfg` and return a
     /// handle exposing the bound local port.
+    ///
+    /// The SSH host key is verified before any credential is sent; an unknown
+    /// or conflicting key returns a `SshTunnelError` carrying the trust state.
     fn open(
         &self,
         key: &str,
@@ -57,7 +139,30 @@ pub trait TunnelBackend: Send + Sync {
         remote_port: u16,
         password: Option<&str>,
         passphrase: Option<&str>,
-    ) -> Result<Tunnel, String>;
+    ) -> Result<Tunnel, SshTunnelError>;
+
+    /// Report the host-trust state for an endpoint. Handshakes only: no
+    /// password, key or passphrase is sent.
+    fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String>;
+
+    /// Remember an explicitly accepted fingerprint for an endpoint.
+    fn enroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String>;
+
+    /// Deliberately replace stale host trust for an endpoint.
+    ///
+    /// Reachable only from the connection's trust state — never from `open` or
+    /// any other authentication path.
+    fn reenroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String>;
 }
 
 /// Manages SSH tunnels, mapping connection keys to active tunnels.
@@ -91,9 +196,11 @@ impl SshTunnelManager {
         remote_port: u16,
         password: Option<&str>,
         passphrase: Option<&str>,
-    ) -> Result<u16, String> {
+    ) -> Result<u16, SshTunnelError> {
         if !cfg.is_valid() {
-            return Err("invalid SSH configuration".to_string());
+            return Err(SshTunnelError::Failed(
+                "invalid SSH configuration".to_string(),
+            ));
         }
         let tunnel = self
             .backend
@@ -107,9 +214,18 @@ impl SshTunnelManager {
 
     /// Close and remove the SSH tunnel for the given key.
     pub fn close_tunnel(&mut self, key: &str) {
-        if let Some(t) = self.tunnels.remove(key) {
+        if let Some(t) = self.take_tunnel(key) {
             drop(t);
         }
+    }
+
+    /// Take the tunnel for `key` out of the map without closing it.
+    ///
+    /// Callers drop the returned handle themselves so the (blocking) close,
+    /// which waits for the forwarding worker to release its loopback listener,
+    /// never runs while this manager's lock is held.
+    pub fn take_tunnel(&mut self, key: &str) -> Option<Tunnel> {
+        self.tunnels.remove(key)
     }
 
     /// Close all active SSH tunnels.
@@ -118,6 +234,14 @@ impl SshTunnelManager {
         for (_, t) in tunnels {
             drop(t);
         }
+    }
+
+    /// Take every active tunnel out of the map without closing them.
+    ///
+    /// Used on app exit so each (blocking) close can run after the manager lock
+    /// is released, instead of holding it while N workers acknowledge.
+    pub fn take_all(&mut self) -> Vec<Tunnel> {
+        std::mem::take(&mut self.tunnels).into_values().collect()
     }
 
     /// Get the local port for an active tunnel, if any.
@@ -133,23 +257,137 @@ impl SshTunnelManager {
 
     /// Insert an already-opened tunnel under `key`, closing any previous one.
     pub fn insert_tunnel(&mut self, key: String, tunnel: Tunnel) {
-        if let Some(old) = self.tunnels.insert(key, tunnel) {
+        if let Some(old) = self.replace_tunnel(key, tunnel) {
             drop(old);
         }
+    }
+
+    /// Put `tunnel` live under `key`, returning the tunnel it replaced.
+    ///
+    /// The replaced handle is returned rather than dropped so a caller that is
+    /// mid-reconnect can release the old session's tunnel *after* the new pool
+    /// handle is registered, and outside this manager's lock.
+    pub fn replace_tunnel(&mut self, key: String, tunnel: Tunnel) -> Option<Tunnel> {
+        self.tunnels.insert(key, tunnel)
     }
 
     /// Return the number of active tunnels.
     pub fn active_count(&self) -> usize {
         self.tunnels.len()
     }
+
+    /// Report the host-trust state for an SSH endpoint (no credentials sent).
+    pub fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
+        self.backend.probe_host_trust(host, port)
+    }
+
+    /// Remember an explicitly accepted fingerprint for an SSH endpoint.
+    pub fn enroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String> {
+        self.backend.enroll_host_trust(host, port, accepted)
+    }
+
+    /// Deliberately replace stale host trust for an SSH endpoint.
+    pub fn reenroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String> {
+        self.backend.reenroll_host_trust(host, port, accepted)
+    }
 }
 
-/// Real ssh2 backend: binds a loopback listener, authenticates to the SSH
-/// host over a blocking socket, then forwards clients on nonblocking channels.
+/// Real ssh2 backend: binds a loopback listener, verifies the SSH host key,
+/// authenticates over a blocking socket, then forwards clients on nonblocking
+/// channels.
 ///
 /// The whole `open` runs inside `tokio::task::spawn_blocking` at the call
 /// sites because `ssh2::Session` is purely blocking.
-pub struct Ssh2Backend;
+pub struct Ssh2Backend {
+    trust: Arc<dyn HostTrustProvider>,
+}
+
+impl Ssh2Backend {
+    pub fn new(trust: Arc<dyn HostTrustProvider>) -> Self {
+        Ssh2Backend { trust }
+    }
+}
+
+/// Open a TCP connection to the SSH host and complete the SSH handshake.
+///
+/// No credentials are involved, which is why probing an endpoint's host key can
+/// use the same path as a real connection.
+fn connect_session(host: &str, port: u16) -> Result<ssh2::Session, String> {
+    use ssh2::Session;
+
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("resolve ssh host: {e}"))?;
+    let mut last_error = io::Error::new(io::ErrorKind::NotFound, "no SSH host addresses");
+    let tcp = addresses
+        .filter_map(
+            |addr| match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
+                Ok(tcp) => Some(tcp),
+                Err(e) => {
+                    last_error = e;
+                    None
+                }
+            },
+        )
+        .next()
+        .ok_or_else(|| format!("connect ssh host: {last_error}"))?;
+    let mut session = Session::new().map_err(|e| format!("ssh session: {e}"))?;
+    session.set_timeout(10_000);
+    session.set_tcp_stream(tcp);
+    Ok(session)
+}
+
+/// Adapter that lets the shared host-trust seam drive a real ssh2 session.
+struct Ssh2Transport<'a> {
+    session: &'a mut ssh2::Session,
+}
+
+impl SshTransport for Ssh2Transport<'_> {
+    fn handshake(&mut self) -> Result<(), String> {
+        self.session
+            .handshake()
+            .map_err(|e| format!("ssh handshake: {e}"))
+    }
+
+    fn host_key(&mut self) -> Result<HostKey, String> {
+        let (blob, _kind) = self
+            .session
+            .host_key()
+            .ok_or_else(|| "ssh server did not present a host key".to_string())?;
+        host_key_from_blob(blob)
+    }
+
+    fn authenticate_password(&mut self, user: &str, password: &str) -> Result<(), String> {
+        self.session
+            .userauth_password(user, password)
+            .map_err(|e| format!("ssh password auth: {e}"))
+    }
+
+    fn authenticate_key(
+        &mut self,
+        user: &str,
+        private_key_path: &Path,
+        passphrase: Option<&str>,
+    ) -> Result<(), String> {
+        self.session
+            .userauth_pubkey_file(user, None, private_key_path, passphrase)
+            .map_err(|e| format!("ssh key auth: {e}"))
+    }
+
+    fn authenticated(&self) -> bool {
+        self.session.authenticated()
+    }
+}
 
 impl TunnelBackend for Ssh2Backend {
     fn open(
@@ -160,56 +398,30 @@ impl TunnelBackend for Ssh2Backend {
         remote_port: u16,
         password: Option<&str>,
         passphrase: Option<&str>,
-    ) -> Result<Tunnel, String> {
-        use ssh2::Session;
-
+    ) -> Result<Tunnel, SshTunnelError> {
         // Loopback-only listener with an ephemeral port.
         let listener = std::net::TcpListener::bind("127.0.0.1:0")
-            .map_err(|e| format!("bind local tunnel port: {e}"))?;
+            .map_err(|e| SshTunnelError::Failed(format!("bind local tunnel port: {e}")))?;
         let local_port = listener
             .local_addr()
-            .map_err(|e| format!("local tunnel address: {e}"))?
+            .map_err(|e| SshTunnelError::Failed(format!("local tunnel address: {e}")))?
             .port();
 
-        let addresses = (cfg.host.as_str(), cfg.port)
-            .to_socket_addrs()
-            .map_err(|e| format!("resolve ssh host: {e}"))?;
-        let mut last_error = io::Error::new(io::ErrorKind::NotFound, "no SSH host addresses");
-        let tcp = addresses
-            .filter_map(
-                |addr| match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
-                    Ok(tcp) => Some(tcp),
-                    Err(e) => {
-                        last_error = e;
-                        None
-                    }
-                },
-            )
-            .next()
-            .ok_or_else(|| format!("connect ssh host: {last_error}"))?;
-        let mut session = Session::new().map_err(|e| format!("ssh session: {e}"))?;
-        session.set_timeout(10_000);
-        session.set_tcp_stream(tcp);
-        session
-            .handshake()
-            .map_err(|e| format!("ssh handshake: {e}"))?;
-
-        match cfg.auth_method.as_str() {
-            "key" => {
-                let path = cfg
-                    .private_key_path
-                    .as_deref()
-                    .ok_or_else(|| "private_key_path required for key auth".to_string())?;
-                session
-                    .userauth_pubkey_file(&cfg.user, None, std::path::Path::new(path), passphrase)
-                    .map_err(|e| format!("ssh key auth: {e}"))?;
-            }
-            _ => session
-                .userauth_password(&cfg.user, password.unwrap_or(""))
-                .map_err(|e| format!("ssh password auth: {e}"))?,
-        }
-        if !session.authenticated() {
-            return Err("SSH authentication failed".into());
+        let mut session = connect_session(&cfg.host, cfg.port).map_err(SshTunnelError::Failed)?;
+        // Verify the host key before authentication: an unknown or conflicting
+        // key returns here, so no password, key or passphrase is ever sent to
+        // an unverified server.
+        {
+            let mut transport = Ssh2Transport {
+                session: &mut session,
+            };
+            establish_trusted_session(
+                &mut transport,
+                self.trust.as_ref(),
+                cfg,
+                password,
+                passphrase,
+            )?;
         }
 
         // Channel clones share the session's mutex. A blocking read would
@@ -217,17 +429,17 @@ impl TunnelBackend for Ssh2Backend {
         session.set_blocking(false);
         listener
             .set_nonblocking(true)
-            .map_err(|e| format!("nonblocking tunnel listener: {e}"))?;
+            .map_err(|e| SshTunnelError::Failed(format!("nonblocking tunnel listener: {e}")))?;
         let remote_host = remote_host.to_string();
-        let (closer_tx, closer_rx) = std::sync::mpsc::channel::<()>();
+        // Nonblocking request/acknowledgement pair handed to the closer: the
+        // worker acks only after it has dropped the loopback listener, so a
+        // closed tunnel has no reachable proxy port left.
+        let (worker, closer) = shutdown_pair();
         std::thread::spawn(move || {
             let mut pending = None;
             let mut clients = Vec::new();
             let mut idle_rounds: u32 = 0;
-            while matches!(
-                closer_rx.try_recv(),
-                Err(std::sync::mpsc::TryRecvError::Empty)
-            ) {
+            while !worker.requested() {
                 let mut progressed = false;
                 if pending.is_none() {
                     match listener.accept() {
@@ -279,14 +491,170 @@ impl TunnelBackend for Ssh2Backend {
             }
             // Dropping the worker's listener, clients and session closes all
             // sockets, including clients stalled in authentication or a query.
+            drop(listener);
+            drop(clients);
+            drop(session);
+            worker.complete();
         });
         Ok(Tunnel {
             local_port,
             closer: Some(Box::new(move || {
-                let _ = closer_tx.send(());
+                closer.close();
             })),
         })
     }
+
+    fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
+        self.probe_session(host, port, TrustAction::Probe)
+    }
+
+    fn enroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String> {
+        self.probe_session(host, port, TrustAction::Enroll(accepted))
+    }
+
+    fn reenroll_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        accepted: &HostKeyFingerprint,
+    ) -> Result<SshHostTrustState, String> {
+        self.probe_session(host, port, TrustAction::Reenroll(accepted))
+    }
+}
+
+/// What a handshake-only session should do with the host key it reads.
+#[derive(Clone, Copy)]
+enum TrustAction<'a> {
+    /// Report the state, change nothing.
+    Probe,
+    /// First use: remember an explicit acceptance.
+    Enroll(&'a HostKeyFingerprint),
+    /// Deliberate re-enrollment: replace stale trust.
+    Reenroll(&'a HostKeyFingerprint),
+}
+
+impl Ssh2Backend {
+    /// Handshake and read the host key, then drop the session: nothing is
+    /// authenticated and no credential is sent.
+    fn probe_session(
+        &self,
+        host: &str,
+        port: u16,
+        action: TrustAction<'_>,
+    ) -> Result<SshHostTrustState, String> {
+        let mut session = connect_session(host, port)?;
+        let mut transport = Ssh2Transport {
+            session: &mut session,
+        };
+        match action {
+            TrustAction::Probe => probe_host_trust(&mut transport, self.trust.as_ref(), host, port),
+            TrustAction::Enroll(accepted) => {
+                enroll_host_trust(&mut transport, self.trust.as_ref(), host, port, accepted)
+            }
+            TrustAction::Reenroll(accepted) => {
+                reenroll_host_trust(&mut transport, self.trust.as_ref(), host, port, accepted)
+            }
+        }
+    }
+}
+
+/// Report the SSH host-trust state for an endpoint.
+///
+/// Handshake + host key only: no password, private key or passphrase is sent,
+/// so the UI can show the fingerprint and ask for acceptance *before* a
+/// connection attempt carries credentials.
+#[tauri::command]
+pub async fn ssh_host_trust_state(
+    host: String,
+    port: u16,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<SshHostTrustState, String> {
+    validate_endpoint(&host, port)?;
+    let backend = state
+        .ssh_manager
+        .lock()
+        .map_err(|e| e.to_string())?
+        .backend_clone();
+    tokio::task::spawn_blocking(move || backend.probe_host_trust(&host, port))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::commands::db_viewer::sanitize_error(&e))
+}
+
+/// Remember an explicitly accepted host-key fingerprint for an endpoint.
+///
+/// Re-reads the offered key: a server that switched keys between the prompt and
+/// the acceptance is refused, and a key that conflicts with existing trust is
+/// never replaced here (that is a deliberate re-enrollment, not authentication).
+#[tauri::command]
+pub async fn ssh_host_trust_enroll(
+    host: String,
+    port: u16,
+    key_type: String,
+    fingerprint: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<SshHostTrustState, String> {
+    validate_endpoint(&host, port)?;
+    let backend = state
+        .ssh_manager
+        .lock()
+        .map_err(|e| e.to_string())?
+        .backend_clone();
+    let accepted = HostKeyFingerprint {
+        key_type,
+        fingerprint,
+    };
+    tokio::task::spawn_blocking(move || backend.enroll_host_trust(&host, port, &accepted))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::commands::db_viewer::sanitize_error(&e))
+}
+
+/// Deliberately replace stale host trust for an endpoint after the user
+/// confirmed the presented fingerprint out of band (ADR 0001).
+///
+/// This is the only command that replaces trust. It is deliberately absent from
+/// every connect/test path: a mismatched key during authentication stays a dead
+/// end, and the user has to come here — from the connection's trust state — to
+/// re-enroll. Re-reads the offered key, so a server that switched keys after the
+/// confirmation is refused. Sends no credentials and records none.
+#[tauri::command]
+pub async fn ssh_host_trust_reenroll(
+    host: String,
+    port: u16,
+    key_type: String,
+    fingerprint: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<SshHostTrustState, String> {
+    validate_endpoint(&host, port)?;
+    let backend = state
+        .ssh_manager
+        .lock()
+        .map_err(|e| e.to_string())?
+        .backend_clone();
+    let accepted = HostKeyFingerprint {
+        key_type,
+        fingerprint,
+    };
+    tokio::task::spawn_blocking(move || backend.reenroll_host_trust(&host, port, &accepted))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::commands::db_viewer::sanitize_error(&e))
+}
+
+fn validate_endpoint(host: &str, port: u16) -> Result<(), String> {
+    if host.trim().is_empty() {
+        return Err("an SSH host is required".to_string());
+    }
+    if port == 0 {
+        return Err("an SSH port is required".to_string());
+    }
+    Ok(())
 }
 
 fn ssh_would_block(error: &ssh2::Error) -> bool {
@@ -385,9 +753,213 @@ impl ForwardedClient {
     }
 }
 
+/// Test-only tunnel backends usable from any module's tests.
+#[cfg(test)]
+pub mod fake {
+    use super::*;
+
+    use std::sync::Mutex as StdMutex;
+
+    /// A tunnel backend whose tunnels really bind a loopback listener, but
+    /// whose forwarded peer hangs up immediately — so a database handshake
+    /// through one fails fast, and a leaked listener is still observable from a
+    /// test.
+    #[derive(Default)]
+    pub struct HangingUpPeerBackend {
+        ports: StdMutex<Vec<u16>>,
+    }
+
+    impl HangingUpPeerBackend {
+        pub fn last_port(&self) -> u16 {
+            *self
+                .ports
+                .lock()
+                .unwrap()
+                .last()
+                .expect("a tunnel was opened")
+        }
+    }
+
+    impl TunnelBackend for HangingUpPeerBackend {
+        fn open(
+            &self,
+            _key: &str,
+            _cfg: &SshConfig,
+            _remote_host: &str,
+            _remote_port: u16,
+            _pw: Option<&str>,
+            _pp: Option<&str>,
+        ) -> Result<Tunnel, SshTunnelError> {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")
+                .map_err(|e| SshTunnelError::Failed(format!("bind: {e}")))?;
+            let port = listener.local_addr().unwrap().port();
+            self.ports.lock().unwrap().push(port);
+            listener.set_nonblocking(true).unwrap();
+            let (worker, closer) = shutdown_pair();
+            std::thread::spawn(move || {
+                while !worker.requested() {
+                    match listener.accept() {
+                        // A peer that hangs up immediately: the database client
+                        // sees an EOF instead of waiting out its timeout.
+                        Ok((stream, _)) => drop(stream),
+                        Err(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                    }
+                }
+                drop(listener);
+                worker.complete();
+            });
+            Ok(Tunnel::with_closer(
+                port,
+                Box::new(move || {
+                    closer.close();
+                }),
+            ))
+        }
+
+        fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
+            Ok(SshHostTrustState::Unknown {
+                host: host.to_string(),
+                port,
+                key_type: "ssh-ed25519".into(),
+                fingerprint: "SHA256:fake".into(),
+            })
+        }
+
+        fn enroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            Ok(SshHostTrustState::Trusted {
+                host: host.to_string(),
+                port,
+                key_type: accepted.key_type.clone(),
+                fingerprint: accepted.fingerprint.clone(),
+                source: crate::models::ssh_trust::TrustSource::Enrolled,
+            })
+        }
+
+        fn reenroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            self.enroll_host_trust(host, port, accepted)
+        }
+    }
+
+    /// A tunnel backend with no SSH connectivity at all: `open` always fails
+    /// and host trust is in-memory. Used by tests that only need an
+    /// `SshTunnelManager` to exist (they never tunnel).
+    #[derive(Default)]
+    pub struct NoSshBackend;
+
+    impl TunnelBackend for NoSshBackend {
+        fn open(
+            &self,
+            _key: &str,
+            _cfg: &SshConfig,
+            _remote_host: &str,
+            _remote_port: u16,
+            _password: Option<&str>,
+            _passphrase: Option<&str>,
+        ) -> Result<Tunnel, SshTunnelError> {
+            Err(SshTunnelError::Failed(
+                "no SSH connectivity in tests".to_string(),
+            ))
+        }
+
+        fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
+            Ok(SshHostTrustState::Unknown {
+                host: host.to_string(),
+                port,
+                key_type: "ssh-ed25519".into(),
+                fingerprint: "SHA256:fake".into(),
+            })
+        }
+
+        fn enroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            Ok(SshHostTrustState::Trusted {
+                host: host.to_string(),
+                port,
+                key_type: accepted.key_type.clone(),
+                fingerprint: accepted.fingerprint.clone(),
+                source: crate::models::ssh_trust::TrustSource::Enrolled,
+            })
+        }
+
+        fn reenroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            self.enroll_host_trust(host, port, accepted)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tunnel_shutdown_close_waits_until_the_listener_is_dropped() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (worker, closer) = shutdown_pair();
+        let forwarder = std::thread::spawn(move || {
+            // Own the listener exactly like the forwarding worker does: it is
+            // dropped when the loop sees the close request, and only then is
+            // teardown acknowledged.
+            while !worker.requested() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            drop(listener);
+            worker.complete();
+        });
+
+        let open = TcpStream::connect(("127.0.0.1", port));
+        assert!(
+            open.is_ok(),
+            "the tunnel accepts connections while it is open"
+        );
+        drop(open);
+
+        assert!(
+            closer.close(),
+            "close waits for the worker to confirm it dropped the listener"
+        );
+        assert!(
+            TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "no loopback listener remains reachable after the tunnel closes"
+        );
+        forwarder.join().unwrap();
+    }
+
+    #[test]
+    fn tunnel_shutdown_close_is_bounded_when_the_worker_never_confirms() {
+        // The worker half stays alive but never acknowledges teardown, so the
+        // wait must time out instead of hanging the caller.
+        let (worker, closer) = shutdown_pair();
+        std::mem::forget(worker);
+        let started = std::time::Instant::now();
+        assert!(
+            !closer.close(),
+            "a wedged worker is reported as an unconfirmed close"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a wedged worker cannot hang the close indefinitely"
+        );
+    }
 
     #[test]
     fn copy_available_keeps_bytes_on_backpressure_and_partial_writes() {
@@ -477,7 +1049,31 @@ mod tests {
             .parse()
             .unwrap();
         let passphrase = std::env::var("GRIDLINE_TEST_SSH_PASSPHRASE").ok();
-        let tunnel = Ssh2Backend
+
+        // Host trust first, exactly like the UI: probe the offered key, accept
+        // its fingerprint explicitly, then connect.
+        let backend = Ssh2Backend::new(Arc::new(
+            crate::commands::ssh_trust::fake::FakeHostTrust::default(),
+        ));
+        let state = backend
+            .probe_host_trust(&cfg.host, cfg.port)
+            .expect("probe SSH host key");
+        let accepted = match &state {
+            SshHostTrustState::Unknown {
+                key_type,
+                fingerprint,
+                ..
+            } => HostKeyFingerprint {
+                key_type: key_type.clone(),
+                fingerprint: fingerprint.clone(),
+            },
+            other => panic!("expected an unknown host on first use, got {other:?}"),
+        };
+        backend
+            .enroll_host_trust(&cfg.host, cfg.port, &accepted)
+            .expect("enroll the live host key");
+
+        let tunnel = backend
             .open(
                 "live-test",
                 &cfg,
@@ -582,6 +1178,9 @@ mod tests {
     #[derive(Debug, Default)]
     struct FakeBackend {
         opens: std::sync::Mutex<Vec<String>>,
+        probes: std::sync::Mutex<Vec<(String, u16)>>,
+        enrollments: std::sync::Mutex<Vec<(String, u16, HostKeyFingerprint)>>,
+        reenrollments: std::sync::Mutex<Vec<(String, u16, HostKeyFingerprint)>>,
         next_port: u16,
     }
 
@@ -589,7 +1188,21 @@ mod tests {
         fn clone(&self) -> Self {
             Self {
                 opens: std::sync::Mutex::new(self.opens.lock().unwrap().clone()),
+                probes: std::sync::Mutex::new(self.probes.lock().unwrap().clone()),
+                enrollments: std::sync::Mutex::new(self.enrollments.lock().unwrap().clone()),
+                reenrollments: std::sync::Mutex::new(self.reenrollments.lock().unwrap().clone()),
                 next_port: self.next_port,
+            }
+        }
+    }
+
+    impl FakeBackend {
+        fn unknown_state(host: &str, port: u16) -> SshHostTrustState {
+            SshHostTrustState::Unknown {
+                host: host.to_string(),
+                port,
+                key_type: "ssh-ed25519".into(),
+                fingerprint: "SHA256:fake".into(),
             }
         }
     }
@@ -603,10 +1216,53 @@ mod tests {
             _remote_port: u16,
             _pw: Option<&str>,
             _pp: Option<&str>,
-        ) -> Result<Tunnel, String> {
+        ) -> Result<Tunnel, SshTunnelError> {
             self.opens.lock().unwrap().push(key.to_string());
             let p = self.next_port;
             Ok(Tunnel::fake(p))
+        }
+
+        fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
+            self.probes.lock().unwrap().push((host.to_string(), port));
+            Ok(FakeBackend::unknown_state(host, port))
+        }
+
+        fn enroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            self.enrollments
+                .lock()
+                .unwrap()
+                .push((host.to_string(), port, accepted.clone()));
+            Ok(SshHostTrustState::Trusted {
+                host: host.to_string(),
+                port,
+                key_type: accepted.key_type.clone(),
+                fingerprint: accepted.fingerprint.clone(),
+                source: crate::models::ssh_trust::TrustSource::Enrolled,
+            })
+        }
+
+        fn reenroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            self.reenrollments
+                .lock()
+                .unwrap()
+                .push((host.to_string(), port, accepted.clone()));
+            Ok(SshHostTrustState::Trusted {
+                host: host.to_string(),
+                port,
+                key_type: accepted.key_type.clone(),
+                fingerprint: accepted.fingerprint.clone(),
+                source: crate::models::ssh_trust::TrustSource::Enrolled,
+            })
         }
     }
 
@@ -651,22 +1307,24 @@ mod tests {
     }
 
     #[test]
-    fn tunneled_tls_is_downgraded_to_require() {
-        // verify-full through a tunnel degrades to encrypt-only `require`
-        assert_eq!(
-            effective_tls_decision(crate::db::tls::tls_decision(Some("verify-full")), true),
-            crate::db::tls::TlsDecision::Require
-        );
-        // direct (non-tunneled) connection keeps the user's mode
-        assert_eq!(
-            effective_tls_decision(crate::db::tls::tls_decision(Some("verify-full")), false),
-            crate::db::tls::TlsDecision::Verify
-        );
+    fn tunnel_endpoint_does_not_change_tls_verification() {
+        // A tunnel used to degrade verify-ca/verify-full to encrypt-only
+        // `require`, because the TLS peer is loopback. The connection plan now
+        // keeps the user's mode and verifies the real hostname instead; this
+        // asserts the tunnel manager's endpoint (loopback + local port) is the
+        // only thing a tunnel contributes.
+        use crate::db::tls::{pg_connect_plan, TlsDecision};
+
+        let plan = pg_connect_plan("db.internal", Some(5432), Some("verify-full"), Some(41234))
+            .expect("verify-full is a valid mode");
+        assert_eq!(plan.decision, TlsDecision::Verify);
+        assert_eq!(plan.host, "db.internal");
+        assert_eq!(plan.port, 41234);
+
         // disable stays disabled regardless of tunneling
-        assert_eq!(
-            effective_tls_decision(crate::db::tls::tls_decision(Some("disable")), true),
-            crate::db::tls::TlsDecision::Disable
-        );
+        let plan =
+            pg_connect_plan("db.internal", Some(5432), Some("disable"), Some(41234)).unwrap();
+        assert_eq!(plan.decision, TlsDecision::Disable);
     }
 
     #[test]
@@ -705,5 +1363,66 @@ mod tests {
         mgr.open_tunnel("b", &cfg, "db", 5432, None, None).ok();
         mgr.close_all();
         assert_eq!(mgr.active_count(), 0);
+    }
+
+    #[test]
+    fn manager_delegates_host_trust_probe_and_enrollment() {
+        let backend = Arc::new(FakeBackend::default());
+        let mgr = SshTunnelManager::new(backend.clone());
+
+        let state = mgr
+            .probe_host_trust("db.example.com", 2222)
+            .expect("probe delegates to the backend");
+        assert!(matches!(
+            state,
+            SshHostTrustState::Unknown { port: 2222, .. }
+        ));
+
+        let accepted = HostKeyFingerprint {
+            key_type: "ssh-ed25519".into(),
+            fingerprint: "SHA256:fake".into(),
+        };
+        let enrolled = mgr
+            .enroll_host_trust("db.example.com", 2222, &accepted)
+            .expect("enrollment delegates to the backend");
+        assert!(enrolled.is_trusted());
+
+        assert_eq!(
+            *backend.probes.lock().unwrap(),
+            vec![("db.example.com".to_string(), 2222)]
+        );
+        assert_eq!(
+            *backend.enrollments.lock().unwrap(),
+            vec![("db.example.com".to_string(), 2222, accepted)]
+        );
+    }
+
+    #[test]
+    fn manager_delegates_deliberate_re_enrollment() {
+        let backend = Arc::new(FakeBackend::default());
+        let mgr = SshTunnelManager::new(backend.clone());
+        let accepted = HostKeyFingerprint {
+            key_type: "ssh-ed25519".into(),
+            fingerprint: "SHA256:rotated".into(),
+        };
+
+        let state = mgr
+            .reenroll_host_trust("db.example.com", 2222, &accepted)
+            .expect("re-enrollment delegates to the backend");
+
+        assert!(state.is_trusted());
+        assert_eq!(
+            *backend.reenrollments.lock().unwrap(),
+            vec![("db.example.com".to_string(), 2222, accepted)],
+            "re-enrollment goes through the deliberate path, not the connect path"
+        );
+        assert!(
+            backend.opens.lock().unwrap().is_empty(),
+            "no tunnel was opened"
+        );
+        assert!(
+            backend.enrollments.lock().unwrap().is_empty(),
+            "first-use enrollment was not used"
+        );
     }
 }

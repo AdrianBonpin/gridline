@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useDbViewerStore } from "./dbViewerStore";
-import type { QueryResult, TableInfo, RoleInfo } from "../lib/types";
+import { useDbViewerStore, currentChangeOrigin } from "./dbViewerStore";
+import { changeOriginFor } from "../lib/changeOrigin";
+import { useUiStore } from "./uiStore";
+import { useConnectionStore } from "./connectionStore";
+import type { QueryResult, TableInfo, RoleInfo, Connection } from "../lib/types";
 import * as commands from "../lib/commands";
 
 vi.mock("../lib/commands", () => ({
@@ -9,8 +12,37 @@ vi.mock("../lib/commands", () => ({
   getTables: vi.fn(),
 }));
 
+function savedConnection(overrides: Partial<Connection> = {}): Connection {
+  return {
+    id: "c1",
+    name: "Local dev",
+    db_type: "postgresql",
+    host: "localhost",
+    port: 5432,
+    username: "dev",
+    database: "appdb",
+    folder_id: null,
+    keychain_ref: null,
+    tag_ids: [],
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    favorite: false,
+    ...overrides,
+  };
+}
+
+/** Make one saved connection + selected database the active Change Origin. */
+function activateTarget(overrides: Partial<Connection> = {}, database = "appdb") {
+  const connection = savedConnection(overrides);
+  useConnectionStore.setState({ connections: [connection] });
+  useUiStore.setState({ activeConnectionId: connection.id });
+  useDbViewerStore.setState({ currentDatabase: database });
+}
+
 beforeEach(() => {
   useDbViewerStore.getState().reset();
+  useConnectionStore.setState({ connections: [] });
+  useUiStore.setState({ activeConnectionId: null });
 });
 
 describe("dbViewerStore", () => {
@@ -363,6 +395,88 @@ describe("dbViewerStore", () => {
     expect(useDbViewerStore.getState().changesQueue).toHaveLength(2);
   });
 
+  describe("Change Origin stamping", () => {
+    it("currentChangeOrigin is null without an active saved connection", () => {
+      expect(currentChangeOrigin()).toBeNull();
+    });
+
+    it("currentChangeOrigin follows the saved connection's live target", () => {
+      activateTarget();
+      const origin = currentChangeOrigin();
+      expect(origin).toMatchObject({ connectionId: "c1", database: "appdb" });
+
+      // The saved connection is retargeted: the derived origin changes with it.
+      activateTarget({ host: "new.example.com" });
+      expect(currentChangeOrigin()?.target).not.toBe(origin?.target);
+    });
+
+    it("stamps staged changes with the active origin", () => {
+      activateTarget({}, "analytics");
+      useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 } });
+      expect(useDbViewerStore.getState().changesQueue[0].origin).toMatchObject({
+        connectionId: "c1",
+        database: "analytics",
+      });
+    });
+
+    it("leaves an explicitly supplied origin untouched", () => {
+      activateTarget();
+      const explicit = currentChangeOrigin()!;
+      useDbViewerStore.setState({ currentDatabase: "other" });
+      useDbViewerStore.getState().addChange({
+        type: "ddl",
+        sql: "CREATE TABLE t ()",
+        origin: explicit,
+      });
+      expect(useDbViewerStore.getState().changesQueue[0].origin).toEqual(explicit);
+    });
+
+    it("stages un-owned work only when no origin is active (never committed)", () => {
+      useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 } });
+      expect(useDbViewerStore.getState().changesQueue[0].origin).toBeNull();
+    });
+
+    it("re-staging a cell after a retarget appends instead of overwriting the old origin's edit", () => {
+      activateTarget();
+      useDbViewerStore.getState().openTab("public", "users");
+      const tabId = useDbViewerStore.getState().activeTabId!;
+      const edit = {
+        tabId, schema: "public", table: "users", primaryKey: { id: 1 },
+        oldData: { name: "Alice" }, newData: { name: "Alicia" },
+      };
+      useDbViewerStore.getState().stageCellEdit(edit);
+
+      activateTarget({ host: "new.example.com" });
+      useDbViewerStore.getState().stageCellEdit({ ...edit, newData: { name: "Alicia 2" } });
+
+      const q = useDbViewerStore.getState().changesQueue;
+      expect(q).toHaveLength(2);
+      expect(q[0].newData).toEqual({ name: "Alicia" });
+      expect(q[1].newData).toEqual({ name: "Alicia 2" });
+      expect(q[0].origin?.target).not.toBe(q[1].origin?.target);
+    });
+
+    it("clearChangesForTarget clears only that origin's work", () => {
+      activateTarget();
+      useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 } });
+      activateTarget({ id: "c2", host: "other.example.com" });
+      useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 2 } });
+
+      useDbViewerStore.getState().clearChangesForTarget(currentChangeOrigin());
+
+      const remaining = useDbViewerStore.getState().changesQueue;
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].origin?.connectionId).toBe("c1");
+    });
+
+    it("clearChangesForTarget with no active origin clears nothing", () => {
+      activateTarget();
+      useDbViewerStore.getState().addChange({ type: "insert", schema: "public", table: "t", newData: { a: 1 } });
+      useDbViewerStore.getState().clearChangesForTarget(null);
+      expect(useDbViewerStore.getState().changesQueue).toHaveLength(1);
+    });
+  });
+
   it("setIndexes / setConstraints update store slices", () => {
     const store = useDbViewerStore.getState();
     store.setIndexes([{ name: "idx", schema: "public", table: "t", definition: "", is_unique: true, method: "btree", columns: ["id"], size_bytes: 1, tablespace: null }]);
@@ -679,5 +793,329 @@ describe("openQueryTab with an initial script", () => {
     expect(tab.tabType).toBe("query");
     expect(tab.query).toBe("");
     expect(tab.filePath).toBeUndefined();
+  });
+});
+
+describe("tab request generations", () => {
+  const result = (page: number, rows: unknown[][] = [[page]]): QueryResult => ({
+    columns: [
+      {
+        name: "id",
+        data_type: "integer",
+        is_pk: true,
+        is_fk: false,
+        is_nullable: false,
+        default_value: null,
+        fk_ref: null,
+        editable: false,
+        is_generated: false,
+      },
+    ],
+    rows,
+    total_rows: 200,
+    page,
+    page_size: 50,
+  });
+
+  function openQuery() {
+    useDbViewerStore.getState().openQueryTab();
+    return useDbViewerStore.getState().activeTabId!;
+  }
+
+  const tab = (id: string) =>
+    useDbViewerStore.getState().tabs.find((t) => t.id === id)!;
+
+  it("only the newest request token may write data", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+
+    const older = store.beginTabRequest(tabId);
+    const newer = store.beginTabRequest(tabId);
+    expect(tab(tabId).loading).toBe(true);
+
+    // The older response arrives last: it must not win.
+    expect(
+      useDbViewerStore.getState().applyTabResult(tabId, older, result(1)),
+    ).toBe(false);
+    expect(tab(tabId).data).toBeNull();
+    expect(tab(tabId).loading).toBe(true);
+
+    expect(
+      useDbViewerStore.getState().applyTabResult(tabId, newer, result(2)),
+    ).toBe(true);
+    expect(tab(tabId).data?.page).toBe(2);
+    expect(tab(tabId).loading).toBe(false);
+  });
+
+  it("bumps the token on a page change so an in-flight response cannot apply", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const token = store.beginTabRequest(tabId);
+
+    // The user pages while that request is still in flight.
+    store.setPage(tabId, 2);
+
+    expect(
+      useDbViewerStore.getState().applyTabResult(tabId, token, result(1)),
+    ).toBe(false);
+    expect(tab(tabId).data).toBeNull();
+  });
+
+  it("resolves loading and marks prior results stale when a request fails", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const first = store.beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabResult(tabId, first, result(1));
+
+    const failing = useDbViewerStore.getState().beginTabRequest(tabId);
+    const applied = useDbViewerStore
+      .getState()
+      .applyTabError(tabId, failing, "connection reset");
+
+    expect(applied).toBe(true);
+    expect(tab(tabId).loading).toBe(false);
+    expect(tab(tabId).error).toBe("connection reset");
+    // The old rows stay on screen, but never as if they were current.
+    expect(tab(tabId).data?.page).toBe(1);
+    expect(tab(tabId).stale).toBe(true);
+  });
+
+  it("drops a stale error from a superseded request", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const older = store.beginTabRequest(tabId);
+    const newer = useDbViewerStore.getState().beginTabRequest(tabId);
+
+    expect(
+      useDbViewerStore.getState().applyTabError(tabId, older, "boom"),
+    ).toBe(false);
+    expect(tab(tabId).error).toBeNull();
+    expect(tab(tabId).loading).toBe(true);
+
+    useDbViewerStore.getState().applyTabResult(tabId, newer, result(1));
+    expect(tab(tabId).loading).toBe(false);
+  });
+
+  it("clears the stale flag when a fresh run succeeds", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const first = store.beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabResult(tabId, first, result(1));
+    const failing = useDbViewerStore.getState().beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabError(tabId, failing, "boom");
+    expect(tab(tabId).stale).toBe(true);
+
+    const retry = useDbViewerStore.getState().beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabResult(tabId, retry, result(3));
+
+    expect(tab(tabId).stale).toBe(false);
+    expect(tab(tabId).error).toBeNull();
+    expect(tab(tabId).data?.page).toBe(3);
+  });
+
+  it("cancelling a tab request is final and marks the previous rows stale", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const first = store.beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabResult(tabId, first, result(1));
+
+    const cancelled = useDbViewerStore.getState().beginTabRequest(tabId);
+    useDbViewerStore.getState().cancelTabRequest(tabId, "Query cancelled");
+
+    const after = tab(tabId);
+    expect(after.loading).toBe(false);
+    expect(after.error).toBe("Query cancelled");
+    expect(after.stale).toBe(true);
+
+    // The cancelled run eventually settles: it must not reopen or overwrite.
+    expect(
+      useDbViewerStore
+        .getState()
+        .applyTabResult(tabId, cancelled, result(9)),
+    ).toBe(false);
+    expect(tab(tabId).error).toBe("Query cancelled");
+    expect(tab(tabId).data?.page).toBe(1);
+  });
+
+  it("setTabError keeps the data and marks it stale", () => {
+    const store = useDbViewerStore.getState();
+    const tabId = openQuery();
+    const first = store.beginTabRequest(tabId);
+    useDbViewerStore.getState().applyTabResult(tabId, first, result(1));
+
+    useDbViewerStore.getState().setTabError(tabId, "budget exceeded");
+
+    expect(tab(tabId).stale).toBe(true);
+    expect(tab(tabId).loading).toBe(false);
+    expect(tab(tabId).data?.page).toBe(1);
+  });
+});
+
+describe("tab identity and freshness", () => {
+  const tab = (id: string) =>
+    useDbViewerStore.getState().tabs.find((t) => t.id === id)!;
+
+  it("stamps every tab with the Change Origin it was opened on", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openQueryTab();
+    useDbViewerStore.getState().openObjectTab("functions", "public", "fn");
+
+    for (const t of useDbViewerStore.getState().tabs) {
+      expect(t.origin?.connectionId).toBe("c1");
+      expect(t.origin?.database).toBe("appdb");
+    }
+  });
+
+  it("keeps a query, an object and a table with the same label as three tabs", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.setState({ currentSchema: "public" });
+    const store = useDbViewerStore.getState();
+
+    store.openQueryTab({ label: "users" });
+    store.openObjectTab("functions", "public", "users");
+    store.openTab("public", "users");
+
+    const tabs = useDbViewerStore.getState().tabs;
+    expect(tabs.map((t) => t.tabType)).toEqual(["query", "object", "table"]);
+    expect(new Set(tabs.map((t) => t.id)).size).toBe(3);
+    // the table tab is the one the user just asked for
+    expect(useDbViewerStore.getState().activeTabId).toBe(tabs[2].id);
+  });
+
+  it("still dedups a re-opened table tab of the same origin", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().openTab("public", "users");
+    expect(useDbViewerStore.getState().tabs).toHaveLength(1);
+  });
+
+  it("opens a second tab for the same table in another database", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().setCurrentDatabase("analytics");
+    useDbViewerStore.getState().openTab("public", "users");
+
+    const tabs = useDbViewerStore.getState().tabs;
+    expect(tabs).toHaveLength(2);
+    expect(tabs.map((t) => t.origin?.database)).toEqual(["appdb", "analytics"]);
+  });
+
+  it("marks tabs from another database visibly stale without dropping their rows", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    const tabId = useDbViewerStore.getState().activeTabId!;
+    useDbViewerStore.getState().setTabData(tabId, {
+      columns: [],
+      rows: [[1]],
+      total_rows: 1,
+      page: 1,
+      page_size: 50,
+    });
+
+    const analytics = changeOriginFor(
+      { ...savedConnection(), database: "analytics" },
+      "analytics",
+    );
+    const restored = useDbViewerStore.getState().syncTabOrigins(analytics);
+
+    const after = tab(tabId);
+    expect(restored).toEqual([]);
+    expect(after.outOfOrigin).toBe(true);
+    expect(after.stale).toBe(true);
+    expect(after.staleReason).toContain("appdb");
+    expect(after.data?.rows).toEqual([[1]]);
+    // any request still in flight for the old context can no longer land
+    expect(after.requestSeq).toBe(1);
+  });
+
+  it("re-queries a tab that comes back into context", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    const tabId = useDbViewerStore.getState().activeTabId!;
+    const appdb = changeOriginFor(savedConnection(), "appdb");
+    const analytics = changeOriginFor(
+      { ...savedConnection(), database: "analytics" },
+      "analytics",
+    );
+
+    useDbViewerStore.getState().syncTabOrigins(analytics);
+    const restored = useDbViewerStore.getState().syncTabOrigins(appdb);
+
+    expect(restored).toEqual([tabId]);
+    const after = tab(tabId);
+    expect(after.outOfOrigin).toBe(false);
+    expect(after.stale).toBe(false);
+    expect(after.staleReason).toBeNull();
+    expect(after.loading).toBe(true);
+  });
+
+  it("keeps a tab with no recorded origin unmarked (nothing to contradict)", () => {
+    useDbViewerStore.getState().openTab("public", "users");
+    const tabId = useDbViewerStore.getState().activeTabId!;
+    useDbViewerStore
+      .getState()
+      .syncTabOrigins(changeOriginFor(savedConnection(), "appdb"));
+    expect(tab(tabId).outOfOrigin).toBeFalsy();
+    expect(tab(tabId).stale).toBe(false);
+  });
+
+  it("prunes committed optimistic markers for a refreshed table only", () => {
+    activateTarget({}, "appdb");
+    const store = useDbViewerStore.getState();
+    const appdb = changeOriginFor(savedConnection(), "appdb");
+    store.addChange({
+      type: "update",
+      schema: "public",
+      table: "users",
+      primaryKey: { id: 1 },
+      oldData: { name: "Alice" },
+      newData: { name: "Alicia" },
+      origin: appdb,
+    });
+    store.addChange({
+      type: "update",
+      schema: "public",
+      table: "orders",
+      primaryKey: { id: 9 },
+      oldData: { total: 1 },
+      newData: { total: 2 },
+      origin: appdb,
+    });
+    for (const c of useDbViewerStore.getState().changesQueue) {
+      useDbViewerStore.getState().markChangeCommitted(c.id);
+    }
+
+    useDbViewerStore
+      .getState()
+      .pruneCommittedOptimisticMarkers(appdb, "public", "users");
+
+    const tables = useDbViewerStore
+      .getState()
+      .changesQueue.map((c) => c.table);
+    expect(tables).toEqual(["orders"]);
+  });
+
+  it("closeTabsForTable only closes tabs of the given origin", () => {
+    activateTarget({}, "appdb");
+    useDbViewerStore.getState().openTab("public", "users");
+    useDbViewerStore.getState().setCurrentDatabase("analytics");
+    useDbViewerStore.getState().openTab("public", "users");
+
+    const analytics = changeOriginFor(
+      { ...savedConnection(), database: "analytics" },
+      "analytics",
+    );
+    useDbViewerStore.getState().closeTabsForTable("public", "users", analytics);
+
+    const tabs = useDbViewerStore.getState().tabs;
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].origin?.database).toBe("appdb");
+  });
+
+  it("invalidateMetadata bumps a revision so metadata caches can be scoped to it", () => {
+    const before = useDbViewerStore.getState().metadataRev;
+    useDbViewerStore.getState().invalidateMetadata();
+    expect(useDbViewerStore.getState().metadataRev).toBe(before + 1);
   });
 });

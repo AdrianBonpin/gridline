@@ -1,20 +1,52 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TabBar } from "./TabBar";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useUiStore } from "../../stores/uiStore";
+import { useConnectionStore } from "../../stores/connectionStore";
+import type { Connection } from "../../lib/types";
 
 const user = userEvent.setup();
+
+function savedConnection(overrides: Partial<Connection> = {}): Connection {
+  return {
+    id: "c1",
+    name: "Local dev",
+    db_type: "postgresql",
+    host: "localhost",
+    port: 5432,
+    username: "dev",
+    database: "appdb",
+    folder_id: null,
+    keychain_ref: null,
+    tag_ids: [],
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    favorite: false,
+    ...overrides,
+  };
+}
+
+/** Make one saved connection + selected database the active Change Origin. */
+function activateTarget(overrides: Partial<Connection> = {}, database = "appdb") {
+  const connection = savedConnection(overrides);
+  useConnectionStore.setState({ connections: [connection] });
+  useUiStore.setState({ activeConnectionId: connection.id });
+  useDbViewerStore.setState({ currentDatabase: database });
+}
 
 describe("TabBar", () => {
   beforeEach(() => {
     useDbViewerStore.getState().reset();
+    activateTarget();
   });
 
   it("renders the fixed Query and Changes actions when no tabs are open", () => {
     render(<TabBar />);
     expect(screen.getByRole("button", { name: /new query/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Changes queue" })).toBeInTheDocument();
+    // stable anchor for the desktop E2E harness (composite-key edit flow)
+    expect(screen.getByTestId("changes-queue-toggle")).toBeInTheDocument();
   });
 
   it("renders open tab names", () => {
@@ -183,6 +215,29 @@ describe("TabBar", () => {
     render(<TabBar />);
     const button = screen.getByRole("button", { name: "Changes queue" });
     expect(within(button).queryByText(/\d/)).toBeNull();
+  });
+
+  it("counts only the active Change Origin's pending changes", async () => {
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    });
+    render(<TabBar />);
+    const button = screen.getByRole("button", { name: "Changes queue" });
+    expect(within(button).getByText("1")).toBeInTheDocument();
+
+    // Another saved connection becomes active: its queue is empty, so the
+    // staged work from the first origin must not be advertised here.
+    act(() => activateTarget({ id: "c2", host: "other.example.com" }));
+    expect(within(button).queryByText(/\d/)).toBeNull();
+    expect(button.className).not.toContain("border-amber-500");
+
+    // Returning to the first origin restores its count.
+    act(() => activateTarget());
+    expect(within(button).getByText("1")).toBeInTheDocument();
   });
 
   it("closes tab when close button clicked", async () => {

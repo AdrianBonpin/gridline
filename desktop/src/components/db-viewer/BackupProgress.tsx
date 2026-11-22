@@ -5,7 +5,14 @@ interface BackupProgressProps {
     jobType: string;
     status: "running" | "completed" | "failed" | "cancelled";
     errorMessage?: string | null;
+    /** Cancel a running job. Omitted when the job is not cancellable. */
     onCancel?: () => void;
+    /**
+     * Recovery action for a failed or cancelled job: run it again from the same
+     * form. A failure without a next step is a dead end, so the panel always
+     * offers one when the caller can provide it.
+     */
+    onRetry?: () => void;
 }
 
 export function BackupProgress({
@@ -14,8 +21,10 @@ export function BackupProgress({
     status,
     errorMessage,
     onCancel,
+    onRetry,
 }: BackupProgressProps) {
     const isRunning = status === "running";
+    const isFinished = status === "failed" || status === "cancelled";
 
     return (
         <div data-testid="backup-progress" className="w-full space-y-3">
@@ -32,11 +41,22 @@ export function BackupProgress({
                         {status === "cancelled" && "Cancelled"}
                     </span>
                 </div>
-                {isRunning && onCancel && (
-                    <Button variant="ghost" onClick={onCancel}>
-                        Cancel
-                    </Button>
-                )}
+                <div className="flex items-center gap-1">
+                    {isRunning && onCancel && (
+                        <Button variant="ghost" onClick={onCancel}>
+                            Cancel
+                        </Button>
+                    )}
+                    {isFinished && onRetry && (
+                        <Button
+                            variant="ghost"
+                            onClick={onRetry}
+                            data-testid="backup-retry"
+                        >
+                            Retry
+                        </Button>
+                    )}
+                </div>
             </div>
 
             {/* Progress bar */}
@@ -44,7 +64,11 @@ export function BackupProgress({
                 <div
                     data-testid="progress-bar-fill"
                     className={`absolute left-0 top-0 h-full rounded-full transition-all duration-300 ${
-                        status === "failed" ? "bg-red-500" : "bg-accent"
+                        status === "failed"
+                            ? "bg-red-500"
+                            : status === "cancelled"
+                              ? "bg-amber-500"
+                              : "bg-accent"
                     }`}
                     style={{
                         width: `${Math.min(100, Math.max(0, progress))}%`,
@@ -52,9 +76,18 @@ export function BackupProgress({
                 />
             </div>
 
-            {/* Error message */}
+            {/* Error message. Multi-line diagnostics (a tool's stderr plus what
+                the target now looks like) keep their line breaks. */}
             {errorMessage && status === "failed" && (
-                <p className="text-sm text-red-400">{errorMessage}</p>
+                <p className="whitespace-pre-line break-words text-sm text-red-400">
+                    {errorMessage}
+                </p>
+            )}
+            {status === "cancelled" && (
+                <p className="text-sm text-amber-300">
+                    Stopped before it finished. Retry to run it again; any
+                    partial output on disk was left in place.
+                </p>
             )}
         </div>
     );

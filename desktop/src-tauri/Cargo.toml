@@ -17,31 +17,49 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# Test-only rusqlite capability: `functions` lets a regression test register a
+# real in-database side effect (`bump()`), which is how "this request executed
+# the statement once" is *proven* instead of inferred from returned rows. It is
+# a dev-dependency so the shipped binary keeps the plain `bundled` feature set.
+[dev-dependencies]
+rusqlite = { version = "0.41", features = ["bundled", "functions"] }
+
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # URL percent-encoding for tokio-postgres connection strings (user/password may contain special chars)
 urlencoding = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+# File identity for the "is the dump destination the database itself?" check:
+# device+inode on Unix, volume+file index on Windows, so a symlink or hard link
+# to the source is caught instead of slipping past a string comparison.
+same-file = "1"
 tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
 bytes = "1"
 futures-util = "0.3"
 # chrono/bigdecimal: MySQL DECIMAL and DATE/TIME/DATETIME/TIMESTAMP have no
 # decoder without them, so those columns silently rendered as NULL (#41).
-sqlx = { version = "0.8", features = ["runtime-tokio", "mysql", "tls-rustls", "json", "chrono", "bigdecimal"] }
+sqlx = { version = "0.9.1", features = ["runtime-tokio", "mysql", "tls-rustls", "json", "chrono", "bigdecimal", "mysql-rsa"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
 # async-ssh2 is not available at v0.4; using synchronous ssh2 via tokio::task::spawn_blocking per plan's fallback
 # vendored-openssl: link OpenSSL statically so the release binary has NO
 # runtime dependency on the build machine's Homebrew openssl (@/opt/homebrew
 # absolute LC_LOAD_DYLIB — dyld aborts on user machines without it).
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+# Process-group supervision for managed tool jobs: terminate the whole child
+# process tree (pg_dump/pg_restore/psql helpers) on cancel or app exit.
+libc = "0.2"
+# SSH host trust (ADR 0001): OpenSSH-style SHA256 fingerprints, key-blob
+# decoding, and HMAC-SHA1 matching of hashed known-hosts entries.
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
 deadpool-postgres = { version = "0.14" }
 indexmap = { version = "2", features = ["serde"] }
 tauri-plugin-keyring-store = { version = "0.2.0", default-features = false }

@@ -1,0 +1,277 @@
+name: AppImage smoke
+
+# Packaged-artifact startup/paint coverage for the Linux AppImage.
+#
+# This lane launches the REAL `Gridline_*.AppImage` through its normal launcher
+# (`./Gridline_*.AppImage`, or AppImage's documented `--appimage-extract-and-run`
+# path when the host has no FUSE), waits for a mapped window at the configured
+# size, requires painted content (colour diversity + bright pixels, because the
+# app is dark-themed and a naive "black means broken" check would false-fail),
+# and fails on known-fatal renderer/web-process diagnostics. A FUSE/container
+# mount problem is reported separately from a rendering problem.
+#
+# WHAT THIS LANE CANNOT DO (do not reword into a fix claim): it can never close
+# issue #62. It sees a headless software-rendered X display, not the reporter's
+# Fedora session, compositor, GPU or driver. A green Fedora run is
+# cross-distribution compatibility coverage only.
+#
+# Triggers:
+#   * schedule   — nightly against the latest published release artifact,
+#   * dispatch   — manual; optionally name a release tag to re-check,
+#   * workflow_run — after the Release workflow finishes, so the AppImage that
+#                    was just built and uploaded is exercised before the draft
+#                    is published.
+#
+# Trust rules (asserted by scripts/check-workflows.sh): third-party actions are
+# pinned to full commit SHAs, the workflow token is default-deny with per-job
+# grants, and ref/tag metadata reaches shell steps through `env:` and is
+# compared as data — never interpolated into a `run:` body.
+
+on:
+  schedule:
+    # Nightly, off the release-window hours.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag whose AppImage to check (default: latest published release)'
+        required: false
+  workflow_run:
+    workflows: ['Release']
+    types: [completed]
+
+# Default-deny: each job below grants only the scope it uses.
+permissions: {}
+
+concurrency:
+  group: appimage-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Manual dispatch may name a release tag; empty means "resolve the newest
+  # published release". Read through `env:` so the value stays data.
+  REQUESTED_TAG: ${{ github.event.inputs.release_tag }}
+  # The Release run whose artifact this lane should pick up (workflow_run only).
+  RELEASE_RUN_ID: ${{ github.event.workflow_run.id }}
+  EVENT_NAME: ${{ github.event_name }}
+
+jobs:
+  # Obtain the exact packaged artifact under test and hand it to the smoke
+  # jobs as an artifact, so every smoke job runs the same bytes.
+  resolve:
+    name: resolve the AppImage under test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    # A failed Release run has no AppImage to smoke; skip instead of failing.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # Reads the release artifact or the Release run's artifacts; nothing else.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Fetch the AppImage from its Release run or Release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ "${EVENT_NAME}" = "workflow_run" ] && [ -n "${RELEASE_RUN_ID:-}" ]; then
+            echo "Taking the AppImage artifact built by Release run ${RELEASE_RUN_ID}"
+            gh run download "${RELEASE_RUN_ID}" -n appimage-linux-x86_64 -D dist
+          else
+            tag="${REQUESTED_TAG:-}"
+            if [ -z "${tag}" ]; then
+              tag="$(gh release view --json tagName --jq '.tagName')"
+            fi
+            echo "Downloading the published AppImage for ${tag}"
+            gh release download "${tag}" --pattern '*.AppImage' --dir dist
+          fi
+          chmod +x dist/*.AppImage
+          ls -l dist
+          # Exactly one packaged image, or the lane would test something
+          # unintended.
+          mapfile -t images < <(find dist -maxdepth 1 -name '*.AppImage' -type f)
+          if [ "${#images[@]}" -ne 1 ]; then
+            echo "expected exactly one .AppImage, found ${#images[@]}" >&2
+            exit 1
+          fi
+
+      - name: Upload the AppImage under test
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-under-test
+          path: dist/*.AppImage
+          retention-days: 7
+          if-no-files-found: error
+
+  # BLOCKING: the bounded headless software-rendered compatibility run. This is
+  # the run that can fail the lane.
+  smoke:
+    name: AppImage startup + paint (software-rendered)
+    needs: resolve
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # FUSE to launch the image the normal way, xvfb for the display, xdotool +
+      # x11-utils to find/measure the window, imagemagick to read its pixels.
+      - name: Install the smoke's host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download the AppImage under test
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: appimage-under-test
+          path: dist
+
+      # The packaged image is launched through its own launcher; the smoke
+      # re-executes itself under xvfb-run with a screen large enough for the
+      # window and adds only harness-local graphics flags.
+      - name: Run the packaged AppImage smoke
+        run: |
+          set -euo pipefail
+          appimage="$(ls dist/*.AppImage | head -n 1)"
+          chmod +x "$appimage"
+          bun run --filter gridline-desktop e2e:appimage -- \
+            --appimage "$appimage" \
+            --artifacts e2e-artifacts/software
+
+      - name: Upload the smoke's artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-smoke-software
+          path: desktop/e2e-artifacts/software
+          retention-days: 14
+          if-no-files-found: warn
+
+  # INFORMATIONAL: the pristine default-environment run — no graphics flags at
+  # all, which is closer to what a user's session looks like. It is reported,
+  # not enforced: a headless runner without a GPU is not the reporter's machine.
+  smoke-pristine:
+    name: AppImage startup + paint (pristine, informational)
+    needs: resolve
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    # Informational only: this run reports, it does not gate.
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install the smoke's host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download the AppImage under test
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: appimage-under-test
+          path: dist
+
+      - name: Run the packaged AppImage smoke with no graphics flags
+        run: |
+          set -euo pipefail
+          appimage="$(ls dist/*.AppImage | head -n 1)"
+          chmod +x "$appimage"
+          bun run --filter gridline-desktop e2e:appimage -- \
+            --appimage "$appimage" \
+            --pristine \
+            --artifacts e2e-artifacts/pristine
+
+      - name: Upload the smoke's artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-smoke-pristine
+          path: desktop/e2e-artifacts/pristine
+          retention-days: 14
+          if-no-files-found: warn
+
+  # INFORMATIONAL: Fedora container compatibility run. This is CROSS-DISTRIBUTION
+  # COMPATIBILITY COVERAGE ONLY — it is not a reproduction of issue #62 and a
+  # green result never closes #62. The container has no /dev/fuse, so the image
+  # is started through AppImage's documented --appimage-extract-and-run path.
+  smoke-fedora:
+    name: AppImage compatibility (Fedora container, cross-distro only)
+    needs: resolve
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    # Cross-distribution compatibility is reported, not enforced: Fedora here is
+    # a container, which is not the reporter's session.
+    continue-on-error: true
+    permissions:
+      contents: read
+    container:
+      image: fedora:latest
+      # Fedora ships a much newer glibc/WebKitGTK than the Ubuntu build baseline,
+      # which is exactly what makes this run informative; there is no /dev/fuse
+      # in the container, so the extract-and-run launcher path is used.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install the smoke's host tools
+        run: |
+          set -euo pipefail
+          dnf install -y \
+            gtk3 webkit2gtk4.1 libappindicator-gtk3 \
+            xorg-x11-server-Xvfb xdotool xorg-x11-utils \
+            ImageMagick fuse fuse-libs mesa-dri-drivers libglvnd-glx \
+            tar gzip git
+          dnf clean all
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download the AppImage under test
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: appimage-under-test
+          path: dist
+
+      - name: Run the packaged AppImage smoke on Fedora
+        run: |
+          set -euo pipefail
+          appimage="$(ls dist/*.AppImage | head -n 1)"
+          chmod +x "$appimage"
+          bun run --filter gridline-desktop e2e:appimage -- \
+            --appimage "$appimage" \
+            --extract-and-run \
+            --artifacts e2e-artifacts/fedora
+
+      - name: Upload the smoke's artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-smoke-fedora
+          path: desktop/e2e-artifacts/fedora
+          retention-days: 14
+          if-no-files-found: warn

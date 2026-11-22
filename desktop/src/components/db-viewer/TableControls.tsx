@@ -7,7 +7,14 @@ import {
 import { useDbViewerStore, type FilterRule, type SortRule } from "../../stores/dbViewerStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { Tooltip } from "../ui/Tooltip";
-import { exportData } from "../../lib/exportData";
+import { projectDeclaredCells, rowIdentityFor } from "../../lib/rowIdentity";
+import {
+  csvCopyCell,
+  exportData,
+  qualifiedNameSql,
+  quoteIdentifier,
+  sqlLiteral,
+} from "../../lib/exportData";
 import type { ColumnInfo } from "../../lib/types";
 
 const AUTO_REFRESH_OPTIONS = [
@@ -320,76 +327,87 @@ function BulkActionsDropdown({
   selectedRows,
   schema,
   table,
+  dbType,
   onClearSelection,
 }: {
   columns: ColumnInfo[];
   selectedRows: unknown[][];
   schema: string;
   table: string;
+  dbType: string;
   onClearSelection: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const addChange = useDbViewerStore((s) => s.addChange);
+  const notify = useNotificationStore((s) => s.notify);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text).catch(() => {});
     setOpen(false);
   };
 
+  // Every copy shares the export writers, so a copied row is projected,
+  // quoted and NULL-marked exactly like an exported one. Only the declared
+  // columns are copied: a no-PK row's trailing row locator is never data.
   const handleCopyJSON = () => {
     const json = selectedRows.map((row) => {
       const obj: Record<string, unknown> = {};
-      columns.forEach((c, i) => { obj[c.name] = row[i] ?? null; });
+      projectDeclaredCells(row, columns).forEach((cell, i) => {
+        obj[columns[i].name] = cell ?? null;
+      });
       return obj;
     });
     copyToClipboard(JSON.stringify(json, null, 2));
   };
 
   const handleCopyCSV = () => {
-    const headers = columns.map((c) => c.name);
-    const csvRows = [headers.map((h) => `"${h.replace(/"/g, '""')}"`).join(",")];
+    const csvRows = [columns.map((c) => csvCopyCell(c.name)).join(",")];
     for (const row of selectedRows) {
-      csvRows.push(
-        row.map((cell) => {
-          const s = cell === null || cell === undefined ? "" : String(cell);
-          return `"${s.replace(/"/g, '""')}"`;
-        }).join(","),
-      );
+      csvRows.push(projectDeclaredCells(row, columns).map(csvCopyCell).join(","));
     }
     copyToClipboard(csvRows.join("\n"));
   };
 
   const handleCopySQL = () => {
-    const headers = columns.map((c) => c.name);
+    const target = qualifiedNameSql(dbType, schema, table);
+    const columnList = columns.map((c) => quoteIdentifier(c.name, dbType)).join(", ");
     const lines: string[] = [];
     for (const row of selectedRows) {
-      const vals = row.map((cell) =>
-        cell === null ? "NULL"
-        : typeof cell === "number" ? String(cell)
-        : `'${String(cell).replace(/'/g, "''")}'`,
-      );
-      lines.push(`INSERT INTO ${schema}.${table} (${headers.join(", ")}) VALUES (${vals.join(", ")});`);
+      const vals = projectDeclaredCells(row, columns).map((cell) => sqlLiteral(cell, dbType));
+      lines.push(`INSERT INTO ${target} (${columnList}) VALUES (${vals.join(", ")});`);
     }
     copyToClipboard(lines.join("\n"));
   };
 
   const handleDeleteSelected = () => {
-    const pkCol = columns.find((c) => c.is_pk);
+    // One staged delete per selected row, each carrying the row's complete Row
+    // Identity: every primary-key column, or the backend locator when the table
+    // has no primary key. A row without a complete identity is never deleted
+    // through a partial or positional predicate.
+    let unaddressable = 0;
     for (const row of selectedRows) {
-      const pk: Record<string, unknown> = {};
-      if (pkCol) {
-        const ci = columns.findIndex((c) => c.name === pkCol.name);
-        if (ci >= 0) pk[pkCol.name] = row[ci] ?? null;
+      const identity = rowIdentityFor(columns, row, dbType);
+      if (!identity) {
+        unaddressable += 1;
+        continue;
       }
       addChange({
         type: "delete",
         schema,
         table,
-        primaryKey: pk,
-        oldData: Object.fromEntries(columns.map((c, i) => [c.name, row[i] ?? null])),
+        primaryKey: identity.values,
+        oldData: Object.fromEntries(
+          projectDeclaredCells(row, columns).map((cell, i) => [columns[i].name, cell]),
+        ),
         description: `Delete row from ${table}`,
       });
+    }
+    if (unaddressable > 0) {
+      notify(
+        `Cannot delete ${unaddressable} row${unaddressable === 1 ? "" : "s"}: no primary key or row locator to address them`,
+        "error",
+      );
     }
     setOpen(false);
     onClearSelection();
@@ -463,12 +481,20 @@ interface TableControlsProps {
   selectedRows: unknown[][];
   onClearSelection: () => void;
   defaultRefreshRate?: number;
+  /** Engine of the active connection (decides the no-PK row locator). */
+  dbType?: string;
   /** Hide data-modifying affordances (e.g. for materialized views). */
   isMatview?: boolean;
   /** "table" = full table toolbar; "query" = export/refresh/columns + timing */
   variant?: "table" | "query";
   /** Open the full-result streamed export dialog. */
   onExportToFile?: () => void;
+  /**
+   * Paging hook for callers that must guard the request (query tabs re-execute
+   * their text to fetch a page). When absent, paging updates the store directly.
+   */
+  onRequestPage?: (page: number) => void;
+  onRequestPageSize?: (pageSize: number) => void;
 }
 
 export function TableControls({
@@ -488,9 +514,12 @@ export function TableControls({
   selectedRows,
   onClearSelection,
   defaultRefreshRate = 0,
+  dbType = "postgresql",
   isMatview = false,
   variant = "table",
   onExportToFile,
+  onRequestPage,
+  onRequestPageSize,
 }: TableControlsProps) {
   const isQuery = variant === "query";
   const notify = useNotificationStore((s) => s.notify);
@@ -513,7 +542,7 @@ export function TableControls({
   const columnMenuWrapRef = useRef<HTMLDivElement>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const exportWrapRef = useRef<HTMLDivElement>(null);
-  const [autoRefresh, setAutoRefresh] = useState(defaultRefreshRate);
+  const [autoRefresh, setAutoRefresh] = useState(isQuery ? 0 : defaultRefreshRate);
   const [autoRefreshOpen, setAutoRefreshOpen] = useState(false);
   const autoRefreshWrapRef = useRef<HTMLDivElement>(null);
 
@@ -521,32 +550,62 @@ export function TableControls({
   // is idle. Fires a refresh, waits for it to complete (loading → false),
   // then starts a fresh countdown. Also resets whenever the active tab changes
   // so a freshly opened/reopened tab is not immediately refetched.
+  //
+  // Query tabs are excluded entirely: an ad-hoc query tab holds text the user
+  // edits and reviews per execution, so a timer that re-runs it would execute
+  // SQL nobody asked to run again. That holds even if a caller passes a
+  // non-zero `defaultRefreshRate`.
   useEffect(() => {
-    if (autoRefresh === 0) return;
+    if (isQuery || autoRefresh === 0) return;
     // While a refresh is in flight, wait for it to finish before counting down
     if (isRefreshing) return;
     const id = setTimeout(onRefresh, autoRefresh);
     return () => clearTimeout(id);
-  }, [autoRefresh, onRefresh, isRefreshing, activeTabId]);
+  }, [autoRefresh, onRefresh, isRefreshing, activeTabId, isQuery]);
 
   // pagination
-  const totalRows = activeTab?.data?.total_rows ?? rows.length;
+  //
+  // `total_rows` may be unknown (`null`): a paged query executes its statement
+  // once, so counting would run it a second time and repeat its side effects.
+  // In that case the toolbar reports the total as unknown and pages through the
+  // exact `has_more` flag instead of inventing a last page.
+  const exactTotal = activeTab?.data?.total_rows ?? null;
   const pageSize = activeTab?.pageSize ?? 50;
   const currentPage = activeTab?.page ?? 1;
-  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
-  const clampedPage = Math.max(1, Math.min(currentPage, totalPages));
-  const startRow = (clampedPage - 1) * pageSize + 1;
-  const endRow = Math.min(clampedPage * pageSize, totalRows);
+  const totalPages =
+    exactTotal === null ? null : Math.max(1, Math.ceil(exactTotal / pageSize));
+  const clampedPage =
+    totalPages === null
+      ? Math.max(1, currentPage)
+      : Math.max(1, Math.min(currentPage, totalPages));
+  const startRow = rows.length === 0 ? 0 : (clampedPage - 1) * pageSize + 1;
+  const endRow =
+    rows.length === 0
+      ? 0
+      : exactTotal === null
+        ? startRow + rows.length - 1
+        : Math.min(clampedPage * pageSize, exactTotal);
+  const hasMore = activeTab?.data?.has_more ?? rows.length >= pageSize;
+  const canGoNext = totalPages === null ? hasMore : clampedPage < totalPages;
 
   const handlePrev = () => {
-    if (clampedPage > 1 && activeTabId) setPage(activeTabId, clampedPage - 1);
+    if (clampedPage > 1 && activeTabId) {
+      if (onRequestPage) onRequestPage(clampedPage - 1);
+      else setPage(activeTabId, clampedPage - 1);
+    }
   };
   const handleNext = () => {
-    if (clampedPage < totalPages && activeTabId) setPage(activeTabId, clampedPage + 1);
+    if (canGoNext && activeTabId) {
+      if (onRequestPage) onRequestPage(clampedPage + 1);
+      else setPage(activeTabId, clampedPage + 1);
+    }
   };
 
   const handlePageSizeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    if (activeTabId) setPageSize(activeTabId, Number(e.target.value));
+    const size = Number(e.target.value);
+    if (!activeTabId) return;
+    if (onRequestPageSize) onRequestPageSize(size);
+    else setPageSize(activeTabId, size);
   };
 
   const handleInsertRow = () => {
@@ -573,7 +632,7 @@ export function TableControls({
     const label =
       EXPORT_FORMATS.find((f) => f.ext === format)?.label ?? format.toUpperCase();
     try {
-      exportData(rows, columns, format, table);
+      exportData(rows, columns, format, table, { schema, dbType });
       notify(
         `Exported ${rows.length} row${rows.length === 1 ? "" : "s"} as ${label}`,
         "success",
@@ -870,6 +929,7 @@ export function TableControls({
               selectedRows={selectedRows}
               schema={schema}
               table={table}
+              dbType={dbType}
               onClearSelection={onClearSelection}
             />
             <button
@@ -890,7 +950,7 @@ export function TableControls({
 
         {/* Row count */}
         <span className="tabular-nums">
-          {startRow}-{endRow} of {totalRows}
+          {startRow}-{endRow} of {exactTotal === null ? "total unknown" : exactTotal}
         </span>
 
         {/* Page size */}
@@ -918,12 +978,13 @@ export function TableControls({
             <ChevronLeft size={14} />
           </button>
           <span className="tabular-nums min-w-[3rem] text-center">
-            {clampedPage}/{totalPages}
+            {clampedPage}
+            {totalPages === null ? "" : `/${totalPages}`}
           </span>
           <button
             type="button"
             onClick={handleNext}
-            disabled={clampedPage >= totalPages}
+            disabled={!canGoNext}
             className="rounded p-0.5 hover:bg-surface-raised disabled:opacity-30 disabled:pointer-events-none transition-colors"
             aria-label="Next page"
           >

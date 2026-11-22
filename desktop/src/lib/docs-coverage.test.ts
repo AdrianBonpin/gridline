@@ -4,10 +4,14 @@ import { describe, it, expect } from "vitest";
 import agents from "../../../AGENTS.md?raw";
 import readme from "../../../README.md?raw";
 import landing from "../../../www/public/landing.js?raw";
+import landingPage from "../../../www/src/pages/index.astro?raw";
 import roadmap from "../../../ROADMAP.md?raw";
 import security from "../../../SECURITY.md?raw";
 
-describe("v0.8.4 docs coverage", () => {
+// Version numbers in the README, the landing page and the changelog are
+// asserted once, in version.test.ts, and against the release version rather
+// than a literal — this suite covers what the docs say beyond the number.
+describe("docs coverage", () => {
   it("AGENTS.md marks inline cell editing complete", () => {
     expect(agents).toContain("Inline cell editing");
     expect(agents).toMatch(/Inline cell editing \| ✅/);
@@ -26,9 +30,6 @@ describe("v0.8.4 docs coverage", () => {
     expect(agents).toMatch(/Favorites \/ Recent connections \| ✅/);
     expect(agents).toMatch(/Connection status indicator on cards \| ✅/);
     expect(agents).toMatch(/Move-to-folder bulk action \| ✅/);
-  });
-  it("README declares v0.8.4", () => {
-    expect(readme).toContain("0.8.4");
   });
   it("AGENTS.md marks schema CRUD complete", () => {
     expect(agents).toMatch(/Schema CRUD \| ✅/);
@@ -67,13 +68,13 @@ describe("v0.8.4 docs coverage", () => {
     expect(agents).toMatch(/Cancel long-running queries \| ✅/);
     expect(agents).toMatch(/Settings export\/import \| ✅/);
   });
-  it("README links to v0.8.4 assets in both download tables", () => {
-    expect(readme).toContain("releases/download/v0.8.4/");
-    expect(readme).toContain("Gridline_0.8.4_aarch64.dmg");
-    expect(readme).toContain("Gridline-0.8.4-1.x86_64.rpm");
+  it("README download tables name the versioned assets", () => {
+    expect(readme).toContain("releases/download/v");
+    expect(readme).toContain("_aarch64.dmg");
+    expect(readme).toContain("-1.x86_64.rpm");
   });
-  it("landing.js platform download links point to v0.8.4", () => {
-    expect(landing).toContain('const version = "0.8.4"');
+  it("landing.js builds its download links from a version const", () => {
+    expect(landing).toContain("const version =");
   });
   it("AGENTS.md documents the native MySQL restore and the .sql association", () => {
     // These claims would actively mislead the next contributor if they were
@@ -87,6 +88,56 @@ describe("v0.8.4 docs coverage", () => {
     expect(readme).toContain("SECURITY.md");
     expect(agents).toContain("SECURITY.md");
     expect(agents.toLowerCase()).toContain("vulnerabilit");
+  });
+});
+
+describe("Linux support surface and issue #62", () => {
+  it("README points users at the Linux support and troubleshooting section", () => {
+    expect(readme).toContain("## Linux support and troubleshooting");
+    expect(readme).toContain("#linux-support-and-troubleshooting");
+  });
+  it("README no longer claims every Linux distribution works", () => {
+    // "Works on every distro" was an unevidenced promise; the replacement states
+    // what is built and tested (Ubuntu 22.04, glibc 2.35, x86_64 only).
+    expect(readme.toLowerCase()).not.toContain("works on every distro");
+    expect(readme).toMatch(/\*\*not\*\* verified on every Linux distribution/);
+    expect(readme).toContain("glibc 2.35");
+    expect(readme).toContain("x86_64 only");
+  });
+  it("README troubleshooting requests the evidence a black-window report needs", () => {
+    // Exact distribution release, session type, GPU/driver, terminal output.
+    expect(readme).toContain("/etc/os-release");
+    expect(readme).toContain("XDG_SESSION_TYPE");
+    expect(readme).toContain("lspci -k");
+    expect(readme).toContain("glxinfo -B");
+    expect(readme).toContain("--appimage-extract-and-run");
+  });
+  it("README documents the graphics workaround ladder and what each step isolates", () => {
+    expect(readme).toContain("WEBKIT_DISABLE_DMABUF_RENDERER=1");
+    expect(readme).toContain("WEBKIT_DISABLE_COMPOSITING_MODE=1");
+    expect(readme).toContain("LIBGL_ALWAYS_SOFTWARE=1");
+    expect(readme).toContain("GDK_BACKEND=x11");
+    // Diagnostics only: the app must not bake a graphics override in.
+    expect(readme).toContain("They are diagnostics, not fixes Gridline ships");
+  });
+  it("README records #62 as open with no root cause and no shipped fix", () => {
+    expect(readme).toContain("issues/62");
+    expect(readme).toContain("the root cause is not identified and no fix has shipped");
+    expect(readme).toMatch(/it stays \*\*open\*\*, with no root cause and no shipped fix/i);
+  });
+  it("landing.js stops guessing macOS architecture and Linux package from the user agent", () => {
+    // Both are undetectable in a browser, so those visitors get the explicit list.
+    expect(landing).not.toContain("x86_64.rpm");
+    expect(landing).not.toContain("aarch64.dmg");
+    expect(landing).toContain('const choicesUrl = "#download"');
+  });
+  it("the landing page lists every macOS architecture and Linux package explicitly", () => {
+    expect(landingPage).toContain("Gridline_${version}_aarch64.dmg");
+    expect(landingPage).toContain("Gridline_${version}_x64.dmg");
+    expect(landingPage).toContain("Gridline_${version}_amd64.deb");
+    expect(landingPage).toContain("Gridline-${version}-1.x86_64.rpm");
+    expect(landingPage).toContain("Gridline_${version}_amd64.AppImage");
+    expect(landingPage).toContain("issues/62");
   });
 });
 

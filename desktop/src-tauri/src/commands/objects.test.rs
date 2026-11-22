@@ -22,7 +22,7 @@ async fn pool() -> (tokio::sync::Mutex<ConnectionPoolManager>, String) {
     });
     let mut pm = ConnectionPoolManager::new();
     let id = "test-conn".to_string();
-    pm.register(&id, DbHandle::Postgresql(client, handle));
+    pm.register(&id, DbHandle::postgresql(client, handle));
     (tokio::sync::Mutex::new(pm), id)
 }
 
@@ -102,7 +102,7 @@ async fn build_object_ddl_inner_guards_missing_connection_and_rejects_unknown_op
     // SQLite now dispatches to the SQLite table builders; non-table ops are rejected.
     pm.lock().await.register(
         "sqlite",
-        DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
     );
     let err = build_object_ddl_inner(
         &pm,
@@ -122,7 +122,7 @@ fn fresh_pool_with_sqlite() -> ConnectionPoolManager {
     let mut pm = ConnectionPoolManager::new();
     pm.register(
         "c",
-        DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
     );
     pm
 }
@@ -148,6 +148,697 @@ async fn build_object_ddl_sqlite_create_yields_sqlite_sql() {
     assert!(sqls.iter().all(|s| !s.contains("serial")), "{sqls:?}");
 }
 
+/// Run a batch of staged statements on the in-memory SQLite handle.
+async fn sqlite_exec(pm: &tokio::sync::Mutex<ConnectionPoolManager>, sqls: &[String]) {
+    let handle = pm.lock().await.acquire("c").unwrap();
+    match handle {
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            for s in sqls {
+                conn.execute_batch(s).unwrap_or_else(|e| panic!("{s}: {e}"));
+            }
+        }
+        _ => panic!("expected a sqlite handle"),
+    }
+}
+
+/// How many `sqlite_master` rows of `kind` carry `name`.
+async fn sqlite_master_count(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    kind: &str,
+    name: &str,
+) -> i64 {
+    let mut g = pm.lock().await;
+    match g.get("c").unwrap() {
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                rusqlite::params![kind, name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        }
+        _ => panic!("expected a sqlite handle"),
+    }
+}
+
+/// Read one table's column names in physical order, plus every row.
+async fn sqlite_columns_and_rows(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    table: &str,
+) -> (Vec<String>, Vec<String>) {
+    let handle = pm.lock().await.acquire("c").unwrap();
+    match handle {
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            let cols: Vec<String> = {
+                let mut stmt = conn
+                    .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+                    .unwrap();
+                stmt.query_map([], |r| r.get::<_, String>(1))
+                    .unwrap()
+                    .filter_map(|r| r.ok())
+                    .collect()
+            };
+            let expr: Vec<String> = cols
+                .iter()
+                .map(|c| format!("ifnull(CAST(\"{c}\" AS TEXT), '<null>')"))
+                .collect();
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {} FROM \"{table}\"",
+                    expr.join(" || '|' || ")
+                ))
+                .unwrap();
+            let rows: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+            (cols, rows)
+        }
+        _ => panic!("expected a sqlite handle"),
+    }
+}
+
+#[tokio::test]
+async fn sqlite_edit_add_in_middle_stages_only_add_and_keeps_rows() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(
+        &pm,
+        &[
+            "CREATE TABLE \"main\".\"users\" (\"id\" INTEGER PRIMARY KEY, \"name\" TEXT, \"age\" INTEGER)".into(),
+            "INSERT INTO \"main\".\"users\" VALUES (1, 'ada', 36)".into(),
+        ],
+    )
+    .await;
+
+    // `email` is inserted between `id` and `name`: it occupies the ordinal that
+    // `name` used to hold.
+    let params = serde_json::json!({
+        // The form is seeded from the live snapshot, which is what a real edit
+        // sends back (SQLite reports an INTEGER PRIMARY KEY as nullable).
+        "schema": "main", "name": "users",
+        "action": { "op": "edit", "columns": [
+            { "name": "id", "type": "INTEGER", "nullable": true, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+            { "name": "email", "type": "TEXT", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false },
+            { "name": "name", "type": "TEXT", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false },
+            { "name": "age", "type": "INTEGER", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
+        ] }
+    });
+    let sqls = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqls,
+        vec!["ALTER TABLE \"main\".\"users\" ADD COLUMN \"email\" TEXT"],
+        "only the add is staged"
+    );
+    sqlite_exec(&pm, &sqls).await;
+    // SQLite appends an added column physically; the point is that `name` and
+    // `age` kept their own values instead of shifting into another column.
+    let (cols, rows) = sqlite_columns_and_rows(&pm, "users").await;
+    assert_eq!(cols, vec!["id", "name", "age", "email"]);
+    assert_eq!(rows, vec!["1|ada|36|<null>"], "no value moved");
+}
+
+#[tokio::test]
+async fn sqlite_edit_explicit_rename_keeps_values_under_the_new_name() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(
+        &pm,
+        &[
+            "CREATE TABLE \"main\".\"users\" (\"id\" INTEGER PRIMARY KEY, \"name\" TEXT)".into(),
+            "INSERT INTO \"main\".\"users\" VALUES (1, 'ada')".into(),
+        ],
+    )
+    .await;
+
+    let params = serde_json::json!({
+        "schema": "main", "name": "users",
+        "action": { "op": "edit", "columns": [
+            { "name": "id", "type": "INTEGER", "nullable": true, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+            { "name": "label", "type": "TEXT", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false, "renamed_from": "name" }
+        ] }
+    });
+    let sqls = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqls,
+        vec!["ALTER TABLE \"main\".\"users\" RENAME COLUMN \"name\" TO \"label\""],
+        "an explicit rename stages only a rename"
+    );
+    sqlite_exec(&pm, &sqls).await;
+    let (cols, rows) = sqlite_columns_and_rows(&pm, "users").await;
+    assert_eq!(cols, vec!["id", "label"]);
+    assert_eq!(rows, vec!["1|ada"], "the value followed the column");
+}
+
+// ---------------------------------------------------------------------------
+// SQLite rebuild guard: a submission that needs a rebuild is refused before any
+// mutation, with a reason naming the blocker (ticket 08)
+// ---------------------------------------------------------------------------
+
+/// The demo `order_items` shape: composite PK, a CHECK, a foreign key, and an
+/// explicit index — every one of which the current rebuild script would drop.
+const RICH_TABLE: &str = r#"
+CREATE TABLE "main"."order_items" (
+    "order_id"   INTEGER NOT NULL REFERENCES "orders"("id"),
+    "product_id" INTEGER NOT NULL,
+    "quantity"   INTEGER NOT NULL DEFAULT 1 CHECK ("quantity" > 0),
+    "unit_price" REAL NOT NULL,
+    PRIMARY KEY ("order_id", "product_id")
+);
+CREATE INDEX "main"."idx_order_items_product_id" ON "order_items"("product_id");
+INSERT INTO "main"."order_items" VALUES (1, 7, 2, 34.99);
+"#;
+
+async fn pool_with_rich_table() -> tokio::sync::Mutex<ConnectionPoolManager> {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(
+        &pm,
+        &[
+            "CREATE TABLE \"main\".\"orders\" (\"id\" INTEGER PRIMARY KEY)".into(),
+            "INSERT INTO \"main\".\"orders\" VALUES (1)".into(),
+            RICH_TABLE.to_string(),
+        ],
+    )
+    .await;
+    pm
+}
+
+fn rich_columns() -> serde_json::Value {
+    serde_json::json!([
+        { "name": "order_id", "type": "INTEGER", "nullable": false, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+        { "name": "product_id", "type": "INTEGER", "nullable": false, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+        { "name": "quantity", "type": "INTEGER", "nullable": false, "default": "1", "is_pk": false, "auto_increment": false, "unique": false },
+        { "name": "unit_price", "type": "REAL", "nullable": false, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
+    ])
+}
+
+#[tokio::test]
+async fn sqlite_edit_that_needs_a_rebuild_preserves_the_rich_table() {
+    let pm = pool_with_rich_table().await;
+    // Changing a declared type cannot be expressed by ALTER TABLE, so this
+    // submission is a rebuild — and that rebuild has to carry the CHECK, the
+    // foreign key, the composite primary key, and the explicit index.
+    let mut columns = rich_columns();
+    columns[2]["type"] = serde_json::json!("TEXT");
+    let params = serde_json::json!({
+        "schema": "main", "name": "order_items",
+        "action": { "op": "edit", "columns": columns }
+    });
+    let sqls = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .expect("a rich table is rebuildable");
+    let script = sqls.join(";\n");
+    for preserved in [
+        "CHECK (\"quantity\" > 0)",
+        "REFERENCES \"orders\"(\"id\")",
+        "PRIMARY KEY (\"order_id\", \"product_id\")",
+        "CREATE INDEX \"idx_order_items_product_id\"",
+        "\"quantity\" TEXT",
+    ] {
+        assert!(
+            script.contains(preserved),
+            "the rebuild keeps {preserved}: {script}"
+        );
+    }
+
+    // And it really applies: the composite key, the index, and the row survive.
+    crate::commands::db_viewer::execute_change_inner(
+        &pm,
+        "c",
+        crate::models::db_viewer::Change::RebuildTable {
+            id: "rb-edit".into(),
+            table: "order_items".into(),
+            sql: script,
+        },
+    )
+    .await
+    .expect("the rebuild applies");
+    let (cols, rows) = sqlite_columns_and_rows(&pm, "order_items").await;
+    assert_eq!(cols[2], "quantity", "the retyped column kept its place");
+    assert_eq!(rows, vec!["1|7|2|34.99".to_string()]);
+    assert_eq!(
+        sqlite_master_count(&pm, "index", "idx_order_items_product_id").await,
+        1,
+        "the index came back"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_edit_that_needs_no_rebuild_is_still_staged() {
+    // The guard must not refuse ALTER-only work on a table it would refuse to
+    // rebuild: adding a nullable column touches no metadata.
+    let pm = pool_with_rich_table().await;
+    let mut columns = rich_columns();
+    columns.as_array_mut().unwrap().push(serde_json::json!(
+        { "name": "discount", "type": "REAL", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
+    ));
+    let params = serde_json::json!({
+        "schema": "main", "name": "order_items",
+        "action": { "op": "edit", "columns": columns }
+    });
+    let sqls = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .expect("an ALTER-only edit needs no rebuild guard");
+    assert_eq!(
+        sqls,
+        vec!["ALTER TABLE \"main\".\"order_items\" ADD COLUMN \"discount\" REAL".to_string()],
+        "only the add is staged"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_rebuild_op_of_a_rich_table_preserves_its_metadata() {
+    let pm = pool_with_rich_table().await;
+    let params = serde_json::json!({
+        "schema": "main", "name": "order_items",
+        "action": { "op": "rebuild", "columns": rich_columns() }
+    });
+    let sqls = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .expect("a rich table is rebuildable");
+    let script = sqls.join(";\n");
+    assert!(script.contains("CHECK (\"quantity\" > 0)"), "{script}");
+    assert!(
+        script.contains("CREATE INDEX \"idx_order_items_product_id\""),
+        "{script}"
+    );
+
+    // Committing the staged script re-checks it against the live table, then
+    // applies it in one transaction.
+    let change = crate::models::db_viewer::Change::RebuildTable {
+        id: "rb-rich".into(),
+        table: "order_items".into(),
+        sql: script,
+    };
+    crate::commands::db_viewer::execute_change_inner(&pm, "c", change)
+        .await
+        .expect("the rebuild applies");
+    let (_, rows) = sqlite_columns_and_rows(&pm, "order_items").await;
+    assert_eq!(rows, vec!["1|7|2|34.99".to_string()], "the row survived");
+    assert_eq!(
+        sqlite_master_count(&pm, "index", "idx_order_items_product_id").await,
+        1,
+        "the index survived"
+    );
+}
+
+/// The stored `sql` of one `sqlite_master` object (empty when it has none).
+async fn sqlite_master_sql(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    kind: &str,
+    name: &str,
+) -> String {
+    let mut g = pm.lock().await;
+    match g.get("c").unwrap() {
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            conn.query_row(
+                "SELECT coalesce(sql, '') FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                rusqlite::params![kind, name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        }
+        _ => panic!("expected a sqlite handle"),
+    }
+}
+
+/// A permutation rename (`a→b`, `b→a`) keeps the column-name SET unchanged, so
+/// it looks exactly like a pure reorder: same names, different order. SQLite's
+/// rebuild CAN carry it — it copies each new column from its `renamed_from`
+/// source and rewrites the stored index/trigger text — but only when the rename
+/// intent arrives as `renamed_from`.
+///
+/// The form used to hand the builder its own rows, which carry the marker
+/// `original_name`; the backend structs read `renamed_from`, so every entry
+/// deserialized as `renamed_from: null` and the copy fell back to an identity
+/// `SELECT`. Both renames were dropped and the table came back as a plain
+/// reorder with no error at all — the forbidden outcome.
+///
+/// This asserts the real outcome, not a payload shape: build the script from the
+/// payload the form now sends, commit it the way the queue does, and read the
+/// table back. Both NAMES move, and each VALUE travels with its column (an
+/// identity copy would swap the names but leave every value where it was).
+#[tokio::test]
+async fn sqlite_rebuild_applies_a_permutation_rename_to_names_and_values() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(
+        &pm,
+        &[
+            "CREATE TABLE \"main\".\"t\" (\"a\" TEXT, \"b\" TEXT)".into(),
+            "CREATE INDEX \"idx_t_a\" ON \"t\"(\"a\")".into(),
+            "INSERT INTO \"main\".\"t\" VALUES ('in-a', 'in-b')".into(),
+        ],
+    )
+    .await;
+
+    // Exactly what `TableForm` stages for a SQLite rebuild: each row converted
+    // through `toSqlColumn` (snake_case fields + `renamed_from`), in the dragged
+    // order, with no `original_name` — the form's marker is not a backend field.
+    let payload = serde_json::json!([
+        { "name": "b", "type": "TEXT", "nullable": true, "default": null,
+          "is_pk": false, "unique": false, "auto_increment": false, "renamed_from": "a" },
+        { "name": "a", "type": "TEXT", "nullable": true, "default": null,
+          "is_pk": false, "unique": false, "auto_increment": false, "renamed_from": "b" }
+    ]);
+    let script = build_rebuild_script_inner(&pm, "c", "main", "t", payload)
+        .await
+        .expect("a swap is expressible as a SQLite rebuild");
+    assert!(
+        script.contains("(\"b\", \"a\") SELECT \"a\", \"b\" FROM \"main\".\"t\""),
+        "the copy must name the source of every new column, not itself: {script}"
+    );
+
+    // Commit it the way the queue does: re-validated against the live shape,
+    // applied in one transaction.
+    crate::commands::db_viewer::execute_change_inner(
+        &pm,
+        "c",
+        crate::models::db_viewer::Change::RebuildTable {
+            id: "rb-permutation".into(),
+            table: "t".into(),
+            sql: script,
+        },
+    )
+    .await
+    .expect("the swap applies");
+
+    let (cols, rows) = sqlite_columns_and_rows(&pm, "t").await;
+    assert_eq!(cols, vec!["b", "a"], "both names moved (the order swapped)");
+    assert_eq!(
+        rows,
+        vec!["in-a|in-b".to_string()],
+        "each value travelled with its column: the new \"b\" holds what \"a\" held \
+         (an identity copy would give in-b|in-a)"
+    );
+    // The index named the old column and follows it, rather than being lost.
+    assert_eq!(sqlite_master_count(&pm, "index", "idx_t_a").await, 1);
+    assert_eq!(
+        sqlite_master_sql(&pm, "index", "idx_t_a").await,
+        "CREATE INDEX \"idx_t_a\" ON \"t\"(\"b\")".to_string(),
+        "the preserved index follows the renamed column"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_rebuild_readiness_answers_for_the_proposed_columns() {
+    let pm = pool_with_rich_table().await;
+    // ALTER-only submission: no rebuild, so nothing to answer.
+    let mut added = rich_columns();
+    added.as_array_mut().unwrap().push(serde_json::json!(
+        { "name": "discount", "type": "REAL", "nullable": true, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
+    ));
+    let ready = get_table_rebuild_readiness_inner(&pm, "c", "main", "order_items", Some(added))
+        .await
+        .unwrap();
+    assert!(ready.ok, "{ready:?}");
+    assert!(ready.reasons.is_empty(), "{ready:?}");
+
+    // A type change is a rebuild, and this table's CHECK, foreign key, composite
+    // primary key, and index are all reproducible.
+    let mut retyped = rich_columns();
+    retyped[2]["type"] = serde_json::json!("TEXT");
+    let rebuilt = get_table_rebuild_readiness_inner(&pm, "c", "main", "order_items", Some(retyped))
+        .await
+        .unwrap();
+    assert!(rebuilt.ok, "{rebuilt:?}");
+    assert!(rebuilt.reasons.is_empty(), "{rebuilt:?}");
+
+    // Without proposed columns the answer is about the live table as-is.
+    let live = get_table_rebuild_readiness_inner(&pm, "c", "main", "order_items", None)
+        .await
+        .unwrap();
+    assert!(live.ok, "the rich table can be rebuilt: {live:?}");
+
+    // Dropping the column the explicit index covers genuinely cannot be
+    // preserved, and the readiness answer names it before anything is staged.
+    let dropped: Vec<serde_json::Value> = rich_columns()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["name"] != "product_id")
+        .cloned()
+        .collect();
+    let refused = get_table_rebuild_readiness_inner(
+        &pm,
+        "c",
+        "main",
+        "order_items",
+        Some(serde_json::Value::Array(dropped)),
+    )
+    .await
+    .unwrap();
+    assert!(!refused.ok, "{refused:?}");
+    assert!(
+        refused
+            .reasons
+            .iter()
+            .any(|r| r.contains("idx_order_items_product_id") && r.contains("product_id")),
+        "the reason names the index and the column: {refused:?}"
+    );
+}
+
+/// The real seeded demo schema: the shapes the demo deliberately contains
+/// (AUTOINCREMENT, FKs, CHECKs, UNIQUEs, composite PKs, indexes, expression
+/// defaults, views) are the regression fixture for the guard — each one is
+/// either reproducible by the rebuild script or refused by name.
+const DEMO_SCHEMA: &str = include_str!("demo_schema.sql");
+
+#[tokio::test]
+async fn sqlite_rebuild_guard_accepts_the_demo_tables_it_can_reproduce() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(&pm, &[DEMO_SCHEMA.to_string()]).await;
+    for table in [
+        "users",
+        "categories",
+        "products",
+        "addresses",
+        "orders",
+        "order_items",
+        "audit_log",
+        "files",
+        "page_views",
+        "app_settings",
+        "marketing_campaigns",
+    ] {
+        let readiness = get_table_rebuild_readiness_inner(&pm, "c", "main", table, None)
+            .await
+            .unwrap_or_else(|e| panic!("{table}: {e}"));
+        assert!(
+            readiness.ok,
+            "{table} is rebuildable, but the guard said {readiness:?}"
+        );
+    }
+}
+
+/// The demo table the desktop E2E rebuild flow edits: dropping the column its
+/// explicit index names is the case the flow asserts must refuse. Pinned here so
+/// the e2e fixture cannot drift back to a column nothing preserved names (which
+/// is what made the refusal assertion unreachable).
+///
+/// Note what is *not* a blocker: a column-level `REFERENCES` or `CHECK` clause
+/// goes away with the column it is declared on, so dropping `product_id`
+/// refuses because of the explicit index — not because of its inline foreign key
+/// — and dropping `unit_price` (named by nothing preserved) is allowed.
+#[tokio::test]
+async fn sqlite_rebuild_guard_refuses_dropping_the_demo_index_column() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(&pm, &[DEMO_SCHEMA.to_string()]).await;
+
+    let live = get_table_rebuild_readiness_inner(&pm, "c", "main", "order_items", None)
+        .await
+        .unwrap();
+    assert!(live.ok, "the live table is rebuildable: {live:?}");
+
+    // The editor submits the live columns minus the one it dropped.
+    let columns: serde_json::Value = serde_json::json!([
+        { "name": "order_id", "type": "INTEGER", "nullable": false, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+        { "name": "quantity", "type": "INTEGER", "nullable": false, "default": "1", "is_pk": false, "auto_increment": false, "unique": false },
+        { "name": "unit_price", "type": "REAL", "nullable": false, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
+    ]);
+    let refused = get_table_rebuild_readiness_inner(&pm, "c", "main", "order_items", Some(columns))
+        .await
+        .unwrap();
+    assert!(!refused.ok, "dropping product_id must refuse: {refused:?}");
+    let reasons = refused.reasons.join(" | ");
+    assert!(
+        reasons.contains("product_id"),
+        "the refusal names the dropped column: {reasons}"
+    );
+    assert!(
+        reasons.contains("idx_order_items_product_id") && reasons.contains("index"),
+        "the refusal names the preserved index: {reasons}"
+    );
+
+    // Control: `unit_price` is named by nothing preserved, so dropping it is a
+    // rebuild the guard allows — the stale premise the e2e fixture used to
+    // assert a refusal on.
+    let without_unit_price: serde_json::Value = serde_json::json!([
+        { "name": "order_id", "type": "INTEGER", "nullable": false, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+        { "name": "product_id", "type": "INTEGER", "nullable": false, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+        { "name": "quantity", "type": "INTEGER", "nullable": false, "default": "1", "is_pk": false, "auto_increment": false, "unique": false }
+    ]);
+    let allowed = get_table_rebuild_readiness_inner(
+        &pm,
+        "c",
+        "main",
+        "order_items",
+        Some(without_unit_price),
+    )
+    .await
+    .unwrap();
+    assert!(
+        allowed.ok && allowed.reasons.is_empty(),
+        "dropping an unconstrained column is a faithful rebuild: {allowed:?}"
+    );
+}
+
+#[tokio::test]
+async fn rebuilding_every_demo_table_keeps_its_schema_objects() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(&pm, &[DEMO_SCHEMA.to_string()]).await;
+    // A reorder of each table, applied for real: the round-trip check inside
+    // `apply_rebuild` is what makes this safe.
+    for table in [
+        "users",
+        "categories",
+        "products",
+        "addresses",
+        "orders",
+        "order_items",
+        "audit_log",
+        "files",
+        "page_views",
+        "app_settings",
+        "marketing_campaigns",
+    ] {
+        let before = sqlite_master_rows(&pm, table).await;
+        let columns = sqlite_live_columns_json(&pm, table).await;
+        let mut reordered = columns.clone();
+        reordered.rotate_left(1);
+        let params = serde_json::json!({
+            "schema": "main", "name": table,
+            "action": { "op": "rebuild", "columns": reordered }
+        });
+        let sqls = build_object_ddl_inner(&pm, "c", "table", params)
+            .await
+            .unwrap_or_else(|e| panic!("{table}: {e}"));
+        crate::commands::db_viewer::execute_change_inner(
+            &pm,
+            "c",
+            crate::models::db_viewer::Change::RebuildTable {
+                id: format!("rb-{table}"),
+                table: table.into(),
+                sql: sqls.join(";\n"),
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{table}: {e}"));
+        assert_eq!(
+            sqlite_master_rows(&pm, table).await,
+            before,
+            "{table}: every index and trigger survived the rebuild"
+        );
+    }
+}
+
+/// The `(type, name, sql)` of the indexes and triggers attached to `table`.
+async fn sqlite_master_rows(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    table: &str,
+) -> Vec<(String, String, String)> {
+    let mut g = pm.lock().await;
+    match g.get("c").unwrap() {
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT type, name, coalesce(sql, '') FROM sqlite_master \
+                     WHERE tbl_name = ?1 AND type IN ('index', 'trigger') ORDER BY type, name",
+                )
+                .unwrap();
+            stmt.query_map(rusqlite::params![table], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+        }
+        _ => panic!("expected a sqlite handle"),
+    }
+}
+
+/// The live columns of `table` as the editor would submit them.
+async fn sqlite_live_columns_json(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    table: &str,
+) -> Vec<serde_json::Value> {
+    let mut g = pm.lock().await;
+    match g.get("c").unwrap() {
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            let shape = crate::db::sqlite_rebuild::read_table_shape(&conn, table).unwrap();
+            shape
+                .columns
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "name": c.name,
+                        "type": c.type_,
+                        "nullable": c.nullable,
+                        "default": c.default,
+                        "is_pk": c.is_pk,
+                        "auto_increment": c.auto_increment,
+                        "unique": c.unique,
+                    })
+                })
+                .collect()
+        }
+        _ => panic!("expected a sqlite handle"),
+    }
+}
+
+#[tokio::test]
+async fn sqlite_rebuild_readiness_allows_a_plain_table() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(
+        &pm,
+        &[
+            "CREATE TABLE \"main\".\"t\" (\"id\" INTEGER PRIMARY KEY, \"label\" TEXT NOT NULL)"
+                .into(),
+            "INSERT INTO \"main\".\"t\" VALUES (1, 'alpha')".into(),
+        ],
+    )
+    .await;
+    let columns = serde_json::json!([
+        { "name": "label", "type": "TEXT", "nullable": false, "default": null, "is_pk": false, "auto_increment": false, "unique": false },
+        { "name": "id", "type": "INTEGER", "nullable": true, "default": null, "is_pk": true, "auto_increment": false, "unique": false }
+    ]);
+    // A reorder: a rebuild, and this table carries nothing a rebuild would drop.
+    let ready = get_table_rebuild_readiness_inner(&pm, "c", "main", "t", Some(columns.clone()))
+        .await
+        .unwrap();
+    assert!(ready.ok, "{ready:?}");
+
+    let params = serde_json::json!({
+        "schema": "main", "name": "t",
+        "action": { "op": "edit", "columns": columns }
+    });
+    let sqls = build_object_ddl_inner(&pm, "c", "table", params)
+        .await
+        .expect("a plain table can be rebuilt");
+    assert!(
+        sqls.iter().any(|s| s.contains("_gl_t_tmp")),
+        "the reorder produced a rebuild script: {sqls:?}"
+    );
+}
+
 #[tokio::test]
 async fn execute_change_sqlite_ddl_runs_create() {
     let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
@@ -159,9 +850,10 @@ async fn execute_change_sqlite_ddl_runs_create() {
     assert!(r.is_ok(), "{r:?}");
     // the table really landed on the live connection
     {
-        let mut g = pm.lock().await;
-        match g.get("c").unwrap() {
+        let handle = pm.lock().await.acquire("c").unwrap();
+        match handle {
             crate::db::pool::DbHandle::Sqlite(conn) => {
+                let conn = conn.lock().await;
                 let n: i64 = conn
                     .query_row(
                         "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='u'",
@@ -204,7 +896,7 @@ async fn get_available_extensions_inner_guards_postgresql_only() {
     // Non-PostgreSQL handle -> PostgreSQL-only error
     pm.lock().await.register(
         "sqlite",
-        DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
     );
     let err = get_available_extensions_inner(&pm, "sqlite")
         .await
@@ -267,8 +959,9 @@ async fn rebuild_table_rolls_back_on_failure() {
     let (pm, id) = pool().await;
     // setup: a table with a PK + one row
     {
-        let mut g = pm.lock().await;
-        if let crate::db::pool::DbHandle::Postgresql(c, _) = g.get(&id).unwrap() {
+        let handle = pm.lock().await.acquire(&id).unwrap();
+        if let crate::db::pool::DbHandle::Postgresql(c, _) = handle {
+            let c = c.lock().await;
             c.batch_execute("DROP TABLE IF EXISTS rebuild_t; CREATE TABLE rebuild_t (id int PRIMARY KEY, v text); INSERT INTO rebuild_t VALUES (1,'a');").await.unwrap();
         }
     }
@@ -281,6 +974,7 @@ async fn rebuild_table_rolls_back_on_failure() {
         THIS IS NOT SQL;";
     let change = crate::models::db_viewer::Change::RebuildTable {
         id: "rb".into(),
+        table: "rebuild_t".into(),
         sql: bad_script.to_string(),
     };
     let res = crate::commands::db_viewer::execute_change_inner(&pm, &id, change).await;
@@ -289,8 +983,9 @@ async fn rebuild_table_rolls_back_on_failure() {
         "expected rollback (transaction should fail on bad SQL)"
     );
     // table still intact
-    let mut g = pm.lock().await;
-    if let crate::db::pool::DbHandle::Postgresql(c, _) = g.get(&id).unwrap() {
+    let handle = pm.lock().await.acquire(&id).unwrap();
+    if let crate::db::pool::DbHandle::Postgresql(c, _) = handle {
+        let c = c.lock().await;
         let row = c
             .query_one("SELECT count(*) FROM rebuild_t", &[])
             .await
