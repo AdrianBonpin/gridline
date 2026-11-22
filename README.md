@@ -430,7 +430,7 @@ Gridline ships three Linux package formats, all **x86_64**, all built from the s
 That is the whole claim, and it is deliberately narrower than "works everywhere":
 
 - Gridline is **not** verified on every Linux distribution. No CI lane installs the `.deb`/`.rpm` on each distro, and there is no Fedora, openSUSE or Arch certification.
-- Automated Linux coverage is Ubuntu-based: builds and unit/Rust tests on Ubuntu 22.04, plus a headless desktop E2E smoke that launches the app under a software-rendered display on Ubuntu 24.04 (a non-AppImage binary).
+- Automated Linux coverage is Ubuntu-based: builds and unit/Rust tests on Ubuntu 22.04, a headless desktop E2E smoke that launches the app under a software-rendered display on Ubuntu 24.04 (a non-AppImage binary), and a nightly/manual AppImage smoke that launches the published `.AppImage` itself, requires a mapped window at the configured size with painted content, and fails on fatal renderer diagnostics. The same check runs in a Fedora container, which is **cross-distribution compatibility coverage only** — a container on a GPU-less runner, not your session, so it neither reproduces nor closes [#62](https://github.com/AdrianBonpin/gridline/issues/62).
 - The AppImage is a **portable build**, not a guarantee that every compositor and GPU stack paints it. If it does not work on your system, that is a bug worth reporting — packaging does not promise against it.
 - A user report that the AppImage opens to a black window on Fedora ([issue #62](https://github.com/AdrianBonpin/gridline/issues/62)) is **open**: the root cause is not identified and no fix has shipped. See the checklist below.
 

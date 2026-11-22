@@ -13,7 +13,8 @@
         "preview": "vite preview",
         "tauri": "tauri",
         "e2e": "bun ./e2e/run.mjs",
-        "e2e:build": "tauri build --no-bundle"
+        "e2e:build": "tauri build --no-bundle",
+        "e2e:appimage": "bun ./e2e/appimageSmoke.mjs"
     },
     "dependencies": {
         "@dnd-kit/core": "^6.3.1",
