@@ -59,7 +59,6 @@ pub fn run() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_keyring_store::init())

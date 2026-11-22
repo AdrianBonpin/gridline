@@ -4,9 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Gridline</title>
-    <style>
-      html, body, #root { background-color: #0A0A0B; }
-    </style>
+    <!--
+      Deliberately no inline style or script element in this file: Tauri
+      rewrites packaged style elements with a nonce, and a nonce source makes
+      the browser ignore style-src 'unsafe-inline' - which the SQL editor needs
+      for its runtime stylesheets. The pre-paint background lives in
+      src/index.css (emitted as a render-blocking stylesheet link in the
+      production build). See
+      docs/adr/0002-production-csp-and-webview-capabilities.md and
+      src/lib/production-policy.test.ts.
+    -->
   </head>
 
   <body>
