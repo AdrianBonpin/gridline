@@ -39,6 +39,19 @@
   --color-accent-muted: color-mix(in srgb, var(--color-accent) 70%, white);
 }
 
+/*
+ * Pre-paint canvas colour. This used to be an inline style block in
+ * index.html, but Tauri rewrites packaged style elements with a CSP nonce, and
+ * a nonce source makes the browser ignore style-src 'unsafe-inline' - which the
+ * SQL editor needs for its runtime stylesheets. In a production build this rule
+ * ships in the render-blocking stylesheet link, so there is still no flash.
+ */
+html,
+body,
+#root {
+  background-color: var(--color-canvas);
+}
+
 /* Light theme overrides — the app is dark-first; `.light` is toggled on the root */
 :root.light {
   --color-canvas: #FAFAFA;

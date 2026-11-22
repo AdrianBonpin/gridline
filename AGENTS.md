@@ -262,6 +262,7 @@ TMP=$(mktemp -d) && cp www/package.json "$TMP/package.json" && cd "$TMP" && bun 
 - **Do NOT** store passwords in SQLite or local files — use OS keychain APIs exclusively
 - **Do NOT** render large query results in raw DOM — always use the virtualized grid component
 - **Do NOT** log credentials, connection strings, or query data
+- **Do NOT** loosen the packaged webview policy — `app.security.csp` in `desktop/src-tauri/tauri.conf.json` and the permission list in `desktop/src-tauri/capabilities/default.json` are pinned by `desktop/src/lib/production-policy.test.ts`. A new remote origin, plugin permission, or file command needs the reasoning in [ADR 0002](./docs/adr/0002-production-csp-and-webview-capabilities.md) updated first. Development uses the deliberately looser `devCsp` (Vite HMR), so dev-mode success proves nothing about the packaged policy — verify in a production build.
 - **Do NOT** introduce Electron, Node.js server processes, or Docker dependencies
 - **Do NOT** execute data-modifying SQL (INSERT, UPDATE, DELETE, DROP, ALTER) or any destructive CRUD operation (deleting connections, folders, tags) directly without explicit user confirmation. For database data, always push to the changes queue first and require "Commit All". For app entities (connections, folders, tags), show a confirmation dialog before executing.
 - **DO** keep Tauri commands thin — business logic lives in `db/` and `store/` modules
@@ -465,6 +466,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 
 - [Project Roadmap](./ROADMAP.md) — source of truth for planned work (in-development, next-up, queue, shipped)
 - [Security Policy](./SECURITY.md) — how to report a vulnerability **privately** (never in a public issue)
+- [ADR 0002: Production CSP and webview capabilities](./docs/adr/0002-production-csp-and-webview-capabilities.md) — the packaged content security policy, every webview permission and why it is granted, and the development-mode gap
 - [Architectural Spec: v0.7.0 connection-screen revamp](./docs/superpowers/specs/2026-08-04-architectural-spec.md) — current in-flight work
 - [Tauri 2.0 Documentation](https://tauri.app/develop/)
 - [sqlx Documentation](https://docs.rs/sqlx)
