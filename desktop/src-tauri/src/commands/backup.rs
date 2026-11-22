@@ -19,6 +19,14 @@ pub struct PgConnParams {
     pub username: String,
     pub database: String,
     pub password: String,
+    /// The connection's stored TLS settings. Carried here so the external client
+    /// tools enforce the same decision the app's own driver does; the CLI tools
+    /// otherwise default to libpq's `prefer` and would dump over plaintext for a
+    /// `verify-full` connection.
+    pub ssl_mode: Option<String>,
+    pub ssl_ca_path: Option<String>,
+    pub ssl_cert_path: Option<String>,
+    pub ssl_key_path: Option<String>,
 }
 
 impl PgConnParams {
@@ -35,7 +43,93 @@ impl PgConnParams {
             username,
             database,
             password,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
         }
+    }
+
+    /// Attach the saved connection's TLS configuration.
+    pub fn with_tls(
+        mut self,
+        ssl_mode: Option<String>,
+        ssl_ca_path: Option<String>,
+        ssl_cert_path: Option<String>,
+        ssl_key_path: Option<String>,
+    ) -> Self {
+        self.ssl_mode = ssl_mode;
+        self.ssl_ca_path = ssl_ca_path;
+        self.ssl_cert_path = ssl_cert_path;
+        self.ssl_key_path = ssl_key_path;
+        self
+    }
+
+    /// The libpq environment that makes `pg_dump`/`pg_restore`/`psql` enforce this
+    /// connection's TLS decision.
+    ///
+    /// The mode is resolved exactly as the app's own connections resolve it
+    /// (`db::tls::resolve_ssl_mode`): an explicit mode wins, a managed provider
+    /// with no stored mode defaults to `require`, and an unrecognized non-empty
+    /// mode is an **error** — it can never reach libpq as `prefer` (which dumps in
+    /// plaintext when the server allows it) or as an accidental downgrade.
+    ///
+    /// Both Gridline verify modes map to libpq's `verify-full`: the app's driver
+    /// checks the certificate chain *and* the hostname for `verify-ca` in v1 (see
+    /// `db::tls`), so the tools must not be looser than browsing.
+    ///
+    /// With no mode configured the environment is left alone: libpq's own default
+    /// (`prefer`) attempts TLS without insisting on it, so nothing the user chose
+    /// is relaxed.
+    pub fn tls_env(&self) -> Result<Vec<(String, String)>, String> {
+        let Some(mode) = crate::db::tls::resolve_ssl_mode(&self.host, self.ssl_mode.as_deref())?
+        else {
+            return Ok(Vec::new());
+        };
+
+        let pgsslmode = match mode.as_str() {
+            "disable" => "disable",
+            "require" => "require",
+            "verify-ca" | "verify-full" => "verify-full",
+            other => {
+                return Err(format!(
+                    "unsupported TLS mode \"{other}\" for the PostgreSQL client tools; valid \
+                     modes are: {}",
+                    crate::db::tls::VALID_SSL_MODES.join(", ")
+                ))
+            }
+        };
+
+        let mut env = vec![("PGSSLMODE".to_string(), pgsslmode.to_string())];
+        // Certificate material only matters when the connection speaks TLS at all.
+        if pgsslmode != "disable" {
+            if let Some(ca) = self.ssl_ca_path.as_deref().filter(|p| !p.trim().is_empty()) {
+                env.push(("PGSSLROOTCERT".to_string(), ca.to_string()));
+            }
+            if let Some(cert) = self
+                .ssl_cert_path
+                .as_deref()
+                .filter(|p| !p.trim().is_empty())
+            {
+                env.push(("PGSSLCERT".to_string(), cert.to_string()));
+            }
+            if let Some(key) = self
+                .ssl_key_path
+                .as_deref()
+                .filter(|p| !p.trim().is_empty())
+            {
+                env.push(("PGSSLKEY".to_string(), key.to_string()));
+            }
+        }
+        Ok(env)
+    }
+
+    /// The variables, applied to a tool command. Fails closed on an unknown mode.
+    fn apply_tls_env(&self, cmd: &mut Command) -> Result<(), String> {
+        for (key, value) in self.tls_env()? {
+            cmd.env(key, value);
+        }
+        Ok(())
     }
 }
 
@@ -460,6 +554,9 @@ pub fn run_pg_dump_managed(
 
     let mut cmd = Command::new(&tools.pg_dump);
     cmd.env("PGPASSWORD", &conn.password).args(&args);
+    // The CLI must not be looser than the app's own driver: without this a
+    // `verify-full` connection dumps over libpq's `prefer`.
+    conn.apply_tls_env(&mut cmd).map_err(JobFailure::failed)?;
 
     let activity = job::path_size_probe(&options.file_path);
     let out = job::run_managed(job, cmd, Some(activity)).map_err(JobFailure::from)?;
@@ -504,7 +601,7 @@ pub fn run_pg_restore_managed(
     txn: PgRestoreTxn,
     tools: &PgToolPaths,
 ) -> Result<(), JobFailure> {
-    let cmd = if options.format == "plain" {
+    let mut cmd = if options.format == "plain" {
         let mut cmd = Command::new(&tools.psql);
         cmd.env("PGPASSWORD", &conn.password)
             .args(build_psql_restore_args(conn, &options.file_path, txn));
@@ -516,6 +613,8 @@ pub fn run_pg_restore_managed(
         cmd.env("PGPASSWORD", &conn.password).args(&args);
         cmd
     };
+    // Restoring into a TLS-verifying target must verify TLS: no `prefer` fallback.
+    conn.apply_tls_env(&mut cmd).map_err(JobFailure::failed)?;
 
     let out = job::run_managed(job, cmd, None).map_err(JobFailure::from)?;
     if out.status.success() {
@@ -998,11 +1097,19 @@ pub fn run_db_sync_managed(
     dump_cmd
         .env("PGPASSWORD", &source.password)
         .args(&dump_args);
+    source
+        .apply_tls_env(&mut dump_cmd)
+        .map_err(JobFailure::failed)?;
 
     let mut restore_cmd = Command::new(&tools.pg_restore);
     restore_cmd
         .env("PGPASSWORD", &target.password)
         .args(&restore_args);
+    // Each endpoint enforces its OWN TLS decision: one side being `require` says
+    // nothing about the other.
+    target
+        .apply_tls_env(&mut restore_cmd)
+        .map_err(JobFailure::failed)?;
 
     let out = job::run_managed_pipe(job, dump_cmd, restore_cmd).map_err(JobFailure::from)?;
 
@@ -1151,21 +1258,47 @@ fn resolved_output_path(path: &Path) -> Result<PathBuf, String> {
     Ok(parent_real.join(name))
 }
 
+/// Whether `source` and `other` name the same file under any name.
+///
+/// Identity is resolved rather than compared as text: a symlink to the source and
+/// a hard link to it are the same file under different names. `same_file`
+/// compares device+inode (Unix) or volume+file index (Windows), and the resolved
+/// paths cover a destination that does not exist yet. Failing to resolve means
+/// file identity is uncertain, which fails closed rather than guessing.
+fn names_the_same_file(source: &Path, other: &Path) -> Result<bool, String> {
+    if same_file::is_same_file(source, other).unwrap_or(false) {
+        return Ok(true);
+    }
+    let source_real = std::fs::canonicalize(source)
+        .map_err(|e| format!("cannot resolve the database file {}: {e}", source.display()))?;
+    Ok(source_real == resolved_output_path(other)?)
+}
+
 /// Refuse a dump destination that is the database being dumped.
 ///
 /// Identity is resolved rather than compared as text: a symlink to the source
 /// and a hard link to it are the same file under different names, and writing
-/// through either would truncate the source. `same_file` compares device+inode
-/// (Unix) or volume+file index (Windows), and the resolved paths cover a
-/// destination that does not exist yet.
+/// through either would truncate the source.
 pub fn refuse_source_as_dump_destination(source: &Path, destination: &Path) -> Result<(), String> {
-    if same_file::is_same_file(source, destination).unwrap_or(false) {
+    if names_the_same_file(source, destination)? {
         return Err(source_is_destination_message());
     }
-    let source_real = std::fs::canonicalize(source)
-        .map_err(|e| format!("cannot resolve the database file {}: {e}", source.display()))?;
-    if source_real == resolved_output_path(destination)? {
-        return Err(source_is_destination_message());
+    Ok(())
+}
+
+/// Refuse a sync whose target is the file it reads.
+///
+/// The dump/restore pipeline holds both ends as files, so a target that resolves
+/// to the source replaces the database being dumped — with `clean` semantics that
+/// is a full drop-and-replay of the source. The same resolved-identity check the
+/// backup path applies to its destination is therefore mandatory here too.
+pub fn refuse_source_as_sync_target(source: &Path, target: &Path) -> Result<(), String> {
+    if names_the_same_file(source, target)? {
+        return Err(
+            "The sync target is the same file as the source database. Gridline refuses \
+                    to replace the database it is reading. Choose a different target file."
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -1742,12 +1875,29 @@ pub fn run_sqlite_sync(source_path: &str, target_path: &str) -> Result<(), Strin
 
 /// Cancellable SQLite dump → restore. Both halves check the flag, and a cancel
 /// during the restore rolls its transaction back.
+///
+/// The source must exist and the target must be a different file: the dump reads
+/// one file and the restore replaces the other, so a missing source would create
+/// an empty database and a same-file target would replace what is being read.
 pub fn run_sqlite_sync_cancellable(
     source_path: &str,
     target_path: &str,
     is_cancelled: CancelCheck<'_>,
 ) -> Result<(), String> {
-    let src = Connection::open(source_path).map_err(|e| format!("open source: {e}"))?;
+    let source = Path::new(source_path);
+    let target = Path::new(target_path);
+    if !source.is_file() {
+        return Err(format!(
+            "the SQLite database to sync is not an existing file: {}",
+            source.display()
+        ));
+    }
+    refuse_source_as_sync_target(source, target)?;
+    if is_cancelled() {
+        return Err(CANCEL_MESSAGE.to_string());
+    }
+
+    let src = Connection::open(source).map_err(|e| format!("open source: {e}"))?;
     let mut buf: Vec<u8> = Vec::new();
     dump_sqlite_to_cancellable(
         &src,
@@ -1813,44 +1963,46 @@ fn client_is_mariadb(program: &str) -> bool {
 /// TLS flags for one MySQL-family client, derived from the connection's own
 /// `ssl_mode` (`disable` | `require` | `verify-ca` | `verify-full`).
 ///
+/// The mode is parsed with the shared parser ([`crate::db::tls::parse_ssl_mode`]),
+/// never with a private spelling table: the four modes above are the only ones
+/// any part of Gridline accepts, and an unrecognized non-empty value is an
+/// **error** here too. A local fallback would let a typo (`verify_ca`,
+/// `verifyidentity`, …) reach a client as some *other* mode — the exact silent
+/// coercion ticket 23 removed from the connection path.
+///
 /// MySQL's clients speak `--ssl-mode=<MODE>`. MariaDB's have no `--ssl-mode`:
 /// they use the boolean `--ssl` (default ON) plus `--ssl-verify-server-cert`
 /// (default ON in 11.4, but stated explicitly so older clients that default it
-/// OFF still verify). An unrecognised non-empty mode fails closed to
-/// encrypted-and-verified rather than silently unencrypted.
-pub fn mysql_tls_args(client_is_mariadb: bool, tls_mode: Option<&str>) -> Vec<String> {
-    let Some(raw) = tls_mode else {
-        return Vec::new();
-    };
-    let normalised = raw.trim().to_ascii_lowercase();
-    let mode = match normalised.as_str() {
-        "" => return Vec::new(),
-        "disable" | "disabled" => "disable",
-        "require" | "required" => "require",
-        "verify-ca" | "verify_ca" => "verify-ca",
-        "verify-full" => "verify-full",
-        "verify_identity" | "verify-identity" => "verify-full",
-        _ => "require",
+/// OFF still verify).
+pub fn mysql_tls_args(
+    client_is_mariadb: bool,
+    tls_mode: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let Some(mode) = crate::db::tls::parse_ssl_mode(tls_mode)? else {
+        return Ok(Vec::new());
     };
 
-    if client_is_mariadb {
+    let args = if client_is_mariadb {
         match mode {
-            "disable" => vec!["--skip-ssl".to_string()],
-            "require" => vec![
+            crate::db::tls::SslMode::Disable => vec!["--skip-ssl".to_string()],
+            crate::db::tls::SslMode::Require => vec![
                 "--ssl".to_string(),
                 "--skip-ssl-verify-server-cert".to_string(),
             ],
-            _ => vec!["--ssl".to_string(), "--ssl-verify-server-cert".to_string()],
+            crate::db::tls::SslMode::VerifyCa | crate::db::tls::SslMode::VerifyFull => {
+                vec!["--ssl".to_string(), "--ssl-verify-server-cert".to_string()]
+            }
         }
     } else {
         let flag = match mode {
-            "disable" => "DISABLED",
-            "require" => "REQUIRED",
-            "verify-ca" => "VERIFY_CA",
-            _ => "VERIFY_IDENTITY",
+            crate::db::tls::SslMode::Disable => "DISABLED",
+            crate::db::tls::SslMode::Require => "REQUIRED",
+            crate::db::tls::SslMode::VerifyCa => "VERIFY_CA",
+            crate::db::tls::SslMode::VerifyFull => "VERIFY_IDENTITY",
         };
         vec![format!("--ssl-mode={flag}")]
-    }
+    };
+    Ok(args)
 }
 
 /// `mariadb-dump`/`mysqldump` args. Passwords go via MYSQL_PWD env (set by the
@@ -1902,17 +2054,17 @@ pub fn build_mysql_sync_dump_args(
     source: &MySqlConnParams,
     client_is_mariadb: bool,
     tls_mode: Option<&str>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let mut args = base_mysql_args(source);
     args.push("--single-transaction".into());
     args.push("--add-drop-table".into());
     if !client_is_mariadb {
         args.push("--skip-column-statistics".into());
     }
-    args.extend(mysql_tls_args(client_is_mariadb, tls_mode));
+    args.extend(mysql_tls_args(client_is_mariadb, tls_mode)?);
     // Positional database name: contents only, no CREATE DATABASE / USE.
     args.push(source.database.clone());
-    args
+    Ok(args)
 }
 
 /// `mariadb`/`mysql` client args that consume a sync dump. The target
@@ -1921,11 +2073,11 @@ pub fn mysql_sync_restore_args(
     target: &MySqlConnParams,
     client_is_mariadb: bool,
     tls_mode: Option<&str>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let mut args = base_mysql_args(target);
     args.push(format!("--database={}", target.database));
-    args.extend(mysql_tls_args(client_is_mariadb, tls_mode));
-    args
+    args.extend(mysql_tls_args(client_is_mariadb, tls_mode)?);
+    Ok(args)
 }
 
 /// System-first mariadb-dump/mysqldump resolution (bundled fallback).
@@ -1972,7 +2124,7 @@ pub fn run_mysql_dump_managed(
 ) -> Result<(), JobFailure> {
     let is_mariadb = client_is_mariadb(&tools.mysqldump);
     let mut args = build_mysql_dump_args(conn, options, is_mariadb);
-    args.extend(mysql_tls_args(is_mariadb, tls_mode));
+    args.extend(mysql_tls_args(is_mariadb, tls_mode).map_err(JobFailure::failed)?);
 
     let mut cmd = Command::new(&tools.mysqldump);
     cmd.env("MYSQL_PWD", &conn.password).args(&args);
@@ -2031,8 +2183,10 @@ pub fn run_mysql_sync_managed(
     let dump_is_mariadb = client_is_mariadb(&tools.mysqldump);
     let restore_is_mariadb = client_is_mariadb(&tools.mysql);
 
-    let dump_args = build_mysql_sync_dump_args(source, dump_is_mariadb, src_tls);
-    let restore_args = mysql_sync_restore_args(target, restore_is_mariadb, tgt_tls);
+    let dump_args =
+        build_mysql_sync_dump_args(source, dump_is_mariadb, src_tls).map_err(JobFailure::failed)?;
+    let restore_args =
+        mysql_sync_restore_args(target, restore_is_mariadb, tgt_tls).map_err(JobFailure::failed)?;
 
     let mut dump_cmd = Command::new(&tools.mysqldump);
     dump_cmd.env("MYSQL_PWD", &source.password).args(&dump_args);
@@ -2360,7 +2514,16 @@ pub async fn pg_dump(
         conn.username.unwrap_or_else(|| "postgres".into()),
         conn.database.unwrap_or_else(|| "postgres".into()),
         password,
+    )
+    .with_tls(
+        conn.ssl_mode.clone(),
+        conn.ssl_ca_path.clone(),
+        conn.ssl_cert_path.clone(),
+        conn.ssl_key_path.clone(),
     );
+    // Resolve the TLS decision before a job exists: an unknown mode is refused
+    // here instead of becoming libpq's plaintext-capable `prefer` mid-job.
+    params.tls_env().map_err(|e| sanitize_error(&e))?;
 
     // Authorize the write last: the granted path is the only output path this
     // command can be made to use, and a grant is not spent on a request that
@@ -2410,7 +2573,16 @@ pub async fn pg_restore(
         conn.username.unwrap_or_else(|| "postgres".into()),
         conn.database.unwrap_or_else(|| "postgres".into()),
         password,
+    )
+    .with_tls(
+        conn.ssl_mode.clone(),
+        conn.ssl_ca_path.clone(),
+        conn.ssl_cert_path.clone(),
+        conn.ssl_key_path.clone(),
     );
+    // The restore target's TLS decision is resolved before the job starts, so an
+    // unknown mode can never silently degrade to `prefer`.
+    params.tls_env().map_err(|e| sanitize_error(&e))?;
 
     let accept_non_atomic = request.accept_non_atomic;
 
@@ -2514,6 +2686,12 @@ pub async fn db_sync(
             .clone()
             .unwrap_or_else(|| "postgres".into()),
         src_password,
+    )
+    .with_tls(
+        source_conn.ssl_mode.clone(),
+        source_conn.ssl_ca_path.clone(),
+        source_conn.ssl_cert_path.clone(),
+        source_conn.ssl_key_path.clone(),
     );
 
     let target = PgConnParams::new(
@@ -2528,7 +2706,16 @@ pub async fn db_sync(
             .clone()
             .unwrap_or_else(|| "postgres".into()),
         tgt_password,
+    )
+    .with_tls(
+        target_conn.ssl_mode.clone(),
+        target_conn.ssl_ca_path.clone(),
+        target_conn.ssl_cert_path.clone(),
+        target_conn.ssl_key_path.clone(),
     );
+    // Each endpoint's TLS decision is resolved before the job starts.
+    source.tls_env().map_err(|e| sanitize_error(&e))?;
+    target.tls_env().map_err(|e| sanitize_error(&e))?;
 
     let schema = options.schema.clone();
     let tables = options.tables.clone();

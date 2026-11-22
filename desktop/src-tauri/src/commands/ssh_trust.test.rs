@@ -247,6 +247,56 @@ fn conflicting_key_reports_expected_and_actual_fingerprints() {
 }
 
 #[test]
+fn a_known_hosts_entry_with_a_different_key_type_is_a_mismatch_not_first_use() {
+    // An attacker cannot make a changed host key look like a fresh host just by
+    // offering it under a different algorithm: ADR 0001 keeps ANY conflicting
+    // key for the same endpoint a hard failure, so one click can never enrol it.
+    let trusted = host_key("ssh-ed25519", 30);
+    let offered = host_key("ssh-rsa", 31);
+    let known = parse_known_hosts(&known_hosts_line("[db.example.com]:2222", &trusted));
+
+    match evaluate_host_trust("db.example.com", 2222, &offered, &known, None) {
+        SshHostTrustState::Mismatch {
+            host,
+            port,
+            key_type,
+            fingerprint,
+            expected_key_type,
+            expected_fingerprint,
+            source,
+        } => {
+            assert_eq!(host, "db.example.com");
+            assert_eq!(port, 2222);
+            assert_eq!(key_type, "ssh-rsa");
+            assert_eq!(fingerprint, fingerprint_of(&offered.blob));
+            assert_eq!(expected_key_type, "ssh-ed25519");
+            assert_eq!(expected_fingerprint, fingerprint_of(&trusted.blob));
+            assert_eq!(source, crate::models::ssh_trust::TrustSource::KnownHosts);
+        }
+        other => panic!("a key-type switch must be a mismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_key_type_switch_against_known_hosts_cannot_be_enrolled() {
+    let trusted = host_key("ssh-ed25519", 32);
+    let offered = host_key("ssh-rsa", 33);
+    let mut trust = FakeHostTrust::default();
+    trust.add_known_hosts(&known_hosts_line("db.example.com", &trusted));
+    let mut transport = FakeTransport::offering(offered.clone());
+    let accepted = HostKeyFingerprint {
+        key_type: offered.key_type.clone(),
+        fingerprint: fingerprint_of(&offered.blob),
+    };
+
+    let err = enroll_host_trust(&mut transport, &trust, "db.example.com", 22, &accepted)
+        .expect_err("a conflicting key type must never be enrolled inline");
+    assert!(err.contains("Nothing was trusted"), "{err}");
+    assert!(trust.records().is_empty(), "nothing may be remembered");
+    assert!(!transport.saw_credentials());
+}
+
+#[test]
 fn known_hosts_stays_authoritative_over_an_enrolled_record() {
     // ADR 0001: existing known-hosts entries remain authoritative where present.
     let trusted = host_key("ssh-ed25519", 22);

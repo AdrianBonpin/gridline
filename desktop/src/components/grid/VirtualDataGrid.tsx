@@ -8,7 +8,7 @@ import { fkLabel, fkTarget, type FkTarget } from "../../lib/fkTarget";
 import { JsonCellPopover, jsonPreview } from "../db-viewer/JsonCellPopover";
 import { CellEditor, type FkOption } from "./CellEditor";
 import { CellContextMenu } from "./CellContextMenu";
-import { cellToUpdateChange, isCellEditable, type TabKind } from "./gridEditability";
+import { cellToUpdateChange, isCellEditable, updateGuardValues, type TabKind } from "./gridEditability";
 import { nextCell, type CellPos } from "./keyboardNav";
 import { copyCellText } from "../../lib/exportData";
 
@@ -339,12 +339,24 @@ export function VirtualDataGrid({
               setEditingCell(null);
               return;
             }
+            // A locator identity needs the whole row as its guard; an edit that
+            // cannot carry one is never staged.
+            const oldData = updateGuardValues({
+              columns,
+              row,
+              identity: locator,
+              editedColumn: col.name,
+            });
+            if (!oldData) {
+              setEditingCell(null);
+              return;
+            }
             onStageEdit?.(
               cellToUpdateChange({
                 schema,
                 table,
                 primaryKey: locator,
-                oldData: { [col.name]: dbValue },
+                oldData,
                 newData: { [col.name]: committed },
               }) as {
                 type: "update";
@@ -490,12 +502,19 @@ export function VirtualDataGrid({
       }
       const locator = getLocator?.(rows[row]) ?? null;
       if (!locator) return;
+      const oldData = updateGuardValues({
+        columns,
+        row: rows[row],
+        identity: locator,
+        editedColumn: column.name,
+      });
+      if (!oldData) return;
       onStageEdit?.(
         cellToUpdateChange({
           schema,
           table,
           primaryKey: locator,
-          oldData: { [column.name]: value },
+          oldData,
           newData: { [column.name]: null },
         }) as {
           type: "update";

@@ -1347,6 +1347,14 @@ pub(crate) async fn run_pg_connect(
 /// Registers the file handle and the interrupt handle taken from it. SQLite
 /// never tunnels, so any tunnel a previous target of this connection left
 /// behind is closed: an orphaned loopback proxy must not stay reachable.
+///
+/// The file must already exist. `rusqlite::Connection::open` creates on open,
+/// which would turn a mistyped path into a brand-new empty database that looks
+/// like a working connection (and hides the typo). Creating a database stays the
+/// separate, explicit [`crate::commands::test_connection::create_sqlite_database_at`]
+/// action, and the open itself is `READ_WRITE` **without** `CREATE`, so a file
+/// that disappears between the check and the open still fails instead of being
+/// conjured.
 pub(crate) async fn run_sqlite_connect(
     connection_id: &str,
     config: &DbConfig,
@@ -1354,7 +1362,31 @@ pub(crate) async fn run_sqlite_connect(
     pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
     cancel_registry: &crate::cancel::CancelRegistry,
 ) -> Result<(), String> {
-    match rusqlite::Connection::open(&config.host) {
+    let path = std::path::Path::new(&config.host);
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => {
+            return Err(format!(
+                "Connection failed: not a database file: {}",
+                config.host
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "Connection failed: database file does not exist: {} — use Create database to \
+                 make a new one",
+                config.host
+            ))
+        }
+        Err(e) => {
+            return Err(format!(
+                "Connection failed: cannot access database file {}: {e}",
+                config.host
+            ))
+        }
+    }
+
+    match rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE) {
         Ok(conn) => {
             // Capture the per-connection interrupt handle so `cancel_query` can
             // abort a running SQLite query from another thread.
@@ -3417,9 +3449,47 @@ pub(crate) async fn execute_change_inner(
 pub async fn execute_change(
     connection_id: String,
     change: Change,
+    origin: crate::db::change_target::ChangeOrigin,
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    execute_change_inner(&state.pool_manager, &connection_id, change).await
+    // The saved connection is what the origin is validated against. A reused
+    // connection id — retargeted host/database/TLS since the work was staged —
+    // must never redirect a staged write, and the renderer's own refusal is not
+    // authoritative (it can be bypassed, or simply be out of date).
+    let stored = {
+        let store = state.db_store.lock().map_err(|e| e.to_string())?;
+        let connections = store.get_connections().map_err(|e| e.to_string())?;
+        connections
+            .into_iter()
+            .find(|c| c.id == connection_id)
+            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
+    };
+    execute_change_for_origin(
+        &state.pool_manager,
+        &stored,
+        &connection_id,
+        &origin,
+        change,
+    )
+    .await
+}
+
+/// Apply one queued change, but only if its Change Origin still matches the saved
+/// connection.
+///
+/// Headless form of the `execute_change` command: the origin is validated first,
+/// so a retargeted connection (or an origin belonging to another connection)
+/// writes nothing. Callers must pass the **stored** connection, not the one the
+/// change claims to belong to.
+pub(crate) async fn execute_change_for_origin(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    stored: &crate::models::Connection,
+    connection_id: &str,
+    origin: &crate::db::change_target::ChangeOrigin,
+    change: Change,
+) -> Result<(), String> {
+    crate::db::change_target::validate_change_origin(stored, connection_id, origin)?;
+    execute_change_inner(pm, connection_id, change).await
 }
 
 #[tauri::command]
@@ -4608,6 +4678,42 @@ mod tests {
         std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1)).is_ok()
     }
 
+    /// Connecting to a path that does not exist must fail and must NOT leave a
+    /// database file behind: `rusqlite::Connection::open` creates on open, which
+    /// would report a mistyped path as a working, empty database. Creating one is
+    /// the separate `create_sqlite_database` action.
+    #[tokio::test]
+    async fn run_sqlite_connect_refuses_a_missing_file_without_creating_it() {
+        let id = "sqlite-missing";
+        let backend = Arc::new(crate::commands::ssh::fake::HangingUpPeerBackend::default());
+        let ssh = StdMutex::new(SshTunnelManager::new(backend.clone()));
+        let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
+
+        let path = std::env::temp_dir().join(format!(
+            "gridline-sqlite-missing-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::remove_file(&path).ok();
+        let cfg = DbConfig::sqlite(&path.to_string_lossy());
+
+        let err = run_sqlite_connect(id, &cfg, &ssh, &pm, &reg)
+            .await
+            .expect_err("a missing database file must not connect");
+        assert!(
+            err.contains("does not exist"),
+            "error must say the file is missing: {err}"
+        );
+        assert!(
+            pm.lock().await.get(id).is_none(),
+            "a refused connect registers no handle"
+        );
+        assert!(
+            !path.exists(),
+            "connecting must not create the database file"
+        );
+    }
+
     /// A SQLite (never-tunnelled) reconnect closes a tunnel a previous target
     /// of the same connection left behind: no orphaned loopback proxy stays
     /// reachable.
@@ -4645,6 +4751,10 @@ mod tests {
             "gridline-sqlite-lifecycle-{}.db",
             uuid::Uuid::new_v4()
         ));
+        // Connecting never creates a database, so the file is made explicitly
+        // first (the same deliberate action the UI offers).
+        crate::commands::test_connection::create_sqlite_database_at(&path.to_string_lossy())
+            .expect("create the database file");
         let cfg = DbConfig::sqlite(&path.to_string_lossy());
         run_sqlite_connect(id, &cfg, &ssh, &pm, &reg)
             .await

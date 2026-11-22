@@ -165,7 +165,7 @@ export function ChangesQueuePanel({
     for (const change of pending) {
       try {
         const payload = buildChangePayload(change);
-        await cmd.executeChange(origin.connectionId, payload);
+        await cmd.executeChange(origin.connectionId, payload, origin);
         markChangeCommitted(change.id);
         committedItems.push(change);
         committedCount++;

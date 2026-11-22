@@ -190,9 +190,14 @@ fn glob_matches(pattern: &[u8], name: &[u8]) -> bool {
 
 /// Evaluate the offered host key against known hosts and enrolled records.
 ///
-/// Precedence matters: a known-hosts entry for this endpoint and key type is
-/// authoritative, so a first-use record can never quietly override the user's
-/// own SSH configuration.
+/// Precedence matters: any known-hosts entry for this endpoint is authoritative,
+/// so a first-use record can never quietly override the user's own SSH
+/// configuration.
+///
+/// The endpoint match is deliberately **not** filtered by key type (ADR 0001). A
+/// server that answers with a different algorithm than the recorded one is a
+/// conflict, not a host Gridline has never seen: filtering by type would report
+/// an ed25519 → rsa switch as first use and let one click enrol it.
 pub fn evaluate_host_trust(
     host: &str,
     port: u16,
@@ -203,11 +208,10 @@ pub fn evaluate_host_trust(
     let name = known_hosts_name(host, port);
     let offered_fingerprint = fingerprint_of(&offered.blob);
 
+    // Every entry for this endpoint, whatever key type it carries.
     let matching: Vec<&KnownHostsEntry> = known_hosts
         .iter()
-        .filter(|entry| {
-            entry.key.key_type == offered.key_type && patterns_match(&entry.patterns, &name)
-        })
+        .filter(|entry| patterns_match(&entry.patterns, &name))
         .collect();
 
     if matching.iter().any(|entry| entry.key.blob == offered.blob) {
@@ -219,7 +223,15 @@ pub fn evaluate_host_trust(
             source: TrustSource::KnownHosts,
         };
     }
-    if let Some(entry) = matching.first() {
+    // A record exists for this endpoint and none of it is the offered key: a
+    // conflict. Prefer the entry of the same key type (so the message compares
+    // like with like) and otherwise report the endpoint's record — a changed key
+    // type is still a changed key.
+    let conflicting = matching
+        .iter()
+        .find(|entry| entry.key.key_type == offered.key_type)
+        .or_else(|| matching.first());
+    if let Some(entry) = conflicting {
         return SshHostTrustState::Mismatch {
             host: host.to_string(),
             port,
