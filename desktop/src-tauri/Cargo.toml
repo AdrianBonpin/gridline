@@ -57,7 +57,7 @@ libc = "0.2"
 # SSH host trust (ADR 0001): OpenSSH-style SHA256 fingerprints, key-blob
 # decoding, and HMAC-SHA1 matching of hashed known-hosts entries.
 sha2 = "0.10"
-sha1 = "0.10"
+sha1 = "0.11"
 hmac = "0.12"
 base64 = "0.22"
 deadpool-postgres = { version = "0.14" }
