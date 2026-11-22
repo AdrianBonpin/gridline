@@ -104,10 +104,16 @@ check_dir() {
   local hash name actual
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
-    hash="${line%% *}"
+    # The manifest is `sha256sum *` output, so a file name that needs escaping
+    # (any Windows path) prefixes the digest with a backslash. Normalise it the
+    # same way the file itself is hashed below, or a correctly bundled tool
+    # reads as a manifest mismatch. See `normalise_sha256` in
+    # scripts/verified-fetch.sh — this calls it rather than re-parsing here.
+    hash="$("$fetch" digest "${line%% *}")" || hash=""
     name="${line#* }"
     while [ "${name# }" != "$name" ]; do name="${name# }"; done
-    if [ -z "$name" ]; then
+    name="${name#\*}"
+    if [ -z "$name" ] || [ -z "$hash" ]; then
       fail "$subdir: malformed manifest line: $line"
       continue
     fi

@@ -22,10 +22,16 @@
 #     authenticated as well as the payload.
 #
 # Usage:
-#   scripts/verified-fetch.sh fetch  <https-url> <sha256> <destination>
-#   scripts/verified-fetch.sh check  <file> <sha256>
-#   scripts/verified-fetch.sh commit <git-worktree> <commit-sha>
-#   scripts/verified-fetch.sh sha256 <file>
+#   scripts/verified-fetch.sh fetch   <https-url> <sha256> <destination>
+#   scripts/verified-fetch.sh check   <file> <sha256>
+#   scripts/verified-fetch.sh commit  <git-worktree> <commit-sha>
+#   scripts/verified-fetch.sh sha256  <file>
+#   scripts/verified-fetch.sh digest  <sha256sum-output-field>
+#
+# `sha256 <file>` prints the bare digest; `digest <field>` normalises a digest
+# that was parsed out of a `sha256sum`/`shasum -a 256` listing (see
+# `normalise_sha256` — the two must agree, which is why the parser lives here
+# and `scripts/verify-bundled-tools.sh` calls it instead of re-implementing it).
 #
 # Exit status: 0 = verified/ok, 1 = missing, malformed or mismatched input,
 # 2 = usage error.
@@ -36,10 +42,11 @@ err() { printf 'verified-fetch: %s\n' "$*" >&2; }
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/verified-fetch.sh fetch  <https-url> <sha256> <destination>
-       scripts/verified-fetch.sh check  <file> <sha256>
-       scripts/verified-fetch.sh commit <git-worktree> <commit-sha>
-       scripts/verified-fetch.sh sha256 <file>
+usage: scripts/verified-fetch.sh fetch   <https-url> <sha256> <destination>
+       scripts/verified-fetch.sh check   <file> <sha256>
+       scripts/verified-fetch.sh commit  <git-worktree> <commit-sha>
+       scripts/verified-fetch.sh sha256  <file>
+       scripts/verified-fetch.sh digest  <sha256sum-output-field>
 EOF
   exit 2
 }
@@ -60,23 +67,75 @@ is_git_sha() {
   [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ]
 }
 
+# Normalise one digest field from a `sha256sum`/`shasum -a 256` listing.
+#
+# The bare hex digest is all that may be compared, but the tools do not always
+# print it bare:
+#
+#   * GNU coreutils prefixes the digest with a backslash when the file name it
+#     prints alongside it needs escaping, and a backslash does — which means
+#     EVERY Windows runner path (`D:\a\_temp\…`) is printed as
+#     `\3508d8f0…  D:\a\_temp\…\postgresql-16.4-1-windows-x64-binaries.zip`.
+#     Parsing that field naively yields `\3508d8f0…`, which can never equal the
+#     pin, so the v0.9.0 release run failed every bundled-tool download on
+#     Windows with "DIGEST MISMATCH" against two visually identical digests.
+#   * `sha256sum -b` / BSD `shasum -b` mark binary mode with a `*` before the
+#     file name, so a field parsed loosely can carry it.
+#   * a digest listing produced on Windows can carry CRLF line endings.
+#
+# So: drop a CR, drop one leading `\` escape marker, drop one leading `*`
+# binary marker, then keep exactly the first 64 characters when those are all
+# lowercase hex. Anything else is returned unchanged, so `is_sha256` and the
+# comparison still fail closed on a genuinely malformed or mismatched value —
+# normalising removes the TOOL's decoration, never a difference between two
+# digests.
+normalise_sha256() {
+  local value="${1:-}"
+  # A caller may hand over a whole listing line (digest, marker, file name).
+  # Drop leading whitespace, then keep only the first field — which also drops
+  # a CR from a CRLF listing, the `*` binary marker of `sha256sum -b` and the
+  # file name itself.
+  while :; do
+    case "$value" in
+      [[:space:]]*) value="${value#?}" ;;
+      *) break ;;
+    esac
+  done
+  value="${value%%[[:space:]]*}"
+  value="${value#\\}"
+  value="${value#\*}"
+  case "${value:0:64}" in
+    '' | *[!0-9a-f]*) ;;
+    *) value="${value:0:64}" ;;
+  esac
+  printf '%s' "$value"
+}
+
 # Portable SHA-256: GNU coreutils on Linux/Git-Bash, `shasum` on macOS.
 sha256_of() {
-  local file="$1"
+  local file="$1" line
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$file" | awk '{print $1}'
+    line="$(sha256sum -- "$file")" || return 1
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$file" | awk '{print $1}'
+    line="$(shasum -a 256 -- "$file")" || return 1
   else
     err "no SHA-256 tool on PATH (need sha256sum or shasum)"
     return 1
   fi
+  # The digest is the first whitespace-separated field; `normalise_sha256`
+  # strips the tool's decoration (`\` escape marker, `*` binary marker).
+  normalise_sha256 "$line"
 }
 
 cmd_sha256() {
   [ "$#" -eq 1 ] || usage
   [ -f "$1" ] || { err "no such file: $1"; return 1; }
   sha256_of "$1"
+}
+
+cmd_digest() {
+  [ "$#" -eq 1 ] || usage
+  normalise_sha256 "$1"
 }
 
 cmd_check() {
@@ -177,5 +236,6 @@ case "$command" in
   check) cmd_check "$@" ;;
   commit) cmd_commit "$@" ;;
   sha256) cmd_sha256 "$@" ;;
+  digest) cmd_digest "$@" ;;
   *) err "unknown command: $command"; usage ;;
 esac

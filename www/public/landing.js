@@ -66,7 +66,7 @@
     const keepLabel = downloadBtn.hasAttribute("data-download-label");
 
     const releasesUrl = "https://github.com/AdrianBonpin/gridline/releases";
-    const version = "0.9.0";
+    const version = "0.9.1";
     const choicesUrl = "#download";
 
     if (isMobile) {
