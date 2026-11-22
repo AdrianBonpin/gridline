@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { analyzeForExecution, planExecution } from "./executionGuard";
-import { analyzeScript, type ScriptAnalysis } from "./sqlScan";
+import type { ScriptAnalysis } from "./sqlScan";
 
 const UNPROVABLE: ScriptAnalysis = {
   destructive: true,
@@ -17,11 +17,32 @@ const READ_ONLY: ScriptAnalysis = {
 };
 
 describe("analyzeForExecution", () => {
-  it("delegates to the shared script analyzer", () => {
-    expect(analyzeForExecution("DELETE FROM users")).toEqual(
-      analyzeScript("DELETE FROM users"),
-    );
-    expect(analyzeForExecution("SELECT 1").destructive).toBe(false);
+  it("classifies a write, a read and an unprovable script for real", () => {
+    // Concrete verdicts, not `analyzeForExecution(x) === analyzeScript(x)`:
+    // comparing the wrapper to its own delegate cannot fail when BOTH are wrong,
+    // so it pinned plumbing rather than the decision a confirmation is based on.
+    expect(analyzeForExecution("DELETE FROM users")).toEqual({
+      destructive: true,
+      firstDestructiveIndex: 1,
+      totalStatements: 1,
+      reason: "write",
+    });
+    expect(analyzeForExecution("SELECT 1")).toEqual({
+      destructive: false,
+      firstDestructiveIndex: null,
+      totalStatements: 1,
+      reason: null,
+    });
+    // The index is 1-based and points at the first offending statement, so a
+    // script whose FIRST statement is harmless still names the real one.
+    expect(analyzeForExecution("SELECT 1; DELETE FROM users")).toEqual({
+      destructive: true,
+      firstDestructiveIndex: 2,
+      totalStatements: 2,
+      reason: "write",
+    });
+    expect(analyzeForExecution("DROP TABLE users").reason).toBe("schema");
+    expect(analyzeForExecution("CALL refresh_all()").reason).toBe("unknown");
   });
 
   it("fails closed when the analyzer throws", () => {

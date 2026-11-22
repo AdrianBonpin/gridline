@@ -137,7 +137,7 @@ pub(crate) async fn update_connection_and_close_stale_session(
             .get_connections()?
             .into_iter()
             .find(|c| c.id == id)
-            .ok_or_else(|| format!("Connection not found: {id}"))?
+            .ok_or_else(|| crate::models::connection::connection_not_found(&id))?
     };
     let updated = update_connection_inner(store, id, input)?;
     crate::db::lifecycle::close_session_if_retargeted(

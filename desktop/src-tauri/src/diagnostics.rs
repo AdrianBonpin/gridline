@@ -59,19 +59,34 @@ pub fn redact(input: &str, max_bytes: usize) -> String {
             out.push_str(REDACTED_SECRET);
             i = token_end(input, i + "secret".len());
         } else {
-            // `i` is always a character boundary here: every branch advances by
-            // whole characters or by ASCII pattern lengths.
-            let ch = input[i..]
-                .chars()
-                .next()
-                .expect("a byte index inside the string starts a character");
-            out.push(ch);
-            i += ch.len_utf8();
+            // Copy exactly one character. This is the only place the scan
+            // advances over the input itself, and the input is untrusted
+            // subprocess/server text, so the advance is fallible: a mid-character
+            // index (only reachable if a future branch advanced by a raw byte
+            // offset) ends the scan with an ellipsis instead of panicking the
+            // redaction path — which is what an `expect` here used to do.
+            match push_char_at(&mut out, input, i) {
+                Some(next) => i = next,
+                None => break,
+            }
         }
     }
     // `i < bytes.len()` means the cap stopped the scan, not the input: say so
     // with an ellipsis even when the text happens to end exactly at the cap.
     truncate_to(out, max_bytes.saturating_sub(3), max_bytes, i < bytes.len())
+}
+
+/// Copy the character starting at byte `i` into `out`, returning the index after
+/// it.
+///
+/// `None` means `i` is not a character boundary or is past the end: the caller
+/// stops the scan. Deliberately fallible — this runs over arbitrary
+/// server/subprocess output, so an invariant failure must degrade the message,
+/// never take the program down.
+fn push_char_at(out: &mut String, input: &str, i: usize) -> Option<usize> {
+    let ch = input.get(i..)?.chars().next()?;
+    out.push(ch);
+    Some(i + ch.len_utf8())
 }
 
 /// Truncate to `max_bytes` (including the ellipsis), cutting at a character

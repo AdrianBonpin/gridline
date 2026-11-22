@@ -440,29 +440,27 @@ fn empty_insert_statement_uses_default_values() {
 // ---------------------------------------------------------------------------
 
 /// Live MySQL/MariaDB case for the ticket's headline bug: a filtered browse
-/// must report the filtered total and page count. Runs only when the
-/// `GRIDLINE_TEST_MYSQL_*` scratch server is configured.
+/// must report the filtered total and page count.
+///
+/// It runs against the `GRIDLINE_TEST_MYSQL_*` scratch server. Without one it
+/// skips on a developer machine and FAILS under
+/// `GRIDLINE_REQUIRE_LIVE_DB_TESTS=1` (which CI sets alongside the MySQL service
+/// it provisions), so the test can no longer report green while running nothing.
 #[tokio::test]
-#[ignore]
 async fn live_mysql_filtered_browse_reports_the_filtered_total() {
-    let (Ok(host), Ok(db)) = (
-        std::env::var("GRIDLINE_TEST_MYSQL_HOST"),
-        std::env::var("GRIDLINE_TEST_MYSQL_DB"),
-    ) else {
+    use crate::commands::query::query_tests::live_mysql_settings;
+    let Some(settings) = live_mysql_settings() else {
+        // Only reachable without `GRIDLINE_REQUIRE_LIVE_DB_TESTS=1`, which turns
+        // the missing prerequisite into a failure inside `live_mysql_settings`.
         return;
     };
-    let port: i64 = std::env::var("GRIDLINE_TEST_MYSQL_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3306);
-    let user = std::env::var("GRIDLINE_TEST_MYSQL_USER").unwrap_or_else(|_| "root".into());
-    let pass = std::env::var("GRIDLINE_TEST_MYSQL_PASS").unwrap_or_default();
+    let db = settings.db.clone();
     let cfg = crate::db::pool::DbConfig {
         db_type: "mysql".into(),
-        host,
-        port: Some(port),
-        username: Some(user),
-        password: Some(pass),
+        host: settings.host,
+        port: Some(settings.port as i64),
+        username: Some(settings.user),
+        password: Some(settings.pass),
         database: Some(db.clone()),
         ssl_mode: None,
         ssl_ca_path: None,

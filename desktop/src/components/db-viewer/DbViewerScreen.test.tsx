@@ -2172,16 +2172,50 @@ describe("viewer identity and freshness", () => {
             .mockResolvedValue({ result_sets: [mockQueryResult], notices: [], execution_time_ms: 42 } as any);
         useDbViewerStore.getState().openQueryTab({ sql: "SELECT 1" });
         renderScreen();
+        const tabId = useDbViewerStore.getState().activeTabId!;
+
+        // Mount control: the tab runs normally while the viewer is on the
+        // database it belongs to, so the assertions below are about the refusal
+        // and not about a screen that never worked.
+        const runButton = await screen.findByRole("button", { name: /run query/i });
+        fireEvent.click(runButton);
+        await waitFor(() => expect(executeQuery).toHaveBeenCalledTimes(1));
+        const rowsBefore = useDbViewerStore
+            .getState()
+            .tabs.find((t) => t.id === tabId)!.data?.rows;
 
         act(() => useDbViewerStore.getState().setCurrentDatabase("archive"));
         await waitFor(() =>
             expect(screen.getByTestId("stale-results")).toHaveTextContent(/mydb/),
         );
 
-        fireEvent.click(screen.getByRole("button", { name: /run query/i }));
-        // The old tab's identity must not execute SQL against the new database.
-        await waitFor(() => expect(executeQuery).not.toHaveBeenCalled());
-        expect(screen.getByTestId("stale-results")).toBeInTheDocument();
+        // Clear the marker the switch itself set, so nothing below can pass on
+        // the switch's account: only RUNNING can put it back.
+        act(() =>
+            useDbViewerStore.setState((s) => ({
+                tabs: s.tabs.map((t) =>
+                    t.id === tabId
+                        ? { ...t, stale: false, staleReason: null, outOfOrigin: false }
+                        : t,
+                ),
+            })),
+        );
+        expect(screen.queryByTestId("stale-results")).toBeNull();
+
+        fireEvent.click(runButton);
+
+        // The refusal is a visible state tied to the tab's own origin…
+        const banner = await screen.findByTestId("stale-results");
+        expect(banner).toHaveTextContent(/mydb/);
+        expect(banner).toHaveTextContent(/not current/i);
+        // …the forbidden outcome never happens (no second execution)…
+        expect(executeQuery).toHaveBeenCalledTimes(1);
+        // …and the tab keeps its rows and its identity instead of silently
+        // being re-run against the new database.
+        const tab = useDbViewerStore.getState().tabs.find((t) => t.id === tabId)!;
+        expect(tab.outOfOrigin).toBe(true);
+        expect(tab.loading).toBe(false);
+        expect(tab.data?.rows).toEqual(rowsBefore);
     });
 
     it("refreshes every affected tab after Commit All and clears its optimistic markers", async () => {

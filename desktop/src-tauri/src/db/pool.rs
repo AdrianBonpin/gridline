@@ -304,7 +304,9 @@ pub async fn acquire_handle(
         .lock()
         .await
         .acquire(id)
-        .ok_or_else(|| "Connection not found".to_string())
+        // One message for a missing saved connection, shared with the other
+        // commands that resolve one (`models::connection::connection_not_found`).
+        .ok_or_else(|| crate::models::connection::connection_not_found(id))
 }
 
 #[cfg(test)]
@@ -598,7 +600,7 @@ mod tests {
         assert!(held_is_sqlite(&held));
         assert_eq!(
             acquire_handle(&pool, "missing").await.err().as_deref(),
-            Some("Connection not found")
+            Some("Connection not found: missing")
         );
     }
 
