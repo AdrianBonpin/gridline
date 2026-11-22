@@ -1860,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "gridline"
-version = "0.8.4"
+version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
