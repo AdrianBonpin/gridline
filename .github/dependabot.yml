@@ -32,11 +32,35 @@
 #     a release-pipeline change that should arrive as a reviewed commit rather
 #     than as bot churn.
 #
-# Minor/patch updates are grouped to keep PR volume low; majors arrive as
-# individual PRs because a major React/Tauri/Astro bump is a decision, not a
-# routine merge. Security updates use the same three entries, and
-# `scripts/check-advisories.py` is the backstop that does not depend on
-# Dependabot at all.
+# Every update type is grouped, per entry (i.e. per ecosystem + directory), so a
+# week's bumps arrive as at most a handful of reviewable PRs instead of one PR
+# per package:
+#
+#   <entry>-minor-patch / cargo-patch -> routine bumps, mergeable as-is
+#   <entry>-major                     -> majors, which are decisions, not merges
+#
+# Dependabot runs each `groups:` bucket (each distinct `update-types` set) as its
+# own group, so a minors/patch group and a majors group coexisting inside one
+# entry is expected: within a week a graph gets at most one minors/patch PR plus
+# one majors PR.
+#
+# Why group majors at all: with only the minor/patch groups, a single weekly run
+# produced 13 PRs, 11 of them bumps that could not pass CI (typescript 5.8 -> 7,
+# vite 7 -> 8, redis 0.27 -> 1.8, @vitejs/plugin-react 4 -> 6, @astrojs/react
+# 6 -> 7, vitest 4 -> 5, satori 0.33 -> 0.63, rusqlite, sha1, sha2,
+# keyring-store). Eleven permanently-red PRs hide real signal. A majors group
+# per entry keeps that decision in one reviewable PR, where a bump that cannot
+# be landed is closed or split rather than left to rot — while the pre-1.0 bumps
+# in that list (a `0.x -> 0.y` move is a *minor* by semver, whatever its blast
+# radius) stay covered by the minor/patch group, so neither bucket can fall back
+# to one PR per package.
+#
+# `open-pull-requests-limit` is 3 per entry (down from 5) because grouping, not
+# the cap, is what bounds the volume — the cap only has to leave room for the
+# minors/patch PR, the majors PR and a possible security PR at the same time.
+#
+# Security updates use the same three entries, and `scripts/check-advisories.py`
+# is the backstop that does not depend on Dependabot at all.
 
 version: 2
 updates:
@@ -46,13 +70,16 @@ updates:
     schedule:
       interval: 'weekly'
       day: 'monday'
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
     commit-message:
       prefix: 'chore(deps)'
     groups:
       bun-workspace-minor-patch:
         patterns: ['*']
         update-types: ['minor', 'patch']
+      bun-workspace-major:
+        patterns: ['*']
+        update-types: ['major']
 
   # Standalone website install -> `www/bun.lock` (the deployed build's graph).
   - package-ecosystem: 'bun'
@@ -60,13 +87,16 @@ updates:
     schedule:
       interval: 'weekly'
       day: 'monday'
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
     commit-message:
       prefix: 'chore(www-deps)'
     groups:
       www-standalone-minor-patch:
         patterns: ['*']
         update-types: ['minor', 'patch']
+      www-standalone-major:
+        patterns: ['*']
+        update-types: ['major']
 
   # Rust backend -> `desktop/src-tauri/Cargo.lock`.
   - package-ecosystem: 'cargo'
@@ -74,10 +104,13 @@ updates:
     schedule:
       interval: 'weekly'
       day: 'monday'
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
     commit-message:
       prefix: 'chore(deps)'
     groups:
       cargo-patch:
         patterns: ['*']
         update-types: ['patch']
+      cargo-major:
+        patterns: ['*']
+        update-types: ['major']

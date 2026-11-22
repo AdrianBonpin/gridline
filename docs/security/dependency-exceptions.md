@@ -22,9 +22,12 @@ acceptable for a stated reason, until a stated date".
 ## How updates arrive
 
 [`.github/dependabot.yml`](../../.github/dependabot.yml) opens weekly update pull requests
-against `prod`, one entry per graph above (minor/patch grouped, majors individually), so a
-fix upstream reaches the repository as a reviewed change rather than as a tag-time
-surprise. Two gaps are deliberate and handled elsewhere:
+against `prod`, one entry per graph above, and every entry groups its updates —
+minor/patch into one pull request and majors into another (Dependabot runs each
+`update-types` bucket as its own group). A week's majors therefore arrive as one
+reviewable pull request per graph instead of one per package, so a fix upstream reaches
+the repository as a reviewed change rather than as a tag-time surprise. Two gaps are
+deliberate and handled elsewhere:
 
 - **`overrides` are not updated by Dependabot.** The root `dompurify` / `fflate` floors and
 the website's `fflate` floor are bumped by hand when a review or this gate says so.
