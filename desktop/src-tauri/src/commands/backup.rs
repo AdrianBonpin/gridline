@@ -639,10 +639,17 @@ pub fn run_pg_dump(
 /// applied). It is never guessed here: [`pg_restore_txn`] derives it from the
 /// dump and refuses a non-atomic run the user did not accept.
 ///
-/// No idle bound applies here: a restore can sit in one large `COPY` without
-/// printing anything, and that is indistinguishable from a quiet-but-healthy
-/// run. The job stays cancellable and is terminated on app exit, but it is
-/// never killed merely for being slow.
+/// No **idle output** bound applies here: a restore can sit in one large `COPY`
+/// without printing anything, and that is indistinguishable from a
+/// quiet-but-healthy run. The job stays cancellable and is terminated on app exit,
+/// but it is never killed merely for being slow.
+///
+/// The one wait that has no end of its own — a lock held by another session — is
+/// bounded from outside instead, by the lock watchdog in
+/// [`crate::db::restore_watch`] (see
+/// [`crate::commands::backup::watch_restore_lock_wait`]). It needs to recognize
+/// this child's backend, so the child connects with a per-job
+/// `application_name`.
 pub fn run_pg_restore_managed(
     job: &JobControl,
     conn: &PgConnParams,
@@ -650,16 +657,20 @@ pub fn run_pg_restore_managed(
     txn: PgRestoreTxn,
     tools: &PgToolPaths,
 ) -> Result<(), JobFailure> {
+    let app_name = crate::db::restore_watch::restore_application_name(job.id());
     let mut cmd = if options.format == "plain" {
         let mut cmd = Command::new(&tools.psql);
         cmd.env("PGPASSWORD", &conn.password)
+            .env("PGAPPNAME", &app_name)
             .args(build_psql_restore_args(conn, &options.file_path, txn));
         cmd
     } else {
         let mut args = build_restore_args(conn, options, txn);
         args.push(options.file_path.clone());
         let mut cmd = Command::new(&tools.pg_restore);
-        cmd.env("PGPASSWORD", &conn.password).args(&args);
+        cmd.env("PGPASSWORD", &conn.password)
+            .env("PGAPPNAME", &app_name)
+            .args(&args);
         cmd
     };
     // Restoring into a TLS-verifying target must verify TLS: no `prefer` fallback.
@@ -668,12 +679,125 @@ pub fn run_pg_restore_managed(
     let out = job::run_managed(job, cmd, None).map_err(JobFailure::from)?;
     if out.status.success() {
         Ok(())
+    } else if let Some(reason) = job.stop_reason() {
+        // A watchdog stopped this job; the tool's own message would only describe
+        // the symptom ("terminating connection due to administrator command").
+        Err(JobFailure::failed(reason))
     } else {
         Err(JobFailure::failed(pg_restore_failure_message(
             txn,
             &out.stderr,
         )))
     }
+}
+
+/// Watch a running PostgreSQL restore and terminate its backend once it has been
+/// **continuously** waiting on a lock for
+/// [`crate::db::restore_watch::DEFAULT_LOCK_WAIT_DEADLINE`].
+///
+/// This is the restore's lock bound: see [`crate::db::restore_watch`] for why a
+/// server-side `lock_timeout` cannot be used (a dump resets it) and why the idle
+/// bound cannot either (a large `COPY` is silent but healthy). Sampling uses the
+/// connection's pooled session — the same TLS/SSH-correct client the rest of the
+/// app uses, and the one whose user owns the restore backend.
+///
+/// The loop can only ever stop a restore it *positively* observed waiting on a
+/// lock: a sample it cannot take is blind, and blindness is never treated as a
+/// stall. It returns as soon as the job is finished (or was cancelled) so it never
+/// outlives the restore.
+async fn watch_restore_lock_wait(
+    app_handle: AppHandle,
+    jobs: std::sync::Arc<crate::job::JobRegistry>,
+    job_id: String,
+    connection_id: String,
+) {
+    use crate::db::restore_watch::{
+        lock_wait_stop_message, restore_application_name, LockWatch, WatchDecision,
+        DEFAULT_LOCK_WAIT_DEADLINE, RESTORE_BACKEND_SQL, SAMPLE_INTERVAL, TERMINATE_BACKEND_SQL,
+    };
+
+    let app_name = restore_application_name(&job_id);
+    let mut watch = LockWatch::new(DEFAULT_LOCK_WAIT_DEADLINE);
+
+    loop {
+        if jobs.get(&job_id).is_none() {
+            return; // finished (or never started): nothing left to watch
+        }
+        tokio::time::sleep(SAMPLE_INTERVAL).await;
+        let state = app_handle.state::<crate::AppState>();
+        let sample = sample_restore_backend(
+            &state.pool_manager,
+            &connection_id,
+            &app_name,
+            RESTORE_BACKEND_SQL,
+        )
+        .await;
+        match watch.observe(std::time::Instant::now(), sample) {
+            WatchDecision::Continue => {}
+            WatchDecision::Stop { pid, waited } => {
+                // Record the reason BEFORE terminating: the restore's error is
+                // mapped as soon as its process exits, and it must already know
+                // why it stopped.
+                if let Some(job) = jobs.get(&job_id) {
+                    job.note_stop_reason(lock_wait_stop_message(waited));
+                }
+                terminate_restore_backend(
+                    &state.pool_manager,
+                    &connection_id,
+                    pid,
+                    TERMINATE_BACKEND_SQL,
+                )
+                .await;
+                return;
+            }
+        }
+    }
+}
+
+/// One `pg_stat_activity` sample of the restore's backend (see [`LockSample`]).
+async fn sample_restore_backend(
+    pool: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    connection_id: &str,
+    app_name: &str,
+    sql: &str,
+) -> crate::db::restore_watch::LockSample {
+    use crate::db::pool::{acquire_handle, DbHandle};
+    use crate::db::restore_watch::LockSample;
+
+    let Ok(DbHandle::Postgresql(client, _)) = acquire_handle(pool, connection_id).await else {
+        return LockSample::NotSeen;
+    };
+    let client = client.lock().await;
+    let Ok(rows) = client.query(sql, &[&app_name]).await else {
+        return LockSample::NotSeen;
+    };
+    let Some(row) = rows.first() else {
+        return LockSample::NotSeen;
+    };
+    let pid: i32 = row.get("pid");
+    let waiting: bool = row.get("waiting_on_lock");
+    if waiting {
+        LockSample::WaitingForLock { pid }
+    } else {
+        LockSample::Running { pid }
+    }
+}
+
+/// Terminate the restore backend a watchdog stopped (best effort: the process may
+/// already be gone, which is not an error).
+async fn terminate_restore_backend(
+    pool: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    connection_id: &str,
+    pid: i32,
+    sql: &str,
+) {
+    use crate::db::pool::{acquire_handle, DbHandle};
+
+    let Ok(DbHandle::Postgresql(client, _)) = acquire_handle(pool, connection_id).await else {
+        return;
+    };
+    let client = client.lock().await;
+    let _ = client.query(sql, &[&pid]).await;
 }
 
 /// Headless one-shot form of [`run_pg_restore_managed`].
@@ -1565,6 +1689,12 @@ pub fn dump_sqlite_to_cancellable<W: Write, F: FnMut(&str)>(
             .next()
             .map_err(|e| format!("read row {row_number} of \"{name}\": {e}"))?
         {
+            // Poll inside the table as well: a single table is one unbounded
+            // step otherwise, so a cancel could not take effect until every row
+            // of it had already been written to the dump.
+            if is_cancelled() {
+                return Err(CANCEL_MESSAGE.to_string());
+            }
             let mut vals: Vec<String> = Vec::with_capacity(emitted.len());
             for (index, column) in emitted.iter().enumerate() {
                 let value = row.get_ref(index).map_err(|e| {
@@ -2323,6 +2453,26 @@ pub fn parse_mysql_restore_script_with_cap(
     Ok(statements)
 }
 
+/// How long a MySQL restore may wait for a metadata lock before the server stops
+/// it.
+///
+/// The server default for `lock_wait_timeout` is **one year**, so a restore queued
+/// behind another session's open transaction waits effectively forever. This
+/// bounds only the wait for a lock: a statement that already holds its locks (a
+/// long `ALTER TABLE`, a large multi-row `INSERT`) is unaffected, so a slow restore
+/// is never killed. Chosen like the PostgreSQL lock deadline
+/// ([`crate::db::restore_watch::DEFAULT_LOCK_WAIT_DEADLINE`]): generous enough for a
+/// busy database, short enough that a stalled restore reports instead of hanging.
+pub const MYSQL_RESTORE_LOCK_WAIT_SECONDS: u64 = 60;
+
+/// The session statement that applies [`MYSQL_RESTORE_LOCK_WAIT_SECONDS`].
+///
+/// Set on the restore's own session only, and re-applied after the `USE` so it
+/// covers every statement of the replay (and the clean drops before them).
+pub fn mysql_lock_wait_bound_statement(seconds: u64) -> String {
+    format!("SET SESSION lock_wait_timeout = {seconds}")
+}
+
 /// Progress units for a restore: every statement, plus one for the clean
 /// drop phase so the fraction never jumps backwards.
 pub fn restore_progress_total(statement_count: usize, clean: bool) -> usize {
@@ -2372,11 +2522,28 @@ pub async fn run_mysql_restore_on(
         true,
     )?;
 
+    // Confine the replay to the selected database BEFORE anything runs. A dump
+    // carrying `USE otherdb` (mysqldump --databases) or a schema-qualified
+    // `CREATE TABLE otherdb.t` would otherwise write outside the target while the
+    // clean plan dropped same-named objects inside it — the two halves would
+    // describe different objects. See `mysql_clean::check_confined`.
+    crate::db::mysql_clean::check_confined(run.database, run.statements)?;
+
     // The form lets the user target a database other than the one this
     // connection defaults to, so select it explicitly.
     exec_restore_statement(
         conn,
         &format!("USE {}", crate::db::mysql::mysql_quote_ident(run.database)),
+    )
+    .await
+    .map_err(|e| sanitize_error(&format!("{e}")))?;
+
+    // Bound the metadata-lock wait on this session (see
+    // `MYSQL_RESTORE_LOCK_WAIT_SECONDS`): the server default is a year, so a
+    // restore queued behind another session's transaction would wait forever.
+    exec_restore_statement(
+        conn,
+        &mysql_lock_wait_bound_statement(MYSQL_RESTORE_LOCK_WAIT_SECONDS),
     )
     .await
     .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -2548,8 +2715,10 @@ fn emit_job_result(app_handle: &AppHandle, job_id: &str, result: Result<(), JobF
 /// Cancel a running tool job (backup / restore / sync).
 ///
 /// Terminates the job's whole child process tree (a cancelled `pg_dump` leaves
-/// no helper behind) and flips the cancellation flag the in-process engines
-/// poll. Returns whether a job with that id was still running.
+/// no helper behind) and flips the cancellation flag every in-process engine
+/// polls. Returns whether a job with that id was still running — including an
+/// in-process job (SQLite dump/restore/sync, MySQL restore), which owns no child
+/// process and was previously reported as "not running" even though it was.
 #[tauri::command]
 pub async fn cancel_tool_job(
     job_id: String,
@@ -2676,6 +2845,18 @@ pub async fn pg_restore(
         let result = run_pg_restore_managed(&job, &params, &options, txn, &tools);
         jobs.finish(&job_id_clone);
         emit_job_result(&app_handle_clone, &job_id_clone, result);
+    });
+
+    // Bound the one unbounded wait a restore can hit: a lock another session
+    // holds. The watchdog stops THIS restore (identified by its per-job
+    // `application_name`) after a continuous lock wait, and never touches a
+    // restore that is merely slow. It cannot fail the restore itself.
+    let watch_jobs = state.jobs.clone();
+    let watch_job_id = job_id.clone();
+    let watch_connection = connection_id.clone();
+    let watch_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        watch_restore_lock_wait(watch_handle, watch_jobs, watch_job_id, watch_connection).await;
     });
 
     Ok(job_id)

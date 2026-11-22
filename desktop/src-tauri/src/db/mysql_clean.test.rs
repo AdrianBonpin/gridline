@@ -134,3 +134,136 @@ fn recognises_a_comment_led_create() {
         vec!["DROP TABLE IF EXISTS `shop`.`c`".to_string()]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Confinement: replay and the clean plan must agree about which schema an
+// object lives in.
+// ---------------------------------------------------------------------------
+
+fn confined(target: &str, sql: &str) -> Result<(), String> {
+    check_confined(
+        target,
+        &crate::db::mysql_script::MySqlScript::new(sql).collect::<Vec<_>>(),
+    )
+}
+
+#[test]
+fn confinement_refuses_a_use_of_another_schema() {
+    // What `mysqldump --databases shop` emits. Replaying this verbatim wrote
+    // into `shop` while the clean plan dropped `target`.`t`.
+    let err = confined("target", "USE `shop`;\nCREATE TABLE `t` (id int);")
+        .expect_err("a dump that switches schema must be refused");
+    assert!(
+        err.contains("`shop`"),
+        "the message must name the schema: {err}"
+    );
+    assert!(
+        err.contains("`target`"),
+        "the message must name the target: {err}"
+    );
+    assert!(
+        !err.contains("CREATE TABLE"),
+        "the statement text must never be echoed: {err}"
+    );
+}
+
+#[test]
+fn confinement_accepts_a_use_of_the_target_schema() {
+    confined("shop", "USE `shop`;\nCREATE TABLE `t` (id int);")
+        .expect("the target schema is allowed");
+    confined("SHOP", "USE `shop`;").expect("schema names compare case-insensitively");
+}
+
+#[test]
+fn confinement_refuses_a_create_in_another_schema() {
+    let err = confined("target", "CREATE TABLE `other`.`t` (id int);")
+        .expect_err("a qualified CREATE escapes the target");
+    assert!(err.contains("`other`"), "got: {err}");
+    assert!(
+        err.contains("Statement 1"),
+        "the message must point at the statement: {err}"
+    );
+}
+
+#[test]
+fn confinement_refuses_a_drop_of_another_schema() {
+    let err = confined("target", "DROP TABLE IF EXISTS `other`.`t`;")
+        .expect_err("a qualified DROP escapes the target");
+    assert!(err.contains("`other`"), "got: {err}");
+}
+
+#[test]
+fn confinement_refuses_a_create_database() {
+    let err = confined(
+        "target",
+        "CREATE DATABASE /*!32312 IF NOT EXISTS*/ `other`;",
+    )
+    .expect_err("creating another database is outside the target");
+    assert!(err.contains("`other`"), "got: {err}");
+}
+
+#[test]
+fn confinement_accepts_the_shapes_a_mysqldump_script_actually_has() {
+    // Aliases, string literals with dots, view bodies, routines wrapped in
+    // executable comments and a comma-separated DROP list must all pass: the
+    // check reads object-name positions only.
+    let dump = "\
+SET NAMES utf8mb4;
+CREATE TABLE `orders` (id int, note varchar(10));
+INSERT INTO `orders` VALUES (1, 'a.b');
+CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v` AS SELECT `o`.`id` AS `id` FROM `orders` `o`;
+/*!50003 CREATE*/ /*!50020 DEFINER=`root`@`localhost`*/ /*!50003 PROCEDURE `p`() BEGIN DROP TABLE `scratch`; END */;;
+DROP TABLE IF EXISTS `a`, `b`;
+ALTER TABLE `orders` ADD COLUMN extra int;
+USE `target`;
+";
+    confined("target", dump).expect("a plain single-database dump is confined by construction");
+}
+
+#[test]
+fn confinement_keeps_the_clean_plan_inside_the_target_schema() {
+    // The agreement the finding is about: every DROP the clean phase plans names
+    // the target schema, for a script the replay accepts.
+    let sql = "USE `shop`;\nCREATE TABLE `orders` (id int);\nCREATE TABLE `users` (id int);";
+    confined("shop", sql).expect("confined");
+    let drops = plan_clean_drops(
+        "shop",
+        &crate::db::mysql_script::MySqlScript::new(sql).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        drops,
+        vec![
+            "DROP TABLE IF EXISTS `shop`.`orders`".to_string(),
+            "DROP TABLE IF EXISTS `shop`.`users`".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn confinement_points_at_the_offending_statement() {
+    let err = confined("target", "CREATE TABLE `a` (id int);\nUSE `other`;\n")
+        .expect_err("the second statement switches schema");
+    assert!(err.contains("Statement 2"), "got: {err}");
+}
+
+/// The clean plan qualifies an unqualified name with the **target**, which is
+/// only correct because the replay is confined: this script is refused before
+/// either phase runs. The test pins both halves of that agreement so the
+/// confinement cannot be dropped as "cosmetic" — without it, the DROP below would
+/// hit `target.orders` while the replay created `shop.orders`.
+#[test]
+fn the_clean_plan_is_only_meaningful_because_the_replay_is_confined() {
+    let sql = "USE `shop`;\nCREATE TABLE `orders` (id int);";
+    let statements = crate::db::mysql_script::MySqlScript::new(sql).collect::<Vec<_>>();
+
+    assert!(
+        check_confined("target", &statements).is_err(),
+        "the replay must refuse to switch schema"
+    );
+    assert_eq!(
+        plan_clean_drops("target", &statements),
+        vec!["DROP TABLE IF EXISTS `target`.`orders`".to_string()],
+        "the plan names the target schema, so it must never run against a script \
+         whose replay would write into `shop`"
+    );
+}

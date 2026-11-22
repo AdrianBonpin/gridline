@@ -19,6 +19,12 @@
 //!   observable progress (drained output, growing output file, bytes crossing a
 //!   sync pipe) for [`JobControl::idle_timeout`] is stopped. A large backup that
 //!   keeps making progress runs as long as it needs to.
+//! * **Lock deadlines where output cannot prove liveness** — a restore can sit in
+//!   one large `COPY` silently, so it is exempt from the idle bound and bounded
+//!   on the *lock wait* instead ([`crate::db::restore_watch`]).
+//! * **Honest cancellation** — the registry answers "was there a job", not "did it
+//!   own a child process", so an in-process job (SQLite dump/restore/sync, MySQL
+//!   restore) can be reported and cancelled like any other.
 //! * **Bounded diagnostics** — child output is drained on its own thread (so a
 //!   chatty tool cannot deadlock on a full pipe) and capped at
 //!   [`MAX_DIAGNOSTIC_BYTES`].
@@ -106,6 +112,11 @@ pub struct JobControl {
     connection_id: Mutex<Option<String>>,
     cancelled: AtomicBool,
     idle_ms: AtomicU64,
+    /// Why an external watchdog stopped this job, when it was not the job's own
+    /// tool that failed (e.g. a restore terminated for sitting in a lock wait).
+    /// Reported instead of the raw consequence ("server closed the connection
+    /// unexpectedly"), so the failure explains itself.
+    stop_reason: Mutex<Option<String>>,
     /// Children currently owned by this job, in spawn order.
     children: Mutex<Vec<Arc<ManagedChild>>>,
 }
@@ -117,6 +128,7 @@ impl JobControl {
             connection_id: Mutex::new(None),
             cancelled: AtomicBool::new(false),
             idle_ms: AtomicU64::new(DEFAULT_IDLE_TIMEOUT.as_millis() as u64),
+            stop_reason: Mutex::new(None),
             children: Mutex::new(Vec::new()),
         })
     }
@@ -149,8 +161,13 @@ impl JobControl {
         Duration::from_millis(self.idle_ms.load(Ordering::SeqCst))
     }
 
-    /// Request cancellation and terminate every owned process tree. Returns
-    /// whether the job had a live child (i.e. there was something to stop).
+    /// Request cancellation and terminate every owned process tree.
+    ///
+    /// The return value is only "did this job own a child process", which is
+    /// NOT the same as "was there a job to cancel": the in-process engines
+    /// (SQLite dump/restore/sync, MySQL restore) own no child at all. Callers
+    /// that answer "is the job running" must use the registry's job id, never
+    /// this flag — see [`JobRegistry::cancel`].
     pub fn cancel(&self) -> bool {
         self.cancelled.store(true, Ordering::SeqCst);
         let children = self.children();
@@ -173,6 +190,18 @@ impl JobControl {
 
     pub fn clear_cancelled(&self) {
         self.cancelled.store(false, Ordering::SeqCst);
+    }
+
+    /// Record why the job was stopped from outside (a watchdog, not the tool).
+    pub fn note_stop_reason(&self, reason: impl Into<String>) {
+        if let Ok(mut g) = self.stop_reason.lock() {
+            *g = Some(reason.into());
+        }
+    }
+
+    /// The recorded stop reason, if any.
+    pub fn stop_reason(&self) -> Option<String> {
+        self.stop_reason.lock().ok().and_then(|g| g.clone())
     }
 
     fn register(&self, child: Arc<ManagedChild>) {
@@ -238,9 +267,18 @@ impl JobRegistry {
     }
 
     /// Cancel one job. `false` when the id is unknown (already finished).
+    ///
+    /// The answer is "a job was registered under this id", never "it owned a
+    /// child process". An in-process job — the SQLite dump/restore/sync and the
+    /// MySQL restore — has no child at all, and reporting it as *not running*
+    /// made `cancel_tool_job` return false and the UI skip its cancellation
+    /// state while the job kept going.
     pub fn cancel(&self, id: &str) -> bool {
         match self.get(id) {
-            Some(control) => control.cancel(),
+            Some(control) => {
+                control.cancel();
+                true
+            }
             None => false,
         }
     }
