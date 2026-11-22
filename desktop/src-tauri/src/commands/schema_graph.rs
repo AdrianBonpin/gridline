@@ -313,9 +313,9 @@ pub async fn get_schema_graph(
     let schema = schema.unwrap_or_else(|| "public".to_string());
     validate_schema_name(&schema)?;
 
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let query = build_pg_schema_graph_query(&schema);
             let rows = client
                 .query(&query, &[&schema])
@@ -337,7 +337,10 @@ pub async fn get_schema_graph(
                 relationships,
             })
         }
-        Some(DbHandle::Sqlite(conn)) => build_sqlite_schema_graph(conn, &schema),
+        Some(DbHandle::Sqlite(conn)) => {
+            let conn = conn.lock().await;
+            build_sqlite_schema_graph(&conn, &schema)
+        }
         Some(DbHandle::MySql(_)) => Err("Schema visualizer not supported for MySQL".to_string()),
         None => Err("Connection not found".into()),
     }

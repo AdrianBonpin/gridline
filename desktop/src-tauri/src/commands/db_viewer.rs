@@ -1244,7 +1244,7 @@ pub(crate) async fn run_mysql_connect(
             pool_manager
                 .lock()
                 .await
-                .register(connection_id, crate::db::pool::DbHandle::MySql(pool));
+                .register(connection_id, crate::db::pool::DbHandle::mysql(pool));
             cancel_registry.set_mysql(
                 connection_id,
                 crate::cancel::MySqlCancel {
@@ -1373,7 +1373,7 @@ pub async fn db_connect(
                 let mut pm = state.pool_manager.lock().await;
                 pm.register(
                     &connection_id,
-                    crate::db::pool::DbHandle::Postgresql(client, handle),
+                    crate::db::pool::DbHandle::postgresql(client, handle),
                 );
                 Ok(())
             }
@@ -1395,7 +1395,7 @@ pub async fn db_connect(
                 // can abort a running SQLite query from another thread.
                 let interrupt = conn.get_interrupt_handle();
                 let mut pm = state.pool_manager.lock().await;
-                pm.register(&connection_id, crate::db::pool::DbHandle::Sqlite(conn));
+                pm.register(&connection_id, crate::db::pool::DbHandle::sqlite(conn));
                 state
                     .cancel_registry
                     .set_sqlite(&connection_id, crate::cancel::SqliteCancel::new(interrupt));
@@ -1436,9 +1436,9 @@ pub async fn get_databases(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<String>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let rows = client
                 .query(
                     "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname",
@@ -1453,7 +1453,8 @@ pub async fn get_databases(
             Ok(vec!["main".to_string()])
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
             let rows = sqlx::query(&crate::db::mysql::mysql_databases_query())
                 .fetch_all(pool)
                 .await
@@ -1474,9 +1475,9 @@ pub async fn get_schemas(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<String>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let rows = client
                 .query(
                     "SELECT nspname FROM pg_namespace WHERE nspname NOT IN ('information_schema', 'pg_catalog') AND nspname NOT LIKE 'pg_toast%' AND nspname NOT LIKE 'pg_temp%' ORDER BY nspname",
@@ -1487,6 +1488,9 @@ pub async fn get_schemas(
             Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            let conn = conn.lock().await;
+            // One operation at a time on this connection (rusqlite requires it).
+            // The pool registry is already released here.
             let mut stmt = conn
                 .prepare("SELECT DISTINCT 'main' AS schema")
                 .map_err(|e| e.to_string())?;
@@ -1496,7 +1500,8 @@ pub async fn get_schemas(
             Ok(rows.filter_map(|r| r.ok()).collect())
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // MySQL has no separate schema layer — databases play the role of
                                // schemas, so the schema selector mirrors the database list.
             let rows = sqlx::query(&crate::db::mysql::mysql_databases_query())
@@ -1521,9 +1526,9 @@ pub(crate) async fn get_tables_inner(
     connection_id: &str,
     schema: Option<&str>,
 ) -> Result<Vec<TableInfo>, String> {
-    let mut pm = pool_manager.lock().await;
-    match pm.get(connection_id) {
+    match pool_manager.lock().await.acquire(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let schema_filter = schema.unwrap_or("public").to_string();
             let rows = client
                 .query(
@@ -1542,6 +1547,9 @@ pub(crate) async fn get_tables_inner(
                 .collect())
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            let conn = conn.lock().await;
+            // One operation at a time on this connection (rusqlite requires it).
+            // The pool registry is already released here.
             let mut stmt = conn
                 .prepare(
                     "SELECT name, 'main', type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -1560,7 +1568,8 @@ pub(crate) async fn get_tables_inner(
                 .map_err(|e| e.to_string())
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // 2 columns (name, type) when a schema is given; 3 (+ schema)
                                // when not — hence sqlx::query + try_get, not query_as.
             let query = crate::db::introspection::mysql_tables_query(schema);
@@ -1730,9 +1739,9 @@ pub(crate) async fn get_table_data_inner(
     let filters = filters.unwrap_or_default();
     let sorts = sorts.unwrap_or_default();
 
-    let mut pm = pool_manager.lock().await;
-    match pm.get(connection_id) {
+    match pool_manager.lock().await.acquire(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let qualified = ident::qualified(Engine::PostgreSql, schema, table)?;
             // Build filter clause (shared by COUNT and data queries)
             let mut pg_param_idx: usize = 0;
@@ -1762,7 +1771,7 @@ pub(crate) async fn get_table_data_inner(
             // Views and materialized views expose no `ctid` and are read-only;
             // detect them so no row-locator is appended to the data SELECT and
             // columns never offer an edit.
-            let read_only_relation = pg_relation_is_read_only(client, schema, table).await;
+            let read_only_relation = pg_relation_is_read_only(&client, schema, table).await;
 
             // Column metadata (PK/FK/read-only flags) is derived from the same
             // shared query + mapper the column-introspection command uses, so a
@@ -1880,6 +1889,9 @@ pub(crate) async fn get_table_data_inner(
             })
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            let conn = conn.lock().await;
+            // One operation at a time on this connection (rusqlite requires it).
+            // The pool registry is already released here.
             // Build filter clause (shared by COUNT and data queries)
             let (filter_clause, filter_vals) = build_sqlite_filter_clause(&filters)?;
             let order_clause = build_order_clause(Engine::Sqlite, &sorts)?;
@@ -1905,7 +1917,7 @@ pub(crate) async fn get_table_data_inner(
 
             // Metadata comes from the catalog, never from a row page: SQLite
             // column introspection is PRAGMA-based and has no `LIMIT`.
-            let (columns, is_view) = sqlite_column_metadata(conn, table)?;
+            let (columns, is_view) = sqlite_column_metadata(&conn, table)?;
 
             // Get data (with filters and sorts applied).
             // `rowid` is appended last for no-PK tables so later UPDATE/DELETE
@@ -1965,8 +1977,9 @@ pub(crate) async fn get_table_data_inner(
             })
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
-            let read_only_relation = mysql_relation_is_read_only(pool, schema, table).await;
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
+            let read_only_relation = mysql_relation_is_read_only(&pool, schema, table).await;
             let columns = mysql_load_columns(pool, schema, table, read_only_relation).await?;
 
             // Filtered total: the count carries exactly the WHERE clause (and
@@ -2176,10 +2189,10 @@ pub(crate) async fn get_table_columns_inner(
     schema: &str,
     table: &str,
 ) -> Result<Vec<crate::models::ColumnInfo>, String> {
-    let mut pm = pm.lock().await;
-    match pm.get(connection_id) {
+    match pm.lock().await.acquire(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
-            let read_only = pg_relation_is_read_only(client, schema, table).await;
+            let client = client.lock().await;
+            let read_only = pg_relation_is_read_only(&client, schema, table).await;
             let rows = client
                 .query(
                     &crate::db::introspection::pg_columns_query(),
@@ -2190,11 +2203,15 @@ pub(crate) async fn get_table_columns_inner(
             pg_columns_from_rows(schema, &rows, read_only)
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
-            sqlite_column_metadata(conn, table).map(|(columns, _)| columns)
+            let conn = conn.lock().await;
+            // One operation at a time on this connection (rusqlite requires it).
+            // The pool registry is already released here.
+            sqlite_column_metadata(&conn, table).map(|(columns, _)| columns)
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let read_only = mysql_relation_is_read_only(pool, schema, table).await;
-            mysql_load_columns(pool, schema, table, read_only).await
+            let pool = pool.lock().await;
+            let read_only = mysql_relation_is_read_only(&pool, schema, table).await;
+            mysql_load_columns(&pool, schema, table, read_only).await
         }
         None => Err("Connection not found".into()),
     }
@@ -2403,10 +2420,10 @@ pub(crate) async fn get_fk_preview_inner(
     column: &str,
     value: &str,
 ) -> Result<QueryResult, String> {
-    let mut pm = pm.lock().await;
-    match pm.get(connection_id) {
+    match pm.lock().await.acquire(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
-            let target = resolve_fk_target(client, schema, table, column).await?;
+            let client = client.lock().await;
+            let target = resolve_fk_target(&client, schema, table, column).await?;
             // Column metadata describes the *referenced* table.
             let col_rows = client
                 .query(
@@ -2438,8 +2455,11 @@ pub(crate) async fn get_fk_preview_inner(
             })
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
-            let target = resolve_fk_target_sqlite(conn, table, column)?;
-            let columns = sqlite_table_columns(conn, &target)?;
+            let conn = conn.lock().await;
+            // One operation at a time on this connection (rusqlite requires it).
+            // The pool registry is already released here.
+            let target = resolve_fk_target_sqlite(&conn, table, column)?;
+            let columns = sqlite_table_columns(&conn, &target)?;
             let data_query = crate::db::fk::preview_sql(Engine::Sqlite, &target)?;
             let mut stmt = conn.prepare(&data_query).map_err(|e| e.to_string())?;
             let col_count = stmt.column_count();
@@ -2466,7 +2486,8 @@ pub(crate) async fn get_fk_preview_inner(
             })
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
             let target = resolve_fk_target_mysql(pool, schema, table, column).await?;
             let columns = mysql_load_columns(pool, &target.schema, &target.table, false).await?;
             let data_query = crate::db::fk::preview_sql(Engine::MySql, &target)?;
@@ -2594,10 +2615,10 @@ pub(crate) async fn search_fk_options_inner(
         .checked_mul(page_size)
         .ok_or_else(|| "foreign-key option search page is too large".to_string())?;
 
-    let mut pm = pm.lock().await;
-    match pm.get(connection_id) {
+    match pm.lock().await.acquire(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
-            let target = resolve_fk_target(client, schema, table, column).await?;
+            let client = client.lock().await;
+            let target = resolve_fk_target(&client, schema, table, column).await?;
             let col_rows = client
                 .query(
                     &crate::db::introspection::pg_columns_query(),
@@ -2646,8 +2667,11 @@ pub(crate) async fn search_fk_options_inner(
             })
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
-            let target = resolve_fk_target_sqlite(conn, table, column)?;
-            let columns = sqlite_table_columns(conn, &target)?;
+            let conn = conn.lock().await;
+            // One operation at a time on this connection (rusqlite requires it).
+            // The pool registry is already released here.
+            let target = resolve_fk_target_sqlite(&conn, table, column)?;
+            let columns = sqlite_table_columns(&conn, &target)?;
             let pairs: Vec<(String, String)> = columns
                 .iter()
                 .map(|c| (c.name.clone(), c.data_type.clone()))
@@ -2692,6 +2716,7 @@ pub(crate) async fn search_fk_options_inner(
             })
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
+            let pool = pool.lock().await;
             let pool = &*pool;
             let target = resolve_fk_target_mysql(pool, schema, table, column).await?;
             let columns = mysql_load_columns(pool, &target.schema, &target.table, false).await?;
@@ -2962,9 +2987,9 @@ pub(crate) async fn execute_change_inner(
     connection_id: &str,
     change: Change,
 ) -> Result<(), String> {
-    let mut pm = pm.lock().await;
-    match pm.get(connection_id) {
+    match pm.lock().await.acquire(connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let mut client = client.lock().await;
             match &change {
                 Change::Update {
                     schema,
@@ -2986,7 +3011,7 @@ pub(crate) async fn execute_change_inner(
                         &data,
                         &original,
                     )?;
-                    return apply_pg_single_row(client, &w).await;
+                    return apply_pg_single_row(&mut *client, &w).await;
                 }
                 Change::Insert {
                     schema,
@@ -3022,7 +3047,7 @@ pub(crate) async fn execute_change_inner(
                         &[],
                         &original,
                     )?;
-                    return apply_pg_single_row(client, &w).await;
+                    return apply_pg_single_row(&mut *client, &w).await;
                 }
                 Change::AlterTable { sql, .. } => {
                     // Execute the raw DDL directly; no bound parameters.
@@ -3059,7 +3084,7 @@ pub(crate) async fn execute_change_inner(
                 } => {
                     // Single transaction for the whole batch; rolls back on the
                     // first failed row so no partial batch persists.
-                    return apply_bulk_insert_pg(client, schema, table, columns, rows)
+                    return apply_bulk_insert_pg(&client, schema, table, columns, rows)
                         .await
                         .map(|_| ());
                 }
@@ -3080,6 +3105,9 @@ pub(crate) async fn execute_change_inner(
             }
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            let mut conn = conn.lock().await;
+            // One operation at a time on this connection (rusqlite requires it).
+            // The pool registry is already released here.
             match &change {
                 Change::Update {
                     schema,
@@ -3101,7 +3129,7 @@ pub(crate) async fn execute_change_inner(
                         &data,
                         &original,
                     )?;
-                    return apply_sqlite_single_row(conn, &w);
+                    return apply_sqlite_single_row(&mut *conn, &w);
                 }
                 Change::Insert {
                     schema,
@@ -3140,7 +3168,7 @@ pub(crate) async fn execute_change_inner(
                         &[],
                         &original,
                     )?;
-                    return apply_sqlite_single_row(conn, &w);
+                    return apply_sqlite_single_row(&mut *conn, &w);
                 }
                 Change::AlterTable { sql, .. } => {
                     conn.execute(sql, []).map_err(|e| e.to_string())?;
@@ -3163,7 +3191,7 @@ pub(crate) async fn execute_change_inner(
                                 .to_string(),
                         );
                     }
-                    crate::db::sqlite_rebuild::apply_rebuild(conn, table, sql)?;
+                    crate::db::sqlite_rebuild::apply_rebuild(&mut *conn, table, sql)?;
                     return Ok(());
                 }
                 Change::BulkInsert {
@@ -3174,7 +3202,7 @@ pub(crate) async fn execute_change_inner(
                 } => {
                     // Single transaction for the whole batch; rolls back on the
                     // first failed row so no partial batch persists.
-                    return apply_bulk_insert_sqlite(conn, table, columns, rows).map(|_| ());
+                    return apply_bulk_insert_sqlite(&mut *conn, table, columns, rows).map(|_| ());
                 }
                 Change::DropTable { schema, table, .. } => {
                     conn.execute(&build_drop_table_sql(schema, table), [])
@@ -3189,7 +3217,8 @@ pub(crate) async fn execute_change_inner(
             }
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
             match &change {
                 Change::Update {
                     schema,
@@ -3324,9 +3353,9 @@ pub async fn refresh_connection(
     // Verify the connection is still alive by running a trivial query. The
     // frontend re-issues getDatabases/getSchemas/getTables separately after
     // this returns, so we only need to confirm reachability here.
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(crate::db::pool::DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             client
                 .query_one("SELECT 1", &[])
                 .await
@@ -3334,12 +3363,16 @@ pub async fn refresh_connection(
             Ok(())
         }
         Some(crate::db::pool::DbHandle::Sqlite(conn)) => {
+            let conn = conn.lock().await;
+            // One operation at a time on this connection (rusqlite requires it).
+            // The pool registry is already released here.
             conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
                 .map_err(|e| e.to_string())?;
             Ok(())
         }
         Some(crate::db::pool::DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // Verify reachability (the sqlx pool reconnects transparently); the
                                // frontend re-issues getDatabases/getSchemas/getTables afterwards.
             sqlx::query_scalar::<_, i64>("SELECT 1")
@@ -3358,9 +3391,9 @@ pub async fn get_functions(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<FunctionInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_functions_query(&schema);
             let rows = client
@@ -3394,9 +3427,9 @@ pub async fn get_hypertables(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<HypertableListResponse, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let detected: bool = client
                 .query_one(&crate::db::introspection::pg_timescale_detect_query(), &[])
                 .await
@@ -3446,9 +3479,9 @@ pub async fn get_indexes(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<IndexInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_indexes_query(&schema);
             let rows = client
@@ -3482,9 +3515,9 @@ pub async fn get_constraints(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<ConstraintInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_constraints_query(&schema);
             let rows = client
@@ -3530,9 +3563,9 @@ pub async fn get_triggers(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<TriggerInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_triggers_query(&schema);
             let rows = client
@@ -3566,9 +3599,9 @@ pub async fn get_sequences(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<SequenceInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_sequences_query(&schema);
             let rows = client
@@ -3604,9 +3637,9 @@ pub async fn get_enums(
     schema: Option<String>,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<EnumInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let schema = schema.unwrap_or_else(|| "public".to_string());
             let query = crate::db::introspection::pg_enums_query(&schema);
             let rows = client
@@ -3633,9 +3666,9 @@ pub async fn get_extensions(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<ExtensionInfo>, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
+    match state.pool_manager.lock().await.acquire(&connection_id) {
         Some(DbHandle::Postgresql(client, _)) => {
+            let client = client.lock().await;
             let query = crate::db::introspection::pg_extensions_query();
             let rows = client.query(&query, &[]).await.map_err(|e| e.to_string())?;
             Ok(rows
@@ -3667,11 +3700,14 @@ pub async fn get_table_ddl(
     state: State<'_, crate::AppState>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let mut pm = state.pool_manager.lock().await;
-    match pm.get(&connection_id) {
-        Some(DbHandle::Sqlite(conn)) => get_sqlite_ddl(conn, &table),
+    match state.pool_manager.lock().await.acquire(&connection_id) {
+        Some(DbHandle::Sqlite(conn)) => {
+            let conn = conn.lock().await;
+            get_sqlite_ddl(&conn, &table)
+        }
         Some(DbHandle::MySql(pool)) => {
-            let pool = &*pool; // Executor is implemented for &Pool, not &mut Pool
+            let pool = pool.lock().await;
+            let pool = &*pool; // Executor is implemented for &Pool, not for the guard
                                // SHOW CREATE TABLE returns (Table, Create Table); take the DDL.
             let row = sqlx::query(&crate::db::mysql::mysql_ddl_query(&schema, &table))
                 .fetch_one(pool)
@@ -4643,10 +4679,11 @@ mod tests {
         assert_eq!(data.page, 1);
         assert_eq!(data.page_size, 10);
         // Columns must be resolvable through the shared helper.
-        let pool = match pm.lock().await.get(&id) {
-            Some(crate::db::pool::DbHandle::MySql(p)) => p.clone(),
+        let pool = match pm.lock().await.acquire(&id) {
+            Some(crate::db::pool::DbHandle::MySql(p)) => p,
             _ => panic!("mysql handle missing"),
         };
+        let pool = pool.lock().await;
         let cols = mysql_load_columns(&pool, &first.schema, &first.name, false)
             .await
             .expect("columns");

@@ -90,6 +90,22 @@ impl DbConfig {
 /// shareable, so a `DbHandle` clone is cheap and independent of the registry.
 pub type SqliteConnection = Arc<tokio::sync::Mutex<rusqlite::Connection>>;
 
+/// A shareable PostgreSQL client.
+///
+/// One `tokio-postgres` client is one backend session, and Gridline's change
+/// application runs multi-statement transactions on it (`BEGIN` … `COMMIT`,
+/// plus per-change single-row transactions), so the handle is exclusive per
+/// connection. Same connection only: another connection's work never waits.
+pub type PgConnection = Arc<tokio::sync::Mutex<tokio_postgres::Client>>;
+
+/// A shareable MySQL pool.
+///
+/// Cancellation (`KILL QUERY <id>`) is registered once per connection with the
+/// `CONNECTION_ID()` of the statement in flight, so two statements overlapping
+/// on one connection would make cancellation target the wrong one. One
+/// statement at a time on a connection keeps `cancel_query` unambiguous.
+pub type MySqlConnection = Arc<tokio::sync::Mutex<sqlx::MySqlPool>>;
+
 /// A handle to an active database connection.
 ///
 /// Supports `Sqlite` (synchronous via `rusqlite`), `Postgresql` (async via
@@ -108,12 +124,9 @@ pub enum DbHandle {
     Sqlite(SqliteConnection),
     /// An asynchronous PostgreSQL connection via `tokio-postgres`.
     /// Stores the client handle and the background connection task.
-    ///
-    /// `tokio-postgres` pipelines requests on one connection, so a cloned
-    /// client needs no extra lock.
-    Postgresql(Arc<tokio_postgres::Client>, Arc<tokio::task::JoinHandle<()>>),
+    Postgresql(PgConnection, Arc<tokio::task::JoinHandle<()>>),
     /// An asynchronous MySQL connection pool via `sqlx`.
-    MySql(sqlx::MySqlPool),
+    MySql(MySqlConnection),
 }
 
 impl DbHandle {
@@ -124,21 +137,12 @@ impl DbHandle {
 
     /// Wrap a `tokio-postgres` client and its connection task.
     pub fn postgresql(client: tokio_postgres::Client, task: tokio::task::JoinHandle<()>) -> Self {
-        DbHandle::Postgresql(Arc::new(client), Arc::new(task))
+        DbHandle::Postgresql(Arc::new(tokio::sync::Mutex::new(client)), Arc::new(task))
     }
 
-    /// Borrow the SQLite connection for the rest of the current scope.
-    ///
-    /// Only for synchronous callers (tests and sync helpers). Async code awaits
-    /// the connection's own mutex, which is the same lock, so both paths
-    /// exclude each other and neither can be entered twice.
-    pub fn sqlite_guard(&self) -> tokio::sync::MutexGuard<'_, rusqlite::Connection> {
-        match self {
-            DbHandle::Sqlite(conn) => conn
-                .try_lock()
-                .expect("sqlite connection is already in use by another operation"),
-            _ => panic!("handle is not a SQLite connection"),
-        }
+    /// Wrap a `sqlx` MySQL pool.
+    pub fn mysql(pool: sqlx::MySqlPool) -> Self {
+        DbHandle::MySql(Arc::new(tokio::sync::Mutex::new(pool)))
     }
 }
 
@@ -294,9 +298,13 @@ pub async fn acquire_handle(
     pool_manager: &tokio::sync::Mutex<ConnectionPoolManager>,
     id: &str,
 ) -> Result<DbHandle, String> {
-    pool_manager.lock().await.acquire(id).ok_or_else(||
-        // Same message the commands used before this helper existed.
-        "Connection not found".to_string())
+    // The guard from `lock()` is a temporary: it is dropped as this statement
+    // completes, before the caller awaits any real work.
+    pool_manager
+        .lock()
+        .await
+        .acquire(id)
+        .ok_or_else(|| "Connection not found".to_string())
 }
 
 #[cfg(test)]
@@ -514,7 +522,7 @@ mod tests {
             .expect("lazy pool parses url without connecting");
         let mut manager = ConnectionPoolManager::new();
         manager.set_max_pools(1);
-        manager.register("mysql-conn", DbHandle::MySql(pool));
+        manager.register("mysql-conn", DbHandle::mysql(pool));
         assert!(matches!(
             manager.get("mysql-conn"),
             Some(DbHandle::MySql(_))
@@ -527,5 +535,74 @@ mod tests {
             manager.get("sqlite-conn"),
             Some(DbHandle::Sqlite(_))
         ));
+    }
+
+    /// `acquire` hands out an owned handle instead of a borrow of the registry,
+    /// and it marks the entry most-recently-used like `get` does.
+    #[tokio::test]
+    async fn acquire_clones_the_handle_and_touches_lru() {
+        let mut manager = ConnectionPoolManager::new();
+        manager.set_max_pools(3);
+        for id in ["a", "b", "c"] {
+            manager.register(
+                id,
+                DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+            );
+        }
+
+        let held = manager.acquire("a").expect("handle for a");
+        // Registering a fourth pool evicts the LRU entry: "b", not the "a" that
+        // was just acquired.
+        manager.register(
+            "d",
+            DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        );
+        assert!(manager.contains("a"), "acquire counts as an access");
+        assert!(!manager.contains("b"));
+
+        // The handle outlives the registry entry: dropping "a" from the pool
+        // does not pull the connection out from under the caller.
+        manager.remove("a");
+        match held {
+            DbHandle::Sqlite(conn) => {
+                let conn = conn.try_lock().expect("connection is free");
+                let one: i64 = conn.query_row("SELECT 1", [], |r| r.get(0)).unwrap();
+                assert_eq!(one, 1);
+            }
+            other => panic!("expected a sqlite handle, got {other:?}"),
+        }
+    }
+
+    /// `acquire_handle` must not leave the registry locked: a command awaiting
+    /// its work with the handle must never block another connection's command.
+    #[tokio::test]
+    async fn acquiring_a_handle_releases_the_registry() {
+        let mut manager = ConnectionPoolManager::new();
+        manager.register(
+            "a",
+            DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        );
+        let pool = tokio::sync::Mutex::new(manager);
+
+        let held = acquire_handle(&pool, "a").await.expect("handle for a");
+        assert!(
+            pool.try_lock().is_ok(),
+            "the registry must be free while a handle is in use"
+        );
+
+        // Unrelated registry work proceeds while the handle is held.
+        pool.lock().await.register(
+            "b",
+            DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        );
+        assert!(held_is_sqlite(&held));
+        assert_eq!(
+            acquire_handle(&pool, "missing").await.err().as_deref(),
+            Some("Connection not found")
+        );
+    }
+
+    fn held_is_sqlite(handle: &DbHandle) -> bool {
+        matches!(handle, DbHandle::Sqlite(_))
     }
 }

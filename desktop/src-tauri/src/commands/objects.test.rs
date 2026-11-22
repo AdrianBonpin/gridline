@@ -22,7 +22,7 @@ async fn pool() -> (tokio::sync::Mutex<ConnectionPoolManager>, String) {
     });
     let mut pm = ConnectionPoolManager::new();
     let id = "test-conn".to_string();
-    pm.register(&id, DbHandle::Postgresql(client, handle));
+    pm.register(&id, DbHandle::postgresql(client, handle));
     (tokio::sync::Mutex::new(pm), id)
 }
 
@@ -102,7 +102,7 @@ async fn build_object_ddl_inner_guards_missing_connection_and_rejects_unknown_op
     // SQLite now dispatches to the SQLite table builders; non-table ops are rejected.
     pm.lock().await.register(
         "sqlite",
-        DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
     );
     let err = build_object_ddl_inner(
         &pm,
@@ -122,7 +122,7 @@ fn fresh_pool_with_sqlite() -> ConnectionPoolManager {
     let mut pm = ConnectionPoolManager::new();
     pm.register(
         "c",
-        DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
     );
     pm
 }
@@ -150,9 +150,10 @@ async fn build_object_ddl_sqlite_create_yields_sqlite_sql() {
 
 /// Run a batch of staged statements on the in-memory SQLite handle.
 async fn sqlite_exec(pm: &tokio::sync::Mutex<ConnectionPoolManager>, sqls: &[String]) {
-    let mut g = pm.lock().await;
-    match g.get("c").unwrap() {
+    let handle = pm.lock().await.acquire("c").unwrap();
+    match handle {
         DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
             for s in sqls {
                 conn.execute_batch(s).unwrap_or_else(|e| panic!("{s}: {e}"));
             }
@@ -166,9 +167,10 @@ async fn sqlite_columns_and_rows(
     pm: &tokio::sync::Mutex<ConnectionPoolManager>,
     table: &str,
 ) -> (Vec<String>, Vec<String>) {
-    let mut g = pm.lock().await;
-    match g.get("c").unwrap() {
+    let handle = pm.lock().await.acquire("c").unwrap();
+    match handle {
         DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
             let cols: Vec<String> = {
                 let mut stmt = conn
                     .prepare(&format!("PRAGMA table_info(\"{table}\")"))
@@ -489,9 +491,10 @@ async fn execute_change_sqlite_ddl_runs_create() {
     assert!(r.is_ok(), "{r:?}");
     // the table really landed on the live connection
     {
-        let mut g = pm.lock().await;
-        match g.get("c").unwrap() {
+        let handle = pm.lock().await.acquire("c").unwrap();
+        match handle {
             crate::db::pool::DbHandle::Sqlite(conn) => {
+                let conn = conn.lock().await;
                 let n: i64 = conn
                     .query_row(
                         "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='u'",
@@ -534,7 +537,7 @@ async fn get_available_extensions_inner_guards_postgresql_only() {
     // Non-PostgreSQL handle -> PostgreSQL-only error
     pm.lock().await.register(
         "sqlite",
-        DbHandle::Sqlite(rusqlite::Connection::open_in_memory().unwrap()),
+        DbHandle::sqlite(rusqlite::Connection::open_in_memory().unwrap()),
     );
     let err = get_available_extensions_inner(&pm, "sqlite")
         .await
@@ -597,8 +600,9 @@ async fn rebuild_table_rolls_back_on_failure() {
     let (pm, id) = pool().await;
     // setup: a table with a PK + one row
     {
-        let mut g = pm.lock().await;
-        if let crate::db::pool::DbHandle::Postgresql(c, _) = g.get(&id).unwrap() {
+        let handle = pm.lock().await.acquire(&id).unwrap();
+        if let crate::db::pool::DbHandle::Postgresql(c, _) = handle {
+            let c = c.lock().await;
             c.batch_execute("DROP TABLE IF EXISTS rebuild_t; CREATE TABLE rebuild_t (id int PRIMARY KEY, v text); INSERT INTO rebuild_t VALUES (1,'a');").await.unwrap();
         }
     }
@@ -620,8 +624,9 @@ async fn rebuild_table_rolls_back_on_failure() {
         "expected rollback (transaction should fail on bad SQL)"
     );
     // table still intact
-    let mut g = pm.lock().await;
-    if let crate::db::pool::DbHandle::Postgresql(c, _) = g.get(&id).unwrap() {
+    let handle = pm.lock().await.acquire(&id).unwrap();
+    if let crate::db::pool::DbHandle::Postgresql(c, _) = handle {
+        let c = c.lock().await;
         let row = c
             .query_one("SELECT count(*) FROM rebuild_t", &[])
             .await
