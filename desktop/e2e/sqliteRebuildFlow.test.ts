@@ -55,6 +55,7 @@ function fakeDriver({
     gridCells: [],
     clicks: [],
     removedIndices: [],
+    editorFocused: false,
   };
 
   const element = (kind) => ({ elementId: kind, kind });
@@ -139,6 +140,9 @@ function fakeDriver({
         );
       }
       switch (el.kind) {
+        case "editor-surface":
+          state.editorFocused = true;
+          break;
         case "options-refused":
           state.menuTable = REBUILD_REFUSED_TABLE;
           break;
@@ -183,8 +187,10 @@ function fakeDriver({
           break;
       }
     },
-    async sendKeys(el, text) {
-      if (el.kind !== "editor") throw new Error("typed outside the query editor");
+    async typeText(text) {
+      // Real keystrokes go to the focused element; the flow focuses the editor
+      // surface first, so this is only reachable with the editor focused.
+      if (!state.editorFocused) throw new Error("typed without focusing the query editor");
       state.typedSql = text;
     },
   };

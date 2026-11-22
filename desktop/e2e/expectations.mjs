@@ -108,18 +108,25 @@ export function destructiveDialogConfirmSelector() {
 }
 
 /**
- * Keys the destructive flow sends to the confirmation dialog itself.
+ * The keys the destructive flow sends to the **focused element** — which, while
+ * the confirmation is up, is the button inside it (a `div[role=dialog]` is not
+ * focusable, so keys are pressed globally and land where focus actually is).
  *
  * `\uE00C` is the WebDriver Escape key and must cancel the pending request.
- * `\uE009\uE007` is Control+Enter — the editor's own run shortcut — which must
- * never execute or relocate the pending confirmation.
+ * `\uE009` + `\uE007` is Control+Enter — the editor's own run shortcut — which
+ * must never execute or relocate the pending confirmation.
  */
 export function destructiveDialogEscapeKey() {
-  return "\uE00C";
+  return { modifiers: [], key: "\uE00C" };
 }
 
 export function destructiveDialogRunShortcut() {
-  return "\uE009\uE007";
+  return { modifiers: ["\uE009"], key: "\uE007" };
+}
+
+/** The chord as one string, for messages and fake-driver assertions. */
+export function describeKeys(keys) {
+  return `${keys.modifiers.join("")}${keys.key}`;
 }
 
 export function destructiveDialogCancelSelector() {

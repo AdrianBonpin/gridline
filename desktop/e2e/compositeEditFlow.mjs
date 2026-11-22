@@ -19,9 +19,19 @@ import { DEFAULT_TIMEOUT_MS, waitForElement } from "./smokeFlow.mjs";
 
 export const DEFAULT_INTERVAL_MS = 250;
 
+/**
+ * The real clock.
+ *
+ * `run.mjs` injects only the budget (`timeoutMs`/`intervalMs`), never a clock, so
+ * a flow that calls `time.sleep(...)` directly needs a working default: the unit
+ * fakes always supply one, which is how the missing default went unnoticed until
+ * the built-product lane reached that step.
+ */
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function clock(options) {
   return {
-    sleep: options.sleep,
+    sleep: options.sleep ?? defaultSleep,
     now: options.now,
     intervalMs: options.intervalMs ?? DEFAULT_INTERVAL_MS,
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,

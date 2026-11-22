@@ -6,6 +6,7 @@ import {
   connectionCardSelector,
   destructiveDialogCancelSelector,
   destructiveDialogConfirmSelector,
+  describeKeys,
   destructiveDialogEscapeKey,
   destructiveDialogRunShortcut,
   destructiveDialogSelector,
@@ -31,6 +32,8 @@ const CANCEL = destructiveDialogCancelSelector();
 const CONFIRM = destructiveDialogConfirmSelector();
 const ESCAPE = destructiveDialogEscapeKey();
 const RUN_SHORTCUT = destructiveDialogRunShortcut();
+const ESCAPE_KEY = describeKeys(ESCAPE);
+const RUN_SHORTCUT_KEYS = describeKeys(RUN_SHORTCUT);
 
 /** The statement the built app asks about: anything data-modifying. */
 const DESTRUCTIVE = /\b(DELETE|UPDATE|INSERT|DROP|ALTER|TRUNCATE|CREATE|REPLACE)\b/i;
@@ -119,18 +122,22 @@ function fakeDriver(
           return null;
       }
     },
-    async sendKeys(element: { elementId: string }, text: string) {
-      if (element.elementId === "dialog") {
-        // Keys sent to the modal go to the modal: Escape cancels it, and the
-        // editor's run shortcut reaches the editor not at all.
-        dialogKeys.push(text);
-        if (text === ESCAPE && !ignoresEscape) state.dialogOpen = false;
-        if (text === RUN_SHORTCUT && shortcutConsumesDialog) state.dialogOpen = false;
-        return;
+    // Real keystrokes go to whatever holds focus. With the confirmation up,
+    // that is inside the modal: Escape cancels it, and the editor's run shortcut
+    // reaches the editor not at all.
+    async pressChord(key: string, modifiers: string[] = []) {
+      dialogKeys.push(`${modifiers.join("")}${key}`);
+      if (`${modifiers.join("")}${key}` === ESCAPE_KEY && !ignoresEscape) {
+        state.dialogOpen = false;
       }
+      if (`${modifiers.join("")}${key}` === RUN_SHORTCUT_KEYS && shortcutConsumesDialog) {
+        state.dialogOpen = false;
+      }
+    },
+    async typeText(text: string) {
+      if (!state.editorReady) throw new HarnessError("typed outside the query editor");
       typed.push(text);
       state.script += text;
-      state.editorReady = true;
     },
     async click(element: { elementId: string }) {
       clicks.push(element.elementId);
@@ -226,7 +233,7 @@ describe("runDestructiveRerunFlow", () => {
     ]);
     expect(result.passMessage).toMatch(/both execution entry points/);
     // The keys went to the modal, never to the editor.
-    expect(driver.dialogKeys).toEqual([RUN_SHORTCUT, ESCAPE]);
+    expect(driver.dialogKeys).toEqual([RUN_SHORTCUT_KEYS, ESCAPE_KEY]);
     expect(result.steps.map((step) => step.name)).toEqual([
       `home: ${DEMO_CONNECTION_NAME} card visible`,
       "home: open the demo database",
@@ -305,7 +312,7 @@ describe("runDestructiveRerunFlow", () => {
 
   it("reports a missing editor instead of typing into nothing", async () => {
     const driver = fakeDriver();
-    driver.sendKeys = vi.fn(async () => {
+    driver.typeText = vi.fn(async () => {
       throw new HarnessError("no editor");
     });
     driver.findElement = (async (selector: string) => {

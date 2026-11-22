@@ -33,9 +33,19 @@ import { DEFAULT_TIMEOUT_MS, waitForElement } from "./smokeFlow.mjs";
 
 export const DEFAULT_INTERVAL_MS = 250;
 
+/**
+ * The real clock.
+ *
+ * `run.mjs` injects only the budget (`timeoutMs`/`intervalMs`), never a clock, so
+ * a flow that calls `time.sleep(...)` directly needs a working default: the unit
+ * fakes always supply one, which is how the missing default went unnoticed until
+ * the built-product lane reached that step.
+ */
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function clock(options) {
   return {
-    sleep: options.sleep,
+    sleep: options.sleep ?? defaultSleep,
     now: options.now,
     intervalMs: options.intervalMs ?? DEFAULT_INTERVAL_MS,
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -246,13 +256,13 @@ export async function runSqliteRebuildFlow(driver, options = {}) {
     await step(`fixture: create ${createdTable} through the query workspace`, async () => {
       const newQuery = await waitFor(newQueryTabSelector(), "New query tab button");
       await driver.click(newQuery);
-      const input = await waitFor(queryEditorInputSelector(), "query editor");
+      await waitFor(queryEditorInputSelector(), "query editor");
       // Focus the rendered editor surface, not the hidden input: Monaco's
-      // `textarea.inputarea` is a 1x1 element behind `.view-lines`, so an
-      // element-targeted click on it is intercepted (see `queryEditorInputSelector`).
+      // `textarea.inputarea` is a 1x1 element behind `.view-lines`, so neither a
+      // click nor element-targeted keys reach it (see `queryEditorInputSelector`).
       const surface = await waitFor(queryEditorSurfaceSelector(), "query editor surface");
       await driver.click(surface);
-      await driver.sendKeys(input, rebuildFixtureScript());
+      await driver.typeText(rebuildFixtureScript());
       const run = await waitFor(runQuerySelector(), "Run query button");
       await driver.click(run);
       // CREATE TABLE is a schema change, so it needs the destructive confirmation.

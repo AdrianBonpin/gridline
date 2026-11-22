@@ -155,11 +155,10 @@ e2e: PASS the built app rendered the seeded demo rows
    `activeTab?.data`). Waiting for `button[aria-label="Re-run query"]` here is
    what makes the re-run assertion below reachable instead of asserting on a
    control that cannot exist yet; a read that prompts for confirmation fails.
-4. `editor: type a destructive script` — `DELETE FROM products;` is typed
-   through Monaco's hidden input area
-   (`[data-testid="query-editor"] textarea.inputarea`), which is the element the
-   editor listens on. **The input area is never clicked** — see "Never click
-   Monaco's input area" below.
+4. `editor: type a destructive script` — `DELETE FROM products;` is typed as
+   real keystrokes into the focused editor, after clicking the rendered editor
+   surface. Monaco's hidden input area is never clicked and never the target of
+   element-scoped keys — see "Never click Monaco's input area" below.
 5. `run: initial Run requires confirmation` — the `Destructive Query` dialog
    (`[data-testid="destructive-query-dialog"]`) must appear.
 6. `run: cancel leaves the script unexecuted` — cancelling closes the dialog.
@@ -167,13 +166,13 @@ e2e: PASS the built app rendered the seeded demo rows
    control (`button[aria-label="Re-run query"]`) must raise the *same* dialog.
    This is the assertion the flow exists for.
 8. `keyboard: the run shortcut cannot execute the pending confirmation` —
-   Control+Enter (`\uE009\uE007`) is sent to the **dialog**, and the dialog must
-   still be there afterwards. Focus trapped inside the modal is what makes this
-   a real-window assertion: the keystroke reached the confirmation, not the
-   editor behind it, and it neither executed the script nor replaced the
-   pending request with a different one.
-9. `keyboard: Escape cancels the pending confirmation` — Escape (`\uE00C`) sent
-   to the dialog must close it, leaving the script unexecuted.
+   Control+Enter (`\uE009` held, then `\uE007`) is pressed as a real **chord** on
+   the focused element, and the dialog must still be there afterwards. The modal
+   moves focus to its Cancel button when it opens, so a focused keystroke lands
+   inside the confirmation, not in the editor behind it: it neither executed the
+   script nor replaced the pending request with a different one.
+9. `keyboard: Escape cancels the pending confirmation` — Escape (`\uE00C`)
+   pressed on the focused element must close it, leaving the script unexecuted.
 
 Every confirmation is cancelled, so the script never executes; each run also
 gets a pristine app-data directory. If any entry point executes without the
@@ -318,12 +317,17 @@ pixel target at `z-index:-10` painted behind `.view-lines`**. Measured on the
 built app: its rect is `{x:406, y:76, w:1, h:1}` and the hit target at its
 center is `div.view-line`, so a W3C element-targeted click is answered with
 `element click intercepted` on every attempt — a flow that clicks it can never
-pass. Click the rendered surface instead
+pass. Element-scoped keys (`POST /element/{id}/value`) are refused for the same
+element too: WebKit answers `element not interactable: Element is not focusable`.
+
+So both editor flows click the rendered surface
 (`[data-testid="query-editor"] .monaco-editor .view-lines`, a real hit target,
-which is also what a user clicks), then send keys to the input area: "Element
-Send Keys" focuses the element it is sent to. Both the destructive and the
-SQLite-rebuild flows use that order, and their fakes reject a click on the input
-area so a regression fails in unit tests too.
+which is also what a user clicks) and then type through the W3C actions endpoint
+(`WebDriverClient.typeText`), which sends real keystrokes to the focused
+element. Keyboard chords go through the same endpoint
+(`WebDriverClient.pressChord`), because element-scoped keys cannot hold a
+modifier across a second key. Both flows' fakes reject a click on the input area
+and reject typing without editor focus, so a regression fails in unit tests too.
 
 Every run gets a fresh app-data directory inside the artifacts folder
 (`XDG_DATA_HOME=<artifacts>/app-data` on Linux), so the demo database and local

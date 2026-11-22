@@ -149,6 +149,32 @@ export class WebDriverClient {
   }
 
   /**
+   * Type `text` into whatever currently holds focus (`POST /actions`).
+   *
+   * The element-targeted route (`/element/{id}/value`) requires the target to be
+   * *focusable* and answers "element not interactable: Element is not focusable"
+   * for an editor like Monaco, whose input is a hidden 1x1 `textarea` painted
+   * behind the rendered lines (the same element a click cannot target either).
+   * Real keystrokes go to the focused element, which is what a user's typing is:
+   * click the editor surface first, then call this.
+   *
+   * W3C key actions take one Unicode code point per `keyDown`/`keyUp` pair, so
+   * the text is sent character by character.
+   *
+   * @param {string} text
+   */
+  async typeText(text) {
+    const actions = [];
+    for (const char of Array.from(text)) {
+      actions.push({ type: "keyDown", value: char }, { type: "keyUp", value: char });
+    }
+    if (actions.length === 0) return;
+    await this.#request("POST", this.#sessionPath("/actions"), {
+      actions: [{ type: "key", id: "keyboard", actions }],
+    });
+  }
+
+  /**
    * Double-click an element the way the grid's cell editor opens: a single
    * pointer-move + two down/up pairs through the W3C actions endpoint. A CSS
    * `click` twice is not a double-click.
@@ -177,17 +203,31 @@ export class WebDriverClient {
 
   /** Keyboard "Enter" via the actions endpoint (commits a cell edit). */
   async pressEnter() {
+    await this.pressChord("\uE007");
+  }
+
+  /**
+   * Press `key` on whatever currently holds focus, holding `modifiers` down.
+   *
+   * A chord has to go through the actions endpoint: element-targeted keys cannot
+   * express "hold Control while pressing Enter", and they are refused outright
+   * for elements WebKit does not consider focusable (a `div[role=dialog]` is not
+   * focusable; the button focused inside it is). Sending the keys to the focused
+   * element is also what a user does — it proves focus really is inside the
+   * modal, instead of just asserting that the modal exists.
+   *
+   * @param {string} key single WebDriver key code, e.g. `"\uE00C"` (Escape)
+   * @param {string[]} modifiers key codes held for the press, e.g. `["\uE009"]`
+   */
+  async pressChord(key, modifiers = []) {
+    const actions = [
+      ...modifiers.map((modifier) => ({ type: "keyDown", value: modifier })),
+      { type: "keyDown", value: key },
+      { type: "keyUp", value: key },
+      ...[...modifiers].reverse().map((modifier) => ({ type: "keyUp", value: modifier })),
+    ];
     await this.#request("POST", this.#sessionPath("/actions"), {
-      actions: [
-        {
-          type: "key",
-          id: "keyboard",
-          actions: [
-            { type: "keyDown", value: "\uE007" },
-            { type: "keyUp", value: "\uE007" },
-          ],
-        },
-      ],
+      actions: [{ type: "key", id: "keyboard", actions }],
     });
   }
 

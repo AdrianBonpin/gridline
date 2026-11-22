@@ -30,20 +30,22 @@ export const DESTRUCTIVE_SCRIPT = "DELETE FROM products;";
 /**
  * Focus the query editor and type into it.
  *
- * Two measured facts drive this helper:
+ * Three measured facts drive this helper:
  *
  * 1. Monaco's real input is a 1x1 `textarea.inputarea` at `z-index:-10`, painted
  *    *behind* `.view-lines`. An element-targeted click on it is intercepted by
- *    `div.view-line` on every platform (W3C: "element click intercepted"), so
- *    the harness must never click it.
- * 2. Keys sent to that same element work — and "Element Send Keys" focuses the
- *    element it is sent to, which is what Monaco listens on.
+ *    `div.view-line` on every attempt (W3C: "element click intercepted"), so the
+ *    harness must never click it.
+ * 2. Element-targeted keys (`/element/{id}/value`) are refused too — WebKit
+ *    answers "element not interactable: Element is not focusable" for that same
+ *    hidden textarea.
+ * 3. Typing into the *focused* element works, which is what a user does.
  *
- * So: click the rendered editor surface (a real hit target, and what a user
- * clicks) to focus, then type into the input area.
+ * So: click the rendered editor surface (a real hit target) to focus Monaco,
+ * then send real keystrokes to the focused element.
  */
 async function typeInEditor(driver, text, waitForElementFn, poll, label) {
-  const input = await waitForElementFn(driver, queryEditorInputSelector(), {
+  await waitForElementFn(driver, queryEditorInputSelector(), {
     ...poll,
     label: label ?? "query editor",
   });
@@ -52,15 +54,24 @@ async function typeInEditor(driver, text, waitForElementFn, poll, label) {
     label: "query editor surface",
   });
   await driver.click(surface);
-  await driver.sendKeys(input, text);
-  return input;
+  await driver.typeText(text);
 }
 
 export { typeInEditor };
 
+/**
+ * The real clock.
+ *
+ * `run.mjs` injects only the budget (`timeoutMs`/`intervalMs`), never a clock, so
+ * a flow that calls `time.sleep(...)` directly needs a working default: the unit
+ * fakes always supply one, which is how the missing default went unnoticed until
+ * the built-product lane reached that step.
+ */
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function clock(options) {
   return {
-    sleep: options.sleep,
+    sleep: options.sleep ?? defaultSleep,
     now: options.now,
     intervalMs: options.intervalMs ?? DEFAULT_INTERVAL_MS,
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -148,19 +159,24 @@ export async function runDestructiveRerunFlow(driver, options = {}) {
   }
 
   /**
-   * Require the open confirmation to survive a key sent to it.
+   * Require the open confirmation to survive a key sent while it is focused.
    *
    * A keyboard shortcut must not execute or relocate a pending confirmation, so
-   * the dialog has to be exactly where it was afterwards. The poll interval is
-   * waited out first: a click/shortcut that consumed the confirmation renders
-   * it away asynchronously, so an immediate check could read the stale dialog.
+   * the dialog has to be exactly where it was afterwards. The keys are pressed
+   * on the focused element (not element-targeted: the modal is a `div` and is
+   * not focusable — the button inside it holds focus), which is exactly what a
+   * user's keystroke is. The poll interval is waited out first: a shortcut that
+   * consumed the confirmation renders it away asynchronously, so an immediate
+   * check could read the stale dialog.
    */
-  async function keepDialogOpen(entryPoint, key, label) {
-    const dialog = await waitForElement(driver, destructiveDialogSelector(), {
+  async function keepDialogOpen(entryPoint, keys, label) {
+    await waitForElement(driver, destructiveDialogSelector(), {
       ...poll,
       label: `${entryPoint} confirmation dialog`,
     });
-    await driver.sendKeys(dialog, key);
+    // Pressed globally: the keys land on whatever holds focus, which — with the
+    // confirmation up — must be inside the modal, never the editor behind it.
+    await driver.pressChord(keys.key, keys.modifiers);
     await time.sleep(time.intervalMs);
     const stillOpen = await driver.findElement(destructiveDialogSelector());
     if (!stillOpen) {
@@ -173,11 +189,11 @@ export async function runDestructiveRerunFlow(driver, options = {}) {
 
   /** Cancel the open confirmation with Escape and require it to close. */
   async function escapeFor(entryPoint) {
-    const dialog = await waitForElement(driver, destructiveDialogSelector(), {
+    await waitForElement(driver, destructiveDialogSelector(), {
       ...poll,
       label: `${entryPoint} confirmation dialog`,
     });
-    await driver.sendKeys(dialog, destructiveDialogEscapeKey());
+    await driver.pressChord(destructiveDialogEscapeKey().key);
     await waitForAbsent(driver, destructiveDialogSelector(), {
       ...poll,
       label: `Escape should cancel the ${entryPoint} pending confirmation`,
