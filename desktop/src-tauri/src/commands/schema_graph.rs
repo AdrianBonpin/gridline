@@ -313,9 +313,9 @@ pub async fn get_schema_graph(
     let schema = schema.unwrap_or_else(|| "public".to_string());
     validate_schema_name(&schema)?;
 
-    let db_handle = state.pool_manager.lock().await.acquire(&connection_id);
+    let db_handle = crate::db::pool::acquire_handle(&state.pool_manager, &connection_id).await?;
     match db_handle {
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             let query = build_pg_schema_graph_query(&schema);
             let rows = client
@@ -338,12 +338,11 @@ pub async fn get_schema_graph(
                 relationships,
             })
         }
-        Some(DbHandle::Sqlite(conn)) => {
+        DbHandle::Sqlite(conn) => {
             let conn = conn.lock().await;
             build_sqlite_schema_graph(&conn, &schema)
         }
-        Some(DbHandle::MySql(_)) => Err("Schema visualizer not supported for MySQL".to_string()),
-        None => Err("Connection not found".into()),
+        DbHandle::MySql(_) => Err("Schema visualizer not supported for MySQL".to_string()),
     }
 }
 

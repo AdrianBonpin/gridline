@@ -869,9 +869,9 @@ fn store_backed_provider_honors_known_hosts_and_remembers_enrollments() {
 
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::store::migrations::run_migrations(&conn).unwrap();
-    let store = std::sync::Arc::new(std::sync::Mutex::new(crate::store::Store::from_connection(
-        conn,
-    )));
+    let store = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::store::Store::from_connection(conn).expect("test store"),
+    ));
     let trust = StoreHostTrust::with_known_hosts_paths(store, vec![known_hosts_path.clone()]);
 
     // A real known-hosts entry verifies silently, on its own port.
@@ -933,9 +933,9 @@ fn store_backed_re_enrollment_replaces_the_row_with_public_metadata_only() {
     let db_path = dir.join("store.sqlite");
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     crate::store::migrations::run_migrations(&conn).unwrap();
-    let store = std::sync::Arc::new(std::sync::Mutex::new(crate::store::Store::from_connection(
-        conn,
-    )));
+    let store = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::store::Store::from_connection(conn).expect("test store"),
+    ));
     let trust = StoreHostTrust::with_known_hosts_paths(store, vec![dir.join("known_hosts")]);
 
     let stale = host_key("ssh-ed25519", 97);
@@ -1012,7 +1012,7 @@ fn store_backed_re_enrollment_is_verified_by_later_connections() {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
         let store = std::sync::Arc::new(std::sync::Mutex::new(
-            crate::store::Store::from_connection(conn),
+            crate::store::Store::from_connection(conn).expect("test store"),
         ));
         let trust = StoreHostTrust::with_known_hosts_paths(store, vec![known_hosts_path.clone()]);
         trust
@@ -1037,7 +1037,7 @@ fn store_backed_re_enrollment_is_verified_by_later_connections() {
     let later_conn = rusqlite::Connection::open(&db_path).unwrap();
     crate::store::migrations::run_migrations(&later_conn).unwrap();
     let later_store = std::sync::Arc::new(std::sync::Mutex::new(
-        crate::store::Store::from_connection(later_conn),
+        crate::store::Store::from_connection(later_conn).expect("test store"),
     ));
     let later = StoreHostTrust::with_known_hosts_paths(later_store, vec![known_hosts_path]);
 

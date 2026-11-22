@@ -5,7 +5,7 @@ use crate::store::Store;
 fn store() -> Mutex<Store> {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::store::migrations::run_migrations(&conn).unwrap();
-    Mutex::new(Store::from_connection(conn))
+    Mutex::new(Store::from_connection(conn).expect("test store"))
 }
 
 /// A unique on-disk store (the production shape) so the test can inspect the
