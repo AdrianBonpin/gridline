@@ -82,6 +82,24 @@ jobs:
     # Read-only: this job only checks out and tests.
     permissions:
       contents: read
+    # Scratch MySQL for the live-database Rust tests (`GRIDLINE_TEST_MYSQL_*`).
+    # Those tests used to `return` early without a server, so the MySQL decode
+    # path (issue #41) and the filtered-total browse were green while asserting
+    # nothing. With this service and `GRIDLINE_REQUIRE_LIVE_DB_TESTS=1` on the
+    # test step, a missing/unreachable server is a FAILURE, not a skip.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: gridline
+          MYSQL_DATABASE: gridline_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -144,6 +162,16 @@ jobs:
 
       - name: Run Rust tests
         working-directory: desktop/src-tauri
+        # `GRIDLINE_REQUIRE_LIVE_DB_TESTS=1` makes a missing live database a hard
+        # failure (see `missing_live_db_prerequisite`), so the live MySQL cases
+        # cannot silently skip here the way they do on a machine with no server.
+        env:
+          GRIDLINE_REQUIRE_LIVE_DB_TESTS: "1"
+          GRIDLINE_TEST_MYSQL_HOST: 127.0.0.1
+          GRIDLINE_TEST_MYSQL_PORT: "3306"
+          GRIDLINE_TEST_MYSQL_USER: root
+          GRIDLINE_TEST_MYSQL_PASS: gridline
+          GRIDLINE_TEST_MYSQL_DB: gridline_test
         run: cargo test
 
       # The build runs BEFORE the tests so the built-product seam

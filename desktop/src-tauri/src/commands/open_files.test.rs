@@ -78,6 +78,38 @@ fn accept_path_ignores_an_invalid_path() {
     assert!(!accept_path(&buffer, "relative.sql"));
 }
 
+/// A poisoned queue mutex must not disable file opening.
+///
+/// `accept_os_path` / `take_from_buffer` are request-handling paths: a panic in
+/// an unrelated thread while it held the queue used to make every later
+/// `.lock().unwrap()` panic, so "open with Gridline" stayed broken for the rest
+/// of the process. The queue holds nothing but validated open handles, so the
+/// poisoned guard is recoverable.
+#[test]
+fn a_poisoned_queue_still_accepts_and_drains() {
+    let buffer = PendingOpenFiles::default();
+    let f = tmp_sql("poison", 1);
+
+    // Poison the mutex: panic while holding the guard.
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = buffer.0.lock().expect("lock for poisoning");
+        panic!("poison the queue");
+    }));
+    assert!(poisoned.is_err(), "the mutex must actually be poisoned");
+    assert!(
+        buffer.0.lock().is_err(),
+        "fixture check: a plain `lock().unwrap()` would panic here"
+    );
+
+    assert!(
+        accept_path(&buffer, &f.to_string_lossy()),
+        "a poisoned queue must still accept a valid file"
+    );
+    let drained = take_from_buffer(&buffer).expect("drain a poisoned queue");
+    assert_eq!(drained.len(), 1, "the queued file survives the poison");
+    assert_eq!(drained[0].content, "SELECT 1;");
+}
+
 #[test]
 fn take_returns_contents_then_drains() {
     let buffer = PendingOpenFiles::default();

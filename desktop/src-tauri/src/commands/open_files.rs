@@ -130,7 +130,11 @@ pub fn accept_os_path(buffer: &PendingOpenFiles, path: &Path) -> bool {
     let Some(opened) = open_sql_file(path) else {
         return false;
     };
-    let mut queue = buffer.0.lock().unwrap();
+    // Poison-tolerant (the pattern `file_grant.rs` / `cancel.rs` / `db_viewer.rs`
+    // use): another thread panicking must not permanently disable "open with
+    // Gridline". The queue is a `Vec` of open handles with no cross-field
+    // invariant a panic could break, so recovering the guard is safe.
+    let mut queue = buffer.0.lock().unwrap_or_else(|e| e.into_inner());
     if queue.iter().any(|p| p.path() == path) {
         return false;
     }
@@ -201,7 +205,9 @@ pub fn take_from_buffer_with_cap(
     cap: u64,
 ) -> Result<Vec<PendingSqlFile>, String> {
     let drained: Vec<OpenedSqlFile> = {
-        let mut queue = buffer.0.lock().unwrap();
+        // Same poison tolerance as `accept_os_path`: a panic elsewhere must not
+        // take file-open handling down with it.
+        let mut queue = buffer.0.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *queue)
     };
 

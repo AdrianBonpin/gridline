@@ -144,6 +144,55 @@ fn truncate_handles_edges() {
     assert_eq!(truncate("short", MAX_ERROR_BYTES), "short", "no ellipsis");
 }
 
+/// The per-character advance is fallible instead of `expect`-ed: it runs over
+/// arbitrary server/subprocess output, so a mid-character index must degrade the
+/// message rather than panic the redaction path.
+///
+/// This is the one place the scan advances over the input itself, and the old
+/// code both sliced (`input[i..]`, which panics off a boundary) and then
+/// `.expect`-ed. Calling the helper with an index inside a multi-byte character
+/// is exactly the case that used to abort the program.
+#[test]
+fn advancing_over_a_mid_character_index_ends_the_scan_instead_of_panicking() {
+    let mut out = String::new();
+    // "é" occupies bytes 0..2, so index 1 is inside it.
+    assert!(!"é".is_char_boundary(1), "the fixture is mid-character");
+    assert_eq!(push_char_at(&mut out, "é", 1), None, "not a boundary");
+    assert_eq!(out, "", "nothing is copied from a partial character");
+
+    // Past the end is also a clean stop, never a panic.
+    assert_eq!(push_char_at(&mut out, "abc", 3), None);
+    assert_eq!(out, "");
+
+    // A real boundary still copies exactly one character and advances past it.
+    assert_eq!(push_char_at(&mut out, "aé", 1), Some(3));
+    assert_eq!(out, "é");
+}
+
+/// Adversarial subprocess output: multi-byte text glued to credential shapes,
+/// a truncated URL, and a scan that stops on the cap. Nothing may panic and no
+/// credential may survive.
+#[test]
+fn redact_never_panics_on_adversarial_output() {
+    let many_emoji = "\u{1F600}".repeat(200);
+    let cases = [
+        "日本語password=secret-value trailing detail",
+        "postgres://héllo:pässwörd@höst/db failed",
+        "secret=😀😀 after",
+        "user=ünïcode secret=🙈 x",
+        "postgres://",
+        "\u{0}password=\u{0}",
+        many_emoji.as_str(),
+    ];
+    for input in cases {
+        let out = redact(input, MAX_ERROR_BYTES);
+        assert!(out.len() <= MAX_ERROR_BYTES, "{input:?} -> {out:?}");
+        assert!(!out.contains("secret-value"), "{out:?}");
+        assert!(!out.contains("pässwörd"), "{out:?}");
+        assert!(!out.contains("🙈 x"), "{out:?}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Redaction
 // ---------------------------------------------------------------------------

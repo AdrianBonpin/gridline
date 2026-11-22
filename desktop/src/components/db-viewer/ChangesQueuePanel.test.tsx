@@ -434,9 +434,22 @@ describe("ChangesQueuePanel", () => {
       description: "Insert row into t",
     } as any);
 
-    act(() => activateTarget({}, "analytics"));
+    // Mount control: the panel DOES render this work for its own database, so the
+    // absence below is the database filter, not a component that renders nothing.
     render(<ChangesQueuePanel />);
+    expect(screen.getByTestId("commit-all")).toHaveTextContent("Commit All (1)");
+    expect(screen.getByText("Pending Changes")).toBeInTheDocument();
+
+    act(() => activateTarget({}, "analytics"));
     expect(screen.queryByTestId("commit-all")).not.toBeInTheDocument();
+    expect(screen.queryByText("Pending Changes")).not.toBeInTheDocument();
+    // Hidden, never dropped: the change stays staged for its own database.
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(1);
+
+    // …and it comes back, unchanged, when the viewer returns to that database.
+    act(() => activateTarget({}, "appdb"));
+    expect(screen.getByTestId("commit-all")).toHaveTextContent("Commit All (1)");
+    expect(screen.getByText("Pending Changes")).toBeInTheDocument();
   });
 
   it("restores the original connection's pending queue unchanged when returning to it", async () => {

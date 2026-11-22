@@ -144,34 +144,93 @@ async fn pg_multi_statement_live() {
 
 // ── sqlx type-feature coverage ──────────────────────────────────────
 
-/// Connect to the optional live MySQL test server. Returns `None` when the
-/// env vars are absent so the whole suite stays green without a server
-/// (matching the existing `#[ignore]`d integration-test convention).
+/// Set to `1` where a scratch MySQL/MariaDB server is guaranteed (CI does: it
+/// provisions one as a service and exports the `GRIDLINE_TEST_MYSQL_*` vars).
+pub(crate) const REQUIRE_LIVE_DB_ENV: &str = "GRIDLINE_REQUIRE_LIVE_DB_TESTS";
+
+/// A live-database test cannot run: skip on a developer machine, FAIL wherever
+/// the suite is required to exercise it.
+///
+/// The old contract (`let Some(conn) = … else { return }` under `#[ignore]`)
+/// reported green while asserting nothing — the #41 decoder regression had no
+/// coverage at all in CI. `GRIDLINE_REQUIRE_LIVE_DB_TESTS=1` makes a missing
+/// prerequisite a failure, exactly like `GRIDLINE_REQUIRE_BUILT_POLICY` on the
+/// frontend side, so a skipped lane is visible instead of silent.
+pub(crate) fn missing_live_db_prerequisite(what: &str) {
+    let required = std::env::var(REQUIRE_LIVE_DB_ENV).as_deref() == Ok("1");
+    assert!(
+        !required,
+        "live-database prerequisite missing: {what}. {REQUIRE_LIVE_DB_ENV}=1 means this \
+         suite must run for real, so this is a failure, not a skip — provision the scratch \
+         server (see the MySQL service in .github/workflows/ci.yml) rather than returning early."
+    );
+    eprintln!("SKIPPED (no live database configured): {what}");
+}
+
+/// Scratch-server settings from the `GRIDLINE_TEST_MYSQL_*` env vars.
+pub(crate) struct LiveMySqlSettings {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub pass: String,
+    pub db: String,
+}
+
+/// Read the scratch-server settings, or record the missing prerequisite.
+pub(crate) fn live_mysql_settings() -> Option<LiveMySqlSettings> {
+    let Ok(host) = std::env::var("GRIDLINE_TEST_MYSQL_HOST") else {
+        missing_live_db_prerequisite("GRIDLINE_TEST_MYSQL_HOST (no scratch MySQL is configured)");
+        return None;
+    };
+    let raw_port = std::env::var("GRIDLINE_TEST_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
+    // A malformed port is a misconfiguration, never a reason to skip.
+    let port: u16 = raw_port
+        .parse()
+        .unwrap_or_else(|_| panic!("GRIDLINE_TEST_MYSQL_PORT={raw_port} is not a port"));
+    let Ok(db) = std::env::var("GRIDLINE_TEST_MYSQL_DB") else {
+        missing_live_db_prerequisite("GRIDLINE_TEST_MYSQL_DB (no scratch database is configured)");
+        return None;
+    };
+    Some(LiveMySqlSettings {
+        host,
+        port,
+        user: std::env::var("GRIDLINE_TEST_MYSQL_USER").unwrap_or_else(|_| "root".into()),
+        pass: std::env::var("GRIDLINE_TEST_MYSQL_PASS").unwrap_or_default(),
+        db,
+    })
+}
+
+/// Connect to the optional live MySQL test server.
+///
+/// `None` means "not available here" and is only legitimate on a developer
+/// machine: with [`REQUIRE_LIVE_DB_ENV`] set, both a missing configuration and
+/// an unreachable server are failures, so CI cannot be green without them.
 pub(crate) async fn mysql_test_connection() -> Option<sqlx::mysql::MySqlConnection> {
     use sqlx::ConnectOptions;
-    let host = std::env::var("GRIDLINE_TEST_MYSQL_HOST").ok()?;
-    let port: u16 = std::env::var("GRIDLINE_TEST_MYSQL_PORT")
-        .ok()?
-        .parse()
-        .ok()?;
-    let user = std::env::var("GRIDLINE_TEST_MYSQL_USER").unwrap_or_else(|_| "root".into());
-    let pass = std::env::var("GRIDLINE_TEST_MYSQL_PASS").unwrap_or_default();
-    let db = std::env::var("GRIDLINE_TEST_MYSQL_DB").ok()?;
-    sqlx::mysql::MySqlConnectOptions::new()
-        .host(&host)
-        .port(port)
-        .username(&user)
-        .password(&pass)
-        .database(&db)
+    let settings = live_mysql_settings()?;
+    match sqlx::mysql::MySqlConnectOptions::new()
+        .host(&settings.host)
+        .port(settings.port)
+        .username(&settings.user)
+        .password(&settings.pass)
+        .database(&settings.db)
         .ssl_mode(sqlx::mysql::MySqlSslMode::Disabled)
         .disable_statement_logging()
         .connect()
         .await
-        .ok()
+    {
+        Ok(conn) => Some(conn),
+        Err(e) => {
+            missing_live_db_prerequisite(&format!(
+                "no reachable MySQL server at {}:{} ({e})",
+                settings.host, settings.port
+            ));
+            None
+        }
+    }
 }
 
 #[tokio::test]
-#[ignore]
 async fn mysql_decimal_and_date_decode_with_features_enabled() {
     use sqlx::Row;
     let Some(mut conn) = mysql_test_connection().await else {
@@ -347,8 +406,200 @@ fn mysql_cell_kind_is_case_insensitive_and_trims() {
 
 // ── mysql_cell_to_json: full type coverage (regression for #41) ─────
 
+/// A cell exactly as sqlx would hand it to the decoder: the *declared* type
+/// name plus the decoded value, never the JSON we expect back.
+enum FakeValue {
+    I64(i64),
+    U64(u64),
+    F32(f32),
+    F64(f64),
+    Decimal(sqlx::types::BigDecimal),
+    Date(chrono::NaiveDate),
+    Time(chrono::NaiveTime),
+    DateTime(chrono::NaiveDateTime),
+    Json(serde_json::Value),
+    Text(String),
+    Bytes(Vec<u8>),
+    /// A declared type sqlx has no decoder for (`GEOMETRY`): every `try_get`
+    /// fails, which is why the value must stay NULL.
+    Undecodable,
+}
+
+/// A row built without a server. sqlx publishes no constructor for `MySqlRow`,
+/// `MySqlValue` or `MySqlTypeInfo`, so this is the only way to exercise the
+/// decoder's type→JSON policy offline — see `MysqlCellSource`.
+struct FakeRow(Vec<(Option<&'static str>, FakeValue)>);
+
+macro_rules! fake_accessor {
+    ($name:ident, $ty:ty, $variant:ident, $map:expr) => {
+        fn $name(&self, i: usize) -> Option<$ty> {
+            match &self.0.get(i)?.1 {
+                FakeValue::$variant(v) => Some(($map)(v)),
+                _ => None,
+            }
+        }
+    };
+}
+
+impl crate::commands::query::MysqlCellSource for FakeRow {
+    fn declared_type(&self, i: usize) -> Option<String> {
+        self.0.get(i)?.0.map(|name| name.to_string())
+    }
+    fake_accessor!(as_i64, i64, I64, |v: &i64| *v);
+    fake_accessor!(as_u64, u64, U64, |v: &u64| *v);
+    fake_accessor!(as_f32, f32, F32, |v: &f32| *v);
+    fake_accessor!(as_f64, f64, F64, |v: &f64| *v);
+    fake_accessor!(
+        as_decimal,
+        sqlx::types::BigDecimal,
+        Decimal,
+        |v: &sqlx::types::BigDecimal| v.clone()
+    );
+    fake_accessor!(as_date, chrono::NaiveDate, Date, |v: &chrono::NaiveDate| *v);
+    fake_accessor!(as_time, chrono::NaiveTime, Time, |v: &chrono::NaiveTime| *v);
+    fake_accessor!(
+        as_datetime,
+        chrono::NaiveDateTime,
+        DateTime,
+        |v: &chrono::NaiveDateTime| *v
+    );
+    fake_accessor!(as_json, serde_json::Value, Json, |v: &serde_json::Value| v
+        .clone());
+    fake_accessor!(as_string, String, Text, |v: &String| v.clone());
+    fake_accessor!(as_bytes, Vec<u8>, Bytes, |v: &Vec<u8>| v.clone());
+}
+
+/// The decoder's real contract, checked with no server present.
+///
+/// Issue #41 was 21 of 30 column types rendering as NULL because the decode was
+/// a blind value-driven try-chain. This pins the type-directed policy one arm at
+/// a time: the fixture holds the *typed wire value* for the declared type, so a
+/// wrong arm (a DATE read as a DATETIME, a 64-bit int read as a number) returns
+/// `None` from the accessor it should not have called and fails here — instead
+/// of only failing in a lane that has the bundled/served MySQL running.
+#[test]
+fn mysql_cell_to_json_decodes_every_declared_type() {
+    use serde_json::{json, Value};
+    use std::str::FromStr;
+
+    fn date(s: &str) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_str(s).expect("fixture date")
+    }
+    fn time(s: &str) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_str(s).expect("fixture time")
+    }
+    /// 2024-01-15 10:30:00, optionally with microseconds.
+    fn datetime(micros: Option<u32>) -> chrono::NaiveDateTime {
+        let d = date("2024-01-15");
+        match micros {
+            Some(us) => d
+                .and_hms_micro_opt(10, 30, 0, us)
+                .expect("fixture datetime"),
+            None => d.and_hms_opt(10, 30, 0).expect("fixture datetime"),
+        }
+    }
+
+    let fixture = FakeRow(vec![
+        (Some("TINYINT"), FakeValue::I64(1)),
+        (Some("TINYINT UNSIGNED"), FakeValue::U64(2)),
+        (Some("BOOLEAN"), FakeValue::I64(1)),
+        (Some("SMALLINT"), FakeValue::I64(5)),
+        (Some("SMALLINT UNSIGNED"), FakeValue::U64(6)),
+        (Some("MEDIUMINT"), FakeValue::I64(7)),
+        // 70000 does not fit a 16-bit rung: a value-driven chain would have
+        // rendered this INT as NULL.
+        (Some("INT"), FakeValue::I64(70000)),
+        (Some("INT UNSIGNED"), FakeValue::U64(9)),
+        // Small values in 64-bit columns must still be strings (exact through
+        // the IPC boundary), not numbers.
+        (Some("BIGINT"), FakeValue::I64(300)),
+        (Some("BIGINT UNSIGNED"), FakeValue::U64(4294967296)),
+        (Some("FLOAT"), FakeValue::F32(11.5)),
+        (Some("DOUBLE"), FakeValue::F64(12.25)),
+        (
+            Some("DECIMAL"),
+            FakeValue::Decimal(
+                sqlx::types::BigDecimal::from_str("13.75").expect("fixture decimal"),
+            ),
+        ),
+        (Some("BIT"), FakeValue::U64(170)),
+        (Some("YEAR"), FakeValue::U64(2024)),
+        (Some("DATE"), FakeValue::Date(date("2024-01-15"))),
+        (Some("TIME"), FakeValue::Time(time("10:30:00"))),
+        (Some("DATETIME"), FakeValue::DateTime(datetime(None))),
+        (
+            Some("DATETIME"),
+            FakeValue::DateTime(datetime(Some(123_456))),
+        ),
+        // TIMESTAMP shares the DATETIME wire type and is decoded naive.
+        (Some("TIMESTAMP"), FakeValue::DateTime(datetime(None))),
+        (Some("CHAR"), FakeValue::Text("abcd".into())),
+        (Some("VARCHAR"), FakeValue::Text("hello".into())),
+        (Some("TEXT"), FakeValue::Text("text value".into())),
+        (Some("BINARY"), FakeValue::Bytes(b"WXYZ".to_vec())),
+        (Some("VARBINARY"), FakeValue::Bytes(vec![1, 2])),
+        (Some("BLOB"), FakeValue::Bytes(vec![1, 2, 3, 4])),
+        (Some("JSON"), FakeValue::Json(json!({"k": "v"}))),
+        (Some("ENUM"), FakeValue::Text("a".into())),
+        (Some("SET"), FakeValue::Text("x,y".into())),
+        // Documented limitation (spec §9): no sqlx decoder exists.
+        (Some("GEOMETRY"), FakeValue::Undecodable),
+        // A genuine SQL NULL is NULL whatever the declared type says.
+        (Some("VARCHAR"), FakeValue::Undecodable),
+        (None, FakeValue::Undecodable),
+    ]);
+
+    let expected: Vec<Value> = vec![
+        json!(1),
+        json!(2),
+        json!(1),
+        json!(5),
+        json!(6),
+        json!(7),
+        json!(70000),
+        json!(9),
+        Value::String("300".into()),
+        Value::String("4294967296".into()),
+        json!(11.5),
+        json!(12.25),
+        Value::String("13.75".into()),
+        json!(170),
+        json!(2024),
+        Value::String("2024-01-15".into()),
+        Value::String("10:30:00".into()),
+        Value::String("2024-01-15 10:30:00".into()),
+        Value::String("2024-01-15 10:30:00.123456".into()),
+        Value::String("2024-01-15 10:30:00".into()),
+        Value::String("abcd".into()),
+        Value::String("hello".into()),
+        Value::String("text value".into()),
+        Value::String("WXYZ".into()),
+        Value::String("\u{1}\u{2}".into()),
+        Value::String("\u{1}\u{2}\u{3}\u{4}".into()),
+        json!({"k": "v"}),
+        Value::String("a".into()),
+        Value::String("x,y".into()),
+        Value::Null,
+        Value::Null,
+        Value::Null,
+    ];
+
+    assert_eq!(fixture.0.len(), expected.len(), "fixture/expected drifted");
+    for (i, want) in expected.iter().enumerate() {
+        assert_eq!(
+            &crate::commands::query::decode_mysql_cell(&fixture, i),
+            want,
+            "fixture cell {i} (declared {:?}) decoded wrong",
+            fixture.0[i].0
+        );
+    }
+}
+
+/// The live half of the same contract: sqlx's real `try_get` decoders accept
+/// the declared types. Needs a server, so it is gated (see
+/// [`missing_live_db_prerequisite`]); the policy itself is covered by
+/// `mysql_cell_to_json_decodes_every_declared_type` above without one.
 #[tokio::test]
-#[ignore]
 async fn mysql_cell_to_json_decodes_every_type() {
     use sqlx::Row;
     let Some(mut conn) = mysql_test_connection().await else {

@@ -149,11 +149,38 @@ describe("useSshHostTrust", () => {
     expect(mockCommands.sshHostTrustEnroll).not.toHaveBeenCalled();
   });
 
-  it("offers the connect path no way to replace a trusted host key", () => {
+  it("offers the connect path no way to replace a trusted host key", async () => {
     // The boundary of ticket 22: replacing trust belongs to the connection's
     // trust state (`useSshHostTrustState`), so the authentication path has no
     // re-enrollment capability at all — a mismatch here stays a dead end.
+    //
+    // Every command is wired and the whole check → accept cycle is exercised, so
+    // the negative assertions below observe the same spies the hook really calls
+    // (`sshHostTrustState` firing is the positive control). A bare
+    // `expect(spy).not.toHaveBeenCalled()` on a spy nothing is wired to passes
+    // no matter what the hook does.
+    mockCommands.sshHostTrustState.mockResolvedValue(trusted);
+    mockCommands.sshHostTrustEnroll.mockResolvedValue(trusted);
+    mockCommands.sshHostTrustReenroll.mockResolvedValue(trusted);
     const { result } = renderHook(() => useSshHostTrust());
+
+    await act(async () => {
+      await result.current.check("db.example.com", 2222);
+    });
+    let retry = true;
+    await act(async () => {
+      retry = await result.current.accept();
+    });
+
+    // Positive control: these spies ARE the module the hook talks to.
+    expect(mockCommands.sshHostTrustState).toHaveBeenCalledWith(
+      "db.example.com",
+      2222,
+    );
+    // An already-trusted host needs no enrollment, and nothing may replace it.
+    expect(retry).toBe(false);
+    expect(mockCommands.sshHostTrustEnroll).not.toHaveBeenCalled();
+    expect(mockCommands.sshHostTrustReenroll).not.toHaveBeenCalled();
     expect(Object.keys(result.current).sort()).toEqual([
       "accept",
       "busy",
@@ -162,6 +189,5 @@ describe("useSshHostTrust", () => {
       "error",
       "trustState",
     ]);
-    expect(mockCommands.sshHostTrustReenroll).not.toHaveBeenCalled();
   });
 });

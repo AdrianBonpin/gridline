@@ -1382,6 +1382,134 @@ fn client_is_mariadb_reads_the_version_banner() {
     assert!(!client_is_mariadb("/nonexistent/definitely-not-a-tool"));
 }
 
+/// The banner probe is what decides whether we emit MySQL-only flags, so it gets
+/// a fake client for each banner — a wrongly-detected MySQL client means every
+/// MariaDB dump dies on "unknown option" before it connects.
+#[cfg(unix)]
+#[test]
+fn client_is_mariadb_recognises_each_banner_with_a_fake_tool() {
+    let dir = sync_temp_dir("client_banner");
+    let mariadb = write_fake_tool(
+        &dir,
+        "mariadb-dump",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then \
+         echo 'mariadb-dump  Ver 11.4.5-MariaDB, for debian-linux-gnu (x86_64)'; exit 0; fi\n\
+         exit 0\n",
+    );
+    let mysql = write_fake_tool(
+        &dir,
+        "mysqldump",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then \
+         echo 'mysqldump  Ver 8.0.36 for Linux on x86_64 (MySQL Community Server - GPL)'; exit 0; fi\n\
+         exit 0\n",
+    );
+
+    assert!(
+        client_is_mariadb(&mariadb),
+        "a MariaDB banner must select MariaDB's flag set"
+    );
+    assert!(
+        !client_is_mariadb(&mysql),
+        "an Oracle/MySQL banner must keep the MySQL flag set"
+    );
+}
+
+/// Offline half of [`bundled_mariadb_dump_accepts_our_generated_args`]: every
+/// option we hand a MariaDB client must be one MariaDB accepts.
+///
+/// That test needs the bundled `mariadb-dump`, a gitignored release artifact, so
+/// on a clean checkout it logged "SKIPPED" and returned — CI was green with the
+/// guard never evaluated. MariaDB's clients reject MySQL-only options with
+/// "unknown option" and abort before connecting, so the policy is pinned here,
+/// where every `cargo test` (CI included) evaluates it.
+#[test]
+fn mariadb_clients_get_only_options_mariadb_accepts() {
+    // MariaDB clients reject these with "unknown option" / "unknown variable".
+    // Adding one for a MariaDB client aborts the dump instead of connecting.
+    const MYSQL_ONLY: &[(&str, &str)] = &[
+        ("skip-column-statistics", "MySQL 8 only"),
+        ("column-statistics", "MySQL 8 only"),
+        ("ssl-mode", "MariaDB uses --ssl / --ssl-verify-server-cert"),
+        ("set-gtid-purged", "GTID is MySQL-specific"),
+        (
+            "source-data",
+            "MySQL 8.4 spelling; MariaDB has no --source-data",
+        ),
+    ];
+    // Options MariaDB's `mariadb-dump`/`mariadb` do accept, verified against
+    // `mariadb-dump --help` / `mariadb --help` (11.4). A new flag must be checked
+    // against those before it is added here.
+    const MARIADB_ACCEPTS: &[&str] = &[
+        "host",
+        "port",
+        "user",
+        "single-transaction",
+        "no-data",
+        "routines",
+        "triggers",
+        "events",
+        "databases",
+        "result-file",
+        "add-drop-table",
+        "database",
+        "ssl",
+        "skip-ssl",
+        "ssl-verify-server-cert",
+        "skip-ssl-verify-server-cert",
+    ];
+
+    let conn = MySqlConnParams::new("h".into(), 3306, "root".into(), "db".into(), "p".into());
+    let opts = MySqlBackupOptions {
+        database: "db".into(),
+        file_path: "/tmp/out.sql".into(),
+        single_transaction: true,
+        no_data: false,
+        routines: true,
+        triggers: true,
+        events: true,
+    };
+
+    // Every argument shape we can hand a MariaDB client, with every TLS mode.
+    let mut shapes: Vec<(&str, Vec<String>)> = Vec::new();
+    for mode in [None, Some("disable"), Some("require"), Some("verify-full")] {
+        let mut backup = build_mysql_dump_args(&conn, &opts, true);
+        backup.extend(mysql_tls_args(true, mode).unwrap());
+        shapes.push(("backup", backup));
+        shapes.push((
+            "sync dump",
+            build_mysql_sync_dump_args(&conn, true, mode).unwrap(),
+        ));
+        shapes.push((
+            "sync restore",
+            mysql_sync_restore_args(&conn, true, mode).unwrap(),
+        ));
+    }
+
+    for (shape, args) in shapes {
+        for arg in &args {
+            let Some(option) = arg.strip_prefix("--") else {
+                // A positional database name, or a value we never prefix.
+                continue;
+            };
+            let name = option.split('=').next().unwrap_or(option);
+            let rejected = MYSQL_ONLY
+                .iter()
+                .find(|(flag, _)| *flag == name)
+                .map(|(flag, why)| format!("--{flag} ({why})"));
+            assert_eq!(
+                rejected, None,
+                "{shape} hands a MariaDB client a MySQL-only option: {args:?}"
+            );
+            assert!(
+                MARIADB_ACCEPTS.contains(&name),
+                "{shape} passes --{name}, which is not on the reviewed list of options \
+                 MariaDB's dump/client accepts ({args:?}). Check `mariadb-dump --help` and \
+                 add it with a note, or keep it behind `if !client_is_mariadb`."
+            );
+        }
+    }
+}
+
 /// Regression guard for the bundled fallback path: the args we generate must be
 /// *accepted* by the real bundled MariaDB client. It spawns the staged binary
 /// against a closed port and requires the failure to be a CONNECTION error —
@@ -1397,6 +1525,17 @@ fn bundled_mariadb_dump_accepts_our_generated_args() {
     ))
     .join(crate::db::tool_resolver::bundled_bin_name("mariadb-dump"));
     if !bundled.is_file() {
+        // The binaries are gitignored release artifacts, so a clean checkout (and
+        // every CI run) has none. `GRIDLINE_REQUIRE_BUNDLED_TOOLS=1` turns the
+        // absence into a failure for a lane that does stage them; the offline
+        // contract next door (`mariadb_clients_get_only_options_mariadb_accepts`)
+        // is what covers the flag set everywhere else.
+        let required = std::env::var("GRIDLINE_REQUIRE_BUNDLED_TOOLS").as_deref() == Ok("1");
+        assert!(
+            !required,
+            "GRIDLINE_REQUIRE_BUNDLED_TOOLS=1 but {bundled:?} is not staged — stage the \
+             bundled MariaDB tools before requiring this guard"
+        );
         eprintln!(
             "SKIPPED bundled_mariadb_dump_accepts_our_generated_args: {bundled:?} is not staged \
              (run the release workflow's tool-staging step to enable this guard)"
