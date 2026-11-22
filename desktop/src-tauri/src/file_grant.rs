@@ -243,7 +243,12 @@ impl FileGrantStore {
         let mut entries = self.lock();
         Self::forget_old(&mut entries, now, self.ttl);
 
-        let Some(entry) = entries.get(grant_id) else {
+        // One lookup, then the entry is marked consumed in place: the earlier
+        // shape checked `get(grant_id)` and then `expect`ed the second
+        // `get_mut` to find the same key. Nothing can remove it under this lock,
+        // but a panic here would be a panic on the file-authorization path, so
+        // the invariant is expressed by the borrow instead of by an `expect`.
+        let Some(entry) = entries.get_mut(grant_id) else {
             return Err(GrantError::Unknown);
         };
         // Expiry is checked before anything else so the UI gets the specific
@@ -260,9 +265,6 @@ impl FileGrantStore {
         if entry.consumed {
             return Err(GrantError::AlreadyConsumed);
         }
-        let entry = entries
-            .get_mut(grant_id)
-            .expect("entry existed during the checks above");
         entry.consumed = true;
         Ok(entry.path.clone())
     }

@@ -3,6 +3,7 @@ import { Play, Copy, AlertTriangle, GitCompare } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { compareSchemas, getSchemas, getDatabases } from "../../lib/commands";
 import { controlClass } from "./objects/formRow";
+import { isMysqlFamily } from "../../lib/dbCapabilities";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
 import type { DiffItem, DiffReport } from "../../lib/types";
@@ -21,7 +22,9 @@ const KIND_BADGE: Record<string, string> = {
 const VIRTUALIZE_THRESHOLD = 200;
 
 function familyOf(dbType: string): string {
-  return dbType === "mysql" || dbType === "mariadb" ? "mysql" : dbType;
+  // MySQL and MariaDB are one engine family; the shared helper is the single
+  // place that knows it, so this file cannot drift from the capability matrix.
+  return isMysqlFamily(dbType) ? "mysql" : dbType;
 }
 
 function SchemaDiffItemCard({ item }: { item: DiffItem }) {

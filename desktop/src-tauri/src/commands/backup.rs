@@ -1030,36 +1030,63 @@ fn code_fragment<'a>(line: &'a str, state: &mut PlainScanState) -> &'a str {
             continue;
         }
 
-        let line_comment = rest.find("--");
-        let block_comment = rest.find("/*");
-        let dollar = find_dollar_opener(rest);
+        // The token itself comes back, not just its position, so there is no
+        // "found a position but could not identify the token" state to unwrap:
+        // the earlier shape recovered the dollar opener from a second `find`
+        // and had to `expect` the invariant that it was still the earliest one.
+        // This runs on an untrusted dump file, so no input may reach a panic.
+        let Some(token) = FragmentToken::earliest(rest) else {
+            return rest;
+        };
+        match token {
+            FragmentToken::LineComment(at) => return &rest[..at],
+            FragmentToken::BlockComment(at) => {
+                state.in_block_comment = true;
+                rest = &rest[at + 2..];
+            }
+            FragmentToken::DollarOpener { at, tag } => {
+                rest = &rest[at + tag.len()..];
+                state.dollar_tag = Some(tag);
+            }
+        }
+    }
+}
 
-        let mut first = rest.len();
-        for at in [
-            line_comment,
-            block_comment,
-            dollar.as_ref().map(|(at, _)| *at),
+/// The earliest token on a line that ends the executable code.
+///
+/// Carrying the payload with the position is what makes [`FragmentToken::earliest`]
+/// total: a caller that only had the index would have to look the token up again
+/// and handle "the lookup disagrees with the index" — a panic on a code path that
+/// reads a user-supplied dump file.
+#[derive(Debug, PartialEq, Eq)]
+enum FragmentToken {
+    /// `--`, which ends the code on this line.
+    LineComment(usize),
+    /// `/*`, which starts a block comment that carries into the next lines.
+    BlockComment(usize),
+    /// A dollar-quote opener (`$$` / `$tag$`) and the tag that closes it.
+    DollarOpener { at: usize, tag: String },
+}
+
+impl FragmentToken {
+    /// The earliest of the tokens that can start on `rest`, if any.
+    fn earliest(rest: &str) -> Option<Self> {
+        [
+            rest.find("--").map(FragmentToken::LineComment),
+            rest.find("/*").map(FragmentToken::BlockComment),
+            find_dollar_opener(rest).map(|(at, tag)| FragmentToken::DollarOpener { at, tag }),
         ]
         .into_iter()
         .flatten()
-        {
-            first = first.min(at);
-        }
+        .min_by_key(FragmentToken::at)
+    }
 
-        if first == rest.len() {
-            return rest;
+    /// The byte offset this token starts at.
+    fn at(&self) -> usize {
+        match self {
+            FragmentToken::LineComment(at) | FragmentToken::BlockComment(at) => *at,
+            FragmentToken::DollarOpener { at, .. } => *at,
         }
-        if Some(first) == line_comment {
-            return &rest[..first];
-        }
-        if Some(first) == block_comment {
-            state.in_block_comment = true;
-            rest = &rest[first + 2..];
-            continue;
-        }
-        let (at, tag) = dollar.expect("dollar opener was the earliest token");
-        rest = &rest[at + tag.len()..];
-        state.dollar_tag = Some(tag);
     }
 }
 
@@ -2642,7 +2669,9 @@ fn saved_connections(state: &crate::AppState) -> Result<Vec<SavedConnection>, St
 /// Backup, restore, sync and dump-shape entry points all report a missing row
 /// through this one helper, so the message is identical everywhere (it used to
 /// come in three shapes: `Connection not found: <id>`, `Source connection not
-/// found: <id>` and `Target connection not found: <id>`).
+/// found: <id>` and `Target connection not found: <id>`). The message itself
+/// lives in [`crate::models::connection::connection_not_found`], shared with the
+/// viewer and schema-diff paths.
 fn require_connection(
     connections: &[SavedConnection],
     connection_id: &str,
@@ -2651,7 +2680,7 @@ fn require_connection(
         .iter()
         .find(|c| c.id == connection_id)
         .cloned()
-        .ok_or_else(|| format!("Connection not found: {connection_id}"))
+        .ok_or_else(|| crate::models::connection::connection_not_found(connection_id))
 }
 
 /// Resolve the credential a tool job authenticates with.

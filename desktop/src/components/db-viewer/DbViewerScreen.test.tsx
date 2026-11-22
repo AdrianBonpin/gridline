@@ -1600,21 +1600,55 @@ describe("execution entry points", () => {
                     table_refresh_rate: 5000,
                 } as any,
             });
-            seedQueryTab("SELECT 1");
+            // Seed the tab WITH results. The query-variant toolbar only renders
+            // when the tab has data, and it is the toolbar that owns the
+            // auto-refresh timer: with `data: null` there is no timer to arm, so
+            // the assertion below could not fail whatever the guard did.
+            seedQueryTab("SELECT 1", {
+                data: {
+                    columns: [
+                        {
+                            name: "id",
+                            data_type: "integer",
+                            is_pk: true,
+                            is_fk: false,
+                            is_nullable: false,
+                            default_value: null,
+                            fk_ref: null,
+                            editable: false,
+                            is_generated: false,
+                        },
+                    ],
+                    rows: [[1]],
+                    total_rows: 1,
+                    page: 1,
+                    page_size: 50,
+                },
+            });
             renderScreen();
 
-            // Nothing to run yet, and no timer may run it later either.
+            // Let the preloaded editor and the workspace commit before the
+            // clock moves: a toolbar that mounts after the advance would arm
+            // its timer too late to fire, which is exactly how this test could
+            // pass with the guard deleted.
+            await act(async () => {});
+            expect(screen.getByTestId("query-results")).toBeInTheDocument();
+            // Pagination is rendered by TableControls only, so this proves the
+            // query-variant toolbar (the timer's owner) is really mounted.
+            expect(screen.getByLabelText(/next page/i)).toBeInTheDocument();
+
+            // A 5 s auto-refresh rate is in effect for table tabs, so a timer
+            // that armed itself here would fire ten times over this window and
+            // re-run `SELECT 1` through the execution guard, hitting the spy.
             await act(async () => {
                 vi.advanceTimersByTime(60_000);
             });
-            // The workspace must really be mounted, otherwise "no refresh
-            // happened" proves nothing: an auto-refresh on this tab would
-            // re-run `SELECT 1` through the guard and hit the spy.
+            // The workspace (and the toolbar in it) must really be mounted,
+            // otherwise "no refresh happened" proves nothing.
             expect(screen.getByTestId("query-workspace")).toBeInTheDocument();
             expect(screen.getByTestId("query-results")).toBeInTheDocument();
             expect(executeQuery).not.toHaveBeenCalled();
-            // A query tab's toolbar carries no auto-refresh control at all: the
-            // screen hands it no rate and no table-variant toolbar.
+            // A query tab's toolbar carries no auto-refresh control at all.
             expect(screen.queryByLabelText(/auto-refresh/i)).toBeNull();
         } finally {
             vi.useRealTimers();

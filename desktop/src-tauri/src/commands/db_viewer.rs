@@ -5,6 +5,7 @@
 
 use crate::db::ident::{self, Engine};
 use crate::db::pool::{ConnectionPoolManager, DbConfig, DbHandle};
+use crate::models::connection::connection_not_found;
 use crate::models::db_viewer::{
     Change, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, HypertableInfo,
     HypertableListResponse, IndexInfo, QueryResult, SequenceInfo, TableInfo, TriggerInfo,
@@ -3481,7 +3482,7 @@ pub(crate) async fn execute_staged_change(
         connections
             .into_iter()
             .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
+            .ok_or_else(|| connection_not_found(&connection_id))?
     };
     execute_change_for_origin(pm, &stored, connection_id, staged_origin, change).await
 }
@@ -3887,7 +3888,7 @@ pub async fn get_table_ddl(
                 .map_err(|e| e.to_string())?
                 .into_iter()
                 .find(|c| c.id == connection_id)
-                .ok_or_else(|| format!("connection {connection_id} not found"))?;
+                .ok_or_else(|| connection_not_found(&connection_id))?;
             let host = conn_row.host.clone();
             let port = conn_row.port.unwrap_or(5432) as u16;
             let user = conn_row.username.unwrap_or_else(|| "postgres".into());

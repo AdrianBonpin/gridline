@@ -232,6 +232,70 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# Shared: what does a workflow actually RUN?
+# --------------------------------------------------------------------------
+# A structure check satisfied by a comment ("see scripts/x.sh") or by an
+# `echo 'cargo test'` proves nothing: deleting the real step but leaving a note
+# that mentions it would still "match". So both section 5 and section 10 ask
+# this helper instead of grepping for substrings.
+#
+#   runs_command <ERE>   # the workflow text on stdin; exit 0 when some command
+#                        # the workflow executes matches <ERE>
+#
+# It strips comments, understands `run: cmd`, `run: |` blocks (one command per
+# line) and folded `run: >-` values (whose lines are one continued command), and
+# normalizes each command: leading `VAR=value` assignments and a
+# `bash`/`sh`/`zsh` wrapper are removed, so `FOO=1 bash ./scripts/x.sh` is
+# recognized while `echo 'scripts/x.sh'` is not.
+runs_command() {
+  local pattern="$1"
+  awk -v pattern="$pattern" '
+    function strip_comment(s) { sub(/#.*/, "", s); return s }
+    function indent(s,  n) { n = 0; while (substr(s, n + 1, 1) == " ") n++; return n }
+    function normalize(s,  t) {
+      t = strip_comment(s)
+      sub(/^[[:space:]]+/, "", t)
+      sub(/[[:space:]]+$/, "", t)
+      # Leading environment assignments do not change which command runs.
+      while (t ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/) {
+        sub(/^[^[:space:]]+[[:space:]]+/, "", t)
+      }
+      sub(/^(bash|sh|zsh)[[:space:]]+(-[A-Za-z]+[[:space:]]+)*/, "", t)
+      return t
+    }
+    {
+      line = $0
+      if (inrun) {
+        if (line ~ /^[[:space:]]*$/) next
+        if (indent(line) > run_indent) {
+          if (folded) {
+            joined = joined " " line
+            if (normalize(joined) ~ pattern) found = 1
+          } else if (normalize(line) ~ pattern) {
+            found = 1
+          }
+          next
+        }
+        inrun = 0
+      }
+      if (line ~ /^[[:space:]]*(-[[:space:]]+)?run:/) {
+        value = line
+        sub(/^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*/, "", value)
+        if (strip_comment(value) ~ /^[|>]/) {
+          inrun = 1
+          run_indent = indent(line)
+          folded = (substr(value, 1, 1) == ">")
+          joined = ""
+        } else if (normalize(value) ~ pattern) {
+          found = 1
+        }
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  '
+}
+
+# --------------------------------------------------------------------------
 # 5. Guardrails: safe triggers, and CI enforces this script.
 # --------------------------------------------------------------------------
 if grep -qE '^[[:space:]]*pull_request_target[[:space:]]*:' "${workflows[@]}" 2>/dev/null; then
@@ -240,45 +304,8 @@ else
   pass "no workflow uses pull_request_target"
 fi
 
-# The check must be EXECUTED by ci.yml, not mentioned by it. A plain grep over the
-# file is satisfied by a comment ("see scripts/check-workflows.sh"), which is how
-# deleting the real step could still pass this check. So the assertion matches an
-# actual *invocation*: a command line inside a `run:` value (single-line or a
-# `run: |` block) whose command is the script itself — optionally behind
-# `bash`/`sh`, `./`, or leading `VAR=value` assignments. Comment text is stripped
-# first, and a `run: echo '…check-workflows.sh'` is not an invocation.
-ci_runs_checker="$(awk '
-  function code(s) { sub(/#.*/, "", s); return s }
-  function indent(s,  n) { n = 0; while (substr(s, n + 1, 1) == " ") n++; return n }
-  function invokes(s,  t) {
-    t = code(s)
-    sub(/^[[:space:]]+/, "", t)
-    # Leading environment assignments do not change which command runs.
-    while (t ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/) {
-      sub(/^[^[:space:]]+[[:space:]]+/, "", t)
-    }
-    sub(/^(bash|sh|zsh)[[:space:]]+/, "", t)
-    return t ~ /^(\.\/)?scripts\/check-workflows\.sh([[:space:]]|$)/
-  }
-  {
-    line = $0
-    if (inrun) {
-      if (indent(line) > run_indent) {
-        if (invokes(line)) found = 1
-        next
-      }
-      inrun = 0
-    }
-    if (line ~ /^[[:space:]]*(-[[:space:]]+)?run:/) {
-      value = line
-      sub(/^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*/, "", value)
-      if (invokes(value)) found = 1
-      if (code(value) ~ /^[|>]/) { inrun = 1; run_indent = indent(line) }
-    }
-  }
-  END { if (found) print "yes" }
-' .github/workflows/ci.yml 2>/dev/null)"
-if [ -n "$ci_runs_checker" ]; then
+if runs_command '^(\./)?scripts/check-workflows\.sh([[:space:]]|$)' \
+  < .github/workflows/ci.yml; then
   pass "ci.yml runs scripts/check-workflows.sh"
 else
   fail "ci.yml does not RUN scripts/check-workflows.sh (a comment or an echo that mentions it does not enforce these checks)"
@@ -1180,11 +1207,44 @@ if [ -z "$gate_job" ]; then
   fail "$release_wf has no 'gate' job, so a tag is built and published without running the checks"
   gate_ok=0
 else
-  for needle in 'bun install --frozen-lockfile' 'cargo test' 'bun run test' \
-    'bun run --filter gridline-desktop build' 'src/lib/version.test.ts'; do
-    printf '%s\n' "$gate_job" | grep -qF -- "$needle" ||
-      { fail "the release gate does not run '${needle}', so a bad tag can still reach publication"; gate_ok=0; }
-  done
+  # Each check must be EXECUTED by the gate, not merely mentioned. A plain
+  # substring grep was satisfied by a commented-out `cargo test` (or an `echo`
+  # of it), so deleting the real step still passed this section.
+  gate_check() { # <description> <ERE>
+    if printf '%s\n' "$gate_job" | runs_command "$2"; then
+      :
+    else
+      fail "the release gate does not RUN $1, so a bad tag can still reach publication"
+      gate_ok=0
+    fi
+  }
+  gate_check '`bun install --frozen-lockfile`' \
+    '^bun[[:space:]]+install[[:space:]]+--frozen-lockfile([[:space:]]|$)'
+  gate_check '`cargo test`' \
+    '^cargo[[:space:]]+test([[:space:]]|$)'
+  gate_check '`cargo fmt --all --check`' \
+    '^cargo[[:space:]]+fmt[[:space:]]+--all[[:space:]]+--check([[:space:]]|$)'
+  gate_check '`bun run test`' \
+    '^bun[[:space:]]+run[[:space:]]+test([[:space:]]|$)'
+  gate_check '`bun run --filter gridline-desktop build`' \
+    '^bun[[:space:]]+run[[:space:]]+--filter[[:space:]]+gridline-desktop[[:space:]]+build([[:space:]]|$)'
+  gate_check 'the version consistency tests (bunx vitest run src/lib/version.test.ts)' \
+    '^bunx[[:space:]]+vitest[[:space:]]+run([[:space:]].*)?src/lib/version\.test\.ts'
+
+  # The frontend gate runs against the BUILT bundle: e2e/builtPolicy.test.ts
+  # reads `desktop/dist` and only fails closed when this variable is set, so an
+  # unset variable would quietly turn the check into a skip.
+  if printf '%s\n' "$gate_job" | awk '
+      { line = $0; sub(/#.*/, "", line) }
+      line ~ /^[[:space:]]*GRIDLINE_REQUIRE_BUILT_POLICY:[[:space:]]*["\047]?1["\047]?[[:space:]]*$/ { found = 1 }
+      END { exit(found ? 0 : 1) }
+    '; then
+    :
+  else
+    fail "the release gate does not set GRIDLINE_REQUIRE_BUILT_POLICY=1 for the frontend tests, so a missing built bundle would skip the built-policy check instead of failing it"
+    gate_ok=0
+  fi
+
   # The gate tests the release commit; it must not be able to publish or upload.
   if printf '%s\n' "$gate_job" | grep -q 'contents:[[:space:]]*write'; then
     fail "the release gate holds a write token; it only needs to test the commit"
@@ -1200,7 +1260,37 @@ elif ! printf '%s\n' "$publish_job" | grep -qE '^    needs:[[:space:]]*\[?[[:spa
   fail "release.yml's 'publish' job does not need the 'gate' job, so it can build and publish before the checks pass"
   gate_ok=0
 fi
-[ "$gate_ok" = "1" ] && pass "the release pipeline is gated: the checks run on the tagged commit and 'publish' waits for them"
+
+# ORDER, not just presence: `needs: gate` is meaningless if the gate is declared
+# after the job that builds, and inside the gate the checks have to run before
+# the build they certify. Step/job names are matched as whole lines so a mention
+# in a comment cannot stand in for the real one.
+release_line() { # <sed BRE> — first line number of a whole-line match
+  grep -nE "$1" "$release_wf" 2>/dev/null | head -n 1 | cut -d: -f1
+}
+gate_line="$(release_line '^  gate:[[:space:]]*$')"
+publish_line="$(release_line '^  publish:[[:space:]]*$')"
+hygiene_step_line="$(release_line '^      - name: Check release pipeline hygiene[[:space:]]*$')"
+rust_step_line="$(release_line '^      - name: Run Rust tests[[:space:]]*$')"
+build_step_line="$(release_line '^      - name: Build the desktop frontend[[:space:]]*$')"
+frontend_step_line="$(release_line '^      - name: Run frontend tests \(against the built bundle\)[[:space:]]*$')"
+if [ -z "$gate_line" ] || [ -z "$publish_line" ]; then
+  fail "could not locate the 'gate' and 'publish' jobs in ${release_wf} to check their order"
+  gate_ok=0
+elif [ "$gate_line" -ge "$publish_line" ]; then
+  fail "the 'gate' job is declared after 'publish' in ${release_wf}; the checks must gate the build, not follow it"
+  gate_ok=0
+fi
+if [ -z "$hygiene_step_line" ] || [ -z "$rust_step_line" ] || [ -z "$build_step_line" ] || [ -z "$frontend_step_line" ]; then
+  fail "could not locate the release gate's hygiene/Rust/build/frontend steps to check their order"
+  gate_ok=0
+elif [ "$hygiene_step_line" -ge "$rust_step_line" ] || \
+  [ "$rust_step_line" -ge "$build_step_line" ] || \
+  [ "$build_step_line" -ge "$frontend_step_line" ]; then
+  fail "the release gate runs its steps out of order (hygiene → Rust tests → frontend build → frontend tests against the built bundle)"
+  gate_ok=0
+fi
+[ "$gate_ok" = "1" ] && pass "the release pipeline is gated: the checks run on the tagged commit, in order, and 'publish' waits for them"
 
 if [ "$status" -eq 0 ]; then
   printf '\ncheck-workflows: all checks passed\n'
