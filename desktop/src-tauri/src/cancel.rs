@@ -125,7 +125,9 @@ impl CancelRegistry {
             m.conn_id = conn_id;
         }
     }
-    fn set(&self, id: &str, h: CancelHandle) {
+    /// Install a cancellation handle under `id`, replacing any previous one.
+    /// Used by the connection lifecycle when a verified session is published.
+    pub(crate) fn set(&self, id: &str, h: CancelHandle) {
         self.map.lock().unwrap().insert(id.to_string(), h);
     }
     pub fn get(&self, id: &str) -> Option<CancelHandle> {
@@ -133,6 +135,20 @@ impl CancelRegistry {
     }
     pub fn remove(&self, id: &str) {
         self.map.lock().unwrap().remove(id);
+    }
+
+    /// Drop a connection's cancellation handle and clear its cancel-requested
+    /// flag.
+    ///
+    /// This is the teardown path (`db_disconnect`, connection deletion, demo
+    /// regeneration): the handle must not outlive the session it aborts, and a
+    /// stale `true` flag must not make the next session look pre-cancelled. The
+    /// flag entry itself is kept rather than removed, because a standalone
+    /// operation that is already running (e.g. a native restore) holds that
+    /// `Arc` and has to keep observing cancel requests until it finishes.
+    pub fn forget(&self, id: &str) {
+        self.remove(id);
+        self.clear_cancelled(id);
     }
 }
 
@@ -238,5 +254,29 @@ mod tests {
             .username("u")
             .password("p")
             .database("d")
+    }
+
+    #[test]
+    fn forget_drops_the_handle_and_clears_the_flag() {
+        let reg = CancelRegistry::new();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        reg.set_sqlite("c1", SqliteCancel::new(conn.get_interrupt_handle()));
+        reg.mark_cancelled("c1");
+        // A running operation may already hold this flag; teardown has to clear
+        // the value it observes, not just drop the map entry.
+        let observed = reg.cancel_flag("c1");
+
+        reg.forget("c1");
+
+        assert!(reg.get("c1").is_none(), "the handle is gone");
+        assert!(
+            !reg.is_cancelled("c1"),
+            "a torn-down connection leaves no cancel-requested flag behind"
+        );
+        assert!(
+            !observed.load(Ordering::SeqCst),
+            "an operation already holding the flag sees it cleared, not stuck cancelled"
+        );
+        drop(conn);
     }
 }

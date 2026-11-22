@@ -195,3 +195,21 @@ export function pickDefaultSchema(schemas: string[]): string | null {
   }
   return schemas[0];
 }
+
+/**
+ * A rejected command's reason, as one line fit for a user-visible message.
+ *
+ * Tauri rejects a failed command with the backend's plain string, while plugin
+ * calls reject with an `Error`. Neither may be dropped on the floor: every
+ * failure path reports through this so the user sees why an action did nothing
+ * (ticket 39 — no failure is console-only).
+ */
+export function errorText(error: unknown): string {
+  if (typeof error === "string" && error.trim()) return error;
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.length > 0) return message;
+  }
+  return "unknown error";
+}

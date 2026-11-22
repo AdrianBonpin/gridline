@@ -2729,4 +2729,150 @@ describe("request-bound confirmation", () => {
         );
         expect(screen.getByTestId("query-workspace").closest("[inert]")).toBeNull();
     });
+
+});
+
+/**
+ * Row detail lifecycle (ticket 39).
+ *
+ * The drawer is keyed by the row's Row Identity, resolved against the rows the
+ * active tab is displaying right now. Leaving that context closes it, so it can
+ * never show another row's or another table's content.
+ */
+const rowDetailUsersColumns = [
+    { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+    { name: "name", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+];
+const rowDetailOrdersColumns = [
+    { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+    { name: "total", data_type: "integer", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+];
+
+describe("row detail lifecycle", () => {
+    beforeEach(() => {
+        useDbViewerStore.getState().reset();
+        useConnectionStore.setState({
+            connections: [
+                { id: "c1", name: "local", db_type: "postgresql", host: "localhost", port: 5432, username: "dev", database: "mydb", folder_id: null, keychain_ref: null, tag_ids: [], favorite: false, created_at: "", updated_at: "" },
+            ] as Connection[],
+        });
+        useUiStore.setState({ activeConnectionId: "c1" });
+        useDbViewerStore.setState({
+            databases: ["mydb"],
+            schemas: ["public"],
+            tables: [{ name: "users", schema: "public", table_type: "TABLE" }],
+            currentDatabase: "mydb",
+            currentSchema: "public",
+        });
+        vi.resetAllMocks();
+    });
+
+    it("row detail shows the displayed row and closes on a tab switch", async () => {
+        const usersColumns = rowDetailUsersColumns;
+        const ordersColumns = rowDetailOrdersColumns;
+        const store = useDbViewerStore.getState();
+        store.openTab("public", "users");
+        const usersTab = useDbViewerStore.getState().activeTabId!;
+        useDbViewerStore.getState().setTabData(usersTab, {
+            columns: usersColumns,
+            rows: [[1, "Alice"]],
+            total_rows: 1,
+            page: 1,
+            page_size: 50,
+        } as any);
+        store.openTab("public", "orders");
+        const ordersTab = useDbViewerStore.getState().activeTabId!;
+        useDbViewerStore.getState().setTabData(ordersTab, {
+            columns: ordersColumns,
+            rows: [[7, 99]],
+            total_rows: 1,
+            page: 1,
+            page_size: 50,
+        } as any);
+        useDbViewerStore.getState().setActiveTab(usersTab);
+
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+        const cell = await waitFor(() => screen.getByText("Alice"));
+        fireEvent.contextMenu(cell);
+        fireEvent.click(screen.getByText("View Row"));
+
+        // The drawer is bound to the clicked row's Row Identity, never to the
+        // grid position it happened to sit at.
+        expect(await screen.findByText("Row detail")).toBeInTheDocument();
+        const key = rowSelectionKey(usersColumns as any, [1, "Alice"], "postgresql")!;
+        expect(
+            useDbViewerStore.getState().tabs.find((t) => t.id === usersTab)!.rowDetail,
+        ).toEqual({ setIndex: 0, key });
+
+        // Switching tabs closes it: another table's rows are never shown inside
+        // a drawer opened for a different result set.
+        act(() => {
+            useDbViewerStore.getState().setActiveTab(ordersTab);
+        });
+        await waitFor(() => expect(screen.queryByText("Row detail")).toBeNull());
+    });
+
+    it("opens the row detail of the result set it was clicked in", async () => {
+        const usersColumns = rowDetailUsersColumns;
+        const ordersColumns = rowDetailOrdersColumns;
+        const usersRows = [[1, "Alice"]];
+        const orderRows = [[1, 999]];
+        // Two result sets whose rows share the same primary-key value: the
+        // drawer must resolve inside the set it was opened from.
+        useDbViewerStore.setState({
+            tabs: [
+                {
+                    id: "q1",
+                    schema: "public",
+                    table: "Query",
+                    page: 1,
+                    pageSize: 50,
+                    loading: false,
+                    error: null,
+                    data: { columns: usersColumns, rows: usersRows, total_rows: 1, page: 1, page_size: 50 },
+                    multi: {
+                        result_sets: [
+                            { columns: usersColumns, rows: usersRows, total_rows: 1, page: 1, page_size: 50 },
+                            { columns: ordersColumns, rows: orderRows, total_rows: 1, page: 1, page_size: 50 },
+                        ],
+                        notices: [],
+                        execution_time_ms: 5,
+                    },
+                    filterRules: [],
+                    sortRules: [],
+                    hiddenColumns: [],
+                    smartSortApplied: true,
+                    tabType: "query",
+                    query: "select * from users; select * from orders",
+                    origin: currentChangeOrigin(),
+                },
+            ],
+            activeTabId: "q1",
+        } as any);
+        render(
+            <DbViewerScreen
+                connectionId="c1"
+                onHome={() => {}}
+                onSettings={() => {}}
+            />,
+        );
+
+        const cell = await waitFor(() => screen.getByText("999"));
+        fireEvent.contextMenu(cell);
+        fireEvent.click(screen.getByText("View Row"));
+
+        expect(await screen.findByText("Row detail")).toBeInTheDocument();
+        expect(
+            useDbViewerStore.getState().tabs[0].rowDetail,
+        ).toEqual({
+            setIndex: 1,
+            key: rowSelectionKey(ordersColumns as any, [1, 999], "postgresql"),
+        });
+    });
 });

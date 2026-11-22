@@ -21,6 +21,10 @@ vi.mock("../../lib/commands", () => ({
   deleteConnection: vi.fn().mockResolvedValue(undefined),
   deleteConnectionPassword: vi.fn().mockResolvedValue(undefined),
   deleteFolder: vi.fn().mockResolvedValue(undefined),
+  createConnection: vi.fn(),
+  updateConnection: vi.fn().mockResolvedValue(undefined),
+  createFolder: vi.fn(),
+  updateFolder: vi.fn(),
   importConnections: vi.fn(),
   exportConnections: vi.fn(),
 }));
@@ -314,12 +318,194 @@ describe("HomeScreen", () => {
     });
     expect(commands.importConnections).toHaveBeenCalledWith("{ not json");
   });
+
+  /**
+   * Everyday home-screen mutations (ticket 39).
+   *
+   * A failed delete or duplicate used to end in `console.error` with the item
+   * still on screen and the selection cleared, so a locked store or a keychain
+   * failure was indistinguishable from success. Every failure is now reported
+   * in the UI, and the items that failed stay selected for a retry.
+   */
+  describe("mutation failures are visible and retain the failed selection", () => {
+    const errorMessages = () =>
+      useNotificationStore
+        .getState()
+        .notifications.filter((n) => n.type === "error")
+        .map((n) => n.message);
+
+    it("reports a per-item bulk delete failure and keeps the failed item selected", async () => {
+      const user = userEvent.setup();
+      // A failure is never only a console line: the user sees it.
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const commands = await import("../../lib/commands");
+      (commands.deleteConnection as any).mockImplementation((id: string) =>
+        id === "conn-2"
+          ? Promise.reject(new Error("store is locked"))
+          : Promise.resolve(undefined),
+      );
+      useSettingsStore.setState({
+        settings: { ...baseSettings(), confirm_before_delete: false },
+      });
+      useConnectionStore.setState({
+        connections: [makeConnection("conn-1", "Alpha"), makeConnection("conn-2", "Beta")],
+      });
+      useUiStore.setState({ selectedItemIds: ["conn-1", "conn-2"] });
+      render(<HomeScreen />);
+
+      await user.click(screen.getByRole("button", { name: /2 selected/i }));
+      await user.click(screen.getByRole("button", { name: /delete \(2\)/i }));
+
+      await waitFor(() => {
+        expect(errorMessages().join(" | ")).toMatch(/Beta/);
+        expect(errorMessages().join(" | ")).toMatch(/store is locked/);
+      });
+      // The item that failed stays selected so it can be retried; the one that
+      // was actually deleted does not linger in the selection.
+      expect(useUiStore.getState().selectedItemIds).toEqual(["conn-2"]);
+      expect(useConnectionStore.getState().connections.map((c) => c.id)).toEqual([
+        "conn-2",
+      ]);
+      expect(consoleError).not.toHaveBeenCalled();
+      consoleError.mockRestore();
+    });
+
+    it("reports every failed item, not a capped sample", async () => {
+      const user = userEvent.setup();
+      const commands = await import("../../lib/commands");
+      (commands.deleteConnection as any).mockRejectedValue(
+        new Error("store is locked"),
+      );
+      useSettingsStore.setState({
+        settings: { ...baseSettings(), confirm_before_delete: false },
+      });
+      const conns = [
+        makeConnection("conn-1", "Alpha"),
+        makeConnection("conn-2", "Beta"),
+        makeConnection("conn-3", "Gamma"),
+        makeConnection("conn-4", "Delta"),
+        makeConnection("conn-5", "Epsilon"),
+      ];
+      useConnectionStore.setState({ connections: conns });
+      useUiStore.setState({ selectedItemIds: conns.map((c) => c.id) });
+      render(<HomeScreen />);
+
+      await user.click(screen.getByRole("button", { name: /5 selected/i }));
+      await user.click(screen.getByRole("button", { name: /delete \(5\)/i }));
+
+      await waitFor(() => {
+        const joined = errorMessages().join(" | ");
+        for (const name of ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]) {
+          expect(joined).toContain(`Failed to delete "${name}"`);
+        }
+      });
+      expect(useUiStore.getState().selectedItemIds).toEqual([
+        "conn-1",
+        "conn-2",
+        "conn-3",
+        "conn-4",
+        "conn-5",
+      ]);
+    });
+
+    it("reports a failed duplicate connection", async () => {
+      const user = userEvent.setup();
+      const commands = await import("../../lib/commands");
+      (commands.createConnection as any).mockRejectedValue(
+        new Error("keychain unavailable"),
+      );
+      useConnectionStore.setState({ connections: [makeConnection("conn-1")] });
+      render(<HomeScreen />);
+
+      await user.click(screen.getByLabelText("Connection actions"));
+      await user.click(screen.getByText("Manage"));
+      await user.click(screen.getByText("Duplicate"));
+
+      await waitFor(() => {
+        expect(errorMessages().join(" | ")).toMatch(/duplicate/i);
+        expect(errorMessages().join(" | ")).toMatch(/keychain unavailable/);
+      });
+    });
+
+    it("reports a failed connection delete from the card menu", async () => {
+      const user = userEvent.setup();
+      const commands = await import("../../lib/commands");
+      (commands.deleteConnection as any).mockRejectedValue(
+        new Error("store is locked"),
+      );
+      useSettingsStore.setState({
+        settings: { ...baseSettings(), confirm_before_delete: false },
+      });
+      useConnectionStore.setState({ connections: [makeConnection("conn-1")] });
+      render(<HomeScreen />);
+
+      await user.click(screen.getByLabelText("Connection actions"));
+      await user.click(screen.getByText("Manage"));
+      await user.click(screen.getByText("Delete…"));
+
+      await waitFor(() => {
+        expect(errorMessages().join(" | ")).toMatch(/store is locked/);
+      });
+      // The connection is still there: a failed delete never removes it.
+      expect(useConnectionStore.getState().connections.map((c) => c.id)).toEqual([
+        "conn-1",
+      ]);
+    });
+
+    it("reports a failed folder delete", async () => {
+      const user = userEvent.setup();
+      const commands = await import("../../lib/commands");
+      (commands.deleteFolder as any).mockRejectedValue(
+        new Error("folder is locked"),
+      );
+      useSettingsStore.setState({
+        settings: { ...baseSettings(), confirm_before_delete: false },
+      });
+      useConnectionStore.setState({ folders: [makeFolder("folder-1")] });
+      useUiStore.setState({ activeFolderId: "folder-1" });
+      render(<HomeScreen />);
+
+      await user.click(screen.getByRole("button", { name: /^delete$/i }));
+
+      await waitFor(() => {
+        expect(errorMessages().join(" | ")).toMatch(/folder is locked/);
+      });
+      expect(useConnectionStore.getState().folders.map((f) => f.id)).toEqual([
+        "folder-1",
+      ]);
+    });
+
+    it("reports a failed move-to-folder and keeps the selection", async () => {
+      const user = userEvent.setup();
+      const commands = await import("../../lib/commands");
+      (commands.updateConnection as any).mockRejectedValue(
+        new Error("move failed"),
+      );
+      useConnectionStore.setState({
+        connections: [makeConnection("conn-1")],
+        folders: [makeFolder("folder-1")],
+      });
+      useUiStore.setState({ selectedItemIds: ["conn-1"], activeFolderId: null });
+      render(<HomeScreen />);
+
+      await user.click(screen.getByRole("button", { name: /1 selected/i }));
+      await user.click(screen.getByRole("button", { name: /move to folder/i }));
+      const folderOptions = await screen.findAllByRole("button", { name: /projects/i });
+      await user.click(folderOptions[folderOptions.length - 1]!);
+      await user.click(screen.getByRole("button", { name: /^move$/i }));
+
+      await waitFor(() => {
+        expect(errorMessages().join(" | ")).toMatch(/move failed/);
+      });
+      expect(useUiStore.getState().selectedItemIds).toEqual(["conn-1"]);
+    });
+  });
 });
 
-function makeConnection(id: string): Connection {
+function makeConnection(id: string, name = "Local DB"): Connection {
   return {
     id,
-    name: "Local DB",
+    name,
     db_type: "postgresql",
     host: "localhost",
     port: 5432,

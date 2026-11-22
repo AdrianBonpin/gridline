@@ -7,10 +7,10 @@
 **Seams:** Connection trust seam: catches teardown and reconnect behavior; misses operating-system listener inspection, which a platform check covers.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/74
-**Status:** ready
+**Status:** done
 
-- [ ] Disconnect closes the pool, the SSH tunnel, and cancellation handles together.
-- [ ] No loopback listener remains reachable after a viewer is closed or disconnected.
-- [ ] A failed reconnect preserves the previously working session and reports the failure.
-- [ ] Regenerating the demo database leaves no stale pool or cancellation state.
-- [ ] Deleting a connection closes its resources and removes its secrets.
+- [x] Disconnect closes the pool, the SSH tunnel, and cancellation handles together.
+- [x] No loopback listener remains reachable after a viewer is closed or disconnected.
+- [x] A failed reconnect preserves the previously working session and reports the failure.
+- [x] Regenerating the demo database leaves no stale pool or cancellation state.
+- [x] Deleting a connection closes its resources and removes its secrets.

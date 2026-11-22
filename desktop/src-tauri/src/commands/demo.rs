@@ -95,9 +95,10 @@ fn ensure_demo_connection(store: &Mutex<Store>, db_path: &Path) -> Result<(), St
     Ok(())
 }
 
-/// Drop any live pool handle for the demo connection so its SQLite file can
-/// be deleted and recreated cleanly.
-async fn disconnect_demo_pool(state: &tauri::State<'_, AppState>) -> Result<(), String> {
+/// Close everything the live demo connection owns — pool handle, SSH tunnel,
+/// cancellation handles — so its SQLite file can be deleted and recreated
+/// without a stale handle still addressing the old file.
+async fn disconnect_demo_connection(state: &AppState) -> Result<(), String> {
     let demo_id = {
         let s = state.db_store.lock().map_err(|e| e.to_string())?;
         s.get_connections()?
@@ -106,8 +107,13 @@ async fn disconnect_demo_pool(state: &tauri::State<'_, AppState>) -> Result<(), 
             .map(|c| c.id.clone())
     };
     if let Some(id) = demo_id {
-        let mut pm = state.pool_manager.lock().await;
-        pm.remove(&id);
+        crate::db::lifecycle::teardown_connection(
+            &id,
+            &state.pool_manager,
+            &state.ssh_manager,
+            &state.cancel_registry,
+        )
+        .await;
     }
     Ok(())
 }
@@ -136,15 +142,15 @@ pub fn recreate_demo_db(
 }
 
 /// Tauri command to regenerate the demo database from the settings screen:
-/// drops any live pool handle, wipes the current file (including any edits
-/// made against it) and re-seeds it with fresh demo data.
+/// closes whatever the live demo connection owns, wipes the current file
+/// (including any edits made against it) and re-seeds it with fresh demo data.
 #[tauri::command]
 pub async fn regenerate_demo_db(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     let db_path = demo_db_path(&app)?;
-    disconnect_demo_pool(&state).await?;
+    disconnect_demo_connection(&state).await?;
     if db_path.exists() {
         std::fs::remove_file(&db_path).map_err(|e| e.to_string())?;
     }

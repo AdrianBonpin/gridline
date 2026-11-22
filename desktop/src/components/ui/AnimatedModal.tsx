@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
+import { useModalPresence } from "../../hooks/useModalPresence";
 
 interface AnimatedModalProps {
   open: boolean;
@@ -9,6 +10,10 @@ interface AnimatedModalProps {
 }
 
 export function AnimatedModal({ open, onClose, children }: AnimatedModalProps) {
+  // While this dialog is up it owns the keyboard: window-level shortcuts are
+  // suppressed until it closes (ticket 39).
+  useModalPresence(open);
+
   useEffect(() => {
     if (!open) return;
 
@@ -40,6 +45,11 @@ export function AnimatedModal({ open, onClose, children }: AnimatedModalProps) {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
+            // A dialog is a dialog: assistive tech and the shortcut guard both
+            // read `aria-modal`, so this surface is never mistaken for page
+            // content while it is up.
+            role="dialog"
+            aria-modal="true"
             className="glass rounded-2xl p-6 shadow-2xl ring-1 ring-white/10"
             style={{ background: "linear-gradient(145deg, rgba(24,24,27,0.85), rgba(10,10,11,0.65))" }}
             onClick={(e) => e.stopPropagation()}
