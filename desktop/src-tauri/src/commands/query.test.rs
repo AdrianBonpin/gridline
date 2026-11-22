@@ -1071,13 +1071,25 @@ async fn pg_side_effecting_select_advances_a_sequence_once() {
     });
 
     // Per-run sequence so a reused test database cannot hide the assertion.
+    //
+    // Two things make the catalog read below trustworthy, and both matter:
+    //
+    // * the sequence is warmed up first. A fresh sequence reports
+    //   `is_called = false` with `last_value = 100`, and its *first* `nextval`
+    //   returns that same 100, so a before/after pair around one call differs by
+    //   0 on every PostgreSQL version — the assertion could never hold.
+    // * `CACHE 1` keeps the catalog in step on PostgreSQL 18, where a backend
+    //   caches sequence values and `last_value` lags `nextval` until the cache is
+    //   exhausted. With the default cache of 32 the increment never shows up, so
+    //   the test could no longer detect a second execution either.
     let seq = format!("gridline_t19_{}", std::process::id());
     client
         .batch_execute(&format!(
-            "DROP SEQUENCE IF EXISTS {seq}; CREATE SEQUENCE {seq} START 100"
+            "DROP SEQUENCE IF EXISTS {seq}; CREATE SEQUENCE {seq} START 100 CACHE 1; \
+             SELECT nextval('{seq}');"
         ))
         .await
-        .expect("create sequence");
+        .expect("create and warm up sequence");
 
     let before: i64 = client
         .query_one(&format!("SELECT last_value FROM {seq}"), &[])

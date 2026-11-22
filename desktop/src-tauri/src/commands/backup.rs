@@ -953,6 +953,13 @@ fn scan_plain_dump(path: &str) -> Result<Vec<PlainDumpHazard>, String> {
     let mut hazards = Vec::new();
     let mut buf = Vec::new();
     let mut line_no = 0usize;
+    // A statement spans lines, so a line is only a statement when nothing is
+    // open. pg_dump writes a sequence's start value on its own line
+    // (`CREATE SEQUENCE s` / `    START WITH 100` / `    INCREMENT BY 1;`), and
+    // judging continuation lines as statements reported every such dump as
+    // non-atomic. The hazard set itself is unchanged — this only decides which
+    // lines may be one.
+    let mut statement_open = false;
 
     loop {
         buf.clear();
@@ -993,12 +1000,23 @@ fn scan_plain_dump(path: &str) -> Result<Vec<PlainDumpHazard>, String> {
             }
         }
 
-        if let Some(found) = line_hazard(code) {
-            hazards.push(PlainDumpHazard {
-                found,
-                line: line_no,
-            });
+        if !statement_open {
+            if let Some(found) = line_hazard(code) {
+                hazards.push(PlainDumpHazard {
+                    found,
+                    line: line_no,
+                });
+            }
         }
+
+        // `;` terminates a statement; a psql meta-command is complete on its own
+        // (it takes no semicolon, so it would otherwise swallow the rest of the
+        // script as its continuation).
+        statement_open = if code.starts_with('\\') {
+            false
+        } else {
+            !code.ends_with(';')
+        };
     }
 
     Ok(hazards)
