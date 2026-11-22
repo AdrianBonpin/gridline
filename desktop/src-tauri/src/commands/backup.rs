@@ -19,6 +19,25 @@ pub struct PgConnParams {
     pub username: String,
     pub database: String,
     pub password: String,
+    /// The connection's stored TLS settings. Carried here so the external client
+    /// tools enforce the same decision the app's own driver does; the CLI tools
+    /// otherwise default to libpq's `prefer` and would dump over plaintext for a
+    /// `verify-full` connection.
+    pub ssl_mode: Option<String>,
+    pub ssl_ca_path: Option<String>,
+    pub ssl_cert_path: Option<String>,
+    pub ssl_key_path: Option<String>,
+    /// The SSH tunnel endpoint the tools must dial, when the server is only
+    /// reachable through one.
+    ///
+    /// `host`/`port` stay the *saved* values and keep naming the server for
+    /// authentication and certificate verification; the tunnel only replaces the
+    /// address that gets dialed (libpq's `PGHOSTADDR`, the same split the app's
+    /// own driver makes in [`crate::db::tls::PgConnectPlan`]). Handing the
+    /// tunnel's `127.0.0.1` to `--host` instead would make a `verify-*`
+    /// connection authenticate the certificate against loopback and fail — or,
+    /// worse, tempt a downgrade to `prefer`.
+    pub tunnel: Option<(std::net::IpAddr, u16)>,
 }
 
 impl PgConnParams {
@@ -35,7 +54,131 @@ impl PgConnParams {
             username,
             database,
             password,
+            ssl_mode: None,
+            ssl_ca_path: None,
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            tunnel: None,
         }
+    }
+
+    /// Reach this connection through an SSH tunnel's loopback listener.
+    ///
+    /// `hostaddr` is the address actually dialed; `host` remains the server name
+    /// that credentials and the certificate are checked against.
+    pub fn through_tunnel(mut self, hostaddr: std::net::IpAddr, port: u16) -> Self {
+        self.tunnel = Some((hostaddr, port));
+        self
+    }
+
+    /// The port the tools must dial: the tunnel's listener when tunnelled, the
+    /// saved port otherwise.
+    pub fn dial_port(&self) -> i64 {
+        match self.tunnel {
+            Some((_, port)) => port as i64,
+            None => self.port,
+        }
+    }
+
+    /// Attach the saved connection's TLS configuration.
+    pub fn with_tls(
+        mut self,
+        ssl_mode: Option<String>,
+        ssl_ca_path: Option<String>,
+        ssl_cert_path: Option<String>,
+        ssl_key_path: Option<String>,
+    ) -> Self {
+        self.ssl_mode = ssl_mode;
+        self.ssl_ca_path = ssl_ca_path;
+        self.ssl_cert_path = ssl_cert_path;
+        self.ssl_key_path = ssl_key_path;
+        self
+    }
+
+    /// The libpq environment that makes `pg_dump`/`pg_restore`/`psql` enforce this
+    /// connection's TLS decision.
+    ///
+    /// The mode is resolved exactly as the app's own connections resolve it
+    /// (`db::tls::resolve_ssl_mode`): an explicit mode wins, a managed provider
+    /// with no stored mode defaults to `require`, and an unrecognized non-empty
+    /// mode is an **error** — it can never reach libpq as `prefer` (which dumps in
+    /// plaintext when the server allows it) or as an accidental downgrade.
+    ///
+    /// Both Gridline verify modes map to libpq's `verify-full`: the app's driver
+    /// checks the certificate chain *and* the hostname for `verify-ca` in v1 (see
+    /// `db::tls`), so the tools must not be looser than browsing.
+    ///
+    /// With no mode configured the environment is left alone: libpq's own default
+    /// (`prefer`) attempts TLS without insisting on it, so nothing the user chose
+    /// is relaxed.
+    pub fn tls_env(&self) -> Result<Vec<(String, String)>, String> {
+        let Some(mode) = crate::db::tls::resolve_ssl_mode(&self.host, self.ssl_mode.as_deref())?
+        else {
+            return Ok(Vec::new());
+        };
+
+        let pgsslmode = match mode.as_str() {
+            "disable" => "disable",
+            "require" => "require",
+            "verify-ca" | "verify-full" => "verify-full",
+            other => {
+                return Err(format!(
+                    "unsupported TLS mode \"{other}\" for the PostgreSQL client tools; valid \
+                     modes are: {}",
+                    crate::db::tls::VALID_SSL_MODES.join(", ")
+                ))
+            }
+        };
+
+        let mut env = vec![("PGSSLMODE".to_string(), pgsslmode.to_string())];
+        // Certificate material only matters when the connection speaks TLS at all.
+        if pgsslmode != "disable" {
+            if let Some(ca) = self.ssl_ca_path.as_deref().filter(|p| !p.trim().is_empty()) {
+                env.push(("PGSSLROOTCERT".to_string(), ca.to_string()));
+            }
+            if let Some(cert) = self
+                .ssl_cert_path
+                .as_deref()
+                .filter(|p| !p.trim().is_empty())
+            {
+                env.push(("PGSSLCERT".to_string(), cert.to_string()));
+            }
+            if let Some(key) = self
+                .ssl_key_path
+                .as_deref()
+                .filter(|p| !p.trim().is_empty())
+            {
+                env.push(("PGSSLKEY".to_string(), key.to_string()));
+            }
+        }
+        Ok(env)
+    }
+
+    /// The libpq variable that routes the TCP connection through a tunnel.
+    ///
+    /// libpq takes the address to dial from `hostaddr` and keeps using `host` for
+    /// authentication and certificate verification, so a `verify-full` connection
+    /// through a tunnel is verified against the server the user saved — never
+    /// against `127.0.0.1`, and never silently relaxed to encryption-only. (The
+    /// MySQL CLI cannot be told a separate verification name, which is why
+    /// [`mysql_cli_tls_mode`] refuses a verify mode through a tunnel instead.)
+    pub fn tunnel_env(&self) -> Vec<(String, String)> {
+        match self.tunnel {
+            Some((hostaddr, _)) => vec![("PGHOSTADDR".to_string(), hostaddr.to_string())],
+            None => Vec::new(),
+        }
+    }
+
+    /// Everything a client tool needs to reach this connection exactly as the
+    /// app's own driver would: the TLS decision *and* the tunnel endpoint.
+    ///
+    /// One call so a spawn site cannot apply the mode and forget the routing (or
+    /// the other way round). Fails closed on an unknown mode.
+    pub(crate) fn apply_tool_env(&self, cmd: &mut Command) -> Result<(), String> {
+        for (key, value) in self.tls_env()?.into_iter().chain(self.tunnel_env()) {
+            cmd.env(key, value);
+        }
+        Ok(())
     }
 }
 
@@ -300,11 +443,16 @@ pub async fn detect_pg_tools(force: Option<bool>, app_handle: AppHandle) -> PgTo
 // Core logic (headless-testable — no Tauri, no store, no keychain)
 // ---------------------------------------------------------------------------
 
-/// Builds the base connection args shared by pg_dump and pg_restore.
-fn base_conn_args(conn: &PgConnParams) -> Vec<String> {
+/// Builds the base connection args shared by pg_dump, pg_restore, psql and the
+/// DDL copy.
+///
+/// `--host` is always the saved server name (`PGHOSTADDR` carries a tunnel's
+/// loopback endpoint, see [`PgConnParams::tunnel_env`]); only the port follows
+/// the endpoint that is actually dialed.
+pub(crate) fn base_conn_args(conn: &PgConnParams) -> Vec<String> {
     vec![
         format!("--host={}", conn.host),
-        format!("--port={}", conn.port),
+        format!("--port={}", conn.dial_port()),
         format!("--username={}", conn.username),
         format!("--dbname={}", conn.database),
     ]
@@ -380,13 +528,8 @@ pub fn build_psql_restore_args(
     if txn.is_atomic() {
         args.push("--single-transaction".to_string());
     }
-    args.extend([
-        format!("--host={}", conn.host),
-        format!("--port={}", conn.port),
-        format!("--username={}", conn.username),
-        format!("--dbname={}", conn.database),
-        format!("--file={file_path}"),
-    ]);
+    args.extend(base_conn_args(conn));
+    args.push(format!("--file={file_path}"));
     args
 }
 
@@ -460,6 +603,9 @@ pub fn run_pg_dump_managed(
 
     let mut cmd = Command::new(&tools.pg_dump);
     cmd.env("PGPASSWORD", &conn.password).args(&args);
+    // The CLI must not be looser than the app's own driver: without this a
+    // `verify-full` connection dumps over libpq's `prefer`.
+    conn.apply_tool_env(&mut cmd).map_err(JobFailure::failed)?;
 
     let activity = job::path_size_probe(&options.file_path);
     let out = job::run_managed(job, cmd, Some(activity)).map_err(JobFailure::from)?;
@@ -493,10 +639,17 @@ pub fn run_pg_dump(
 /// applied). It is never guessed here: [`pg_restore_txn`] derives it from the
 /// dump and refuses a non-atomic run the user did not accept.
 ///
-/// No idle bound applies here: a restore can sit in one large `COPY` without
-/// printing anything, and that is indistinguishable from a quiet-but-healthy
-/// run. The job stays cancellable and is terminated on app exit, but it is
-/// never killed merely for being slow.
+/// No **idle output** bound applies here: a restore can sit in one large `COPY`
+/// without printing anything, and that is indistinguishable from a
+/// quiet-but-healthy run. The job stays cancellable and is terminated on app exit,
+/// but it is never killed merely for being slow.
+///
+/// The one wait that has no end of its own — a lock held by another session — is
+/// bounded from outside instead, by the lock watchdog in
+/// [`crate::db::restore_watch`] (see
+/// [`crate::commands::backup::watch_restore_lock_wait`]). It needs to recognize
+/// this child's backend, so the child connects with a per-job
+/// `application_name`.
 pub fn run_pg_restore_managed(
     job: &JobControl,
     conn: &PgConnParams,
@@ -504,28 +657,147 @@ pub fn run_pg_restore_managed(
     txn: PgRestoreTxn,
     tools: &PgToolPaths,
 ) -> Result<(), JobFailure> {
-    let cmd = if options.format == "plain" {
+    let app_name = crate::db::restore_watch::restore_application_name(job.id());
+    let mut cmd = if options.format == "plain" {
         let mut cmd = Command::new(&tools.psql);
         cmd.env("PGPASSWORD", &conn.password)
+            .env("PGAPPNAME", &app_name)
             .args(build_psql_restore_args(conn, &options.file_path, txn));
         cmd
     } else {
         let mut args = build_restore_args(conn, options, txn);
         args.push(options.file_path.clone());
         let mut cmd = Command::new(&tools.pg_restore);
-        cmd.env("PGPASSWORD", &conn.password).args(&args);
+        cmd.env("PGPASSWORD", &conn.password)
+            .env("PGAPPNAME", &app_name)
+            .args(&args);
         cmd
     };
+    // Restoring into a TLS-verifying target must verify TLS: no `prefer` fallback.
+    conn.apply_tool_env(&mut cmd).map_err(JobFailure::failed)?;
 
     let out = job::run_managed(job, cmd, None).map_err(JobFailure::from)?;
     if out.status.success() {
         Ok(())
+    } else if let Some(reason) = job.stop_reason() {
+        // A watchdog stopped this job; the tool's own message would only describe
+        // the symptom ("terminating connection due to administrator command").
+        Err(JobFailure::failed(reason))
     } else {
         Err(JobFailure::failed(pg_restore_failure_message(
             txn,
             &out.stderr,
         )))
     }
+}
+
+/// Watch a running PostgreSQL restore and terminate its backend once it has been
+/// **continuously** waiting on a lock for
+/// [`crate::db::restore_watch::DEFAULT_LOCK_WAIT_DEADLINE`].
+///
+/// This is the restore's lock bound: see [`crate::db::restore_watch`] for why a
+/// server-side `lock_timeout` cannot be used (a dump resets it) and why the idle
+/// bound cannot either (a large `COPY` is silent but healthy). Sampling uses the
+/// connection's pooled session — the same TLS/SSH-correct client the rest of the
+/// app uses, and the one whose user owns the restore backend.
+///
+/// The loop can only ever stop a restore it *positively* observed waiting on a
+/// lock: a sample it cannot take is blind, and blindness is never treated as a
+/// stall. It returns as soon as the job is finished (or was cancelled) so it never
+/// outlives the restore.
+async fn watch_restore_lock_wait(
+    app_handle: AppHandle,
+    jobs: std::sync::Arc<crate::job::JobRegistry>,
+    job_id: String,
+    connection_id: String,
+) {
+    use crate::db::restore_watch::{
+        lock_wait_stop_message, restore_application_name, LockWatch, WatchDecision,
+        DEFAULT_LOCK_WAIT_DEADLINE, RESTORE_BACKEND_SQL, SAMPLE_INTERVAL, TERMINATE_BACKEND_SQL,
+    };
+
+    let app_name = restore_application_name(&job_id);
+    let mut watch = LockWatch::new(DEFAULT_LOCK_WAIT_DEADLINE);
+
+    loop {
+        if jobs.get(&job_id).is_none() {
+            return; // finished (or never started): nothing left to watch
+        }
+        tokio::time::sleep(SAMPLE_INTERVAL).await;
+        let state = app_handle.state::<crate::AppState>();
+        let sample = sample_restore_backend(
+            &state.pool_manager,
+            &connection_id,
+            &app_name,
+            RESTORE_BACKEND_SQL,
+        )
+        .await;
+        match watch.observe(std::time::Instant::now(), sample) {
+            WatchDecision::Continue => {}
+            WatchDecision::Stop { pid, waited } => {
+                // Record the reason BEFORE terminating: the restore's error is
+                // mapped as soon as its process exits, and it must already know
+                // why it stopped.
+                if let Some(job) = jobs.get(&job_id) {
+                    job.note_stop_reason(lock_wait_stop_message(waited));
+                }
+                terminate_restore_backend(
+                    &state.pool_manager,
+                    &connection_id,
+                    pid,
+                    TERMINATE_BACKEND_SQL,
+                )
+                .await;
+                return;
+            }
+        }
+    }
+}
+
+/// One `pg_stat_activity` sample of the restore's backend (see [`LockSample`]).
+async fn sample_restore_backend(
+    pool: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    connection_id: &str,
+    app_name: &str,
+    sql: &str,
+) -> crate::db::restore_watch::LockSample {
+    use crate::db::pool::{acquire_handle, DbHandle};
+    use crate::db::restore_watch::LockSample;
+
+    let Ok(DbHandle::Postgresql(client, _)) = acquire_handle(pool, connection_id).await else {
+        return LockSample::NotSeen;
+    };
+    let client = client.lock().await;
+    let Ok(rows) = client.query(sql, &[&app_name]).await else {
+        return LockSample::NotSeen;
+    };
+    let Some(row) = rows.first() else {
+        return LockSample::NotSeen;
+    };
+    let pid: i32 = row.get("pid");
+    let waiting: bool = row.get("waiting_on_lock");
+    if waiting {
+        LockSample::WaitingForLock { pid }
+    } else {
+        LockSample::Running { pid }
+    }
+}
+
+/// Terminate the restore backend a watchdog stopped (best effort: the process may
+/// already be gone, which is not an error).
+async fn terminate_restore_backend(
+    pool: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    connection_id: &str,
+    pid: i32,
+    sql: &str,
+) {
+    use crate::db::pool::{acquire_handle, DbHandle};
+
+    let Ok(DbHandle::Postgresql(client, _)) = acquire_handle(pool, connection_id).await else {
+        return;
+    };
+    let client = client.lock().await;
+    let _ = client.query(sql, &[&pid]).await;
 }
 
 /// Headless one-shot form of [`run_pg_restore_managed`].
@@ -998,11 +1270,19 @@ pub fn run_db_sync_managed(
     dump_cmd
         .env("PGPASSWORD", &source.password)
         .args(&dump_args);
+    source
+        .apply_tool_env(&mut dump_cmd)
+        .map_err(JobFailure::failed)?;
 
     let mut restore_cmd = Command::new(&tools.pg_restore);
     restore_cmd
         .env("PGPASSWORD", &target.password)
         .args(&restore_args);
+    // Each endpoint enforces its OWN TLS decision: one side being `require` says
+    // nothing about the other.
+    target
+        .apply_tool_env(&mut restore_cmd)
+        .map_err(JobFailure::failed)?;
 
     let out = job::run_managed_pipe(job, dump_cmd, restore_cmd).map_err(JobFailure::from)?;
 
@@ -1151,21 +1431,47 @@ fn resolved_output_path(path: &Path) -> Result<PathBuf, String> {
     Ok(parent_real.join(name))
 }
 
+/// Whether `source` and `other` name the same file under any name.
+///
+/// Identity is resolved rather than compared as text: a symlink to the source and
+/// a hard link to it are the same file under different names. `same_file`
+/// compares device+inode (Unix) or volume+file index (Windows), and the resolved
+/// paths cover a destination that does not exist yet. Failing to resolve means
+/// file identity is uncertain, which fails closed rather than guessing.
+fn names_the_same_file(source: &Path, other: &Path) -> Result<bool, String> {
+    if same_file::is_same_file(source, other).unwrap_or(false) {
+        return Ok(true);
+    }
+    let source_real = std::fs::canonicalize(source)
+        .map_err(|e| format!("cannot resolve the database file {}: {e}", source.display()))?;
+    Ok(source_real == resolved_output_path(other)?)
+}
+
 /// Refuse a dump destination that is the database being dumped.
 ///
 /// Identity is resolved rather than compared as text: a symlink to the source
 /// and a hard link to it are the same file under different names, and writing
-/// through either would truncate the source. `same_file` compares device+inode
-/// (Unix) or volume+file index (Windows), and the resolved paths cover a
-/// destination that does not exist yet.
+/// through either would truncate the source.
 pub fn refuse_source_as_dump_destination(source: &Path, destination: &Path) -> Result<(), String> {
-    if same_file::is_same_file(source, destination).unwrap_or(false) {
+    if names_the_same_file(source, destination)? {
         return Err(source_is_destination_message());
     }
-    let source_real = std::fs::canonicalize(source)
-        .map_err(|e| format!("cannot resolve the database file {}: {e}", source.display()))?;
-    if source_real == resolved_output_path(destination)? {
-        return Err(source_is_destination_message());
+    Ok(())
+}
+
+/// Refuse a sync whose target is the file it reads.
+///
+/// The dump/restore pipeline holds both ends as files, so a target that resolves
+/// to the source replaces the database being dumped — with `clean` semantics that
+/// is a full drop-and-replay of the source. The same resolved-identity check the
+/// backup path applies to its destination is therefore mandatory here too.
+pub fn refuse_source_as_sync_target(source: &Path, target: &Path) -> Result<(), String> {
+    if names_the_same_file(source, target)? {
+        return Err(
+            "The sync target is the same file as the source database. Gridline refuses \
+                    to replace the database it is reading. Choose a different target file."
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -1383,6 +1689,12 @@ pub fn dump_sqlite_to_cancellable<W: Write, F: FnMut(&str)>(
             .next()
             .map_err(|e| format!("read row {row_number} of \"{name}\": {e}"))?
         {
+            // Poll inside the table as well: a single table is one unbounded
+            // step otherwise, so a cancel could not take effect until every row
+            // of it had already been written to the dump.
+            if is_cancelled() {
+                return Err(CANCEL_MESSAGE.to_string());
+            }
             let mut vals: Vec<String> = Vec::with_capacity(emitted.len());
             for (index, column) in emitted.iter().enumerate() {
                 let value = row.get_ref(index).map_err(|e| {
@@ -1742,12 +2054,29 @@ pub fn run_sqlite_sync(source_path: &str, target_path: &str) -> Result<(), Strin
 
 /// Cancellable SQLite dump → restore. Both halves check the flag, and a cancel
 /// during the restore rolls its transaction back.
+///
+/// The source must exist and the target must be a different file: the dump reads
+/// one file and the restore replaces the other, so a missing source would create
+/// an empty database and a same-file target would replace what is being read.
 pub fn run_sqlite_sync_cancellable(
     source_path: &str,
     target_path: &str,
     is_cancelled: CancelCheck<'_>,
 ) -> Result<(), String> {
-    let src = Connection::open(source_path).map_err(|e| format!("open source: {e}"))?;
+    let source = Path::new(source_path);
+    let target = Path::new(target_path);
+    if !source.is_file() {
+        return Err(format!(
+            "the SQLite database to sync is not an existing file: {}",
+            source.display()
+        ));
+    }
+    refuse_source_as_sync_target(source, target)?;
+    if is_cancelled() {
+        return Err(CANCEL_MESSAGE.to_string());
+    }
+
+    let src = Connection::open(source).map_err(|e| format!("open source: {e}"))?;
     let mut buf: Vec<u8> = Vec::new();
     dump_sqlite_to_cancellable(
         &src,
@@ -1813,44 +2142,46 @@ fn client_is_mariadb(program: &str) -> bool {
 /// TLS flags for one MySQL-family client, derived from the connection's own
 /// `ssl_mode` (`disable` | `require` | `verify-ca` | `verify-full`).
 ///
+/// The mode is parsed with the shared parser ([`crate::db::tls::parse_ssl_mode`]),
+/// never with a private spelling table: the four modes above are the only ones
+/// any part of Gridline accepts, and an unrecognized non-empty value is an
+/// **error** here too. A local fallback would let a typo (`verify_ca`,
+/// `verifyidentity`, …) reach a client as some *other* mode — the exact silent
+/// coercion ticket 23 removed from the connection path.
+///
 /// MySQL's clients speak `--ssl-mode=<MODE>`. MariaDB's have no `--ssl-mode`:
 /// they use the boolean `--ssl` (default ON) plus `--ssl-verify-server-cert`
 /// (default ON in 11.4, but stated explicitly so older clients that default it
-/// OFF still verify). An unrecognised non-empty mode fails closed to
-/// encrypted-and-verified rather than silently unencrypted.
-pub fn mysql_tls_args(client_is_mariadb: bool, tls_mode: Option<&str>) -> Vec<String> {
-    let Some(raw) = tls_mode else {
-        return Vec::new();
-    };
-    let normalised = raw.trim().to_ascii_lowercase();
-    let mode = match normalised.as_str() {
-        "" => return Vec::new(),
-        "disable" | "disabled" => "disable",
-        "require" | "required" => "require",
-        "verify-ca" | "verify_ca" => "verify-ca",
-        "verify-full" => "verify-full",
-        "verify_identity" | "verify-identity" => "verify-full",
-        _ => "require",
+/// OFF still verify).
+pub fn mysql_tls_args(
+    client_is_mariadb: bool,
+    tls_mode: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let Some(mode) = crate::db::tls::parse_ssl_mode(tls_mode)? else {
+        return Ok(Vec::new());
     };
 
-    if client_is_mariadb {
+    let args = if client_is_mariadb {
         match mode {
-            "disable" => vec!["--skip-ssl".to_string()],
-            "require" => vec![
+            crate::db::tls::SslMode::Disable => vec!["--skip-ssl".to_string()],
+            crate::db::tls::SslMode::Require => vec![
                 "--ssl".to_string(),
                 "--skip-ssl-verify-server-cert".to_string(),
             ],
-            _ => vec!["--ssl".to_string(), "--ssl-verify-server-cert".to_string()],
+            crate::db::tls::SslMode::VerifyCa | crate::db::tls::SslMode::VerifyFull => {
+                vec!["--ssl".to_string(), "--ssl-verify-server-cert".to_string()]
+            }
         }
     } else {
         let flag = match mode {
-            "disable" => "DISABLED",
-            "require" => "REQUIRED",
-            "verify-ca" => "VERIFY_CA",
-            _ => "VERIFY_IDENTITY",
+            crate::db::tls::SslMode::Disable => "DISABLED",
+            crate::db::tls::SslMode::Require => "REQUIRED",
+            crate::db::tls::SslMode::VerifyCa => "VERIFY_CA",
+            crate::db::tls::SslMode::VerifyFull => "VERIFY_IDENTITY",
         };
         vec![format!("--ssl-mode={flag}")]
-    }
+    };
+    Ok(args)
 }
 
 /// `mariadb-dump`/`mysqldump` args. Passwords go via MYSQL_PWD env (set by the
@@ -1902,17 +2233,17 @@ pub fn build_mysql_sync_dump_args(
     source: &MySqlConnParams,
     client_is_mariadb: bool,
     tls_mode: Option<&str>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let mut args = base_mysql_args(source);
     args.push("--single-transaction".into());
     args.push("--add-drop-table".into());
     if !client_is_mariadb {
         args.push("--skip-column-statistics".into());
     }
-    args.extend(mysql_tls_args(client_is_mariadb, tls_mode));
+    args.extend(mysql_tls_args(client_is_mariadb, tls_mode)?);
     // Positional database name: contents only, no CREATE DATABASE / USE.
     args.push(source.database.clone());
-    args
+    Ok(args)
 }
 
 /// `mariadb`/`mysql` client args that consume a sync dump. The target
@@ -1921,11 +2252,11 @@ pub fn mysql_sync_restore_args(
     target: &MySqlConnParams,
     client_is_mariadb: bool,
     tls_mode: Option<&str>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let mut args = base_mysql_args(target);
     args.push(format!("--database={}", target.database));
-    args.extend(mysql_tls_args(client_is_mariadb, tls_mode));
-    args
+    args.extend(mysql_tls_args(client_is_mariadb, tls_mode)?);
+    Ok(args)
 }
 
 /// System-first mariadb-dump/mysqldump resolution (bundled fallback).
@@ -1972,7 +2303,7 @@ pub fn run_mysql_dump_managed(
 ) -> Result<(), JobFailure> {
     let is_mariadb = client_is_mariadb(&tools.mysqldump);
     let mut args = build_mysql_dump_args(conn, options, is_mariadb);
-    args.extend(mysql_tls_args(is_mariadb, tls_mode));
+    args.extend(mysql_tls_args(is_mariadb, tls_mode).map_err(JobFailure::failed)?);
 
     let mut cmd = Command::new(&tools.mysqldump);
     cmd.env("MYSQL_PWD", &conn.password).args(&args);
@@ -2031,8 +2362,10 @@ pub fn run_mysql_sync_managed(
     let dump_is_mariadb = client_is_mariadb(&tools.mysqldump);
     let restore_is_mariadb = client_is_mariadb(&tools.mysql);
 
-    let dump_args = build_mysql_sync_dump_args(source, dump_is_mariadb, src_tls);
-    let restore_args = mysql_sync_restore_args(target, restore_is_mariadb, tgt_tls);
+    let dump_args =
+        build_mysql_sync_dump_args(source, dump_is_mariadb, src_tls).map_err(JobFailure::failed)?;
+    let restore_args =
+        mysql_sync_restore_args(target, restore_is_mariadb, tgt_tls).map_err(JobFailure::failed)?;
 
     let mut dump_cmd = Command::new(&tools.mysqldump);
     dump_cmd.env("MYSQL_PWD", &source.password).args(&dump_args);
@@ -2120,6 +2453,26 @@ pub fn parse_mysql_restore_script_with_cap(
     Ok(statements)
 }
 
+/// How long a MySQL restore may wait for a metadata lock before the server stops
+/// it.
+///
+/// The server default for `lock_wait_timeout` is **one year**, so a restore queued
+/// behind another session's open transaction waits effectively forever. This
+/// bounds only the wait for a lock: a statement that already holds its locks (a
+/// long `ALTER TABLE`, a large multi-row `INSERT`) is unaffected, so a slow restore
+/// is never killed. Chosen like the PostgreSQL lock deadline
+/// ([`crate::db::restore_watch::DEFAULT_LOCK_WAIT_DEADLINE`]): generous enough for a
+/// busy database, short enough that a stalled restore reports instead of hanging.
+pub const MYSQL_RESTORE_LOCK_WAIT_SECONDS: u64 = 60;
+
+/// The session statement that applies [`MYSQL_RESTORE_LOCK_WAIT_SECONDS`].
+///
+/// Set on the restore's own session only, and re-applied after the `USE` so it
+/// covers every statement of the replay (and the clean drops before them).
+pub fn mysql_lock_wait_bound_statement(seconds: u64) -> String {
+    format!("SET SESSION lock_wait_timeout = {seconds}")
+}
+
 /// Progress units for a restore: every statement, plus one for the clean
 /// drop phase so the fraction never jumps backwards.
 pub fn restore_progress_total(statement_count: usize, clean: bool) -> usize {
@@ -2169,11 +2522,28 @@ pub async fn run_mysql_restore_on(
         true,
     )?;
 
+    // Confine the replay to the selected database BEFORE anything runs. A dump
+    // carrying `USE otherdb` (mysqldump --databases) or a schema-qualified
+    // `CREATE TABLE otherdb.t` would otherwise write outside the target while the
+    // clean plan dropped same-named objects inside it — the two halves would
+    // describe different objects. See `mysql_clean::check_confined`.
+    crate::db::mysql_clean::check_confined(run.database, run.statements)?;
+
     // The form lets the user target a database other than the one this
     // connection defaults to, so select it explicitly.
     exec_restore_statement(
         conn,
         &format!("USE {}", crate::db::mysql::mysql_quote_ident(run.database)),
+    )
+    .await
+    .map_err(|e| sanitize_error(&format!("{e}")))?;
+
+    // Bound the metadata-lock wait on this session (see
+    // `MYSQL_RESTORE_LOCK_WAIT_SECONDS`): the server default is a year, so a
+    // restore queued behind another session's transaction would wait forever.
+    exec_restore_statement(
+        conn,
+        &mysql_lock_wait_bound_statement(MYSQL_RESTORE_LOCK_WAIT_SECONDS),
     )
     .await
     .map_err(|e| sanitize_error(&format!("{e}")))?;
@@ -2257,6 +2627,33 @@ fn emit_result(app_handle: &AppHandle, job_id: &str, result: Result<(), String>)
     emit_job_result(app_handle, job_id, result.map_err(JobFailure::from_engine));
 }
 
+/// A saved connection row (`rusqlite::Connection` owns the name in this module).
+type SavedConnection = crate::models::connection::Connection;
+
+/// Every saved connection, read under the store lock and released before the
+/// job awaits any work.
+fn saved_connections(state: &crate::AppState) -> Result<Vec<SavedConnection>, String> {
+    let store = state.db_store.lock().map_err(|e| e.to_string())?;
+    store.get_connections().map_err(|e| e.to_string())
+}
+
+/// Resolve one saved connection from an already-loaded list.
+///
+/// Backup, restore, sync and dump-shape entry points all report a missing row
+/// through this one helper, so the message is identical everywhere (it used to
+/// come in three shapes: `Connection not found: <id>`, `Source connection not
+/// found: <id>` and `Target connection not found: <id>`).
+fn require_connection(
+    connections: &[SavedConnection],
+    connection_id: &str,
+) -> Result<SavedConnection, String> {
+    connections
+        .iter()
+        .find(|c| c.id == connection_id)
+        .cloned()
+        .ok_or_else(|| format!("Connection not found: {connection_id}"))
+}
+
 /// Resolve the credential a tool job authenticates with.
 ///
 /// A keychain-enabled connection keeps reading the OS keychain (existing
@@ -2318,8 +2715,10 @@ fn emit_job_result(app_handle: &AppHandle, job_id: &str, result: Result<(), JobF
 /// Cancel a running tool job (backup / restore / sync).
 ///
 /// Terminates the job's whole child process tree (a cancelled `pg_dump` leaves
-/// no helper behind) and flips the cancellation flag the in-process engines
-/// poll. Returns whether a job with that id was still running.
+/// no helper behind) and flips the cancellation flag every in-process engine
+/// polls. Returns whether a job with that id was still running — including an
+/// in-process job (SQLite dump/restore/sync, MySQL restore), which owns no child
+/// process and was previously reported as "not running" even though it was.
 #[tauri::command]
 pub async fn cancel_tool_job(
     job_id: String,
@@ -2341,15 +2740,7 @@ pub async fn pg_dump(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    // Get connection from store (scope the std::sync::Mutex lock guard)
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     // Keychain when enabled, otherwise the session-only credential (or a prompt).
     let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
@@ -2360,7 +2751,16 @@ pub async fn pg_dump(
         conn.username.unwrap_or_else(|| "postgres".into()),
         conn.database.unwrap_or_else(|| "postgres".into()),
         password,
+    )
+    .with_tls(
+        conn.ssl_mode.clone(),
+        conn.ssl_ca_path.clone(),
+        conn.ssl_cert_path.clone(),
+        conn.ssl_key_path.clone(),
     );
+    // Resolve the TLS decision before a job exists: an unknown mode is refused
+    // here instead of becoming libpq's plaintext-capable `prefer` mid-job.
+    params.tls_env().map_err(|e| sanitize_error(&e))?;
 
     // Authorize the write last: the granted path is the only output path this
     // command can be made to use, and a grant is not spent on a request that
@@ -2393,14 +2793,7 @@ pub async fn pg_restore(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
 
@@ -2410,7 +2803,16 @@ pub async fn pg_restore(
         conn.username.unwrap_or_else(|| "postgres".into()),
         conn.database.unwrap_or_else(|| "postgres".into()),
         password,
+    )
+    .with_tls(
+        conn.ssl_mode.clone(),
+        conn.ssl_ca_path.clone(),
+        conn.ssl_cert_path.clone(),
+        conn.ssl_key_path.clone(),
     );
+    // The restore target's TLS decision is resolved before the job starts, so an
+    // unknown mode can never silently degrade to `prefer`.
+    params.tls_env().map_err(|e| sanitize_error(&e))?;
 
     let accept_non_atomic = request.accept_non_atomic;
 
@@ -2445,6 +2847,18 @@ pub async fn pg_restore(
         emit_job_result(&app_handle_clone, &job_id_clone, result);
     });
 
+    // Bound the one unbounded wait a restore can hit: a lock another session
+    // holds. The watchdog stops THIS restore (identified by its per-job
+    // `application_name`) after a continuous lock wait, and never touches a
+    // restore that is merely slow. It cannot fail the restore itself.
+    let watch_jobs = state.jobs.clone();
+    let watch_job_id = job_id.clone();
+    let watch_connection = connection_id.clone();
+    let watch_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        watch_restore_lock_wait(watch_handle, watch_jobs, watch_job_id, watch_connection).await;
+    });
+
     Ok(job_id)
 }
 
@@ -2456,35 +2870,9 @@ pub async fn db_sync(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    // Get both connections from store
-    let (source_conn, target_conn) = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-
-        let src = connections
-            .iter()
-            .find(|c| c.id == options.source_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Source connection not found: {}",
-                    options.source_connection_id
-                )
-            })?
-            .clone();
-
-        let tgt = connections
-            .iter()
-            .find(|c| c.id == options.target_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Target connection not found: {}",
-                    options.target_connection_id
-                )
-            })?
-            .clone();
-
-        (src, tgt)
-    };
+    let connections = saved_connections(&state)?;
+    let source_conn = require_connection(&connections, &options.source_connection_id)?;
+    let target_conn = require_connection(&connections, &options.target_connection_id)?;
 
     // Resolve each side's credential independently: a sync may mix a keychain
     // connection with a session-only one, and the refusal names whichever side
@@ -2514,6 +2902,12 @@ pub async fn db_sync(
             .clone()
             .unwrap_or_else(|| "postgres".into()),
         src_password,
+    )
+    .with_tls(
+        source_conn.ssl_mode.clone(),
+        source_conn.ssl_ca_path.clone(),
+        source_conn.ssl_cert_path.clone(),
+        source_conn.ssl_key_path.clone(),
     );
 
     let target = PgConnParams::new(
@@ -2528,7 +2922,16 @@ pub async fn db_sync(
             .clone()
             .unwrap_or_else(|| "postgres".into()),
         tgt_password,
+    )
+    .with_tls(
+        target_conn.ssl_mode.clone(),
+        target_conn.ssl_ca_path.clone(),
+        target_conn.ssl_cert_path.clone(),
+        target_conn.ssl_key_path.clone(),
     );
+    // Each endpoint's TLS decision is resolved before the job starts.
+    source.tls_env().map_err(|e| sanitize_error(&e))?;
+    target.tls_env().map_err(|e| sanitize_error(&e))?;
 
     let schema = options.schema.clone();
     let tables = options.tables.clone();
@@ -2740,14 +3143,7 @@ pub async fn mysql_dump(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
 
@@ -2803,14 +3199,7 @@ pub async fn mysql_restore(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
 
@@ -2974,35 +3363,9 @@ pub async fn mysql_sync(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    // Get both connections from store
-    let (source_conn, target_conn) = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-
-        let src = connections
-            .iter()
-            .find(|c| c.id == options.source_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Source connection not found: {}",
-                    options.source_connection_id
-                )
-            })?
-            .clone();
-
-        let tgt = connections
-            .iter()
-            .find(|c| c.id == options.target_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Target connection not found: {}",
-                    options.target_connection_id
-                )
-            })?
-            .clone();
-
-        (src, tgt)
-    };
+    let connections = saved_connections(&state)?;
+    let source_conn = require_connection(&connections, &options.source_connection_id)?;
+    let target_conn = require_connection(&connections, &options.target_connection_id)?;
 
     // Each endpoint resolves its own credential; the refusal names the side
     // that still needs a session password.
@@ -3120,14 +3483,7 @@ pub async fn sqlite_dump(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     let path = conn.host.clone();
     // The dump destination is the granted path, never a renderer string.
@@ -3165,14 +3521,7 @@ pub async fn sqlite_restore(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     let path = conn.host.clone();
     // The dump input is the granted path, never a renderer string.
@@ -3209,34 +3558,10 @@ pub async fn sqlite_sync(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let (source_path, target_path) = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-
-        let src = connections
-            .iter()
-            .find(|c| c.id == options.source_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Source connection not found: {}",
-                    options.source_connection_id
-                )
-            })?
-            .clone();
-
-        let tgt = connections
-            .iter()
-            .find(|c| c.id == options.target_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Target connection not found: {}",
-                    options.target_connection_id
-                )
-            })?
-            .clone();
-
-        (src.host, tgt.host)
-    };
+    let connections = saved_connections(&state)?;
+    let source_conn = require_connection(&connections, &options.source_connection_id)?;
+    let target_conn = require_connection(&connections, &options.target_connection_id)?;
+    let (source_path, target_path) = (source_conn.host, target_conn.host);
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();

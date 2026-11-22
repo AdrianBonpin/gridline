@@ -1,3 +1,4 @@
+pub mod change_target;
 pub mod fk;
 pub mod ident;
 pub mod introspection;
@@ -9,6 +10,7 @@ pub mod object_crud;
 pub mod object_ddl;
 pub mod pool;
 pub mod read_only;
+pub mod restore_watch;
 pub mod row_write;
 pub mod schema_diff;
 pub mod sql_classify;

@@ -1445,24 +1445,24 @@ pub(crate) async fn execute_query_multi_inner(
     let mut result_sets: Vec<QueryResult> = Vec::new();
     let mut notices: Vec<StatementNotice> = Vec::new();
 
-    // The registry guard is a temporary of the `let` below: it is gone before
-    // this function awaits anything, so a long script on one connection cannot
-    // block another connection's commands.
-    let db_handle = pool_manager.lock().await.acquire(connection_id);
+    // `acquire_handle` takes the registry lock, clones the handle and drops the
+    // guard before returning: a long script on one connection cannot block
+    // another connection's commands.
+    let db_handle = crate::db::pool::acquire_handle(pool_manager, connection_id).await?;
     let err_text: Option<String>;
     match db_handle {
-        Some(DbHandle::Postgresql(client, _)) => {
+        DbHandle::Postgresql(client, _) => {
             let client = client.lock().await;
             err_text =
                 run_pg_statements(&client, &statements, p, ps, &mut result_sets, &mut notices)
                     .await;
         }
-        Some(DbHandle::Sqlite(conn)) => {
+        DbHandle::Sqlite(conn) => {
             let conn = conn.lock().await;
             err_text =
                 run_sqlite_statements(&conn, &statements, p, ps, &mut result_sets, &mut notices);
         }
-        Some(DbHandle::MySql(pool)) => {
+        DbHandle::MySql(pool) => {
             let pool = pool.lock().await;
             let mut conn = pool
                 .acquire()
@@ -1480,7 +1480,6 @@ pub(crate) async fn execute_query_multi_inner(
             )
             .await;
         }
-        None => return Err("Connection not found".to_string()),
     }
 
     let elapsed = start.elapsed().as_millis() as i64;
@@ -1796,7 +1795,7 @@ mod tests {
             [],
         )
         .unwrap();
-        Mutex::new(Store::from_connection(conn))
+        Mutex::new(Store::from_connection(conn).expect("test store"))
     }
 
     /// Open an in‑memory SQLite database and return a DbHandle.
@@ -2002,7 +2001,7 @@ mod tests {
         use crate::models::ConnectionInput;
         let conn = SqliteConnection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
-        let store = Mutex::new(Store::from_connection(conn));
+        let store = Mutex::new(Store::from_connection(conn).expect("test store"));
         let sc2 = store
             .lock()
             .unwrap()

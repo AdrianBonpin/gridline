@@ -214,3 +214,291 @@ fn a_poisoned_shared_lock_does_not_wedge_ddl_copy() {
     assert_eq!(rows.len(), 1, "the state is still readable");
     assert_eq!(rows[0], "public.events");
 }
+
+// ---------------------------------------------------------------------------
+// F1: this tool job enforces the connection's TLS decision
+// ---------------------------------------------------------------------------
+//
+// Copying a table's schema is a `pg_dump` job like a backup, but this one used
+// to spawn the tool with `PGPASSWORD` alone — so libpq ran at its default
+// `prefer` and a `verify-full` connection could be stripped to plaintext by an
+// attacker on the very network the user hardened against, password included.
+//
+// These tests drive the real invocation with a fake `pg_dump` and read back what
+// *that* process actually received, so they fail if the environment stops being
+// applied here (rather than in some other call site).
+
+use crate::commands::backup::PgConnParams;
+
+/// A `pg_dump` stand-in that records the environment and argv of its real
+/// invocation while printing fixed DDL. `--version` is answered separately: the
+/// availability probe must not count as "the dump ran".
+#[cfg(unix)]
+struct FakeDump {
+    dir: std::path::PathBuf,
+    path: String,
+}
+
+#[cfg(unix)]
+impl FakeDump {
+    fn new(tag: &str, ddl: &str) -> Self {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!(
+            "gridline_ddl_{tag}_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ddl_file = dir.join("ddl.sql");
+        std::fs::write(&ddl_file, ddl).unwrap();
+        let script = format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"--version\" ]; then echo 'pg_dump (PostgreSQL) 16.4'; exit 0; fi\n\
+             env > '{}'\n\
+             printf '%s\\n' \"$@\" > '{}'\n\
+             cat '{}'\n",
+            dir.join("env.txt").display(),
+            dir.join("argv.txt").display(),
+            ddl_file.display()
+        );
+        let path = dir.join("pg_dump");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(script.as_bytes()).unwrap();
+        file.flush().unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&path, perms).unwrap();
+        let path = path.to_string_lossy().to_string();
+        Self { dir, path }
+    }
+
+    fn env(&self) -> String {
+        std::fs::read_to_string(self.dir.join("env.txt")).expect("the dump ran")
+    }
+
+    fn argv(&self) -> String {
+        std::fs::read_to_string(self.dir.join("argv.txt")).expect("the dump ran")
+    }
+
+    /// Whether the *dump* ran (the `--version` probe writes nothing here).
+    fn ran(&self) -> bool {
+        self.dir.join("env.txt").exists()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for FakeDump {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[cfg(unix)]
+fn env_value(env: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    env.lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(str::to_string)
+}
+
+#[cfg(unix)]
+fn params_with(mode: Option<&str>) -> PgConnParams {
+    PgConnParams::new(
+        "db.example.com".into(),
+        5432,
+        "app".into(),
+        "appdb".into(),
+        "hunter2".into(),
+    )
+    .with_tls(
+        mode.map(str::to_string),
+        Some("/etc/ssl/ca.pem".into()),
+        None,
+        None,
+    )
+}
+
+/// The copy's own `pg_dump` is told to verify TLS, with the connection's CA —
+/// not left at libpq's `prefer`.
+#[cfg(unix)]
+#[test]
+fn a_ddl_copy_tells_its_own_pg_dump_to_verify_tls() {
+    let dump = FakeDump::new("tls_verify", "CREATE TABLE public.events (id bigint);\n");
+
+    let ddl = get_pg_ddl_via_dump(
+        "public",
+        "events",
+        &params_with(Some("verify-full")),
+        &dump.path,
+    )
+    .expect("the copy runs");
+
+    assert_eq!(
+        ddl, "CREATE TABLE public.events (id bigint);\n",
+        "the payload is still returned verbatim"
+    );
+    let env = dump.env();
+    assert_eq!(
+        env_value(&env, "PGSSLMODE").as_deref(),
+        Some("verify-full"),
+        "the tool must verify, not prefer:\n{env}"
+    );
+    assert_eq!(
+        env_value(&env, "PGSSLROOTCERT").as_deref(),
+        Some("/etc/ssl/ca.pem"),
+        "the connection's CA bundle must reach this process:\n{env}"
+    );
+    assert_eq!(
+        env_value(&env, "PGHOSTADDR"),
+        None,
+        "a direct connection dials --host; no separate address is injected:\n{env}"
+    );
+    let argv = dump.argv();
+    assert!(
+        argv.contains("--host=db.example.com"),
+        "the saved server is what is dialed: {argv}"
+    );
+    assert!(
+        argv.contains("--port=5432"),
+        "a direct connection keeps the saved port: {argv}"
+    );
+    assert!(
+        !argv.contains("hunter2"),
+        "the credential still never reaches argv: {argv}"
+    );
+}
+
+/// Through an SSH tunnel the tool dials the tunnel's loopback listener while the
+/// *verification target* stays the saved server name.
+///
+/// This is the deliberate decision for the tunnel wrinkle: handing
+/// `127.0.0.1` to `--host` would make `verify-full` authenticate the certificate
+/// against loopback — fail, or invite the downgrade this fix exists to prevent —
+/// so the address moves to libpq's `PGHOSTADDR` (the same split
+/// `db::tls::PgConnectPlan` makes for the app's driver, which is what makes the
+/// tools neither looser nor stricter than browsing).
+///
+/// libpq's split was measured, not assumed (PostgreSQL 18.6, CA-signed cert for
+/// `pgtest.example`, server listening only on `127.0.0.1`):
+///
+/// * `--host=pgtest.example PGHOSTADDR=127.0.0.1 sslmode=verify-full` connects
+///   (no DNS for the name, certificate verified);
+/// * the same with `--host=other.example` fails with `server certificate for
+///   "pgtest.example" does not match host name "other.example"` — so the
+///   certificate is checked against `--host`, never against the dialed address;
+/// * `--host=127.0.0.1` (what this path used to dial) fails the same way, which
+///   is exactly the downgrade-into-failure this test pins down.
+#[cfg(unix)]
+#[test]
+fn a_tunnelled_ddl_copy_verifies_the_saved_server_while_dialing_loopback() {
+    let dump = FakeDump::new("tls_tunnel", "CREATE TABLE public.events (id bigint);\n");
+    let params = params_with(Some("verify-full"))
+        .through_tunnel(std::net::IpAddr::from([127, 0, 0, 1]), 5433);
+
+    get_pg_ddl_via_dump("public", "events", &params, &dump.path).expect("the copy runs");
+
+    let env = dump.env();
+    assert_eq!(
+        env_value(&env, "PGHOSTADDR").as_deref(),
+        Some("127.0.0.1"),
+        "the address actually dialed is the tunnel listener:\n{env}"
+    );
+    assert_eq!(
+        env_value(&env, "PGSSLMODE").as_deref(),
+        Some("verify-full"),
+        "verification is unchanged by the tunnel:\n{env}"
+    );
+    let argv = dump.argv();
+    assert!(
+        argv.contains("--host=db.example.com"),
+        "the certificate is verified against the saved server, not loopback: {argv}"
+    );
+    assert!(
+        !argv.contains("127.0.0.1"),
+        "loopback is the dialed address, never the verification target: {argv}"
+    );
+    assert!(
+        argv.contains("--port=5433"),
+        "the dialed port follows the tunnel: {argv}"
+    );
+}
+
+/// With no mode configured nothing is exported: an ordinary local connection
+/// keeps libpq's own `prefer` (attempt TLS, never insist) because no decision
+/// was taken away from it. A tunnelled connection of the same kind still gets
+/// its tunnel address — the plaintext-capable hop there is loopback, inside the
+/// encrypted SSH session.
+#[cfg(unix)]
+#[test]
+fn a_ddl_copy_without_a_configured_mode_leaves_libpq_prefer_alone() {
+    let plain = FakeDump::new("tls_absent", "CREATE TABLE public.events (id bigint);\n");
+    let params = PgConnParams::new(
+        "localhost".into(),
+        5432,
+        "app".into(),
+        "appdb".into(),
+        "hunter2".into(),
+    );
+    get_pg_ddl_via_dump("public", "events", &params, &plain.path).expect("the copy runs");
+
+    let env = plain.env();
+    for key in [
+        "PGSSLMODE",
+        "PGSSLROOTCERT",
+        "PGSSLCERT",
+        "PGSSLKEY",
+        "PGHOSTADDR",
+    ] {
+        assert_eq!(
+            env_value(&env, key),
+            None,
+            "an unconfigured connection exports no {key}, so nothing is relaxed:\n{env}"
+        );
+    }
+
+    let tunnelled = FakeDump::new(
+        "tls_absent_tunnel",
+        "CREATE TABLE public.events (id bigint);\n",
+    );
+    let params = PgConnParams::new(
+        "localhost".into(),
+        5432,
+        "app".into(),
+        "appdb".into(),
+        "hunter2".into(),
+    )
+    .through_tunnel(std::net::IpAddr::from([127, 0, 0, 1]), 5433);
+    get_pg_ddl_via_dump("public", "events", &params, &tunnelled.path).expect("the copy runs");
+    let env = tunnelled.env();
+    assert_eq!(
+        env_value(&env, "PGHOSTADDR").as_deref(),
+        Some("127.0.0.1"),
+        "the tunnel address is still routed:\n{env}"
+    );
+    assert_eq!(
+        env_value(&env, "PGSSLMODE"),
+        None,
+        "no mode was configured, so libpq's `prefer` stands:\n{env}"
+    );
+}
+
+/// A stored mode libpq cannot enforce fails the copy *before* the tool runs,
+/// instead of silently reaching libpq as `prefer`.
+#[cfg(unix)]
+#[test]
+fn an_unenforceable_mode_fails_the_copy_before_pg_dump_runs() {
+    let dump = FakeDump::new("tls_unknown", "CREATE TABLE public.events (id bigint);\n");
+
+    let err = get_pg_ddl_via_dump("public", "events", &params_with(Some("prefer")), &dump.path)
+        .expect_err("an unknown mode must fail closed");
+
+    assert!(
+        err.contains("unknown TLS mode") && err.contains("verify-full"),
+        "the error names the valid set: {err}"
+    );
+    assert!(
+        !dump.ran(),
+        "the dump must not run with a mode that cannot be enforced"
+    );
+}

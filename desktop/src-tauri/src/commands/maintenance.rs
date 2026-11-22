@@ -11,11 +11,10 @@ pub(crate) async fn run_maintenance_inner(
     table: &str,
     action: &str,
 ) -> Result<MaintenanceResult, String> {
-    let db_handle = pm.lock().await.acquire(connection_id);
+    let db_handle = crate::db::pool::acquire_handle(pm, connection_id).await?;
     let client = match db_handle {
-        Some(DbHandle::Postgresql(c, _)) => c,
-        Some(_) => return Err("Maintenance is PostgreSQL-only".into()),
-        None => return Err("Connection not found".into()),
+        DbHandle::Postgresql(c, _) => c,
+        _ => return Err("Maintenance is PostgreSQL-only".into()),
     };
     let client = client.lock().await;
     crate::db::object_ddl::validate_object_name(&schema)?;

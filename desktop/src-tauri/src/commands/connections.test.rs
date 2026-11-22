@@ -98,5 +98,5 @@ fn updating_a_connection_rejects_an_unknown_ssl_mode_and_keeps_the_stored_one() 
 fn test_state() -> std::sync::Mutex<Store> {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::store::migrations::run_migrations(&conn).unwrap();
-    std::sync::Mutex::new(Store::from_connection(conn))
+    std::sync::Mutex::new(Store::from_connection(conn).expect("test store"))
 }

@@ -802,4 +802,86 @@ describe("VirtualDataGrid", () => {
     expect(change.newData).toEqual({ user_id: "120" });
     expect(change.oldData).toEqual({ user_id: 7 });
   });
+
+  it("stages the whole displayed row as the guard for a physical-locator update", () => {
+    const onStageEdit = vi.fn();
+    const noPkCols: ColumnInfo[] = [
+      { name: "url", data_type: "text", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+      { name: "session_id", data_type: "text", is_nullable: false, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    ];
+    mockGetTotalSize.mockReturnValue(36);
+    mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
+
+    render(
+      <VirtualDataGrid
+        connectionId="c1"
+        schema="main"
+        table="page_views"
+        rows={[["/cart", "sess-002"]]}
+        columns={noPkCols}
+        hiddenColumns={new Set()}
+        selectedRows={new Set()}
+        onToggleRow={vi.fn()}
+        onToggleAll={vi.fn()}
+        dbType="sqlite"
+        tabType="table"
+        getLocator={() => ({ rowid: 2 })}
+        onStageEdit={onStageEdit}
+      />,
+    );
+
+    const cell = screen.getByText("/cart");
+    fireEvent.click(cell);
+    fireEvent.keyDown(cell, { key: "Enter" });
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "/cart-2" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onStageEdit).toHaveBeenCalledTimes(1);
+    const change = onStageEdit.mock.calls[0][0];
+    expect(change.primaryKey).toEqual({ rowid: 2 });
+    expect(change.newData).toEqual({ url: "/cart-2" });
+    // A locator can be reused by another row, so the predicate covers every
+    // displayed column — not only the edited one.
+    expect(change.oldData).toEqual({ url: "/cart", session_id: "sess-002" });
+  });
+
+  it("stages only the edited columns original value for a primary-key update", () => {
+    const onStageEdit = vi.fn();
+    const pkCols: ColumnInfo[] = [
+      { name: "id", data_type: "integer", is_nullable: false, is_pk: true, is_fk: false, fk_ref: null, default_value: null, editable: false, is_generated: false },
+      { name: "name", data_type: "text", is_nullable: true, is_pk: false, is_fk: false, fk_ref: null, default_value: null, editable: true, is_generated: false },
+    ];
+    mockGetTotalSize.mockReturnValue(36);
+    mockGetVirtualItems.mockReturnValue([{ key: 0, index: 0, start: 0, size: 36 }]);
+
+    render(
+      <VirtualDataGrid
+        connectionId="c1"
+        schema="public"
+        table="users"
+        rows={[[1, "Alice"]]}
+        columns={pkCols}
+        hiddenColumns={new Set()}
+        selectedRows={new Set()}
+        onToggleRow={vi.fn()}
+        onToggleAll={vi.fn()}
+        dbType="postgresql"
+        tabType="table"
+        getLocator={() => ({ id: 1 })}
+        onStageEdit={onStageEdit}
+      />,
+    );
+
+    const cell = screen.getByText("Alice");
+    fireEvent.click(cell);
+    fireEvent.keyDown(cell, { key: "Enter" });
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "Alicia" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onStageEdit).toHaveBeenCalledTimes(1);
+    const change = onStageEdit.mock.calls[0][0];
+    expect(change.oldData).toEqual({ name: "Alice" });
+  });
 });

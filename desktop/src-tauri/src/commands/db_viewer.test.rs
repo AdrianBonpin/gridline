@@ -81,7 +81,9 @@ async fn hypertables_unavailable_on_plain_pg() {
 // database, and — env-gated — against a live PostgreSQL server.
 // ---------------------------------------------------------------------------
 
-use crate::commands::db_viewer::{execute_change_inner, get_table_data_inner};
+use crate::commands::db_viewer::{
+    execute_change_for_origin, execute_change_inner, get_table_data_inner,
+};
 use crate::models::db_viewer::Change;
 use rusqlite::types::Value;
 
@@ -288,6 +290,216 @@ async fn no_pk_delete_by_rowid_removes_only_that_row() {
             vec![Value::Text("/products".into())],
             vec![Value::Text("/orders".into())],
         ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The backend is authoritative for the Change Origin (F3)
+// ---------------------------------------------------------------------------
+
+fn stored_sqlite_connection(id: &str, path: &str) -> crate::models::Connection {
+    crate::models::Connection {
+        id: id.to_string(),
+        name: "Demo".to_string(),
+        db_type: "sqlite".to_string(),
+        host: path.to_string(),
+        port: None,
+        username: None,
+        database: Some("main".to_string()),
+        folder_id: None,
+        keychain_ref: None,
+        environment: None,
+        favorite: false,
+        ssh_host: None,
+        ssh_port: None,
+        ssh_user: None,
+        ssh_auth_method: None,
+        ssh_private_key_path: None,
+        ssl_mode: None,
+        ssl_ca_path: None,
+        ssl_cert_path: None,
+        ssl_key_path: None,
+        tag_ids: Vec::new(),
+        use_keychain: false,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        updated_at: "2026-01-01T00:00:00Z".to_string(),
+    }
+}
+
+fn origin_for(conn: &crate::models::Connection) -> crate::db::change_target::ChangeOrigin {
+    crate::db::change_target::ChangeOrigin {
+        connection_id: conn.id.clone(),
+        database: "main".to_string(),
+        target: crate::db::change_target::connection_target_fingerprint(conn),
+        target_label: crate::db::change_target::describe_connection_target(conn),
+    }
+}
+
+/// A staged change whose target no longer matches the saved connection is
+/// refused by the backend itself (not just the renderer), and nothing is written.
+#[tokio::test]
+async fn the_backend_refuses_a_change_staged_against_a_retargeted_connection() {
+    let (pm, id) = sqlite_pool("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);");
+    let staged = stored_sqlite_connection(&id, "/tmp/app.db");
+    let origin = origin_for(&staged);
+    // The saved connection now points somewhere else: same id, different file.
+    let retargeted = stored_sqlite_connection(&id, "/tmp/other.db");
+
+    let change = Change::Insert {
+        id: "ch-origin".into(),
+        schema: "main".into(),
+        table: "notes".into(),
+        data: r#"{"id":1,"body":"must not be written"}"#.into(),
+    };
+    let err = execute_change_for_origin(&pm, &retargeted, &id, &origin, change)
+        .await
+        .expect_err("a retargeted connection must refuse the staged change");
+    assert!(
+        err.contains(crate::db::change_target::CHANGE_ORIGIN_RETARGETED),
+        "the refusal carries the stable code: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    let rows = sqlite_query(&mut guard, &id, "SELECT COUNT(*) FROM notes");
+    assert_eq!(rows, vec![vec![int(0)]], "nothing may be written");
+}
+
+/// The same change applies when the origin still matches, so the refusal is
+/// specific to a moved target rather than a blanket block.
+#[tokio::test]
+async fn the_backend_applies_a_change_whose_origin_still_matches() {
+    let (pm, id) = sqlite_pool("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);");
+    let stored = stored_sqlite_connection(&id, "/tmp/app.db");
+    let origin = origin_for(&stored);
+    let change = Change::Insert {
+        id: "ch-origin-ok".into(),
+        schema: "main".into(),
+        table: "notes".into(),
+        data: r#"{"id":1,"body":"applied"}"#.into(),
+    };
+    execute_change_for_origin(&pm, &stored, &id, &origin, change)
+        .await
+        .expect("a matching origin applies");
+
+    let mut guard = pm.lock().await;
+    let rows = sqlite_query(&mut guard, &id, "SELECT COUNT(*) FROM notes");
+    assert_eq!(rows, vec![vec![int(1)]]);
+}
+
+// ---------------------------------------------------------------------------
+// A reused physical locator can never modify a different row
+// ---------------------------------------------------------------------------
+
+/// A no-PK row is addressed by `rowid`, and SQLite reuses a `rowid` as soon as
+/// the row that held it is gone. The whole-row guard is what stops that reused
+/// locator from editing a row the user never saw.
+#[tokio::test]
+async fn a_reused_rowid_cannot_be_modified_into_the_wrong_row() {
+    let (pm, id) = sqlite_pool(NO_PK_FIXTURE);
+
+    // The user sees rowid 3 (`/orders`, `sess-003`) — the highest rowid, so
+    // SQLite hands it to the next insert. Someone else deletes it and inserts a
+    // different row, which takes that rowid.
+    {
+        let mut guard = pm.lock().await;
+        sqlite_exec(&mut guard, &id, "DELETE FROM page_views WHERE rowid = 3");
+        sqlite_exec(
+            &mut guard,
+            &id,
+            "INSERT INTO page_views (url, session_id, user_agent) \
+             VALUES ('/orders', 'sess-999', 'agent-impostor')",
+        );
+        drop(guard);
+    }
+
+    // The staged update carries the whole displayed row, which the impostor does
+    // not match, so nothing is written.
+    let change = Change::Update {
+        id: "ch-reused-locator".into(),
+        schema: "main".into(),
+        table: "page_views".into(),
+        primary_key: r#"{"rowid":3}"#.into(),
+        old_data: r#"{"url":"/orders","session_id":"sess-003","user_agent":"agent-c"}"#.into(),
+        new_data: r#"{"url":"/stolen"}"#.into(),
+    };
+    let err = execute_change_inner(&pm, &id, change)
+        .await
+        .expect_err("the reused locator addresses a different row");
+    assert!(
+        err.contains("nothing was written"),
+        "the refusal must state that nothing was written: {err}"
+    );
+
+    let mut guard = pm.lock().await;
+    let rows = sqlite_query(
+        &mut guard,
+        &id,
+        "SELECT url, session_id FROM page_views ORDER BY rowid",
+    );
+    assert_eq!(
+        rows,
+        vec![
+            vec![
+                Value::Text("/products".into()),
+                Value::Text("sess-001".into())
+            ],
+            vec![Value::Text("/cart".into()), Value::Text("sess-002".into())],
+            vec![
+                Value::Text("/orders".into()),
+                Value::Text("sess-999".into())
+            ],
+        ],
+        "the impostor row keeps its values; the other rows are untouched"
+    );
+}
+
+/// Why the whole row is needed: this is the payload a locator update would carry
+/// if the grid staged only the edited cell, and it matches the reused locator's
+/// new occupant.
+#[tokio::test]
+async fn a_reused_rowid_would_match_an_edited_column_only_guard() {
+    let (pm, id) = sqlite_pool(NO_PK_FIXTURE);
+    {
+        let mut guard = pm.lock().await;
+        sqlite_exec(&mut guard, &id, "DELETE FROM page_views WHERE rowid = 3");
+        sqlite_exec(
+            &mut guard,
+            &id,
+            "INSERT INTO page_views (url, session_id, user_agent) \
+             VALUES ('/orders', 'sess-999', 'agent-impostor')",
+        );
+        drop(guard);
+    }
+
+    // `url` is the edited column and the impostor shares its old value, so the
+    // partial predicate matches exactly one row — the wrong one. The grid never
+    // produces this payload any more (`updateGuardValues` stages the whole row
+    // for a locator identity); this test pins down why that guard is mandatory.
+    let change = Change::Update {
+        id: "ch-partial-guard".into(),
+        schema: "main".into(),
+        table: "page_views".into(),
+        primary_key: r#"{"rowid":3}"#.into(),
+        old_data: r#"{"url":"/orders"}"#.into(),
+        new_data: r#"{"url":"/elsewhere"}"#.into(),
+    };
+    execute_change_inner(&pm, &id, change)
+        .await
+        .expect("a one-row match is applied");
+
+    let mut guard = pm.lock().await;
+    let rows = sqlite_query(
+        &mut guard,
+        &id,
+        "SELECT url, session_id FROM page_views ORDER BY rowid",
+    );
+    assert_eq!(
+        rows[2],
+        vec![
+            Value::Text("/elsewhere".into()),
+            Value::Text("sess-999".into())
+        ],
+        "the reused locator's occupant was modified — the hazard the full-row guard removes"
     );
 }
 
@@ -1635,11 +1847,13 @@ fn ddl_copy_sends_the_session_password_through_the_environment_only() {
     let ddl = super::get_pg_ddl_via_dump(
         "public",
         "t",
-        "localhost",
-        5432,
-        "u",
-        "db",
-        &password,
+        &crate::commands::backup::PgConnParams::new(
+            "localhost".into(),
+            5432,
+            "u".into(),
+            "db".into(),
+            password,
+        ),
         pg_dump.to_str().unwrap(),
     );
 

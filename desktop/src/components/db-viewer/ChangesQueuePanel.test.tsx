@@ -167,6 +167,16 @@ describe("ChangesQueuePanel", () => {
       table: "t",
       data: expect.any(String),
     }));
+    // The backend revalidates the origin itself, so the request must carry it.
+    const origin = exec.mock.calls[0][2];
+    expect(origin).toEqual(
+      expect.objectContaining({
+        connectionId: "c1",
+        database: "appdb",
+        target: expect.any(String),
+      }),
+    );
+    expect(origin.target.length).toBeGreaterThan(0);
   });
 
   it("refreshes the schema tree after committing a drop_table change", async () => {

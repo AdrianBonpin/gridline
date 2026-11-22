@@ -1,7 +1,9 @@
 //! Pure MySQL SQL builders for the DB viewer. Identifiers are backtick-quoted
 //! (never string-concatenated); values are bound via `?` placeholders at the
-//! call site. Mirrors the PG builders in `commands/db_viewer.rs` but with
-//! MySQL quoting and `LIMIT 1` on single-row UPDATE/DELETE.
+//! call site. Mirrors the PG builders in `commands/db_viewer.rs` but with MySQL
+//! quoting. Single-row UPDATE/DELETE deliberately carry **no** `LIMIT 1`: a
+//! limited statement silently succeeds when its locator matches more than one
+//! row, so an ambiguous match must reach the caller (tests forbid the clause).
 use crate::db::ident::{self, Engine};
 use crate::models::db_viewer::{FilterRule, SortRule};
 use sqlx::Row;

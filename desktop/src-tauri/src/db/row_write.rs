@@ -5,11 +5,18 @@
 //! engines cannot drift apart:
 //!
 //! 1. **The predicate.** The Row Identity (every primary-key column, or the
-//!    backend physical locator) plus the original values the user saw. An
-//!    update always carries the edited column's original value; a
-//!    physical-locator write also carries the whole row's original values, so a
-//!    row that moved — or a locator reused by a different row — is refused
-//!    rather than modified.
+//!    backend physical locator) plus the original values the user saw. The
+//!    original values depend on the identity:
+//!    - **Primary key** — an update carries the edited column's original value
+//!      (the optimistic predicate the spec requires); a delete is decided by the
+//!      complete Row Identity alone, because full-row versioning is out of scope.
+//!    - **Physical locator** (`ctid`/`rowid`) — the write carries the **whole
+//!      displayed row's** original values, because a locator can move or be
+//!      reused by another row. The grid stages that full row for a locator
+//!      update (`updateGuardValues` in `gridEditability.ts`) and has always
+//!      staged it for a locator delete; an update that cannot carry it is
+//!      refused before staging, and one that reaches here with no original
+//!      values fails closed.
 //! 2. **The transaction.** Callers run the statement inside a transaction and
 //!    commit only when it matched exactly one row; zero and multiple matches are
 //!    rolled back before the failure is reported, so a reported failure can never
@@ -18,9 +25,11 @@
 //!    Row-Identity probe into the error the viewer shows: stale row, ambiguous
 //!    match, or a value conflict.
 //!
-//! Full-row optimistic versioning is deliberately **not** introduced: a
-//! primary-key delete stays decided by its complete Row Identity, and an update
-//! is guarded only by the column(s) the user edited.
+//! Full-row optimistic versioning is deliberately **not** introduced for the
+//! general case: a primary-key delete stays decided by its complete Row
+//! Identity, and a primary-key update is guarded only by the column(s) the user
+//! edited. The full-row guard is specific to the physical locator, where the
+//! identity itself cannot prove which row is being addressed.
 
 use crate::db::ident::{self, Engine};
 use serde_json::Value;
@@ -55,11 +64,12 @@ pub fn is_physical_locator(identity: &[(String, Value)]) -> bool {
 /// The original values that must guard this write, or an error when the write
 /// cannot be guarded at all.
 ///
-/// * **Update** — the edited column(s)' original values (the optimistic
-///   predicate the spec requires), on every engine.
-/// * **Delete with a physical locator** — the whole displayed row, because a
-///   locator alone can address a different row once the row moves or its locator
-///   is reused.
+/// * **Update with a primary key** — the edited column(s)' original values (the
+///   optimistic predicate the spec requires).
+/// * **Update or delete with a physical locator** — the whole displayed row,
+///   because a locator alone can address a different row once the row moves or
+///   its locator is reused. The grid stages that full row (`updateGuardValues`),
+///   so a locator update without it cannot come from the UI.
 /// * **Delete with a primary key** — nothing: the complete Row Identity is the
 ///   predicate. Full-row versioning is intentionally out of scope.
 ///
