@@ -19,7 +19,9 @@ case "$branch" in
 esac
 
 root="$(git rev-parse --show-toplevel)" || exit 0
-GRIDLINE_MIRROR_RUNNING=1 sh "$root/scripts/mirror-gitea.sh" ||
+# Bash, not `sh`: this hook is POSIX sh and git runs it with the system shell
+# (dash on Debian/Ubuntu), while the mirror needs `set -o pipefail`.
+GRIDLINE_MIRROR_RUNNING=1 bash "$root/scripts/mirror-gitea.sh" ||
   echo "post-merge: warning: Gitea mirror was not updated" >&2
 
 exit 0

@@ -50,19 +50,22 @@ fi
 
 missing=()
 for name in "${vars[@]}"; do
-  # Indirect expansion only, and only for a plain variable name: this script
-  # must never evaluate a caller-supplied expression.
+  # Reject anything that is not exactly an environment variable name, BEFORE
+  # any indirect expansion. The check must match the WHOLE argument: a `case`
+  # glob is a prefix match, so `[A-Za-z_][A-Za-z0-9_]*` also accepts
+  # "NAME; echo pwned" — and `${!name}` on such a name is an expansion error in
+  # bash 5 (it silently yields empty in bash 3.2). The bash-5 path abandoned the
+  # loop iteration, so nothing was ever counted missing and the script reported
+  # "all N present" and exited 0 — failing OPEN on Linux CI.
   case "$name" in
-    [A-Za-z_][A-Za-z0-9_]*)
-      if [ -z "${!name:-}" ]; then
-        missing+=("$name")
-      fi
-      ;;
-    *)
+    '' | [0-9]* | *[!A-Za-z0-9_]*)
       echo "require-macos-signing-credentials: '${name}' is not an environment variable name" >&2
       exit 2
       ;;
   esac
+  if [ -z "${!name:-}" ]; then
+    missing+=("$name")
+  fi
 done
 
 if [ "${#missing[@]}" -gt 0 ]; then

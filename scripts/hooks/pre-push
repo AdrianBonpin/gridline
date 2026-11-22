@@ -39,7 +39,12 @@ done
 [ "$mirror_needed" = "1" ] || exit 0
 
 root="$(git rev-parse --show-toplevel)" || exit 0
-GRIDLINE_MIRROR_RUNNING=1 sh "$root/scripts/mirror-gitea.sh" ||
+# The mirror is a BASH script (it uses `set -o pipefail`). This hook is POSIX sh
+# and git runs it with the system shell, which is dash on Debian/Ubuntu — so
+# `sh scripts/mirror-gitea.sh` would die with "Illegal option -o pipefail" and
+# the mirror would silently never update on Linux. Invoke it through bash
+# explicitly (the script's own `#!/usr/bin/env bash` requires bash anyway).
+GRIDLINE_MIRROR_RUNNING=1 bash "$root/scripts/mirror-gitea.sh" ||
   echo "pre-push: warning: Gitea mirror was not updated (continuing with the push)" >&2
 
 # Never block the push to GitHub because of a mirror problem.
