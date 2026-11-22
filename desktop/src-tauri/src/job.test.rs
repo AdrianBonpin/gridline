@@ -75,6 +75,66 @@ fn cmd(program: &Path) -> Command {
 }
 
 // ---------------------------------------------------------------------------
+// Transient ETXTBSY at spawn
+// ---------------------------------------------------------------------------
+
+/// A tool file that another process still holds open for writing cannot be
+/// exec'ed (`ETXTBSY` on Linux). That condition is transient — a `fork` in
+/// another thread inherits the writer's handle and drops it when it execs — so a
+/// tool spawn must retry briefly instead of failing the job.
+///
+/// The holder below stands in for exactly that: an inherited write handle that
+/// is open across the first spawn attempt and closed shortly after. The spawn
+/// must survive it, and the retried spawn must still have its piped stdio.
+#[cfg(unix)]
+#[test]
+fn a_tool_still_open_for_writing_is_retried_instead_of_failing() {
+    let dir = temp_dir("etxtbsy");
+    let script = write_script(&dir, "busy-tool", "#!/bin/sh\necho spawned\n");
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let held_path = script.clone();
+    let holder = std::thread::spawn(move || {
+        // A write handle on the published file, held until released.
+        let handle = std::fs::File::options()
+            .append(true)
+            .open(&held_path)
+            .unwrap();
+        ready_tx.send(()).unwrap();
+        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        drop(handle);
+    });
+    ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the write handle should be open");
+    // Hold it across the first attempt, then close it well inside the retry
+    // budget (5 attempts, 20 ms apart).
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        let _ = release_tx.send(());
+    });
+
+    let mut spawn_cmd = Command::new(&script);
+    spawn_cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = spawn_tool(&mut spawn_cmd).expect("a transient ETXTBSY must be retried");
+    let output = child.wait_with_output().unwrap();
+
+    holder.join().unwrap();
+    releaser.join().unwrap();
+    assert!(output.status.success(), "the tool did not run");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "spawned\n",
+        "the retried spawn must keep its captured stdout"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
 // Process-tree termination
 // ---------------------------------------------------------------------------
 

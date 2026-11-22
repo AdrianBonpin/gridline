@@ -251,8 +251,14 @@ pub fn get_pg_ddl_via_dump(
     // Same decision as the app's driver, and refused before spawning when the
     // stored mode is not one libpq can enforce.
     conn.apply_tool_env(&mut cmd)?;
-    let out = cmd
-        .output()
+    // The probe above and this run both go through `job::spawn_tool` so a
+    // transient `ETXTBSY` (the tool's file still open for writing elsewhere)
+    // is retried instead of failing the copy.
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let out = crate::job::spawn_tool(&mut cmd)
+        .and_then(|child| child.wait_with_output())
         .map_err(|e| format!("pg_dump spawn failed: {e}"))?;
     ddl_from_dump_output(
         &format!("{schema}.{table}"),

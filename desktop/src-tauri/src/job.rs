@@ -55,6 +55,51 @@ pub const MAX_DIAGNOSTIC_BYTES: usize = 1024 * 1024;
 /// A monotonic progress signal: any change resets the idle clock.
 pub type Activity = Arc<dyn Fn() -> u64 + Send + Sync>;
 
+/// How many spawn attempts `ETXTBSY` may cost, and the pause between them.
+const ETXTBSY_ATTEMPTS: u32 = 5;
+const ETXTBSY_BACKOFF: Duration = Duration::from_millis(20);
+
+/// `ETXTBSY`: the kernel refuses `exec` while *any* process still holds the file
+/// open for writing.
+#[cfg(unix)]
+fn is_etxtbsy(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(libc::ETXTBSY)
+}
+
+#[cfg(not(unix))]
+fn is_etxtbsy(_err: &std::io::Error) -> bool {
+    false
+}
+
+/// Spawn `cmd`, retrying briefly while the kernel reports `ETXTBSY`.
+///
+/// `ETXTBSY` is transient and not the job's fault: a `fork` in another thread of
+/// this process inherits a write handle that is still open on the executable and
+/// keeps it (until that child `exec`s), so an `exec` of the same inode in that
+/// window fails with "Text file busy". The window is microseconds, so a short
+/// bounded retry succeeds — and it is the only place the condition can be
+/// observed. Publishing the file atomically does *not* help here: `rename` keeps
+/// the inode identity, so the exec'ed path is still the inode another process
+/// holds open for writing.
+///
+/// Retrying at the single spawn site therefore covers every tool job and probe
+/// (a real tool being rewritten by a package manager hits exactly this too).
+/// `Command::spawn` leaves the configured stdio in place when it fails, so a
+/// retried spawn still has its pipes.
+pub fn spawn_tool(cmd: &mut Command) -> std::io::Result<Child> {
+    let mut attempt = 1;
+    loop {
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(err) if is_etxtbsy(&err) && attempt < ETXTBSY_ATTEMPTS => {
+                attempt += 1;
+                std::thread::sleep(ETXTBSY_BACKOFF);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 /// Why a managed job did not complete normally.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobError {
@@ -350,7 +395,7 @@ impl ManagedChild {
         .stderr(Stdio::piped());
         configure_process_group(&mut cmd);
 
-        let mut child = cmd.spawn().map_err(|e| JobError::Spawn(e.to_string()))?;
+        let mut child = spawn_tool(&mut cmd).map_err(|e| JobError::Spawn(e.to_string()))?;
         let pid = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
