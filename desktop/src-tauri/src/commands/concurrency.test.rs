@@ -140,7 +140,7 @@ fn test_store() -> StdMutex<crate::store::Store> {
         )
         .expect("placeholder connection");
     }
-    StdMutex::new(crate::store::Store::from_connection(conn))
+    StdMutex::new(crate::store::Store::from_connection(conn).expect("test store"))
 }
 
 /// Spawn the gated query on connection `id`; returns the task and the flag it

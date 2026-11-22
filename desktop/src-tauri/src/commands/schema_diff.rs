@@ -56,27 +56,23 @@ pub async fn compare_schemas(
     // while it reads two databases, and must never hold two connection handles
     // at once (two diffs in opposite directions would deadlock).
     let source = {
-        let mut handle = state
-            .pool_manager
-            .lock()
-            .await
-            .acquire(&source_connection_id)
-            .ok_or_else(|| {
-                "Source connection failed: not connected (open it in the DB viewer first)"
-                    .to_string()
-            })?;
+        let mut handle =
+            crate::db::pool::acquire_handle(&state.pool_manager, &source_connection_id)
+                .await
+                .map_err(|_| {
+                    "Source connection failed: not connected (open it in the DB viewer first)"
+                        .to_string()
+                })?;
         crate::db::schema_diff::capture_snapshot(&mut handle, &source_db_type, &source_schema)
             .await
             .map_err(|e| format!("Source connection failed: {e}"))?
     };
 
     let target = {
-        let mut handle = state
-            .pool_manager
-            .lock()
-            .await
-            .acquire(&target_connection_id)
-            .ok_or_else(|| "Target connection failed: not connected".to_string())?;
+        let mut handle =
+            crate::db::pool::acquire_handle(&state.pool_manager, &target_connection_id)
+                .await
+                .map_err(|_| "Target connection failed: not connected".to_string())?;
         crate::db::schema_diff::capture_snapshot(&mut handle, &target_db_type, &target_schema)
             .await
             .map_err(|e| format!("Target connection failed: {e}"))?

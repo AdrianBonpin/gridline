@@ -1037,10 +1037,10 @@ fn table_diff(q: &str, old: &[TableColumn], new: &[TableColumn]) -> Result<Vec<S
         ));
     }
 
-    // 3. ALTERs: attribute changes on a kept or renamed column.
-    for edit in edits.iter().filter(|e| e.source.is_some()) {
-        let nc = edit.new;
-        let oc = edit.source.expect("filtered above");
+    // 3. ALTERs: attribute changes on a kept or renamed column. `filter_map`
+    // makes the pairing structural — an edit without a source column is an ADD
+    // (step 2) and cannot reach the ALTERs at all.
+    for (nc, oc) in edits.iter().filter_map(|e| e.source.map(|oc| (e.new, oc))) {
         if oc.type_.trim() != nc.type_.trim() {
             out.push(format!(
                 "ALTER TABLE {} ALTER COLUMN {} TYPE {}",

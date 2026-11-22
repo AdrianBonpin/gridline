@@ -52,6 +52,6 @@ export function getCapabilities(dbType: string): DbCapabilities {
  * missed by `dbType === "mysql"` checks in the Tools pages, which sent a
  * MariaDB DB Sync down the SQLite path (issue #47).
  */
-export function isMysqlFamily(dbType: DbType | null | undefined): boolean {
+export function isMysqlFamily(dbType: string | null | undefined): boolean {
   return dbType === "mysql" || dbType === "mariadb";
 }

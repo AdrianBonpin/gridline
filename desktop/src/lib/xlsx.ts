@@ -1,5 +1,6 @@
 import { zipSync, strToU8 } from "fflate";
 import { projectDeclaredCells } from "./rowIdentity";
+import { baseDeclaredType } from "./declaredType";
 import type { ColumnInfo } from "./types";
 
 /** Minimal OOXML spreadsheet: one sheet. Text is written as an inline string
@@ -41,23 +42,13 @@ const NUMERIC_BASE_TYPES = new Set([
   "year",
 ]);
 
-/** The bare base type of a declared column (`numeric(10,2)` → `numeric`). */
-function baseType(dataType: string): string {
-  return dataType
-    .toLowerCase()
-    .split("(")[0]
-    .replace(/\bunsigned\b|\bzerofill\b|\bvarying\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function isNumericType(dataType: string): boolean {
-  return NUMERIC_BASE_TYPES.has(baseType(dataType));
+  return NUMERIC_BASE_TYPES.has(baseDeclaredType(dataType));
 }
 
 /** `date` for a calendar date, `datetime` for an instant/timestamp. */
 function dateKind(dataType: string): "date" | "datetime" | null {
-  const base = baseType(dataType);
+  const base = baseDeclaredType(dataType);
   if (base === "date") return "date";
   if (base === "timestamp" || base === "timestamptz" || base === "datetime") return "datetime";
   return null;

@@ -1,4 +1,5 @@
 import { buildXlsx } from "./xlsx";
+import { isMysqlFamily } from "./dbCapabilities";
 import { projectDeclaredCells } from "./rowIdentity";
 import type { ColumnInfo } from "./types";
 
@@ -45,16 +46,10 @@ export function copyCellText(value: unknown): string {
 
 /** SQL selecting every row of a table, dialect-quoted. */
 export function qualifiedTableSql(dbType: string, schema: string, table: string): string {
-  if (dbType === "mysql" || dbType === "mariadb") {
-    const q = (s: string) => s.replace(/`/g, "``");
-    return `SELECT * FROM \`${q(schema)}\`.\`${q(table)}\``;
-  }
-  const q = (s: string) => s.replace(/"/g, '""');
-  return `SELECT * FROM "${q(schema)}"."${q(table)}"`;
-}
-
-function isMySql(dbType: string | undefined): boolean {
-  return dbType === "mysql" || dbType === "mariadb";
+  // One quoting path for every statement this module emits: a table with no
+  // schema (SQLite, or a connection with no active schema) is named unqualified
+  // rather than wrapped in an empty identifier.
+  return `SELECT * FROM ${qualifiedNameSql(dbType, schema || undefined, table)}`;
 }
 
 /**
@@ -63,7 +58,7 @@ function isMySql(dbType: string | undefined): boolean {
  * space, a dot, or a quote, and exported SQL must replay as written.
  */
 export function quoteIdentifier(name: string, dbType?: string): string {
-  if (isMySql(dbType)) return `\`${name.replace(/`/g, "``")}\``;
+  if (isMysqlFamily(dbType)) return `\`${name.replace(/`/g, "``")}\``;
   return `"${name.replace(/"/g, '""')}"`;
 }
 
@@ -89,7 +84,7 @@ export function qualifiedNameSql(
  */
 export function sqlStringLiteral(value: string, dbType?: string): string {
   let body = value;
-  if (isMySql(dbType)) {
+  if (isMysqlFamily(dbType)) {
     body = body
       .replace(/\\/g, "\\\\")
       .replace(/\u0000/g, "\\0")

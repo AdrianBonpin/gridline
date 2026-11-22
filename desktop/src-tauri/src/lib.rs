@@ -86,9 +86,11 @@ pub fn run() {
         .setup(move |app| {
             // Open the local store under the OS app-data directory. When the
             // app is launched from Finder/LaunchServices the working directory
-            // is `/`, so a relative "gridline.db" path panics ("failed to
-            // open db", exit 101) before the UI ever starts. The demo DB uses
-            // the same directory (see commands/demo.rs).
+            // is `/`, so a relative "gridline.db" path cannot be resolved. The
+            // demo DB uses the same directory (see commands/demo.rs). A failure
+            // (unwritable directory, unopenable file, disabled referential
+            // enforcement) is reported like its neighbours rather than panicking
+            // out of the setup hook.
             let data_dir = app
                 .path()
                 .app_data_dir()
@@ -97,7 +99,7 @@ pub fn run() {
                 .map_err(|e| format!("failed to create app data dir: {e}"))?;
             let store = Arc::new(StdMutex::new(
                 Store::open(&data_dir.join("gridline.db").to_string_lossy())
-                    .expect("failed to open db"),
+                    .map_err(|e| format!("failed to open the local store: {e}"))?,
             ));
             // SSH host trust: system known-hosts files plus the enrollments this
             // user accepted (non-secret metadata in the same local store).

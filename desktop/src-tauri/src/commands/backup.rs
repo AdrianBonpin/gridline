@@ -2424,6 +2424,33 @@ fn emit_result(app_handle: &AppHandle, job_id: &str, result: Result<(), String>)
     emit_job_result(app_handle, job_id, result.map_err(JobFailure::from_engine));
 }
 
+/// A saved connection row (`rusqlite::Connection` owns the name in this module).
+type SavedConnection = crate::models::connection::Connection;
+
+/// Every saved connection, read under the store lock and released before the
+/// job awaits any work.
+fn saved_connections(state: &crate::AppState) -> Result<Vec<SavedConnection>, String> {
+    let store = state.db_store.lock().map_err(|e| e.to_string())?;
+    store.get_connections().map_err(|e| e.to_string())
+}
+
+/// Resolve one saved connection from an already-loaded list.
+///
+/// Backup, restore, sync and dump-shape entry points all report a missing row
+/// through this one helper, so the message is identical everywhere (it used to
+/// come in three shapes: `Connection not found: <id>`, `Source connection not
+/// found: <id>` and `Target connection not found: <id>`).
+fn require_connection(
+    connections: &[SavedConnection],
+    connection_id: &str,
+) -> Result<SavedConnection, String> {
+    connections
+        .iter()
+        .find(|c| c.id == connection_id)
+        .cloned()
+        .ok_or_else(|| format!("Connection not found: {connection_id}"))
+}
+
 /// Resolve the credential a tool job authenticates with.
 ///
 /// A keychain-enabled connection keeps reading the OS keychain (existing
@@ -2510,15 +2537,7 @@ pub async fn pg_dump(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    // Get connection from store (scope the std::sync::Mutex lock guard)
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     // Keychain when enabled, otherwise the session-only credential (or a prompt).
     let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
@@ -2562,14 +2581,7 @@ pub async fn pg_restore(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
 
@@ -2637,35 +2649,9 @@ pub async fn db_sync(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    // Get both connections from store
-    let (source_conn, target_conn) = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-
-        let src = connections
-            .iter()
-            .find(|c| c.id == options.source_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Source connection not found: {}",
-                    options.source_connection_id
-                )
-            })?
-            .clone();
-
-        let tgt = connections
-            .iter()
-            .find(|c| c.id == options.target_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Target connection not found: {}",
-                    options.target_connection_id
-                )
-            })?
-            .clone();
-
-        (src, tgt)
-    };
+    let connections = saved_connections(&state)?;
+    let source_conn = require_connection(&connections, &options.source_connection_id)?;
+    let target_conn = require_connection(&connections, &options.target_connection_id)?;
 
     // Resolve each side's credential independently: a sync may mix a keychain
     // connection with a session-only one, and the refusal names whichever side
@@ -2921,14 +2907,7 @@ pub async fn mysql_dump(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
 
@@ -2984,14 +2963,7 @@ pub async fn mysql_restore(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     let password = tool_password(&state, &app_handle, &connection_id, conn.use_keychain)?;
 
@@ -3155,35 +3127,9 @@ pub async fn mysql_sync(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    // Get both connections from store
-    let (source_conn, target_conn) = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-
-        let src = connections
-            .iter()
-            .find(|c| c.id == options.source_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Source connection not found: {}",
-                    options.source_connection_id
-                )
-            })?
-            .clone();
-
-        let tgt = connections
-            .iter()
-            .find(|c| c.id == options.target_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Target connection not found: {}",
-                    options.target_connection_id
-                )
-            })?
-            .clone();
-
-        (src, tgt)
-    };
+    let connections = saved_connections(&state)?;
+    let source_conn = require_connection(&connections, &options.source_connection_id)?;
+    let target_conn = require_connection(&connections, &options.target_connection_id)?;
 
     // Each endpoint resolves its own credential; the refusal names the side
     // that still needs a session password.
@@ -3301,14 +3247,7 @@ pub async fn sqlite_dump(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     let path = conn.host.clone();
     // The dump destination is the granted path, never a renderer string.
@@ -3346,14 +3285,7 @@ pub async fn sqlite_restore(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let conn = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-        connections
-            .into_iter()
-            .find(|c| c.id == connection_id)
-            .ok_or_else(|| format!("Connection not found: {connection_id}"))?
-    };
+    let conn = require_connection(&saved_connections(&state)?, &connection_id)?;
 
     let path = conn.host.clone();
     // The dump input is the granted path, never a renderer string.
@@ -3390,34 +3322,10 @@ pub async fn sqlite_sync(
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    let (source_path, target_path) = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
-        let connections = store.get_connections().map_err(|e| e.to_string())?;
-
-        let src = connections
-            .iter()
-            .find(|c| c.id == options.source_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Source connection not found: {}",
-                    options.source_connection_id
-                )
-            })?
-            .clone();
-
-        let tgt = connections
-            .iter()
-            .find(|c| c.id == options.target_connection_id)
-            .ok_or_else(|| {
-                format!(
-                    "Target connection not found: {}",
-                    options.target_connection_id
-                )
-            })?
-            .clone();
-
-        (src.host, tgt.host)
-    };
+    let connections = saved_connections(&state)?;
+    let source_conn = require_connection(&connections, &options.source_connection_id)?;
+    let target_conn = require_connection(&connections, &options.target_connection_id)?;
+    let (source_path, target_path) = (source_conn.host, target_conn.host);
 
     let job_id_clone = job_id.clone();
     let app_handle_clone = app_handle.clone();
