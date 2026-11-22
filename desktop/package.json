@@ -33,7 +33,7 @@
         "fflate": "^0.8.3",
         "html-to-image": "^1.11.13",
         "lucide-react": "^1.77.0",
-        "monaco-editor": "^0.56.0",
+        "monaco-editor": "^0.57.0",
         "motion": "^12.43.0",
         "react": "^19.3.1",
         "react-dom": "^19.3.1",
