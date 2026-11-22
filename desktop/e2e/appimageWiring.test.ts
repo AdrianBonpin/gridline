@@ -88,6 +88,21 @@ describe("packaged AppImage smoke wiring", () => {
     expect(workflow).not.toMatch(/\n\s*appimage="\$\(ls dist\/\*\.AppImage/);
   });
 
+  it("installs the host GL runtime the packaged image relies on", () => {
+    const workflow = read(".github/workflows/appimage-smoke.yml");
+    // The image bundles GTK3 + WebKitGTK but deliberately not libEGL/libGL
+    // (linuxdeploy excludes driver-provided GL), so the host supplies them — as
+    // a desktop install does through libgtk-3-0/libwebkit2gtk-4.1-0. Without
+    // them the app dies at startup with "libEGL.so.1: cannot open shared object
+    // file", which is how this lane first failed after the path was fixed.
+    const ubuntuTooling = workflow.match(/apt-get install -y [^\n]*\n[^\n]*/g) ?? [];
+    expect(ubuntuTooling.length).toBeGreaterThanOrEqual(2);
+    for (const step of ubuntuTooling) {
+      expect(step).toMatch(/libegl1/);
+    }
+    expect(workflow).toContain("libglvnd-egl");
+  });
+
   it("installs the container's tooling before anything that needs it", () => {
     const workflow = read(".github/workflows/appimage-smoke.yml");
     const fedora = workflow.slice(workflow.indexOf("  smoke-fedora:"));

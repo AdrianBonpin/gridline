@@ -136,10 +136,18 @@ jobs:
 
       # FUSE to launch the image the normal way, xvfb for the display, xdotool +
       # x11-utils to find/measure the window, imagemagick to read its pixels.
+      #
+      # The GL/EGL runtime is the host's job: the packaged image bundles GTK3 and
+      # WebKitGTK but not libEGL/libGL, because linuxdeploy excludes
+      # driver-provided GL libraries on purpose (its .deb counterpart gets the
+      # stack through libgtk-3-0 / libwebkit2gtk-4.1-0). Without it the app dies
+      # at startup with "libEGL.so.1: cannot open shared object file", which is
+      # what a runner image — unlike a desktop install — does not provide.
       - name: Install the smoke's host tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2
+          sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2 \
+            libegl1 libgles2 libgl1
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -193,10 +201,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      # Same host runtime as the blocking lane: see the note there about libEGL.
       - name: Install the smoke's host tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2
+          sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2 \
+            libegl1 libgles2 libgl1
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -263,10 +273,20 @@ jobs:
           set -euo pipefail
           dnf install -y \
             gtk3 webkit2gtk4.1 libappindicator-gtk3 \
-            xorg-x11-server-Xvfb xdotool xorg-x11-utils \
-            ImageMagick fuse fuse-libs mesa-dri-drivers libglvnd-glx \
+            xorg-x11-server-Xvfb xdotool xwininfo \
+            ImageMagick fuse fuse-libs mesa-dri-drivers \
+            libglvnd-glx libglvnd-egl libglvnd-gles \
             tar gzip git unzip which findutils
           dnf clean all
+          # Distro packaging churns (Fedora retired the xorg-x11-utils
+          # metapackage that used to carry xwininfo), so assert the tools the
+          # smoke actually calls instead of assuming a package list implies them.
+          for tool in xvfb-run xdotool xwininfo import unzip; do
+            command -v "${tool}" >/dev/null 2>&1 || {
+              echo "missing required tool in the Fedora container: ${tool}" >&2
+              exit 1
+            }
+          done
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
