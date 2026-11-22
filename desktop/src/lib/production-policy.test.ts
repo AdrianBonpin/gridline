@@ -69,9 +69,12 @@ const EXPECTED_PERMISSIONS = [
   // @tauri-apps/plugin-dialog — native file pickers only.
   "dialog:allow-open",
   "dialog:allow-save",
-  // @tauri-apps/plugin-fs — settings/connection JSON import+export and the
-  // schema-visualizer image export. Paths are authorized by the native picker,
-  // which is the only thing that extends the fs scope at runtime.
+  // @tauri-apps/plugin-fs — connection JSON import+export (src/lib/importExport.ts)
+  // and the schema-visualizer image export (SchemaVisualizerPage.tsx). Paths are
+  // authorized by the native picker, which is the only thing that extends the fs
+  // scope at runtime. Settings import/export no longer uses this plugin: it goes
+  // through a Rust File Grant (settings::export_settings_to_file /
+  // read_settings_file), so a renderer-supplied path authorizes nothing there.
   "fs:allow-read-text-file",
   "fs:allow-write-text-file",
   "fs:allow-write-file",

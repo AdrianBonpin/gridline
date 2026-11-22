@@ -37,6 +37,17 @@ describe("connectionTarget", () => {
     expect(a.fingerprint.length).toBeGreaterThan(0);
   });
 
+  it("produces the exact canonical string the backend recomputes", () => {
+    // Cross-language pin: `db::change_target::connection_target_fingerprint` in
+    // Rust must produce this same string, or every commit would be refused as
+    // retargeted. Both sides assert the literal on purpose.
+    expect(connectionTarget(conn()).fingerprint).toBe(
+      "db_type=postgresql|host=localhost|port=5432|username=dev|database=appdb|" +
+        "ssh_host=|ssh_port=|ssh_user=|ssh_auth_method=|ssh_private_key_path=|" +
+        "ssl_mode=|ssl_ca_path=|ssl_cert_path=|ssl_key_path=",
+    );
+  });
+
   it("changes the fingerprint when the saved target changes", () => {
     const base = connectionTarget(conn()).fingerprint;
     const targets = [

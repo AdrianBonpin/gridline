@@ -254,6 +254,8 @@ pub fn run() {
             backup::sqlite_sync,
             settings::export_settings,
             settings::import_settings,
+            settings::export_settings_to_file,
+            settings::read_settings_file,
             schema_graph::get_schema_graph,
             schema_diff::compare_schemas,
             query::execute_query,

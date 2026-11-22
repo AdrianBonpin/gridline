@@ -1251,55 +1251,66 @@ fn mysql_dump_args_omit_column_statistics_for_mariadb_clients() {
 fn mysql_tls_args_map_each_mode_per_client() {
     // MySQL clients speak --ssl-mode.
     assert_eq!(
-        mysql_tls_args(false, Some("disable")),
+        mysql_tls_args(false, Some("disable")).unwrap(),
         vec!["--ssl-mode=DISABLED".to_string()]
     );
     assert_eq!(
-        mysql_tls_args(false, Some("require")),
+        mysql_tls_args(false, Some("require")).unwrap(),
         vec!["--ssl-mode=REQUIRED".to_string()]
     );
     assert_eq!(
-        mysql_tls_args(false, Some("verify-ca")),
+        mysql_tls_args(false, Some("verify-ca")).unwrap(),
         vec!["--ssl-mode=VERIFY_CA".to_string()]
     );
     assert_eq!(
-        mysql_tls_args(false, Some("verify-full")),
+        mysql_tls_args(false, Some("verify-full")).unwrap(),
         vec!["--ssl-mode=VERIFY_IDENTITY".to_string()]
-    );
-    // Legacy uppercase form from the pre-fix code path still maps.
-    assert_eq!(
-        mysql_tls_args(false, Some("REQUIRED")),
-        vec!["--ssl-mode=REQUIRED".to_string()]
     );
 
     // MariaDB clients have no --ssl-mode; --ssl defaults ON, so `require`
     // only needs verification turned off, and verify modes state both flags
     // explicitly (older clients default verification OFF).
     assert_eq!(
-        mysql_tls_args(true, Some("disable")),
+        mysql_tls_args(true, Some("disable")).unwrap(),
         vec!["--skip-ssl".to_string()]
     );
     assert_eq!(
-        mysql_tls_args(true, Some("require")),
+        mysql_tls_args(true, Some("require")).unwrap(),
         vec![
             "--ssl".to_string(),
             "--skip-ssl-verify-server-cert".to_string()
         ]
     );
     assert_eq!(
-        mysql_tls_args(true, Some("verify-full")),
+        mysql_tls_args(true, Some("verify-full")).unwrap(),
         vec!["--ssl".to_string(), "--ssl-verify-server-cert".to_string()]
     );
 
     // No mode at all -> nothing (client default).
-    assert!(mysql_tls_args(false, None).is_empty());
-    assert!(mysql_tls_args(true, None).is_empty());
+    assert!(mysql_tls_args(false, None).unwrap().is_empty());
+    assert!(mysql_tls_args(true, None).unwrap().is_empty());
+}
 
-    // An unrecognised non-empty mode fails closed to encrypted-but-verified.
-    assert_eq!(
-        mysql_tls_args(false, Some("bogus")),
-        vec!["--ssl-mode=REQUIRED".to_string()]
-    );
+/// The MySQL client flags use the SHARED parser, so a stray spelling can never be
+/// coerced into a different mode (ticket 23: unknown modes are hard errors).
+#[test]
+fn mysql_tls_args_reject_an_unknown_mode_instead_of_coercing_it() {
+    for mode in [
+        "bogus",
+        "verify_ca",
+        "REQUIRED",
+        "verify_identity",
+        "prefer",
+    ] {
+        for mariadb in [false, true] {
+            let err =
+                mysql_tls_args(mariadb, Some(mode)).expect_err("an unknown mode must fail closed");
+            assert!(
+                err.contains("unknown TLS mode") && err.contains("verify-full"),
+                "the error must name the valid set ({mode}, mariadb={mariadb}): {err}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1311,7 +1322,7 @@ fn mysql_sync_dump_args_never_emit_database_creation_or_selection() {
         "source_db".into(),
         "secret".into(),
     );
-    let args = build_mysql_sync_dump_args(&source, true, Some("require"));
+    let args = build_mysql_sync_dump_args(&source, true, Some("require")).unwrap();
     // #47: --databases emits CREATE DATABASE + USE, which would redirect the
     // restore into a source-named schema on the target server.
     assert!(
@@ -1338,9 +1349,9 @@ fn mysql_sync_dump_args_never_emit_database_creation_or_selection() {
 #[test]
 fn mysql_sync_dump_args_omit_column_statistics_for_mariadb_clients() {
     let source = MySqlConnParams::new("h".into(), 3306, "root".into(), "db".into(), "p".into());
-    let mariadb = build_mysql_sync_dump_args(&source, true, None);
+    let mariadb = build_mysql_sync_dump_args(&source, true, None).unwrap();
     assert!(!mariadb.iter().any(|a| a == "--skip-column-statistics"));
-    let mysql = build_mysql_sync_dump_args(&source, false, None);
+    let mysql = build_mysql_sync_dump_args(&source, false, None).unwrap();
     assert!(mysql.iter().any(|a| a == "--skip-column-statistics"));
 }
 
@@ -1353,7 +1364,7 @@ fn mysql_sync_restore_args_target_the_target_database_only() {
         "target_db".into(),
         "secret".into(),
     );
-    let args = mysql_sync_restore_args(&target, false, Some("verify-full"));
+    let args = mysql_sync_restore_args(&target, false, Some("verify-full")).unwrap();
     assert!(
         args.iter().any(|a| a == "--database=target_db"),
         "got: {args:?}"
@@ -1418,7 +1429,7 @@ fn bundled_mariadb_dump_accepts_our_generated_args() {
     );
 
     let mut args = build_mysql_dump_args(&conn, &opts, true);
-    args.extend(mysql_tls_args(true, Some("require")));
+    args.extend(mysql_tls_args(true, Some("require")).unwrap());
 
     let out = std::process::Command::new(&bundled)
         .args(&args)
@@ -2828,6 +2839,96 @@ fn sqlite_sync_replaces_the_target_objects() {
             .unwrap();
         assert_eq!(rows, 1);
     }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Sync reads one file and rewrites another. The two must not resolve to the same
+/// file: a sync onto its own source replaces the database it is reading.
+#[test]
+fn sqlite_sync_refuses_the_source_file_as_its_target() {
+    let dir = job_temp_dir("sqlite_sync_self");
+    let db = dir.join("app.db");
+    write_seed_db(&db);
+    let before = std::fs::read(&db).unwrap();
+
+    let err = run_sqlite_sync(db.to_str().unwrap(), db.to_str().unwrap()).unwrap_err();
+    assert!(
+        err.to_lowercase().contains("same file"),
+        "the refusal must say why, got: {err}"
+    );
+    assert_eq!(
+        before,
+        std::fs::read(&db).unwrap(),
+        "a refused sync must leave the source database byte-identical"
+    );
+
+    // The same file spelled differently is still the same file.
+    let spelled = dir.join(".").join("app.db");
+    assert!(run_sqlite_sync(db.to_str().unwrap(), spelled.to_str().unwrap()).is_err());
+    assert_eq!(before, std::fs::read(&db).unwrap());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A hard link has a different path but the same identity, so writing through it
+/// would still replace the source.
+#[test]
+fn sqlite_sync_refuses_a_hard_link_to_the_source() {
+    let dir = job_temp_dir("sqlite_sync_hardlink");
+    let db = dir.join("app.db");
+    write_seed_db(&db);
+    let before = std::fs::read(&db).unwrap();
+    let link = dir.join("linked.db");
+    std::fs::hard_link(&db, &link).unwrap();
+
+    let err = run_sqlite_sync(db.to_str().unwrap(), link.to_str().unwrap()).unwrap_err();
+    assert!(err.to_lowercase().contains("same file"), "got: {err}");
+    assert_eq!(before, std::fs::read(&db).unwrap());
+    assert_eq!(before, std::fs::read(&link).unwrap());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A symlinked target resolves to the source as well.
+#[test]
+#[cfg(unix)]
+fn sqlite_sync_refuses_a_symlinked_target_that_names_the_source() {
+    let dir = job_temp_dir("sqlite_sync_symlink");
+    let db = dir.join("app.db");
+    write_seed_db(&db);
+    let before = std::fs::read(&db).unwrap();
+    let link = dir.join("linked.db");
+    std::os::unix::fs::symlink(&db, &link).unwrap();
+
+    let err = run_sqlite_sync(db.to_str().unwrap(), link.to_str().unwrap()).unwrap_err();
+    assert!(err.to_lowercase().contains("same file"), "got: {err}");
+    assert_eq!(before, std::fs::read(&db).unwrap());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sync whose source file does not exist must fail instead of creating an empty
+/// database and then wiping the target with it.
+#[test]
+fn sqlite_sync_refuses_a_missing_source_without_creating_it() {
+    let dir = job_temp_dir("sqlite_sync_missing_src");
+    let src_path = dir.join("absent.db");
+    let tgt_path = dir.join("tgt.db");
+    write_seed_db(&tgt_path);
+    let before = std::fs::read(&tgt_path).unwrap();
+
+    let err = run_sqlite_sync(src_path.to_str().unwrap(), tgt_path.to_str().unwrap()).unwrap_err();
+    assert!(
+        err.contains("not an existing file"),
+        "the refusal must name the missing source, got: {err}"
+    );
+    assert!(!src_path.exists(), "the source must not be created");
+    assert_eq!(
+        before,
+        std::fs::read(&tgt_path).unwrap(),
+        "a refused sync must not touch the target"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -4615,6 +4716,251 @@ fn a_session_credential_sync_keeps_both_passwords_out_of_argv() {
             "the {side} credential must never be a process argument: {argv}"
         );
     }
+}
+
+// ------------------------------------------------------------------
+// PostgreSQL tool jobs must enforce the connection's TLS decision (F1)
+// ------------------------------------------------------------------
+
+fn pg_tls_params(mode: Option<&str>) -> PgConnParams {
+    PgConnParams::new(
+        "db.example.com".into(),
+        5432,
+        "u".into(),
+        "appdb".into(),
+        "secret".into(),
+    )
+    .with_tls(
+        mode.map(str::to_string),
+        Some("/etc/ssl/ca.pem".into()),
+        None,
+        None,
+    )
+}
+
+fn env_value(env: &str, key: &str) -> Option<String> {
+    env.lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}=")))
+        .map(str::to_string)
+}
+
+#[test]
+fn pg_tool_tls_env_maps_every_mode_for_libpq() {
+    // `disable` and `require` are libpq's own spellings.
+    assert_eq!(
+        env_value(
+            &pg_tls_params(Some("disable"))
+                .tls_env()
+                .unwrap()
+                .into_iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "PGSSLMODE"
+        )
+        .as_deref(),
+        Some("disable")
+    );
+    assert_eq!(
+        env_value(
+            &pg_tls_params(Some("require"))
+                .tls_env()
+                .unwrap()
+                .into_iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "PGSSLMODE"
+        )
+        .as_deref(),
+        Some("require")
+    );
+    // Both verify modes require the hostname too: the app's driver treats
+    // verify-ca as verify-full in v1, so the tools must not be looser.
+    for mode in ["verify-ca", "verify-full"] {
+        let env: Vec<(String, String)> = pg_tls_params(Some(mode)).tls_env().unwrap();
+        assert!(
+            env.contains(&("PGSSLMODE".to_string(), "verify-full".to_string())),
+            "{mode} must demand full verification: {env:?}"
+        );
+        assert!(
+            env.contains(&("PGSSLROOTCERT".to_string(), "/etc/ssl/ca.pem".to_string())),
+            "{mode} must pass the connection's CA bundle: {env:?}"
+        );
+    }
+    // `disable` needs no certificate material at all.
+    let disabled: Vec<(String, String)> = pg_tls_params(Some("disable")).tls_env().unwrap();
+    assert!(
+        !disabled.iter().any(|(k, _)| k == "PGSSLROOTCERT"),
+        "a disabled-TLS connection passes no CA path: {disabled:?}"
+    );
+    // A managed provider with no stored mode still encrypts (the app's default).
+    let managed = PgConnParams::new(
+        "ep-x-pooler.eu.aws.neon.tech".into(),
+        5432,
+        "u".into(),
+        "d".into(),
+        "secret".into(),
+    );
+    assert!(managed
+        .tls_env()
+        .unwrap()
+        .contains(&("PGSSLMODE".to_string(), "require".to_string())));
+    // With no mode configured nothing is exported, so libpq's own `prefer`
+    // default (attempt TLS, never insist) is unchanged — nothing was configured
+    // to relax.
+    let plain = PgConnParams::new(
+        "db.example.com".into(),
+        5432,
+        "u".into(),
+        "d".into(),
+        "p".into(),
+    );
+    assert!(plain.tls_env().unwrap().is_empty());
+}
+
+/// An unknown mode is a hard error, never a silent `prefer` (ticket 23).
+#[test]
+fn pg_tool_tls_env_rejects_an_unknown_mode() {
+    for mode in ["verifyidentity", "prefer", "bogus", "verify_ca"] {
+        let err = pg_tls_params(Some(mode))
+            .tls_env()
+            .expect_err("an unknown mode must fail closed");
+        assert!(
+            err.contains("unknown TLS mode") && err.contains("verify-full"),
+            "the error must name the valid set: {err}"
+        );
+    }
+}
+
+/// The dump tool receives the TLS environment, so a `verify-full` connection
+/// cannot fall back to libpq's plaintext-capable `prefer`.
+#[cfg(unix)]
+#[test]
+fn pg_dump_tool_invocation_enforces_verify_full() {
+    let dir = job_temp_dir("pg_dump_tls_env");
+    let env_out = dir.join("env.txt");
+    let args_out = dir.join("args.txt");
+    let script = format!(
+        "#!/bin/sh\nenv > '{}'\nprintf '%s\\n' \"$@\" > '{}'\nexit 0\n",
+        env_out.display(),
+        args_out.display()
+    );
+    let tool = write_fake_tool(&dir, "pg_dump", &script);
+    let tools = PgToolPaths {
+        pg_dump: tool,
+        pg_restore: "pg_restore".to_string(),
+        psql: "psql".to_string(),
+    };
+    let options = BackupOptions {
+        format: "custom".into(),
+        file_path: dir.join("out.dump").to_string_lossy().into_owned(),
+        schema: None,
+        tables: None,
+        no_owner: true,
+    };
+
+    run_pg_dump(&pg_tls_params(Some("verify-full")), &options, &tools).expect("the dump runs");
+
+    let env = std::fs::read_to_string(&env_out).expect("the tool ran");
+    assert_eq!(
+        env_value(&env, "PGSSLMODE").as_deref(),
+        Some("verify-full"),
+        "the tool must be told to verify, not to prefer:\n{env}"
+    );
+    assert_eq!(
+        env_value(&env, "PGSSLROOTCERT").as_deref(),
+        Some("/etc/ssl/ca.pem"),
+        "the connection's CA bundle must reach the tool:\n{env}"
+    );
+    assert_eq!(
+        env_value(&env, "PGPASSWORD").as_deref(),
+        Some("secret"),
+        "the password still travels in the environment, never in argv:\n{env}"
+    );
+    let args = std::fs::read_to_string(&args_out).expect("the tool ran");
+    assert!(args.lines().any(|a| a == "--host=db.example.com"), "{args}");
+    assert!(
+        !args.contains("secret"),
+        "no credential may appear in the process arguments: {args}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The restore tools receive the same environment (psql for plain dumps).
+#[cfg(unix)]
+#[test]
+fn pg_restore_tool_invocation_enforces_verify_full() {
+    let dir = job_temp_dir("pg_restore_tls_env");
+    let env_out = dir.join("env.txt");
+    let script = format!("#!/bin/sh\nenv > '{}'\nexit 0\n", env_out.display());
+    let pg_restore = write_fake_tool(&dir, "pg_restore", &script);
+    let psql = write_fake_tool(&dir, "psql", &script);
+    let tools = PgToolPaths {
+        pg_dump: "pg_dump".to_string(),
+        pg_restore,
+        psql,
+    };
+    let options = RestoreOptions {
+        format: "custom".into(),
+        file_path: dir.join("in.dump").to_string_lossy().into_owned(),
+        clean: false,
+        schema: None,
+    };
+
+    run_pg_restore(&pg_tls_params(Some("verify-full")), &options, &tools)
+        .expect("the restore runs");
+    let env = std::fs::read_to_string(&env_out).expect("the tool ran");
+    assert_eq!(env_value(&env, "PGSSLMODE").as_deref(), Some("verify-full"));
+
+    // ...and for a plain dump executed through psql.
+    std::fs::remove_file(&env_out).ok();
+    let plain = RestoreOptions {
+        format: "plain".into(),
+        file_path: dir.join("in.sql").to_string_lossy().into_owned(),
+        clean: false,
+        schema: None,
+    };
+    std::fs::write(&plain.file_path, "CREATE TABLE t (id INT);\n").unwrap();
+    run_pg_restore(&pg_tls_params(Some("verify-full")), &plain, &tools)
+        .expect("the plain restore runs through psql");
+    let env = std::fs::read_to_string(&env_out).expect("psql ran");
+    assert_eq!(
+        env_value(&env, "PGSSLMODE").as_deref(),
+        Some("verify-full"),
+        "psql restores must verify TLS too:\n{env}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An unknown mode refuses the job instead of running the tool with `prefer`.
+#[cfg(unix)]
+#[test]
+fn pg_dump_refuses_an_unknown_tls_mode_without_running_the_tool() {
+    let dir = job_temp_dir("pg_dump_tls_unknown");
+    let ran = dir.join("ran.txt");
+    let script = format!("#!/bin/sh\ntouch '{}'\nexit 0\n", ran.display());
+    let tool = write_fake_tool(&dir, "pg_dump", &script);
+    let tools = PgToolPaths {
+        pg_dump: tool,
+        pg_restore: "pg_restore".to_string(),
+        psql: "psql".to_string(),
+    };
+    let options = BackupOptions {
+        format: "custom".into(),
+        file_path: dir.join("out.dump").to_string_lossy().into_owned(),
+        schema: None,
+        tables: None,
+        no_owner: true,
+    };
+
+    let err = run_pg_dump(&pg_tls_params(Some("bogus")), &options, &tools)
+        .expect_err("an unknown TLS mode must fail closed");
+    assert!(err.contains("unknown TLS mode"), "{err}");
+    assert!(!ran.exists(), "the dump tool must not run at all");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------

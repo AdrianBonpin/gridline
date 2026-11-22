@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ChangeOrigin } from "./changeOrigin";
 import type { Connection, ConnectionInput, ConnectionTestResult, Folder, FolderInput, Tag, TagInput, Settings, ImportResult, TableInfo, QueryResult, BackupOptions, PgRestoreRequest, SyncOptions, PgToolStatus, MySqlToolStatus, MySqlBackupOptions, MySqlRestoreRequest, SqliteRestoreRequest, FunctionInfo, TriggerInfo, SequenceInfo, EnumInfo, ExtensionInfo, SchemaGraph, IndexInfo, ConstraintInfo, RecentConnection, ObjectSearchHit, DependencyInfo, RoleInfo, PrivilegeEntry, RebuildReadiness, MaintenanceResult, TablespaceInfo, ColumnInfo, HypertableListResponse, MultiQueryResult, PendingSqlFile, HostKeyFingerprint, SshHostTrustState, ImportSource } from "./types";
 import type { FileGrant, FileGrantRequest } from "./fileGrant";
 import type { FilterRule, SortRule } from "../stores/dbViewerStore";
@@ -191,8 +192,21 @@ export async function getTableData(
   return invoke<QueryResult>("get_table_data", { connectionId, schema, table, page, pageSize, filters, sorts });
 }
 
-export async function executeChange(connectionId: string, change: ChangePayload): Promise<void> {
-  return invoke<void>("execute_change", { connectionId, change });
+/**
+ * Apply one queued change.
+ *
+ * `origin` is the Change Origin the work was staged against. The backend
+ * revalidates it against the saved connection and refuses the change when the
+ * connection has been retargeted since, so a reused connection id can never
+ * redirect a staged write (the renderer's own check is a convenience, not the
+ * guarantee).
+ */
+export async function executeChange(
+  connectionId: string,
+  change: ChangePayload,
+  origin: ChangeOrigin,
+): Promise<void> {
+  return invoke<void>("execute_change", { connectionId, change, origin });
 }
 
 export async function getTableDdl(connectionId: string, schema: string, table: string): Promise<string> {
@@ -351,6 +365,27 @@ export async function sqliteSync(options: SyncOptions): Promise<string> {
 
 export async function exportSettings(): Promise<string> {
   return invoke<string>("export_settings");
+}
+
+/**
+ * Export settings into the file a File Grant authorized.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (write intent) and is
+ * consumed by this call: the renderer never supplies a path, so a bare path
+ * authorizes nothing.
+ */
+export async function exportSettingsToFile(fileGrant: string): Promise<string> {
+  return invoke<string>("export_settings_to_file", { fileGrant });
+}
+
+/**
+ * Read a settings file through a File Grant.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (read intent) and is
+ * consumed by this call. The returned text is validated before it is applied.
+ */
+export async function readSettingsFile(fileGrant: string): Promise<string> {
+  return invoke<string>("read_settings_file", { fileGrant });
 }
 
 export async function importSettings(json: string): Promise<void> {
