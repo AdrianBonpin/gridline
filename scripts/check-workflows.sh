@@ -608,7 +608,9 @@ fi
 
 # Behavioural check: the packaged-manifest gate passes an honest bundle and
 # fails a tampered binary, a missing tool, an unexpected extra file, and a tool
-# that reports a different version. All against synthetic tools, no toolchain.
+# that reports a different version — on BOTH bundle shapes (bare names, and the
+# `.exe` names the Windows job writes), and only for the shape the requested
+# platform produces. All against synthetic tools, no toolchain.
 manifest_behaviour() {
   local tmp rc
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/gridline-manifest-check.XXXXXX")" || return 1
@@ -646,8 +648,21 @@ manifest_behaviour() {
       done
       mv "$d/checksums.txt.new" "$d/checksums.txt"
     }
+    # The verifier is asked for one bundle shape at a time: the release
+    # workflow passes the runner label, so the probe does too instead of
+    # depending on the host it happens to run on.
+    verify_unix() { "$verify" --resources "$resources" --conf "$conf" --platform ubuntu-22.04; }
+    verify_windows() { "$verify" --resources "$resources" --conf "$conf" --platform windows-latest; }
+    # Every fixture starts from empty resource directories, so one platform's
+    # shape can never leak into the next case.
+    reset_bundles() {
+      rm -rf "$resources" || return 1
+      mkdir -p "$resources/pg_tools" "$resources/mysql_tools"
+    }
+    # The Unix shape: bare binary names, as the Linux and macOS jobs write them.
     build_bundle() {
       local t
+      reset_bundles || return 1
       for t in pg_dump pg_restore psql; do
         write_tool "$resources/pg_tools/$t" "$t (PostgreSQL) 16.4" || return 1
       done
@@ -658,6 +673,21 @@ manifest_behaviour() {
       # carries GNU's escape marker and the digest comparison has to normalise
       # it (the Windows-runner failure in v0.9.0).
       write_tool "$resources/pg_tools/back\slash.dll" "pg_dump (PostgreSQL) 16.4" || return 1
+      write_manifest "$resources/pg_tools" || return 1
+      write_manifest "$resources/mysql_tools"
+    }
+    # The Windows shape (the v0.9.1 Windows release failure): the Windows job
+    # writes AND manifests `.exe` names for both resource directories, so the
+    # gate has to expect those names there.
+    build_windows_bundle() {
+      local t
+      reset_bundles || return 1
+      for t in pg_dump pg_restore psql; do
+        write_tool "$resources/pg_tools/$t.exe" "$t (PostgreSQL) 16.4" || return 1
+      done
+      for t in mariadb-dump mariadb; do
+        write_tool "$resources/mysql_tools/$t.exe" "$t  Ver 10.19  Distrib 11.4.5-MariaDB, for test" || return 1
+      done
       write_manifest "$resources/pg_tools" || return 1
       write_manifest "$resources/mysql_tools"
     }
@@ -672,24 +702,23 @@ manifest_behaviour() {
     fi
     # An honest bundle passes — including the file whose manifest digest is
     # written with the escape marker.
-    "$verify" --resources "$resources" --conf "$conf" >/dev/null || exit 1
+    verify_unix >/dev/null || exit 1
 
     # A binary swapped after the manifest was written fails.
-    out="$("$verify" --resources "$resources" --conf "$conf" 2>&1)" || true
     printf '#!/bin/sh\necho "pg_dump (PostgreSQL) 16.4"\necho swapped\n' > "$resources/pg_tools/pg_dump"
-    if out="$("$verify" --resources "$resources" --conf "$conf" 2>&1)"; then exit 1; fi
+    if out="$(verify_unix 2>&1)"; then exit 1; fi
     printf '%s' "$out" | grep -q 'does not match its manifest digest' || exit 1
 
     # A missing required tool fails.
     build_bundle || exit 1
     rm -f "$resources/pg_tools/psql"
-    if out="$("$verify" --resources "$resources" --conf "$conf" 2>&1)"; then exit 1; fi
+    if out="$(verify_unix 2>&1)"; then exit 1; fi
     printf '%s' "$out" | grep -q 'required tool psql is not bundled' || exit 1
 
     # An unexpected extra executable fails.
     build_bundle || exit 1
     write_tool "$resources/pg_tools/pg_smuggled" "pg_smuggled" || exit 1
-    if out="$("$verify" --resources "$resources" --conf "$conf" 2>&1)"; then exit 1; fi
+    if out="$(verify_unix 2>&1)"; then exit 1; fi
     printf '%s' "$out" | grep -q 'is in the bundle but not in checksums.txt' || exit 1
 
     # A tool built from a different source (wrong reported version) fails, even
@@ -697,13 +726,61 @@ manifest_behaviour() {
     build_bundle || exit 1
     write_tool "$resources/pg_tools/pg_dump" "pg_dump (PostgreSQL) 15.1" || exit 1
     write_manifest "$resources/pg_tools" || exit 1
-    if out="$("$verify" --resources "$resources" --conf "$conf" 2>&1)"; then exit 1; fi
+    if out="$(verify_unix 2>&1)"; then exit 1; fi
     printf '%s' "$out" | grep -q 'does not report pinned version 16.4' || exit 1
+
+    # --- the Windows shape (v0.9.1 Windows release failure) ------------------
+    # A correct `.exe` bundle passes for BOTH resource directories, and each
+    # tool is executed through its real `.exe` path (the ok line names it).
+    build_windows_bundle || exit 1
+    out="$(verify_windows 2>&1)" || {
+      echo "manifest probe: a correct Windows bundle (.exe names) is rejected: $out" >&2
+      exit 1
+    }
+    printf '%s' "$out" | grep -q 'pg_tools: pg_dump.exe reports the pinned version' || exit 1
+    printf '%s' "$out" | grep -q 'mysql_tools: mariadb.exe reports the pinned version' || exit 1
+
+    # The expected name follows the platform, not a filesystem probe (MSYS2
+    # resolves `pg_dump` to `pg_dump.exe`, which is what produced the false
+    # "missing from checksums.txt" failure). The same `.exe` bundle must
+    # therefore FAIL as a Unix bundle, rather than pass by probing.
+    if out="$(verify_unix 2>&1)"; then
+      echo "manifest probe: accepts a Windows-shaped bundle as a Unix bundle" >&2
+      exit 1
+    fi
+    printf '%s' "$out" | grep -q 'required tool pg_dump is not bundled' || exit 1
+
+    # A missing `.exe` tool fails — for both resource directories.
+    build_windows_bundle || exit 1
+    rm -f "$resources/mysql_tools/mariadb.exe"
+    write_manifest "$resources/mysql_tools" || exit 1
+    if out="$(verify_windows 2>&1)"; then exit 1; fi
+    printf '%s' "$out" | grep -q 'required tool mariadb.exe is not bundled' || exit 1
+
+    # An unexpected extra `.exe` fails the exact-file-set check.
+    build_windows_bundle || exit 1
+    write_tool "$resources/pg_tools/pg_smuggled.exe" "pg_smuggled" || exit 1
+    if out="$(verify_windows 2>&1)"; then exit 1; fi
+    printf '%s' "$out" | grep -q 'pg_smuggled.exe is in the bundle but not in checksums.txt' || exit 1
+
+    # A `.exe` reporting the wrong version fails, even with a regenerated
+    # manifest — proof the check runs the `.exe` itself, not a bare name.
+    build_windows_bundle || exit 1
+    write_tool "$resources/pg_tools/psql.exe" "psql (PostgreSQL) 15.1" || exit 1
+    write_manifest "$resources/pg_tools" || exit 1
+    if out="$(verify_windows 2>&1)"; then exit 1; fi
+    printf '%s' "$out" | grep -q 'psql.exe does not report pinned version 16.4' || exit 1
+
+    # A `.exe` on disk that the manifest does not name fails.
+    build_windows_bundle || exit 1
+    ( cd "$resources/pg_tools" && grep -Fv 'psql.exe' checksums.txt > checksums.txt.new && mv checksums.txt.new checksums.txt ) || exit 1
+    if out="$(verify_windows 2>&1)"; then exit 1; fi
+    printf '%s' "$out" | grep -q 'psql.exe is missing from checksums.txt' || exit 1
 
     # A bundle config that would not ship the verified tools fails.
     build_bundle || exit 1
     printf '{"bundle":{"resources":["resources/pg_tools/*"]}}\n' > "$conf"
-    if out="$("$verify" --resources "$resources" --conf "$conf" 2>&1)"; then exit 1; fi
+    if out="$(verify_unix 2>&1)"; then exit 1; fi
     printf '%s' "$out" | grep -q 'does not bundle resources/mysql_tools' || exit 1
   )
   rc=$?
@@ -713,7 +790,7 @@ manifest_behaviour() {
 
 manifest_behaviour
 if [ $? -eq 0 ]; then
-  pass "the manifest gate passes an honest bundle and fails tampered, missing, extra or wrong-version tools"
+  pass "the manifest gate passes an honest bundle and fails tampered, missing, extra or wrong-version tools, on both the Unix and the Windows (.exe) bundle shape"
 else
   fail "scripts/verify-bundled-tools.sh no longer gates the packaged manifests (run it by hand to debug)"
 fi

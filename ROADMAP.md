@@ -6,7 +6,7 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 
 ---
 
-## ✅ Shipped (0.9.1)
+## ✅ Shipped (0.9.2)
 
 - **SSH host trust before authentication** — a server's host key is verified before any password, key or passphrase is sent: known hosts connect silently, an unknown host blocks authentication until its fingerprint is accepted once and remembered, a changed key fails closed with both fingerprints, and replacing stale trust is a separate re-enrollment flow with no override in the authentication error path ([#72](https://github.com/AdrianBonpin/gridline/issues/72), [#98](https://github.com/AdrianBonpin/gridline/issues/98)).
 - **TLS fails closed and verifies the real host** — unrecognised TLS modes are rejected at save, import and connect instead of silently connecting in plaintext, and certificate verification through an SSH tunnel validates the original database hostname rather than the loopback endpoint (MySQL refuses `verify-full` through a tunnel rather than weakening it) ([#73](https://github.com/AdrianBonpin/gridline/issues/73)).
@@ -16,7 +16,7 @@ This file is the **source of truth** for what Gridline is building. [AGENTS.md](
 - **Reliability** — tool jobs are owned and cancellable with process-tree termination on cancel and on quit, probes are bounded, connections and tabs are no longer blocked by another connection's slow work, and a disconnect closes pool, tunnel and cancellation state together while a failed reconnect keeps the working session ([#75](https://github.com/AdrianBonpin/gridline/issues/75), [#80](https://github.com/AdrianBonpin/gridline/issues/80), [#74](https://github.com/AdrianBonpin/gridline/issues/74)).
 - **Release hardening** — one GitHub release pipeline with a release gate, pinned actions, job-scoped tokens, verified tool inputs, fail-closed macOS signing/notarization verification, validated cask rendering, dependency advisories remediated with governed exceptions, cross-platform compile/test coverage, and a version-consistency test that covers every manifest, the landing page, the changelog, the README and this file ([#88](https://github.com/AdrianBonpin/gridline/issues/88), [#101](https://github.com/AdrianBonpin/gridline/issues/101), [#102](https://github.com/AdrianBonpin/gridline/issues/102), [#91](https://github.com/AdrianBonpin/gridline/issues/91)).
 - **Linux support language corrected; #62 still open** — releases are one Ubuntu 22.04 x86_64 build repackaged as `.deb`/`.rpm`/`.AppImage`, with no per-distribution certification and no ARM build. [Issue #62](https://github.com/AdrianBonpin/gridline/issues/62) (AppImage black window on Fedora) remains open with no root cause and no shipped fix; the README now carries a diagnostic checklist (exact Fedora release, session type, GPU/driver, terminal output, workaround ladder) so it can be reproduced from evidence ([#85](https://github.com/AdrianBonpin/gridline/issues/85)).
-- **Version bump** 0.8.4 → **0.9.1**.
+- **Version bump** 0.8.4 → **0.9.2**.
 
 ## ✅ Shipped (0.8.4)
 

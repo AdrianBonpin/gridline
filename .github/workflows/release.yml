@@ -610,11 +610,19 @@ jobs:
       # manifest recorded (e.g. one swapped after the build step), an unexpected
       # extra file, or a tool that reports a version other than the pin fails
       # this job, so no unverified executable can be uploaded.
+      #
+      # PLATFORM selects the shape the checked bundle must have: the Windows job
+      # writes (and manifests) `.exe` names, the other jobs bare names. It is
+      # passed explicitly rather than sniffed from the filesystem, because on
+      # the Windows runner MSYS2 resolves `pg_dump` to `pg_dump.exe` and a probe
+      # cannot tell the two shapes apart.
       - name: Verify bundled tool manifests
         shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
-          "${GITHUB_WORKSPACE}/scripts/verify-bundled-tools.sh"
+          "${GITHUB_WORKSPACE}/scripts/verify-bundled-tools.sh" --platform "$PLATFORM"
 
       # Non-macOS installers have nothing to verify, so each is built and
       # uploaded in one step. macOS deliberately does NOT use this step (see the
