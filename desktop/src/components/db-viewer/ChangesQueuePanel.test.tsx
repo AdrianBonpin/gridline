@@ -6,6 +6,7 @@ import { useDbViewerStore } from "../../stores/dbViewerStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useNotificationStore } from "../../stores/notificationStore";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import * as commands from "../../lib/commands";
 import type { Connection } from "../../lib/types";
 
@@ -227,6 +228,77 @@ describe("ChangesQueuePanel", () => {
     render(<ChangesQueuePanel />);
     fireEvent.keyDown(document, { key: "s", metaKey: true });
     await waitFor(() => expect(exec).toHaveBeenCalled());
+  });
+
+  it("Cmd+S does not commit while a text field is being edited", async () => {
+    const exec = vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+    render(<ChangesQueuePanel />);
+
+    // The user is typing in a cell editor / filter box: the commit shortcut
+    // must not reach a durable write.
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    fireEvent.keyDown(input, { key: "s", metaKey: true });
+
+    await act(async () => {});
+    expect(exec).not.toHaveBeenCalled();
+    expect(useDbViewerStore.getState().changesQueue[0].status).toBe("pending");
+  });
+
+  it("Cmd+S does not commit while a modal is open", async () => {
+    const exec = vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+    const { rerender } = render(
+      <>
+        <ChangesQueuePanel />
+        <ConfirmDialog open title="Delete?" message="Are you sure?" onConfirm={vi.fn()} onCancel={vi.fn()} />
+      </>,
+    );
+
+    fireEvent.keyDown(document, { key: "s", metaKey: true });
+    await act(async () => {});
+    expect(exec).not.toHaveBeenCalled();
+
+    // Once the modal is gone the shortcut works again.
+    rerender(<ChangesQueuePanel />);
+    fireEvent.keyDown(document, { key: "s", metaKey: true });
+    await waitFor(() => expect(exec).toHaveBeenCalledTimes(1));
+  });
+
+  it("registers the commit shortcut once across re-renders", async () => {
+    const exec = vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+    const { rerender } = render(<ChangesQueuePanel onCommitted={vi.fn()} />);
+    // A parent re-render hands down a fresh callback identity; a leaked
+    // listener would commit the same change twice.
+    for (let tick = 0; tick < 4; tick += 1) {
+      rerender(<ChangesQueuePanel onCommitted={vi.fn()} />);
+    }
+
+    fireEvent.keyDown(document, { key: "s", metaKey: true });
+
+    await waitFor(() => expect(exec).toHaveBeenCalled());
+    await act(async () => {});
+    expect(exec).toHaveBeenCalledTimes(1);
   });
 
   it("Clear All empties the queue", async () => {

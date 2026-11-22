@@ -676,8 +676,22 @@ jobs:
           SHA_ARM: ${{ steps.meta.outputs.sha_arm }}
           SHA_INTEL: ${{ steps.meta.outputs.sha_intel }}
         run: |
+          set -euo pipefail
           mkdir -p tap/Casks
-          ./scripts/render-cask.sh "$VERSION" "$SHA_ARM" "$SHA_INTEL" > tap/Casks/gridline.rb
+          # The renderer validates the version and both checksums, refuses a
+          # version that disagrees with the release tag, and re-hashes the two
+          # DMGs downloaded above, so the cask can only describe the artifacts
+          # this release actually published (ticket 46). Any failure aborts the
+          # step before anything is committed or pushed to the tap.
+          ./scripts/render-cask.sh \
+            --tag "$RELEASE_TAG" \
+            --dmg-arm /tmp/arm.dmg \
+            --dmg-intel /tmp/intel.dmg \
+            "$VERSION" "$SHA_ARM" "$SHA_INTEL" > tap/Casks/gridline.rb
+          [ -s tap/Casks/gridline.rb ] || {
+            echo "::error::scripts/render-cask.sh produced an empty cask"
+            exit 1
+          }
           cat tap/Casks/gridline.rb
           cd tap
           git config user.name "github-actions[bot]"

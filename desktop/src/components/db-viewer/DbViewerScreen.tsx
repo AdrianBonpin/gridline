@@ -4,7 +4,7 @@ import { format as formatSql } from "sql-formatter";
 import { TooltipProvider } from "../ui/Tooltip";
 import { DbViewerSidebar, NAV_CAPABILITY_KEY } from "./DbViewerSidebar";
 import { DbViewerToolbar } from "./DbViewerToolbar";
-import { isSchemaModifyingQuery } from "../../lib/utils";
+import { errorText, isSchemaModifyingQuery } from "../../lib/utils";
 import { planExecution } from "../../lib/executionGuard";
 import {
     confirmationStatus,
@@ -47,11 +47,12 @@ import { QueriesPanel } from "../queries/QueriesPanel";
 import { useQueryStore } from "../../stores/queryStore";
 import { ObjectSearchPalette } from "./ObjectSearchPalette";
 import * as cmd from "../../lib/commands";
-import type { EnumInfo } from "../../lib/types";
+import type { EnumInfo, MultiQueryResult } from "../../lib/types";
 import type { FkOption } from "../grid/CellEditor";
 import { fkRelation, fkTarget } from "../../lib/fkTarget";
-import type { QueueItem } from "../../stores/dbViewerStore";
+import type { QueueItem, ViewerTab } from "../../stores/dbViewerStore";
 import { rowIdentityFor } from "../../lib/rowIdentity";
+import { resolveRowDetail, type RowDetailSet } from "../../lib/rowDetail";
 import {
     rowSelectionKey,
     rowSelectionKeys,
@@ -150,6 +151,23 @@ export function derivePendingCellKeys(
         }
     });
     return keys;
+}
+
+/**
+ * Does this tab render one grid per result set (a multi-statement run) instead
+ * of a single grid for its `data`?
+ *
+ * Used by both the results render and the row-detail resolver, so the two can
+ * never disagree about which rows are on screen — the drawer is resolved inside
+ * exactly the result sets the grids are showing.
+ */
+export function displaysResultSetPanels(
+    tab: ViewerTab | null,
+): tab is ViewerTab & { multi: MultiQueryResult } {
+    if (!tab || tab.tabType !== "query" || !tab.multi) return false;
+    return (
+        tab.multi.result_sets.length > 1 || tab.multi.notices.length > 0
+    );
 }
 
 /**
@@ -322,7 +340,6 @@ export function DbViewerScreen({
     const [tablePanelWidth, setTablePanelWidth] = useState(280);
     const [queriesPanelWidth, setQueriesPanelWidth] = useState(280);
     const [searchQuery, setSearchQuery] = useState("");
-    const [rowDetailIdx, setRowDetailIdx] = useState<number | null>(null);
     const [editModalOpen, setEditModalOpen] = useState(false);
     // A destructive confirmation is bound to exactly one request (ticket 17):
     // its tab, Change Origin, reviewed SQL revision, and intent all travel
@@ -670,10 +687,6 @@ export function DbViewerScreen({
         },
         [updateChange],
     );
-
-    const handleOpenRowDetail = useCallback((rowIndex: number) => {
-        setRowDetailIdx(rowIndex);
-    }, []);
 
     /**
      * After Commit All: refresh **every** affected tab and clear its optimistic
@@ -1358,6 +1371,8 @@ export function DbViewerScreen({
     const toggleRowSelection = useDbViewerStore((s) => s.toggleRowSelection);
     const setRowSelection = useDbViewerStore((s) => s.setRowSelection);
     const clearRowSelection = useDbViewerStore((s) => s.clearRowSelection);
+    const openRowDetail = useDbViewerStore((s) => s.openRowDetail);
+    const clearRowDetail = useDbViewerStore((s) => s.clearRowDetail);
 
     /**
      * The selection, resolved against the rows on screen.
@@ -1383,6 +1398,35 @@ export function DbViewerScreen({
     const selectedRowData = useMemo(
         () => selectedIndices.map((index) => processedRows[index]!),
         [selectedIndices, processedRows],
+    );
+
+    /**
+     * The open row detail, resolved against the result sets currently displayed.
+     *
+     * Only the reference (result set + Row Identity) is remembered; the row is
+     * looked up in what this tab is showing right now. A reference that no
+     * longer resolves — another page, another sort, another table, a shorter
+     * multi-statement result — renders nothing at all rather than falling back
+     * to whatever now sits at the old position. The store closes the drawer on
+     * every such change, so this is the second line of defence, not the first.
+     */
+    const rowDetailSets = useMemo<RowDetailSet[]>(() => {
+        if (displaysResultSetPanels(activeTab)) {
+            return activeTab.multi.result_sets.map((set) => ({
+                columns: set.columns,
+                rows: set.rows,
+            }));
+        }
+        return [{ columns, rows: processedRows }];
+    }, [activeTab, columns, processedRows]);
+    const rowDetailRow = useMemo(
+        () =>
+            resolveRowDetail(
+                rowDetailSets,
+                dbType,
+                activeTab?.rowDetail ?? null,
+            ),
+        [rowDetailSets, dbType, activeTab?.rowDetail],
     );
 
     /** Toggle one row's selection by its identity, not by its position. */
@@ -1439,6 +1483,31 @@ export function DbViewerScreen({
         columns.map((col) => c.newData?.[col.name] ?? null),
     );
     const displayRows = [...pendingInsertRows, ...processedRows];
+
+    /**
+     * Open the row detail for a row of a displayed result set.
+     *
+     * The drawer is bound to the row's Row Identity and to the result set it
+     * came from (see `lib/rowSelection.ts`, `lib/rowDetail.ts`), never to the
+     * grid position it was clicked at: a row detail is opened from the rows
+     * currently displayed and resolved back against them, so a drawer can never
+     * outlive its result set and show another row's content.
+     */
+    const handleOpenRowDetail = useCallback(
+        (rowIndex: number, resultSet?: RowDetailSet & { index: number }) => {
+            const tabId = useDbViewerStore.getState().activeTabId;
+            const setColumns = resultSet?.columns ?? columns;
+            const setRows = resultSet?.rows ?? processedRows;
+            const row = setRows[rowIndex];
+            if (!tabId || !row) return;
+            const key = rowSelectionKey(setColumns, row, dbType);
+            // No columns means no Row Identity to bind to; the drawer never
+            // opens on a bare position.
+            if (!key) return;
+            openRowDetail(tabId, { setIndex: resultSet?.index ?? 0, key });
+        },
+        [processedRows, columns, dbType, openRowDetail],
+    );
 
     const onPanelResizeStart = useCallback(
         (e: React.MouseEvent) => {
@@ -1830,12 +1899,24 @@ const onQueriesPanelResizeStart = useCallback(
                                                             />
                                                         )}
                                                         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                                                {activeTab?.tabType === "query" && activeTab.multi && (activeTab.multi.result_sets.length > 1 || activeTab.multi.notices.length > 0) ? (
+                                                {displaysResultSetPanels(activeTab) ? (
                                                     <ResultSetPanels
                                                         multi={activeTab.multi}
-                                                        renderGrid={(set) => (
-                                                            <VirtualDataGrid {...gridPropsForQueryTab} rows={set.rows} columns={set.columns} />
-                                                        )}
+                                                        renderGrid={(set, index) => {
+                                                            return (
+                                                                <VirtualDataGrid
+                                                                    {...gridPropsForQueryTab}
+                                                                    rows={set.rows}
+                                                                    columns={set.columns}
+                                                                    onOpenRowDetail={(rowIndex) =>
+                                                                        handleOpenRowDetail(
+                                                                            rowIndex,
+                                                                            { index, ...set },
+                                                                        )
+                                                                    }
+                                                                />
+                                                            );
+                                                        }}
                                                     />
                                                 ) : (
                                                     <VirtualDataGrid {...gridPropsForQueryTab} />
@@ -1965,14 +2046,31 @@ const onQueriesPanelResizeStart = useCallback(
                                         </div>
                                     </>
                                 )}
-                            {rowDetailIdx !== null && activeTab?.data && (
+                            {activeTab && rowDetailRow && (
                                 <RowDetailDrawer
-                                    columns={activeTab.data.columns}
-                                    row={activeTab.data.rows[rowDetailIdx]}
-                                    onClose={() => setRowDetailIdx(null)}
-                                    onCopy={(value) =>
-                                        navigator.clipboard.writeText(value).catch(() => {})
-                                    }
+                                    columns={rowDetailRow.columns}
+                                    row={rowDetailRow.row}
+                                    onClose={() => clearRowDetail(activeTab.id)}
+                                    onCopy={(value) => {
+                                        // A copy that silently fails looks
+                                        // successful; say so instead.
+                                        const clipboard = navigator.clipboard;
+                                        if (!clipboard) {
+                                            notify(
+                                                "Copy failed: the clipboard is unavailable",
+                                                "error",
+                                            );
+                                            return;
+                                        }
+                                        void clipboard
+                                            .writeText(value)
+                                            .catch((e) =>
+                                                notify(
+                                                    `Copy failed: ${errorText(e)}`,
+                                                    "error",
+                                                ),
+                                            );
+                                    }}
                                 />
                             )}
                             </div>

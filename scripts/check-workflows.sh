@@ -18,6 +18,10 @@
 #      the build, cached archives are verified rather than trusted, and the
 #      packaged tool manifests are checked before anything is uploaded
 #      (ticket 44, "Release inputs are verified").
+#   7. The Homebrew cask renderer validates its metadata — version and
+#      checksums — against the release tag and the published DMGs, and refuses
+#      anything that could alter the cask's structure (ticket 46, "Cask
+#      rendering validates inputs").
 #
 # Ref protection, immutable releases and required checks are REPOSITORY
 # SETTINGS, not files; they cannot be asserted here. See AGENTS.md
@@ -545,6 +549,52 @@ if [ $? -eq 0 ]; then
   pass "the manifest gate passes an honest bundle and fails tampered, missing, extra or wrong-version tools"
 else
   fail "scripts/verify-bundled-tools.sh no longer gates the packaged manifests (run it by hand to debug)"
+fi
+
+# --------------------------------------------------------------------------
+# 7. Cask rendering validates its inputs (ticket 46).
+# --------------------------------------------------------------------------
+cask_ok=1
+for f in scripts/render-cask.sh scripts/render-cask.test.sh packaging/homebrew/gridline.rb.template; do
+  if [ ! -f "$f" ]; then
+    fail "missing $f (the Homebrew cask can no longer be validated)"
+    cask_ok=0
+  fi
+done
+for f in scripts/render-cask.sh scripts/render-cask.test.sh; do
+  [ -f "$f" ] || continue
+  [ -x "$f" ] || { fail "$f is not executable"; cask_ok=0; }
+  bash -n "$f" 2>/dev/null || { fail "$f has a syntax error"; cask_ok=0; }
+done
+# The release pipeline must hand the renderer the release tag and the DMGs it
+# downloaded, so the published cask can only describe the published artifacts.
+for flag in --tag '"$RELEASE_TAG"' --dmg-arm --dmg-intel; do
+  grep -q -F -- "$flag" "$release_wf" 2>/dev/null ||
+    { fail "release.yml does not pass $flag to scripts/render-cask.sh"; cask_ok=0; }
+done
+[ "$cask_ok" = "1" ] && pass "cask rendering is wired to the release tag and the downloaded DMGs"
+
+# Behavioural check: valid metadata renders the template unchanged apart from
+# the three values; hostile or inconsistent metadata fails closed with no
+# partial cask on stdout.
+cask_behaviour() {
+  local out rc
+  out="$(mktemp "${TMPDIR:-/tmp}/gridline-cask-check.XXXXXX")" || return 1
+  scripts/render-cask.test.sh >"$out" 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf -- '--- scripts/render-cask.test.sh (failures) ---\n' >&2
+    grep '^FAIL' "$out" >&2 || cat "$out" >&2
+  fi
+  rm -f "$out"
+  return "$rc"
+}
+
+cask_behaviour
+if [ $? -eq 0 ]; then
+  pass "cask rendering accepts valid metadata and refuses hostile or inconsistent inputs"
+else
+  fail "scripts/render-cask.sh no longer validates its inputs (run scripts/render-cask.test.sh)"
 fi
 
 if [ "$status" -eq 0 ]; then

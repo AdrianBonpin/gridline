@@ -1,6 +1,7 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { importConnections, exportConnections } from "./commands";
+import { errorText } from "./utils";
 import type { ImportResult } from "./types";
 
 export async function handleImport(): Promise<ImportResult | null> {
@@ -29,13 +30,7 @@ export async function handleExport(): Promise<string | null> {
  * file plugins reject with an `Error`.
  */
 export function importErrorMessage(error: unknown): string {
-  if (typeof error === "string") return error;
-  if (error instanceof Error && error.message) return error.message;
-  if (error && typeof error === "object" && "message" in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === "string" && message.length > 0) return message;
-  }
-  return "unknown error";
+  return errorText(error);
 }
 
 export interface ImportSummary {

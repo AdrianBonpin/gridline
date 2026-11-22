@@ -10,6 +10,7 @@ import {
   type TabIdentity,
 } from "../lib/tabIdentity";
 import { invalidateColumnCache } from "../lib/sqlCompletion";
+import type { RowDetailRef } from "../lib/rowDetail";
 import { useUiStore } from "./uiStore";
 import { useConnectionStore } from "./connectionStore";
 
@@ -131,6 +132,19 @@ export interface ViewerTab {
    * Optional so hand-built tabs (fixtures/tests) stay valid.
    */
   selection?: string[];
+  /**
+   * The row whose detail drawer is open in this tab, or `null`/absent when it
+   * is closed.
+   *
+   * Bound to the row's Row Identity and its result set rather than a grid
+   * position: a position means nothing outside the result set it was recorded
+   * in, so a drawer left open across a page, filter, sort, tab, origin, or
+   * dataset change would show another row's (or another table's) content. The
+   * store clears it on every one of those lifecycle changes, and the drawer is
+   * rendered only when the reference resolves against the rows currently
+   * displayed.
+   */
+  rowDetail?: RowDetailRef | null;
   /** Set when the tab's text came from an OS-opened `.sql` file. */
   filePath?: string;
   objectType?: ObjectType | null;
@@ -181,25 +195,34 @@ const initialTab = (schema: string, table: string, defaultPageSize?: number): Vi
   sortRules: [],
   hiddenColumns: [],
   selection: [],
+  rowDetail: null,
   smartSortApplied: false,
   tabType: "table",
   query: undefined,
 });
 
 /**
- * Drop one tab's selection.
+ * Drop one tab's row-bound context: its selection and any open row detail.
  *
- * A selection is only meaningful for the rows and context it was made in, so
- * every lifecycle change that replaces those rows (page, page size, filter,
- * sort, tab, origin, dataset) clears it rather than carrying it forward.
+ * A selection and a row detail are both only meaningful for the rows and
+ * context they were made in, so every lifecycle change that replaces those
+ * rows (page, page size, filter, sort, tab, origin, dataset) clears them rather
+ * than carrying them forward. Keeping the two in one helper means no lifecycle
+ * path can remember one and forget the other.
  */
-const withoutSelection = (tab: ViewerTab): ViewerTab =>
-  (tab.selection?.length ?? 0) > 0 ? { ...tab, selection: [] } : tab;
+const withoutRowContext = (tab: ViewerTab): ViewerTab => {
+  const hasSelection = (tab.selection?.length ?? 0) > 0;
+  const hasRowDetail = (tab.rowDetail ?? null) !== null;
+  if (!hasSelection && !hasRowDetail) return tab;
+  return { ...tab, selection: [], rowDetail: null };
+};
 
-/** Drop every tab's selection (a tab or origin change invalidates all of them). */
-const withoutSelections = (tabs: ViewerTab[]): ViewerTab[] =>
-  tabs.some((t) => (t.selection?.length ?? 0) > 0)
-    ? tabs.map(withoutSelection)
+/** Drop every tab's row-bound context (a tab or origin change invalidates all of them). */
+const withoutRowContexts = (tabs: ViewerTab[]): ViewerTab[] =>
+  tabs.some(
+    (t) => (t.selection?.length ?? 0) > 0 || (t.rowDetail ?? null) !== null,
+  )
+    ? tabs.map(withoutRowContext)
     : tabs;
 
 // ─── State interface ────────────────────────────────────────────
@@ -268,6 +291,14 @@ interface DbViewerState {
   /** Replace a tab's selection with these keys (select-all / select-none). */
   setRowSelection: (tabId: string, keys: string[]) => void;
   clearRowSelection: (tabId: string) => void;
+  /**
+   * Open a tab's row detail for the row with this Row Identity key in this
+   * result set. Only a reference that resolves against the rows currently
+   * displayed is shown.
+   */
+  openRowDetail: (tabId: string, rowDetail: RowDetailRef) => void;
+  /** Close a tab's row detail drawer. */
+  clearRowDetail: (tabId: string) => void;
   setPage: (tabId: string, page: number) => void;
   setPageSize: (tabId: string, pageSize: number) => void;
   setTabData: (tabId: string, data: QueryResult) => void;
@@ -445,13 +476,13 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       };
       const existing = tabs.find((t) => isSameTab(t, identity));
       if (existing) {
-        set({ tabs: withoutSelections(tabs), activeTabId: existing.id });
+        set({ tabs: withoutRowContexts(tabs), activeTabId: existing.id });
         return;
       }
     }
 
     const tab = initialTab(schema, table, get().defaultPageSize);
-    set({ tabs: [...withoutSelections(tabs), tab], activeTabId: tab.id });
+    set({ tabs: [...withoutRowContexts(tabs), tab], activeTabId: tab.id });
   },
 
   openQueryTab: (initial) => {
@@ -467,7 +498,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       };
       const existing = tabs.find((t) => isSameTab(t, identity));
       if (existing) {
-        set({ tabs: withoutSelections(tabs), activeTabId: existing.id });
+        set({ tabs: withoutRowContexts(tabs), activeTabId: existing.id });
         return;
       }
     }
@@ -495,7 +526,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       query: initial?.sql ?? "",
       filePath: initial?.filePath,
     };
-    set({ tabs: [...withoutSelections(tabs), tab], activeTabId: tab.id });
+    set({ tabs: [...withoutRowContexts(tabs), tab], activeTabId: tab.id });
   },
 
   openObjectTab: (objectType, schema, name, item) => {
@@ -512,7 +543,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     };
     const existing = tabs.find((t) => isSameTab(t, identity));
     if (existing) {
-      set({ tabs: withoutSelections(tabs), activeTabId: existing.id });
+      set({ tabs: withoutRowContexts(tabs), activeTabId: existing.id });
       return;
     }
 
@@ -538,7 +569,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       objectType,
       objectItem: item,
     };
-    set({ tabs: [...withoutSelections(tabs), tab], activeTabId: tab.id });
+    set({ tabs: [...withoutRowContexts(tabs), tab], activeTabId: tab.id });
   },
 
   openFormTab: ({ kind, schema, name, title, description, mode, params }) => {
@@ -570,7 +601,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     if (existing) {
       // Re-clicking the same form focuses the tab and never clobbers its
       // in-progress params.
-      set({ tabs: withoutSelections(tabs), activeTabId: existing.id });
+      set({ tabs: withoutRowContexts(tabs), activeTabId: existing.id });
       return;
     }
 
@@ -596,7 +627,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       objectType: null,
       form: { kind, params, title, description, mode },
     };
-    set({ tabs: [...withoutSelections(tabs), tab], activeTabId: tab.id });
+    set({ tabs: [...withoutRowContexts(tabs), tab], activeTabId: tab.id });
   },
 
   updateFormTabParams: (tabId, params) =>
@@ -619,7 +650,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
           ? remaining[remaining.length - 1].id
           : null
         : activeTabId;
-    set({ tabs: withoutSelections(remaining), activeTabId: newActiveId });
+    set({ tabs: withoutRowContexts(remaining), activeTabId: newActiveId });
   },
 
   // Move a tab to a new index (drag-to-reorder). The active tab is tracked by
@@ -661,18 +692,18 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
           ? remaining[remaining.length - 1].id
           : null
         : activeTabId;
-    set({ tabs: withoutSelections(remaining), activeTabId: newActiveId });
+    set({ tabs: withoutRowContexts(remaining), activeTabId: newActiveId });
   },
 
-  // Switching tabs invalidates every selection: a selection made in one
-  // tab's context is never applied to another tab's rows. Re-activating the
-  // already-active tab is not a change, so it keeps the selection.
+  // Switching tabs invalidates every tab's row-bound context: a selection or an
+  // open row detail made in one tab is never applied to another tab's rows.
+  // Re-activating the already-active tab is not a change, so it keeps them.
   setActiveTab: (tabId) =>
     set((state) => ({
       tabs:
         tabId === state.activeTabId
           ? state.tabs
-          : withoutSelections(state.tabs),
+          : withoutRowContexts(state.tabs),
       activeTabId: tabId,
     })),
 
@@ -699,14 +730,34 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
 
   clearRowSelection: (tabId) =>
     set((state) => ({
-      tabs: state.tabs.map((t) => (t.id === tabId ? withoutSelection(t) : t)),
+      tabs: state.tabs.map((t) =>
+        t.id === tabId && (t.selection?.length ?? 0) > 0
+          ? { ...t, selection: [] }
+          : t,
+      ),
+    })),
+
+  openRowDetail: (tabId, rowDetail) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, rowDetail } : t,
+      ),
+    })),
+
+  clearRowDetail: (tabId) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId && (t.rowDetail ?? null) !== null
+          ? { ...t, rowDetail: null }
+          : t,
+      ),
     })),
 
   setPage: (tabId, page) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? withoutSelection({
+          ? withoutRowContext({
                 ...t,
                 page,
                 loading: true,
@@ -723,7 +774,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? withoutSelection({
+          ? withoutRowContext({
                 ...t,
                 pageSize,
                 page: 1,
@@ -739,7 +790,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? withoutSelection({
+          ? withoutRowContext({
                 ...t,
                 data,
                 multi: null,
@@ -755,7 +806,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setTabMulti: (tabId, multi) =>
     set((s) => ({
       tabs: s.tabs.map((t) =>
-        t.id === tabId ? withoutSelection({ ...t, multi }) : t,
+        t.id === tabId ? withoutRowContext({ ...t, multi }) : t,
       ),
     })),
 
@@ -801,7 +852,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? withoutSelection({
+          ? withoutRowContext({
                 ...t,
                 data,
                 multi: null,
@@ -857,7 +908,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? withoutSelection({
+          ? withoutRowContext({
                 ...t,
                 outOfOrigin: true,
                 // The rows stay on screen so the user keeps context, but they
@@ -908,10 +959,10 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
       }
       return t;
     });
-    // Moving the viewer's target invalidates every selection, in both
-    // directions: a restored tab's rows come from a re-query, and a foreign
-    // tab's rows belong to another origin now.
-    if (changed) set({ tabs: withoutSelections(tabs) });
+    // Moving the viewer's target invalidates every tab's row-bound context, in
+    // both directions: a restored tab's rows come from a re-query, and a
+    // foreign tab's rows belong to another origin now.
+    if (changed) set({ tabs: withoutRowContexts(tabs) });
     return restored;
   },
 
@@ -940,7 +991,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? withoutSelection({ ...t, columnFilter: { column, value } })
+          ? withoutRowContext({ ...t, columnFilter: { column, value } })
           : t,
       ),
     })),
@@ -948,7 +999,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   clearColumnFilter: (tabId) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? withoutSelection({ ...t, columnFilter: undefined }) : t,
+        t.id === tabId ? withoutRowContext({ ...t, columnFilter: undefined }) : t,
       ),
     })),
 
@@ -956,7 +1007,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? withoutSelection({
+          ? withoutRowContext({
                 ...t,
                 filterRules: rules,
                 page: 1,
@@ -972,7 +1023,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId
-          ? withoutSelection({
+          ? withoutRowContext({
                 ...t,
                 sortRules: rules,
                 page: 1,
@@ -1008,7 +1059,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setSmartSortApplied: (tabId) =>
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId ? withoutSelection({ ...t, smartSortApplied: true }) : t,
+        t.id === tabId ? withoutRowContext({ ...t, smartSortApplied: true }) : t,
       ),
     })),
 
@@ -1101,7 +1152,7 @@ export const useDbViewerStore = create<DbViewerState>((set, get) => ({
   setCurrentDatabase: (db) =>
     set((state) => ({
       currentDatabase: db,
-      tabs: withoutSelections(state.tabs),
+      tabs: withoutRowContexts(state.tabs),
     })),
   setCurrentSchema: (schema) => set({ currentSchema: schema }),
   setObjectSearchOpen: (open) => set({ objectSearchOpen: open }),
