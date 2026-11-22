@@ -47,6 +47,80 @@ impl Drop for Tunnel {
     }
 }
 
+/// How long a close waits for the forwarding worker to confirm it dropped the
+/// listener. The worker polls its shutdown request between forwarding rounds
+/// (backing off to one round per 20 ms when idle), so a healthy close acks in
+/// milliseconds; the bound only exists so a wedged worker cannot hang quit or
+/// disconnect forever.
+const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Worker-side half of a tunnel shutdown handshake.
+///
+/// The worker that owns the loopback listener polls [`ShutdownWorker::requested`]
+/// between forwarding rounds, and calls [`ShutdownWorker::complete`] *after* it
+/// has dropped the listener. That acknowledgement is what makes "closed" mean
+/// the loopback port refuses connections, rather than "a message was queued".
+pub(crate) struct ShutdownWorker {
+    request: std::sync::mpsc::Receiver<()>,
+    done: std::sync::mpsc::Sender<()>,
+}
+
+impl ShutdownWorker {
+    /// Whether the tunnel handle has been closed (or dropped).
+    ///
+    /// A disconnected channel counts as closed: the closer only goes away
+    /// without requesting when it was dropped, and either way the worker's
+    /// resources must not outlive it.
+    pub(crate) fn requested(&self) -> bool {
+        !matches!(
+            self.request.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        )
+    }
+
+    /// Confirm that the worker has released the listener and session.
+    pub(crate) fn complete(self) {
+        let _ = self.done.send(());
+    }
+}
+
+/// Closer-side half of a tunnel shutdown handshake.
+pub(crate) struct ShutdownCloser {
+    request: std::sync::mpsc::Sender<()>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+impl ShutdownCloser {
+    /// Ask the worker to stop and wait (bounded) for it to confirm teardown.
+    ///
+    /// Returns `true` when the worker acknowledged, i.e. the listener has been
+    /// dropped by the time this returns.
+    pub(crate) fn close(self) -> bool {
+        if self.request.send(()).is_err() {
+            // The worker is already gone (it stopped on its own), so nothing
+            // is left holding the listener.
+            return true;
+        }
+        matches!(self.done.recv_timeout(SHUTDOWN_ACK_TIMEOUT), Ok(()))
+    }
+}
+
+/// Create the two halves of a tunnel shutdown handshake.
+pub(crate) fn shutdown_pair() -> (ShutdownWorker, ShutdownCloser) {
+    let (request_tx, request_rx) = std::sync::mpsc::channel::<()>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    (
+        ShutdownWorker {
+            request: request_rx,
+            done: done_tx,
+        },
+        ShutdownCloser {
+            request: request_tx,
+            done: done_rx,
+        },
+    )
+}
+
 /// Backend that actually establishes SSH tunnels.
 ///
 /// The manager only does bookkeeping; opening/closing the OS-level tunnel is
@@ -140,9 +214,18 @@ impl SshTunnelManager {
 
     /// Close and remove the SSH tunnel for the given key.
     pub fn close_tunnel(&mut self, key: &str) {
-        if let Some(t) = self.tunnels.remove(key) {
+        if let Some(t) = self.take_tunnel(key) {
             drop(t);
         }
+    }
+
+    /// Take the tunnel for `key` out of the map without closing it.
+    ///
+    /// Callers drop the returned handle themselves so the (blocking) close,
+    /// which waits for the forwarding worker to release its loopback listener,
+    /// never runs while this manager's lock is held.
+    pub fn take_tunnel(&mut self, key: &str) -> Option<Tunnel> {
+        self.tunnels.remove(key)
     }
 
     /// Close all active SSH tunnels.
@@ -151,6 +234,14 @@ impl SshTunnelManager {
         for (_, t) in tunnels {
             drop(t);
         }
+    }
+
+    /// Take every active tunnel out of the map without closing them.
+    ///
+    /// Used on app exit so each (blocking) close can run after the manager lock
+    /// is released, instead of holding it while N workers acknowledge.
+    pub fn take_all(&mut self) -> Vec<Tunnel> {
+        std::mem::take(&mut self.tunnels).into_values().collect()
     }
 
     /// Get the local port for an active tunnel, if any.
@@ -166,9 +257,18 @@ impl SshTunnelManager {
 
     /// Insert an already-opened tunnel under `key`, closing any previous one.
     pub fn insert_tunnel(&mut self, key: String, tunnel: Tunnel) {
-        if let Some(old) = self.tunnels.insert(key, tunnel) {
+        if let Some(old) = self.replace_tunnel(key, tunnel) {
             drop(old);
         }
+    }
+
+    /// Put `tunnel` live under `key`, returning the tunnel it replaced.
+    ///
+    /// The replaced handle is returned rather than dropped so a caller that is
+    /// mid-reconnect can release the old session's tunnel *after* the new pool
+    /// handle is registered, and outside this manager's lock.
+    pub fn replace_tunnel(&mut self, key: String, tunnel: Tunnel) -> Option<Tunnel> {
+        self.tunnels.insert(key, tunnel)
     }
 
     /// Return the number of active tunnels.
@@ -331,15 +431,15 @@ impl TunnelBackend for Ssh2Backend {
             .set_nonblocking(true)
             .map_err(|e| SshTunnelError::Failed(format!("nonblocking tunnel listener: {e}")))?;
         let remote_host = remote_host.to_string();
-        let (closer_tx, closer_rx) = std::sync::mpsc::channel::<()>();
+        // Nonblocking request/acknowledgement pair handed to the closer: the
+        // worker acks only after it has dropped the loopback listener, so a
+        // closed tunnel has no reachable proxy port left.
+        let (worker, closer) = shutdown_pair();
         std::thread::spawn(move || {
             let mut pending = None;
             let mut clients = Vec::new();
             let mut idle_rounds: u32 = 0;
-            while matches!(
-                closer_rx.try_recv(),
-                Err(std::sync::mpsc::TryRecvError::Empty)
-            ) {
+            while !worker.requested() {
                 let mut progressed = false;
                 if pending.is_none() {
                     match listener.accept() {
@@ -391,11 +491,15 @@ impl TunnelBackend for Ssh2Backend {
             }
             // Dropping the worker's listener, clients and session closes all
             // sockets, including clients stalled in authentication or a query.
+            drop(listener);
+            drop(clients);
+            drop(session);
+            worker.complete();
         });
         Ok(Tunnel {
             local_port,
             closer: Some(Box::new(move || {
-                let _ = closer_tx.send(());
+                closer.close();
             })),
         })
     }
@@ -649,9 +753,213 @@ impl ForwardedClient {
     }
 }
 
+/// Test-only tunnel backends usable from any module's tests.
+#[cfg(test)]
+pub mod fake {
+    use super::*;
+
+    use std::sync::Mutex as StdMutex;
+
+    /// A tunnel backend whose tunnels really bind a loopback listener, but
+    /// whose forwarded peer hangs up immediately — so a database handshake
+    /// through one fails fast, and a leaked listener is still observable from a
+    /// test.
+    #[derive(Default)]
+    pub struct HangingUpPeerBackend {
+        ports: StdMutex<Vec<u16>>,
+    }
+
+    impl HangingUpPeerBackend {
+        pub fn last_port(&self) -> u16 {
+            *self
+                .ports
+                .lock()
+                .unwrap()
+                .last()
+                .expect("a tunnel was opened")
+        }
+    }
+
+    impl TunnelBackend for HangingUpPeerBackend {
+        fn open(
+            &self,
+            _key: &str,
+            _cfg: &SshConfig,
+            _remote_host: &str,
+            _remote_port: u16,
+            _pw: Option<&str>,
+            _pp: Option<&str>,
+        ) -> Result<Tunnel, SshTunnelError> {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")
+                .map_err(|e| SshTunnelError::Failed(format!("bind: {e}")))?;
+            let port = listener.local_addr().unwrap().port();
+            self.ports.lock().unwrap().push(port);
+            listener.set_nonblocking(true).unwrap();
+            let (worker, closer) = shutdown_pair();
+            std::thread::spawn(move || {
+                while !worker.requested() {
+                    match listener.accept() {
+                        // A peer that hangs up immediately: the database client
+                        // sees an EOF instead of waiting out its timeout.
+                        Ok((stream, _)) => drop(stream),
+                        Err(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                    }
+                }
+                drop(listener);
+                worker.complete();
+            });
+            Ok(Tunnel::with_closer(
+                port,
+                Box::new(move || {
+                    closer.close();
+                }),
+            ))
+        }
+
+        fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
+            Ok(SshHostTrustState::Unknown {
+                host: host.to_string(),
+                port,
+                key_type: "ssh-ed25519".into(),
+                fingerprint: "SHA256:fake".into(),
+            })
+        }
+
+        fn enroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            Ok(SshHostTrustState::Trusted {
+                host: host.to_string(),
+                port,
+                key_type: accepted.key_type.clone(),
+                fingerprint: accepted.fingerprint.clone(),
+                source: crate::models::ssh_trust::TrustSource::Enrolled,
+            })
+        }
+
+        fn reenroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            self.enroll_host_trust(host, port, accepted)
+        }
+    }
+
+    /// A tunnel backend with no SSH connectivity at all: `open` always fails
+    /// and host trust is in-memory. Used by tests that only need an
+    /// `SshTunnelManager` to exist (they never tunnel).
+    #[derive(Default)]
+    pub struct NoSshBackend;
+
+    impl TunnelBackend for NoSshBackend {
+        fn open(
+            &self,
+            _key: &str,
+            _cfg: &SshConfig,
+            _remote_host: &str,
+            _remote_port: u16,
+            _password: Option<&str>,
+            _passphrase: Option<&str>,
+        ) -> Result<Tunnel, SshTunnelError> {
+            Err(SshTunnelError::Failed(
+                "no SSH connectivity in tests".to_string(),
+            ))
+        }
+
+        fn probe_host_trust(&self, host: &str, port: u16) -> Result<SshHostTrustState, String> {
+            Ok(SshHostTrustState::Unknown {
+                host: host.to_string(),
+                port,
+                key_type: "ssh-ed25519".into(),
+                fingerprint: "SHA256:fake".into(),
+            })
+        }
+
+        fn enroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            Ok(SshHostTrustState::Trusted {
+                host: host.to_string(),
+                port,
+                key_type: accepted.key_type.clone(),
+                fingerprint: accepted.fingerprint.clone(),
+                source: crate::models::ssh_trust::TrustSource::Enrolled,
+            })
+        }
+
+        fn reenroll_host_trust(
+            &self,
+            host: &str,
+            port: u16,
+            accepted: &HostKeyFingerprint,
+        ) -> Result<SshHostTrustState, String> {
+            self.enroll_host_trust(host, port, accepted)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tunnel_shutdown_close_waits_until_the_listener_is_dropped() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (worker, closer) = shutdown_pair();
+        let forwarder = std::thread::spawn(move || {
+            // Own the listener exactly like the forwarding worker does: it is
+            // dropped when the loop sees the close request, and only then is
+            // teardown acknowledged.
+            while !worker.requested() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            drop(listener);
+            worker.complete();
+        });
+
+        let open = TcpStream::connect(("127.0.0.1", port));
+        assert!(
+            open.is_ok(),
+            "the tunnel accepts connections while it is open"
+        );
+        drop(open);
+
+        assert!(
+            closer.close(),
+            "close waits for the worker to confirm it dropped the listener"
+        );
+        assert!(
+            TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "no loopback listener remains reachable after the tunnel closes"
+        );
+        forwarder.join().unwrap();
+    }
+
+    #[test]
+    fn tunnel_shutdown_close_is_bounded_when_the_worker_never_confirms() {
+        // The worker half stays alive but never acknowledges teardown, so the
+        // wait must time out instead of hanging the caller.
+        let (worker, closer) = shutdown_pair();
+        std::mem::forget(worker);
+        let started = std::time::Instant::now();
+        assert!(
+            !closer.close(),
+            "a wedged worker is reported as an unconfirmed close"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a wedged worker cannot hang the close indefinitely"
+        );
+    }
 
     #[test]
     fn copy_available_keeps_bytes_on_backpressure_and_partial_writes() {

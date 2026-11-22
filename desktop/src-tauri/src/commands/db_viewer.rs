@@ -1162,6 +1162,10 @@ pub(crate) async fn open_mysql_connection(
 /// configured (binding 127.0.0.1 only), maps SSL modes, and registers a
 /// `DbHandle::MySql` pool. Errors are sanitized so no `mysql://user:pass@host`
 /// text leaks across the IPC boundary.
+///
+/// The tunnel, pool handle and cancellation handle are only published once the
+/// pool has actually connected, so a failed attempt cannot leave a half-built
+/// session behind or disturb the one it was replacing.
 pub(crate) async fn run_mysql_connect(
     connection_id: &str,
     config: &crate::db::pool::DbConfig,
@@ -1181,43 +1185,13 @@ pub(crate) async fn run_mysql_connect(
     let tls = mysql_tls_mode(&config.host, config.ssl_mode.as_deref(), via_ssh)
         .map_err(|e| sanitize_error(&e))?;
 
-    let target_host: String;
-    let target_port: u16;
-    let via_tunnel: bool;
-
-    if let Some(ssh_cfg) = config.ssh_config() {
-        let key = connection_id.to_string();
-        let remote_host = config.host.clone();
-        let remote_port = config.port.unwrap_or(3306) as u16;
-        let pw = config.ssh_password.clone();
-        let pp = config.ssh_passphrase.clone();
-        let backend = ssh_manager.lock().unwrap().backend_clone();
-        let tunnel = tokio::task::spawn_blocking(move || {
-            backend.open(
-                &key,
-                &ssh_cfg,
-                &remote_host,
-                remote_port,
-                pw.as_deref(),
-                pp.as_deref(),
-            )
-        })
-        .await
-        .map_err(|e| format!("Connection failed: {e}"))?
-        .map_err(|e: crate::commands::ssh_trust::SshTunnelError| sanitize_error(&e.message()))?;
-        let lp = tunnel.local_port;
-        ssh_manager
-            .lock()
-            .unwrap()
-            .insert_tunnel(connection_id.to_string(), tunnel);
-        target_host = "127.0.0.1".to_string();
-        target_port = lp;
-        via_tunnel = true;
-    } else {
-        target_host = config.host.clone();
-        target_port = config.port.unwrap_or(3306) as u16;
-        via_tunnel = false;
-    }
+    // The tunnel is opened privately and only published once the pool connects,
+    // so a failed attempt cannot disturb the session it was replacing.
+    let attempt =
+        crate::db::lifecycle::ConnectionAttempt::begin(connection_id, config, 3306, ssh_manager)
+            .await?;
+    // TLS is already resolved above, so only the endpoint is needed here.
+    let (target_host, target_port, _via_tunnel) = attempt.target(config, 3306);
 
     let opts = MySqlConnectOptions::new()
         .host(&target_host)
@@ -1241,28 +1215,159 @@ pub(crate) async fn run_mysql_connect(
         .await
     {
         Ok(pool) => {
-            pool_manager
-                .lock()
-                .await
-                .register(connection_id, crate::db::pool::DbHandle::MySql(pool));
-            cancel_registry.set_mysql(
-                connection_id,
-                crate::cancel::MySqlCancel {
-                    conn_id: None,
-                    connect_options: cancel_opts,
-                },
-            );
+            attempt
+                .commit(
+                    crate::db::pool::DbHandle::MySql(pool),
+                    Some(crate::cancel::CancelHandle::MySql(
+                        crate::cancel::MySqlCancel {
+                            conn_id: None,
+                            connect_options: cancel_opts,
+                        },
+                    )),
+                    pool_manager,
+                    ssh_manager,
+                    cancel_registry,
+                )
+                .await;
             Ok(())
         }
         Err(e) => {
-            if via_tunnel {
-                ssh_manager.lock().unwrap().close_tunnel(connection_id);
-            }
+            // Release only what this attempt opened; the previous session (if
+            // any) keeps its tunnel, pool and cancel handle.
+            attempt.abort();
             Err(format!(
                 "Connection failed: {}",
                 sanitize_error(&format!("{e}"))
             ))
         }
+    }
+}
+
+/// Headless PostgreSQL connect (no Tauri `State`).
+///
+/// Validates the TLS mode, opens a private SSH tunnel when configured (the
+/// tunnel is only the TCP endpoint: verification stays verification and is
+/// checked against the real host), and only publishes the pool handle, tunnel
+/// and cancel token once the server handshake succeeds. A failure returns the
+/// error and releases just what the attempt opened, so a reconnect that cannot
+/// be verified leaves the previously working session — pool handle, tunnel,
+/// listener, cancel token — intact.
+pub(crate) async fn run_pg_connect(
+    connection_id: &str,
+    config: &DbConfig,
+    ssh_manager: &std::sync::Mutex<crate::commands::ssh::SshTunnelManager>,
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    cancel_registry: &crate::cancel::CancelRegistry,
+) -> Result<(), String> {
+    let user = config.username.as_deref().unwrap_or("postgres");
+    let dbname = config.database.as_deref().unwrap_or("postgres");
+    let password = config.password.as_deref().unwrap_or("");
+
+    // TLS first: the mode is validated here, so an unknown mode is refused
+    // before any tunnel is opened and before a connection is attempted.
+    let decision = crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref())
+        .map_err(|e| sanitize_error(&e))?;
+    let tls = crate::db::tls::build_tls_config(
+        decision,
+        config.ssl_ca_path.as_deref(),
+        config.ssl_cert_path.as_deref(),
+        config.ssl_key_path.as_deref(),
+    )
+    .map_err(|e| sanitize_error(&e))?;
+    // Snapshot before `match tls` consumes the Option below.
+    let cancel_cfg = tls.clone();
+
+    // The tunnel is opened privately; it becomes the connection's tunnel only
+    // when `commit` runs.
+    let attempt =
+        crate::db::lifecycle::ConnectionAttempt::begin(connection_id, config, 5432, ssh_manager)
+            .await?;
+
+    // Endpoint plan: through a tunnel the TCP endpoint is the tunnel's loopback
+    // listener (`hostaddr`) while `host` stays the real database name, so
+    // verify-ca/verify-full authenticate the certificate against the host the
+    // user asked for instead of 127.0.0.1.
+    let plan = crate::db::tls::PgConnectPlan::new(
+        &config.host,
+        config.port,
+        decision,
+        attempt.tunnel_port(),
+    );
+
+    // Config builder: user/password/dbname are sent as-is (no URL
+    // percent-encoding needed), and the TLS connector is chosen explicitly.
+    let mut pgconfig = tokio_postgres::Config::new();
+    plan.apply(&mut pgconfig);
+    pgconfig
+        .user(user)
+        .password(password)
+        .dbname(dbname)
+        .connect_timeout(std::time::Duration::from_secs(10));
+
+    let result = match tls {
+        None => connect_pg_with(&pgconfig, tokio_postgres::NoTls).await,
+        Some(cc) => {
+            let connector = tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
+            connect_pg_with(&pgconfig, connector).await
+        }
+    };
+
+    match result {
+        Ok((client, handle)) => {
+            // Capture a cancel token + the exact TLS decision/config used to
+            // build the connection so `cancel_query` can open an identical
+            // (short-lived) cancel connection later.
+            let cancel = crate::cancel::CancelHandle::Pg(crate::cancel::PgCancel {
+                cancel_token: client.cancel_token(),
+                tls_decision: decision,
+                tls_config: cancel_cfg,
+            });
+            attempt
+                .commit(
+                    crate::db::pool::DbHandle::Postgresql(client, handle),
+                    Some(cancel),
+                    pool_manager,
+                    ssh_manager,
+                    cancel_registry,
+                )
+                .await;
+            Ok(())
+        }
+        Err(e) => {
+            // Release only this attempt's tunnel: a failed reconnect must not
+            // tear down the session it was replacing.
+            attempt.abort();
+            Err(format!("Connection failed: {}", pg_error_message(&e)))
+        }
+    }
+}
+
+/// Headless SQLite connect (no Tauri `State`).
+///
+/// Registers the file handle and the interrupt handle taken from it. SQLite
+/// never tunnels, so any tunnel a previous target of this connection left
+/// behind is closed: an orphaned loopback proxy must not stay reachable.
+pub(crate) async fn run_sqlite_connect(
+    connection_id: &str,
+    config: &DbConfig,
+    ssh_manager: &std::sync::Mutex<crate::commands::ssh::SshTunnelManager>,
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    cancel_registry: &crate::cancel::CancelRegistry,
+) -> Result<(), String> {
+    match rusqlite::Connection::open(&config.host) {
+        Ok(conn) => {
+            // Capture the per-connection interrupt handle so `cancel_query` can
+            // abort a running SQLite query from another thread.
+            let interrupt = conn.get_interrupt_handle();
+            pool_manager
+                .lock()
+                .await
+                .register(connection_id, crate::db::pool::DbHandle::Sqlite(conn));
+            cancel_registry.set_sqlite(connection_id, crate::cancel::SqliteCancel::new(interrupt));
+            crate::db::lifecycle::close_tunnel(ssh_manager, connection_id);
+            Ok(())
+        }
+        Err(e) => Err(format!("Connection failed: {}", e)),
     }
 }
 
@@ -1273,136 +1378,23 @@ pub async fn db_connect(
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
     if config.db_type == "postgresql" {
-        let user = config.username.as_deref().unwrap_or("postgres");
-        let dbname = config.database.as_deref().unwrap_or("postgres");
-        let password = config.password.as_deref().unwrap_or("");
-
-        let ssh_cfg = config.ssh_config();
-
-        // TLS first: the mode is validated here, so an unknown mode is refused
-        // before any tunnel is opened and before a connection is attempted.
-        // A tunnel never changes the decision — verification stays verification
-        // and is checked against the real host below.
-        let decision = crate::db::tls::tls_decision_for(&config.host, config.ssl_mode.as_deref())
-            .map_err(|e| sanitize_error(&e))?;
-        let tls = crate::db::tls::build_tls_config(
-            decision,
-            config.ssl_ca_path.as_deref(),
-            config.ssl_cert_path.as_deref(),
-            config.ssl_key_path.as_deref(),
+        run_pg_connect(
+            &connection_id,
+            &config,
+            &state.ssh_manager,
+            &state.pool_manager,
+            &state.cancel_registry,
         )
-        .map_err(|e| sanitize_error(&e))?;
-        // Snapshot before `match tls` consumes the Option below.
-        let cancel_cfg = tls.clone();
-
-        // SSH tunnel: if configured, open a loopback tunnel to the remote DB
-        // and connect through it. The blocking ssh2 handshake runs in
-        // `spawn_blocking` so it never blocks the async runtime.
-        let via_tunnel = if let Some(ssh) = ssh_cfg {
-            let key = connection_id.clone();
-            let remote_host = config.host.clone();
-            let remote_port = config.port.unwrap_or(5432) as u16;
-            let pw = config.ssh_password.clone();
-            let pp = config.ssh_passphrase.clone();
-            let backend = state.ssh_manager.lock().unwrap().backend_clone();
-            let tunnel = tokio::task::spawn_blocking(move || {
-                backend.open(
-                    &key,
-                    &ssh,
-                    &remote_host,
-                    remote_port,
-                    pw.as_deref(),
-                    pp.as_deref(),
-                )
-            })
-            .await
-            .map_err(|e| format!("Connection failed: {e}"))?
-            .map_err(|e: crate::commands::ssh_trust::SshTunnelError| {
-                sanitize_error(&e.message())
-            })?;
-            let lp = tunnel.local_port;
-            state
-                .ssh_manager
-                .lock()
-                .unwrap()
-                .insert_tunnel(connection_id.clone(), tunnel);
-            Some(lp)
-        } else {
-            None
-        };
-
-        // Endpoint plan: through a tunnel the TCP endpoint is the tunnel's
-        // loopback listener (`hostaddr`) while `host` stays the real database
-        // name, so verify-ca/verify-full authenticate the certificate against
-        // the host the user asked for instead of 127.0.0.1.
-        let plan =
-            crate::db::tls::PgConnectPlan::new(&config.host, config.port, decision, via_tunnel);
-
-        // Config builder: user/password/dbname are sent as-is (no URL
-        // percent-encoding needed), and the TLS connector is chosen explicitly.
-        let mut pgconfig = tokio_postgres::Config::new();
-        plan.apply(&mut pgconfig);
-        pgconfig
-            .user(user)
-            .password(password)
-            .dbname(dbname)
-            .connect_timeout(std::time::Duration::from_secs(10));
-
-        let result = match tls {
-            None => connect_pg_with(&pgconfig, tokio_postgres::NoTls).await,
-            Some(cc) => {
-                let connector = tokio_postgres_rustls::MakeRustlsConnect::new((*cc).clone());
-                connect_pg_with(&pgconfig, connector).await
-            }
-        };
-
-        match result {
-            Ok((client, handle)) => {
-                // Capture a cancel token + the exact TLS decision/config used to
-                // build the connection so `cancel_query` can open an identical
-                // (short-lived) cancel connection later.
-                let pgtoken = client.cancel_token();
-                state.cancel_registry.set_pg(
-                    &connection_id,
-                    crate::cancel::PgCancel {
-                        cancel_token: pgtoken,
-                        tls_decision: decision,
-                        tls_config: cancel_cfg,
-                    },
-                );
-                let mut pm = state.pool_manager.lock().await;
-                pm.register(
-                    &connection_id,
-                    crate::db::pool::DbHandle::Postgresql(client, handle),
-                );
-                Ok(())
-            }
-            Err(e) => {
-                if via_tunnel.is_some() {
-                    state
-                        .ssh_manager
-                        .lock()
-                        .unwrap()
-                        .close_tunnel(&connection_id);
-                }
-                Err(format!("Connection failed: {}", pg_error_message(&e)))
-            }
-        }
+        .await
     } else if config.db_type == "sqlite" {
-        match rusqlite::Connection::open(&config.host) {
-            Ok(conn) => {
-                // Capture the per-connection interrupt handle so `cancel_query`
-                // can abort a running SQLite query from another thread.
-                let interrupt = conn.get_interrupt_handle();
-                let mut pm = state.pool_manager.lock().await;
-                pm.register(&connection_id, crate::db::pool::DbHandle::Sqlite(conn));
-                state
-                    .cancel_registry
-                    .set_sqlite(&connection_id, crate::cancel::SqliteCancel::new(interrupt));
-                Ok(())
-            }
-            Err(e) => Err(format!("Connection failed: {}", e)),
-        }
+        run_sqlite_connect(
+            &connection_id,
+            &config,
+            &state.ssh_manager,
+            &state.pool_manager,
+            &state.cancel_registry,
+        )
+        .await
     } else if config.db_type == "mysql" || config.db_type == "mariadb" {
         run_mysql_connect(
             &connection_id,
@@ -1420,14 +1412,23 @@ pub async fn db_connect(
     }
 }
 
+/// Close everything a viewer's connection owns.
+///
+/// Delegates to the single teardown path so disconnect cannot free a subset:
+/// the pool handle, the SSH tunnel (and its loopback listener) and the
+/// cancellation handles all go together.
 #[tauri::command]
 pub async fn db_disconnect(
     connection_id: String,
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    let mut pm = state.pool_manager.lock().await;
-    pm.remove(&connection_id);
-    state.cancel_registry.remove(&connection_id);
+    crate::db::lifecycle::teardown_connection(
+        &connection_id,
+        &state.pool_manager,
+        &state.ssh_manager,
+        &state.cancel_registry,
+    )
+    .await;
     Ok(())
 }
 
@@ -4514,6 +4515,165 @@ mod tests {
 
     async fn fresh_pool_manager() -> tokio::sync::Mutex<ConnectionPoolManager> {
         tokio::sync::Mutex::new(ConnectionPoolManager::new())
+    }
+
+    fn reachable(port: u16) -> bool {
+        let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1)).is_ok()
+    }
+
+    /// A SQLite (never-tunnelled) reconnect closes a tunnel a previous target
+    /// of the same connection left behind: no orphaned loopback proxy stays
+    /// reachable.
+    #[tokio::test]
+    async fn run_sqlite_connect_closes_a_stale_tunnel() {
+        let id = "sqlite-after-tunnel";
+        let backend = Arc::new(crate::commands::ssh::fake::HangingUpPeerBackend::default());
+        let ssh = StdMutex::new(SshTunnelManager::new(backend.clone()));
+        let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
+
+        let stale = ssh
+            .lock()
+            .unwrap()
+            .backend_clone()
+            .open(
+                id,
+                &crate::models::SshConfig::new(
+                    "jump.internal".into(),
+                    22,
+                    "tunnel".into(),
+                    "password".into(),
+                ),
+                "db.internal",
+                5432,
+                None,
+                None,
+            )
+            .expect("open the previous target's tunnel");
+        let stale_port = stale.local_port;
+        ssh.lock().unwrap().insert_tunnel(id.to_string(), stale);
+        assert!(reachable(stale_port));
+
+        let path = std::env::temp_dir().join(format!(
+            "gridline-sqlite-lifecycle-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let cfg = DbConfig::sqlite(&path.to_string_lossy());
+        run_sqlite_connect(id, &cfg, &ssh, &pm, &reg)
+            .await
+            .expect("sqlite connect");
+
+        assert!(matches!(pm.lock().await.get(id), Some(DbHandle::Sqlite(_))));
+        assert_eq!(
+            ssh.lock().unwrap().get_local_port(id),
+            None,
+            "the stale tunnel is no longer the connection's"
+        );
+        assert!(
+            !reachable(stale_port),
+            "the stale tunnel's loopback listener is closed"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Criterion: a failed reconnect preserves the previously working session
+    /// and reports the failure.
+    ///
+    /// The previous session is a real (SQLite) handle with a real loopback
+    /// tunnel and a real cancellation handle; the reconnect is a real
+    /// PostgreSQL handshake through a tunnel whose peer hangs up. Every part of
+    /// the old session must survive, and the failed attempt must not leave a
+    /// reachable proxy behind.
+    #[tokio::test]
+    async fn run_pg_connect_failure_keeps_the_previous_session() {
+        let id = "pg-reconnect-fails";
+        let backend = Arc::new(crate::commands::ssh::fake::HangingUpPeerBackend::default());
+        let ssh = StdMutex::new(SshTunnelManager::new(backend.clone()));
+        let pm = fresh_pool_manager().await;
+        let reg = crate::cancel::CancelRegistry::new();
+
+        // The previously working session.
+        let prior_tunnel = ssh
+            .lock()
+            .unwrap()
+            .backend_clone()
+            .open(
+                id,
+                &crate::models::SshConfig::new(
+                    "jump.internal".into(),
+                    22,
+                    "tunnel".into(),
+                    "password".into(),
+                ),
+                "db.internal",
+                5432,
+                None,
+                None,
+            )
+            .expect("open the working session's tunnel");
+        let prior_port = prior_tunnel.local_port;
+        ssh.lock()
+            .unwrap()
+            .insert_tunnel(id.to_string(), prior_tunnel);
+        let prior_conn = rusqlite::Connection::open_in_memory().unwrap();
+        let prior_interrupt = prior_conn.get_interrupt_handle();
+        pm.lock().await.register(id, DbHandle::Sqlite(prior_conn));
+        reg.set_sqlite(id, crate::cancel::SqliteCancel::new(prior_interrupt));
+        assert!(reachable(prior_port), "the working session's proxy is live");
+
+        // A reconnect with a changed target: same id, tunneled, unreachable DB.
+        let cfg = DbConfig {
+            db_type: "postgresql".into(),
+            host: "db.internal".into(),
+            port: Some(5432),
+            username: Some("app".into()),
+            password: Some("pw".into()),
+            database: Some("appdb".into()),
+            ssh_host: Some("jump.internal".into()),
+            ssh_port: Some(22),
+            ssh_user: Some("tunnel".into()),
+            ssh_auth_method: Some("password".into()),
+            ssh_password: Some("pw".into()),
+            ..Default::default()
+        };
+        let attempt_port = {
+            let err = run_pg_connect(id, &cfg, &ssh, &pm, &reg)
+                .await
+                .expect_err("the hung-up peer must fail the reconnect");
+            assert!(
+                err.contains("Connection failed"),
+                "the failure is reported to the caller; got: {err}"
+            );
+            backend.last_port()
+        };
+
+        // The previously working session is intact...
+        let still_live = match pm.lock().await.get(id) {
+            Some(DbHandle::Sqlite(conn)) => conn
+                .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                .is_ok(),
+            _ => false,
+        };
+        assert!(still_live, "the working session still answers queries");
+        assert_eq!(
+            ssh.lock().unwrap().get_local_port(id),
+            Some(prior_port),
+            "the working session keeps its tunnel"
+        );
+        assert!(
+            reachable(prior_port),
+            "the working session's loopback listener is still reachable"
+        );
+        assert!(
+            reg.get(id).is_some(),
+            "the working session keeps its cancellation handle"
+        );
+        // ...and the failed attempt left no proxy behind.
+        assert!(
+            !reachable(attempt_port),
+            "the failed attempt's loopback listener was released"
+        );
     }
 
     #[tokio::test]

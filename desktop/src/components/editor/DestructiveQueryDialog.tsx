@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "../ui/Button";
+import { useModalPresence } from "../../hooks/useModalPresence";
 
 export type DestructiveReason = "write" | "schema" | "unknown";
 
@@ -51,6 +52,10 @@ export function DestructiveQueryDialog({
 }: DestructiveQueryDialogProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  // The portal keeps this dialog out of the page's DOM subtree, so the shared
+  // modal-presence signal is what tells window-level shortcuts to stand down
+  // while it is up (its own capture handler stops them too).
+  useModalPresence(open);
   // Callbacks change identity on every parent render; the modal effect must not
   // re-run (and re-steal focus) because of that.
   const cancelHandlerRef = useRef(onCancel);

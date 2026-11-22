@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import { useDbViewerStore } from "../../stores/dbViewerStore";
+import { useModalPresence } from "../../hooks/useModalPresence";
 import * as cmd from "../../lib/commands";
 import type { ObjectSearchHit, ObjectType } from "../../lib/types";
 
@@ -33,6 +34,10 @@ export function ObjectSearchPalette({ connectionId }: ObjectSearchPaletteProps) 
   const [hits, setHits] = useState<ObjectSearchHit[]>([]);
   const [loading, setLoading] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
+
+  // The palette is a modal surface: while it is up, window-level shortcuts (a
+  // tab-closing Cmd+W, a committing Cmd+S) must not act on the page behind it.
+  useModalPresence(open);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 

@@ -23,7 +23,7 @@ import {
     importErrorMessage,
 } from "../../lib/importExport";
 import { useNotificationStore } from "../../stores/notificationStore";
-import { getChildFolders } from "../../lib/utils";
+import { errorText, getChildFolders } from "../../lib/utils";
 import { useShortcut } from "../../hooks/useShortcut";
 import type { Connection, Folder } from "../../lib/types";
 
@@ -51,6 +51,7 @@ export function HomeScreen() {
     const notify = useNotificationStore((s) => s.notify);
     const selectedItemIds = useUiStore((s) => s.selectedItemIds);
     const clearSelection = useUiStore((s) => s.clearSelection);
+    const selectAllItems = useUiStore((s) => s.selectAllItems);
     const confirmBeforeDelete =
         useSettingsStore((s) => s.settings?.confirm_before_delete ?? true);
     const [folderDialogOpen, setFolderDialogOpen] = useState(false);
@@ -101,10 +102,11 @@ export function HomeScreen() {
 
         try {
             await useConnectionStore.getState().moveConnection(connectionId, folderId);
-        } catch {
-            // Error handling in store; no additional action needed here
+        } catch (e) {
+            // The store rolled the optimistic move back; say why it did.
+            notify(`Failed to move connection: ${errorText(e)}`, "error");
         }
-    }, []);
+    }, [notify]);
 
     // Cmd+K to focus search (configurable in Settings → Shortcuts)
     useShortcut("command_palette", () => {
@@ -146,21 +148,59 @@ export function HomeScreen() {
         loadRecent();
     }, [loadRecent]);
 
+    /**
+     * Delete every selected item, reporting exactly what happened.
+     *
+     * A locked store or a keychain failure used to be swallowed with
+     * `console.error`, while the selection was cleared and the item stayed on
+     * screen — indistinguishable from a successful delete. Every failure is now
+     * reported per item, with its reason, and the selection is reduced to
+     * exactly the items that still exist so the user can retry them.
+     */
     const executeDeleteSelected = async () => {
         const folderIds = new Set(folders.map((f) => f.id));
+        const failed: { id: string; name: string; reason: string }[] = [];
+        let deleted = 0;
         for (const id of selectedItemIds) {
+            const isFolder = folderIds.has(id);
+            // Names come from the full store, not the filtered view, so a
+            // failure is always named even if a filter hides the item.
+            const name = isFolder
+                ? (folders.find((f) => f.id === id)?.name ?? id)
+                : (useConnectionStore
+                      .getState()
+                      .connections.find((c) => c.id === id)?.name ?? id);
             try {
-                if (folderIds.has(id)) {
+                if (isFolder) {
                     await deleteFolder(id);
                 } else {
                     await deleteConnection(id);
                 }
+                deleted += 1;
             } catch (e) {
-                console.error("Failed to delete item:", e);
+                failed.push({ id, name, reason: errorText(e) });
             }
         }
-        clearSelection();
         setConfirmDelete(null);
+        // The selection survives for exactly the items that still exist: a
+        // failed delete is retryable and never looks like it removed anything.
+        selectAllItems(failed.map((f) => f.id));
+
+        // One visible error per failed item, named, with its reason — never a
+        // capped summary that hides which items are still there.
+        for (const failure of failed) {
+            notify(
+                `Failed to delete "${failure.name}": ${failure.reason}`,
+                "error",
+            );
+        }
+        if (failed.length > 0 && deleted > 0) {
+            notify(
+                `Deleted ${deleted} of ${deleted + failed.length} items. ` +
+                    `${failed.length} still selected.`,
+                "info",
+            );
+        }
     };
 
     const executeDeleteFolder = async (folder: Folder) => {
@@ -170,7 +210,10 @@ export function HomeScreen() {
                 setActiveFolderId(null);
             }
         } catch (e) {
-            console.error("Failed to delete folder:", e);
+            notify(
+                `Failed to delete folder "${folder.name}": ${errorText(e)}`,
+                "error",
+            );
         }
         setConfirmDelete(null);
     };
@@ -179,17 +222,35 @@ export function HomeScreen() {
         try {
             await useConnectionStore.getState().duplicateConnection(conn.id);
         } catch (e) {
-            console.error("Failed to duplicate connection:", e);
+            notify(
+                `Failed to duplicate "${conn.name}": ${errorText(e)}`,
+                "error",
+            );
         }
+    };
+
+    /**
+     * Delete one connection, from the card menu or its confirmation dialog.
+     * A failure keeps the connection on screen and says why; the same path
+     * serves both entry points so neither can end in silence.
+     */
+    const deleteOneConnection = async (conn: Connection) => {
+        try {
+            await deleteConnection(conn.id);
+        } catch (e) {
+            notify(
+                `Failed to delete connection "${conn.name}": ${errorText(e)}`,
+                "error",
+            );
+        }
+        setConfirmDelete(null);
     };
 
     const handleDeleteConnection = (conn: Connection) => {
         if (confirmBeforeDelete) {
             setConfirmDelete({ type: "connection", connection: conn });
         } else {
-            void deleteConnection(conn.id).catch((e) => {
-                console.error("Failed to delete connection:", e);
-            });
+            void deleteOneConnection(conn);
         }
     };
 
@@ -292,7 +353,13 @@ export function HomeScreen() {
                     try {
                         await createFolder(input);
                     } catch (e) {
-                        console.error("Failed to create folder:", e);
+                        // Keep the dialog open: the input is still there to
+                        // retry, and the reason is visible rather than logged.
+                        notify(
+                            `Failed to create folder "${input.name}": ${errorText(e)}`,
+                            "error",
+                        );
+                        return;
                     }
                     setFolderDialogOpen(false);
                 }}
@@ -311,7 +378,11 @@ export function HomeScreen() {
                             tag_ids: input.tag_ids,
                         });
                     } catch (e) {
-                        console.error("Failed to update folder:", e);
+                        notify(
+                            `Failed to save folder "${input.name}": ${errorText(e)}`,
+                            "error",
+                        );
+                        return;
                     }
                     setEditFolder(null);
                 }}
@@ -325,7 +396,12 @@ export function HomeScreen() {
                     try {
                         await moveSelectionToFolder(selectedItemIds, target);
                     } catch (e) {
-                        console.error("Failed to move selection:", e);
+                        // The selection is retained so the move can be retried.
+                        notify(
+                            `Failed to move selection: ${errorText(e)}`,
+                            "error",
+                        );
+                        return;
                     }
                     clearSelection();
                     setMoveToFolderOpen(false);
@@ -371,17 +447,7 @@ export function HomeScreen() {
                         confirmLabel="Delete"
                         confirmVariant="ghost"
                         onConfirm={async () => {
-                            try {
-                                await deleteConnection(
-                                    confirmDelete.connection!.id,
-                                );
-                            } catch (e) {
-                                console.error(
-                                    "Failed to delete connection:",
-                                    e,
-                                );
-                            }
-                            setConfirmDelete(null);
+                            await deleteOneConnection(confirmDelete.connection!);
                         }}
                         onCancel={() => setConfirmDelete(null)}
                     />

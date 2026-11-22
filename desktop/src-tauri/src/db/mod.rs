@@ -1,6 +1,7 @@
 pub mod fk;
 pub mod ident;
 pub mod introspection;
+pub mod lifecycle;
 pub mod mysql;
 pub mod mysql_clean;
 pub mod mysql_script;
