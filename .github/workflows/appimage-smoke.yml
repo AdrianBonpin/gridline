@@ -78,11 +78,25 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          tag="${REQUESTED_TAG:-}"
+          downloaded=0
+
           if [ "${EVENT_NAME}" = "workflow_run" ] && [ -n "${RELEASE_RUN_ID:-}" ]; then
             echo "Taking the AppImage artifact built by Release run ${RELEASE_RUN_ID}"
-            gh run download "${RELEASE_RUN_ID}" -n appimage-linux-x86_64 -D dist
-          else
-            tag="${REQUESTED_TAG:-}"
+            if gh run download "${RELEASE_RUN_ID}" -n appimage-linux-x86_64 -D dist; then
+              downloaded=1
+            else
+              # release.yml also runs on the `release: published` event, where its
+              # gate and publish jobs are skipped and no artifact is produced. The
+              # published asset for that run's tag is the same packaged image, so
+              # fall back to it instead of failing the lane on an empty download.
+              rm -rf dist && mkdir -p dist
+              tag="$(gh run view "${RELEASE_RUN_ID}" --json headBranch --jq '.headBranch' 2>/dev/null || true)"
+              echo "::warning::Release run ${RELEASE_RUN_ID} produced no appimage artifact; falling back to the published release${tag:+ ${tag}}"
+            fi
+          fi
+
+          if [ "${downloaded}" -eq 0 ]; then
             if [ -z "${tag}" ]; then
               tag="$(gh release view --json tagName --jq '.tagName')"
             fi

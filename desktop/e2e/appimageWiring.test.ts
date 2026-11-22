@@ -112,6 +112,16 @@ describe("packaged AppImage smoke wiring", () => {
     );
   });
 
+  it("falls back to the published asset when the Release run produced none", () => {
+    const workflow = read(".github/workflows/appimage-smoke.yml");
+    // release.yml also runs on the `release: published` event, where `gate` and
+    // `publish` are skipped — so `workflow_run` announces a completed Release run
+    // that has no `appimage-linux-x86_64` artifact. Downloading it unconditionally
+    // failed the resolve job with "no valid artifacts found to download".
+    expect(workflow).toMatch(/if gh run download "\$\{RELEASE_RUN_ID\}" -n appimage-linux-x86_64/);
+    expect(workflow).toContain("falling back to the published release");
+  });
+
   it("labels the Fedora run as cross-distribution compatibility only", () => {
     const workflow = read(".github/workflows/appimage-smoke.yml");
     expect(workflow).toMatch(/smoke-fedora:/);
