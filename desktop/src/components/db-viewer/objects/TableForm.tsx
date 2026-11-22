@@ -307,9 +307,29 @@ export function TableForm({
     const action = params.action;
     const mode = form.mode;
 
+    // Does this submission carry rename intent? Only a row that came from a live
+    // column and now has a different name does — see `toSqlColumn`.
+    const carriesRename = action.columns.some(
+        (c) => c.original_name !== undefined && c.original_name !== c.name,
+    );
+
+    // A set-equal column list is the rebuild shape — but only when the rebuild
+    // can actually carry what was asked. A rename keeps the name SET unchanged
+    // (`a→b` with `b→a` is a permutation), so it used to fall through here and
+    // the rebuild's identity copy (`INSERT INTO tmp (b, a) SELECT b, a FROM
+    // original`) silently dropped both renames: the table came back with the old
+    // names and nothing said so. PostgreSQL re-creates the preserved
+    // constraints/indexes/FKs from definitions that still name the old columns,
+    // so a rebuild genuinely cannot carry a rename there — the edit path can
+    // (`ALTER TABLE ... RENAME COLUMN`), and it refuses a swap with a reason
+    // when one pass cannot express it. SQLite's rebuild DOES carry renames (it
+    // maps each new column to its `renamed_from` source), so it keeps the path.
+    const rebuildCanCarryThis = dbType === "sqlite" || !carriesRename;
+
     const isRebuild =
         mode === "edit" &&
         action.old_columns !== undefined &&
+        rebuildCanCarryThis &&
         sameColumnNames(action.columns, action.old_columns) &&
         namesInOrder(action.columns) !== namesInOrder(action.old_columns);
 

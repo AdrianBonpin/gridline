@@ -1,3 +1,4 @@
+use crate::commands::db_viewer::MAX_TABLE_PAGE_SIZE;
 use crate::models::Settings;
 use crate::store::Store;
 use std::collections::HashMap;
@@ -9,8 +10,50 @@ pub fn get_settings_inner(state: &Mutex<Store>) -> Result<Settings, String> {
 }
 
 pub fn update_setting_inner(state: &Mutex<Store>, key: &str, value: &str) -> Result<(), String> {
+    // `table_page_size` is the one setting whose value reaches a `LIMIT`, and the
+    // browse path REJECTS a page size outside the grid's range instead of
+    // substituting another window (`db_viewer::page_window`). A value that got
+    // past this sink would therefore break every table browse, so the range is
+    // enforced here too — not only when a settings file is imported.
+    if key == "table_page_size" {
+        let size: i64 = value
+            .trim()
+            .parse()
+            .map_err(|_| format!("table_page_size must be an integer, got {value:?}"))?;
+        if !(1..=MAX_TABLE_PAGE_SIZE).contains(&size) {
+            return Err(page_size_error(size));
+        }
+    }
     let store = state.lock().map_err(|e| e.to_string())?;
     store.update_setting(key, value)
+}
+
+/// Why a page size is not one the browse path could use.
+fn page_size_error(size: i64) -> String {
+    format!("table_page_size {size} must be between 1 and {MAX_TABLE_PAGE_SIZE}")
+}
+
+/// Validate an imported settings document, in place, before anything is stored.
+///
+/// A settings file is untrusted input that arrives through a File Grant, and the
+/// renderer that reads it is not the boundary: its own clamp was computed and
+/// then discarded (the raw file text was forwarded, never the validated
+/// document), so importing `table_page_size: 100000` stored 100000 and made
+/// every subsequent browse fail. The backend clamps/refuses here so the stored
+/// value is always one the browse path accepts, whichever client sent it.
+///
+/// A value that names no page (`<= 0`) is refused rather than salvaged; an
+/// oversized one is clamped to the largest page the grid offers, because an
+/// imported document states a preference ("as many rows as you can show") and
+/// clamping keeps the app usable instead of failing the whole import.
+pub(crate) fn validate_imported_settings(settings: &mut Settings) -> Result<(), String> {
+    if settings.table_page_size <= 0 {
+        return Err(page_size_error(settings.table_page_size));
+    }
+    if settings.table_page_size > MAX_TABLE_PAGE_SIZE {
+        settings.table_page_size = MAX_TABLE_PAGE_SIZE;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -94,8 +137,9 @@ pub fn import_settings(json: String, state: tauri::State<crate::AppState>) -> Re
 }
 
 fn import_settings_text(store: &Mutex<Store>, json: &str) -> Result<(), String> {
-    let env: crate::models::settings::SettingsExport =
+    let mut env: crate::models::settings::SettingsExport =
         serde_json::from_str(json).map_err(|e| format!("invalid settings file: {e}"))?;
+    validate_imported_settings(&mut env.settings)?;
     let map = settings_to_kv(&env.settings);
     let store = store.lock().map_err(|e| e.to_string())?;
     store.apply_settings(&map)
@@ -381,5 +425,97 @@ mod tests {
         store.apply_settings(&map).unwrap();
         assert_eq!(store.get_settings().unwrap().theme, "light");
         assert_eq!(store.get_settings().unwrap().accent_color, "#EF4444");
+    }
+
+    // ── An imported page size must stay inside the range browse accepts ──
+
+    /// A settings file with one `table_page_size` value, in the exported shape.
+    fn settings_file(page_size: i64) -> String {
+        let env = crate::models::settings::SettingsExport {
+            schema_version: 1,
+            settings: crate::models::Settings {
+                confirm_before_delete: true,
+                default_folder_id: None,
+                theme: "dark".into(),
+                font_size: "medium".into(),
+                default_ports: HashMap::new(),
+                tag_order: None,
+                table_refresh_rate: 0,
+                table_page_size: page_size,
+                shortcuts: HashMap::new(),
+                accent_color: "#2563EB".into(),
+                editor_font_size: 14,
+                editor_font_family: "Menlo".into(),
+                editor_word_wrap: "off".into(),
+                editor_minimap: false,
+                editor_tab_size: 2,
+            },
+        };
+        serde_json::to_string(&env).unwrap()
+    }
+
+    /// The regression: importing an oversized page size used to store it verbatim,
+    /// after which `page_window` rejected every table browse with
+    /// "page size 100000 must be between 1 and 500" — the app was broken by a
+    /// settings import. The stored value must be one browse accepts.
+    #[test]
+    fn importing_an_oversized_page_size_leaves_a_usable_page_size() {
+        let st = state();
+        import_settings_text(&st, &settings_file(100_000)).unwrap();
+
+        let stored = get_settings_inner(&st).unwrap();
+        assert_eq!(stored.table_page_size, MAX_TABLE_PAGE_SIZE);
+        // Browse works afterwards: the stored size is inside the accepted window.
+        assert_eq!(
+            crate::commands::db_viewer::page_window(Some(1), Some(stored.table_page_size)),
+            Ok((1, 500, 0)),
+            "a table browse must still be possible after the import"
+        );
+    }
+
+    /// A page size that names no page cannot be salvaged into one: it is refused,
+    /// and the store keeps what it had.
+    #[test]
+    fn importing_a_non_positive_page_size_is_refused() {
+        let st = state();
+        update_setting_inner(&st, "table_page_size", "100").unwrap();
+
+        for bad in [0, -50] {
+            let err = import_settings_text(&st, &settings_file(bad))
+                .expect_err("a non-positive page size must be refused");
+            assert!(err.contains("table_page_size"), "got: {err}");
+            assert!(err.contains(&bad.to_string()), "got: {err}");
+            assert_eq!(
+                get_settings_inner(&st).unwrap().table_page_size,
+                100,
+                "a refused import must store nothing"
+            );
+        }
+    }
+
+    /// The bounds themselves are valid, and are kept exactly.
+    #[test]
+    fn importing_an_in_range_page_size_is_kept() {
+        for size in [1, 500] {
+            let st = state();
+            import_settings_text(&st, &settings_file(size)).unwrap();
+            assert_eq!(get_settings_inner(&st).unwrap().table_page_size, size);
+        }
+    }
+
+    /// The same range holds for a direct setting write: the renderer is not the
+    /// only client that can reach this key.
+    #[test]
+    fn update_setting_rejects_an_out_of_range_page_size() {
+        let st = state();
+        for bad in ["100000", "0", "-50", "ten"] {
+            assert!(
+                update_setting_inner(&st, "table_page_size", bad).is_err(),
+                "{bad} must be refused"
+            );
+        }
+        assert_eq!(get_settings_inner(&st).unwrap().table_page_size, 50);
+        update_setting_inner(&st, "table_page_size", "500").unwrap();
+        assert_eq!(get_settings_inner(&st).unwrap().table_page_size, 500);
     }
 }

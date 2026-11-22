@@ -195,11 +195,13 @@ export async function getTableData(
 /**
  * Apply one queued change.
  *
- * `origin` is the Change Origin the work was staged against. The backend
- * revalidates it against the saved connection and refuses the change when the
- * connection has been retargeted since, so a reused connection id can never
- * redirect a staged write (the renderer's own check is a convenience, not the
- * guarantee).
+ * `origin` is the Change Origin the work was **staged** against (the value
+ * recorded on the queue item), never one recomputed at commit time. The backend
+ * resolves the saved connection itself and refuses the change when its target no
+ * longer matches, so a reused connection id can never redirect a staged write.
+ * Passing the live target here would make that comparison tautological and hand
+ * the decision back to the renderer, which is what the backend check exists to
+ * prevent.
  */
 export async function executeChange(
   connectionId: string,

@@ -8,6 +8,9 @@ import * as objectCrud from "../../../lib/objectCrud";
 
 beforeEach(() => {
   useDbViewerStore.getState().reset();
+  // The form reads the engine off the saved connection; no test may inherit
+  // another's connection (e.g. a SQLite one) and silently change the path taken.
+  useConnectionStore.setState({ connections: [] });
   vi.spyOn(cmd, "buildObjectDdl").mockReset().mockResolvedValue([]);
   vi.spyOn(cmd, "buildRebuildScript").mockReset().mockResolvedValue("");
   vi.spyOn(cmd, "getTableRebuildReadiness").mockReset().mockResolvedValue({ ok: true, reasons: [] });
@@ -325,6 +328,85 @@ describe("TableForm", () => {
         'ALTER TABLE "public"."users" ADD COLUMN "email" text',
       ]);
     });
+  });
+
+  it("a permutation rename is never staged as a set-equal rebuild", async () => {
+    // `id→name` + `name→id` keeps the column-name SET unchanged, so it looks
+    // exactly like a pure reorder. A PostgreSQL rebuild copies data by identity
+    // name, so taking that path dropped both renames and rebuilt the table with
+    // the old names — silently. The edit path applies a rename and refuses a
+    // swap with a reason, so the submission must go there instead.
+    (cmd.getTableColumns as any).mockResolvedValue([liveId, liveName]);
+    (cmd.buildObjectDdl as any).mockRejectedValue(
+      new Error(
+        'Cannot rename to "name": it is still the source of another rename in this submission',
+      ),
+    );
+    renderEdit([
+      { ...snapshot[1], original_name: "id" },
+      { ...snapshot[0], original_name: "name" },
+    ]);
+    await screen.findByLabelText(/SQL/i);
+
+    expect(cmd.buildRebuildScript).not.toHaveBeenCalled();
+    const payloads = editPayloads();
+    expect(payloads.length).toBeGreaterThan(0);
+    expect(payloads[payloads.length - 1].action.op).toBe("edit");
+    expect(payloads[payloads.length - 1].action.columns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "name", renamed_from: "id" }),
+        expect.objectContaining({ name: "id", renamed_from: "name" }),
+      ]),
+    );
+
+    // Staging surfaces the backend's refusal; nothing enters the queue as a
+    // "reorder" that would have thrown the rename away.
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    expect(
+      await screen.findByText(/still the source of another rename/i),
+    ).toBeInTheDocument();
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+  });
+
+  it("a SQLite permutation rename keeps the rebuild path, which carries renames", async () => {
+    // SQLite's rebuild maps every new column to its `renamed_from` source, so it
+    // applies a swap atomically; it must not be routed away from the rebuild.
+    useConnectionStore.setState({
+      connections: [
+        {
+          id: "c1",
+          name: "Local",
+          db_type: "sqlite",
+          host: "/tmp/app.db",
+          port: null,
+          username: null,
+          database: "main",
+          folder_id: null,
+          keychain_ref: null,
+          tag_ids: [],
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+          favorite: false,
+        },
+      ],
+    } as any);
+    (cmd.buildRebuildScript as any).mockResolvedValue(
+      'INSERT INTO "main"."_gl_users_tmp" ("name", "id") SELECT "id", "name" FROM "main"."users"',
+    );
+    renderEdit([
+      { ...snapshot[1], original_name: "id" },
+      { ...snapshot[0], original_name: "name" },
+    ]);
+    await screen.findByLabelText(/SQL/i);
+    await waitFor(() => expect(cmd.buildRebuildScript).toHaveBeenCalled());
+    const [args] = (cmd.buildRebuildScript as any).mock.calls.slice(-1);
+    // The script builder receives every column with its rename intent intact.
+    expect(args[3]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "name", original_name: "id" }),
+        expect.objectContaining({ name: "id", original_name: "name" }),
+      ]),
+    );
   });
 
   it("stale guard blocks staging when live columns differ", async () => {

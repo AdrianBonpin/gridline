@@ -345,6 +345,96 @@ async fn disconnect_closes_pool_tunnel_and_cancel_handles() {
     );
 }
 
+/// A saved connection is the target every staged write is validated against, so
+/// an edit that MOVES it must close the session opened with the old config —
+/// otherwise commands keep writing through a configuration the store no longer
+/// holds (the validated config is not the one in use).
+#[tokio::test]
+async fn editing_the_target_of_a_saved_connection_closes_its_live_session() {
+    let mut rig = Rig::new("conn-retarget");
+    rig.live_session().await;
+    assert!(rig.pool_handle_is_live().await, "session starts live");
+    let port = rig.tunnel_port().expect("a tunnel is open");
+    assert!(reachable(port));
+
+    let before = saved_connection("db.internal");
+    // Same saved id, different host: writes would land somewhere else.
+    let after = saved_connection("prod.internal");
+
+    let closed =
+        close_session_if_retargeted(&rig.id, &before, &after, &rig.pool, &rig.ssh, &rig.cancel)
+            .await;
+
+    assert!(closed, "a moved target closes the session");
+    assert!(
+        !rig.pool_handle_is_live().await,
+        "the stale pool handle is gone"
+    );
+    assert!(rig.tunnel_port().is_none(), "its tunnel is closed");
+    assert!(
+        !reachable(port),
+        "the old loopback listener no longer proxies the database"
+    );
+    assert!(!rig.cancel_handle_present(), "its cancel handle is gone");
+}
+
+/// The other half: renaming or refiling a connection is not a retarget, so it
+/// must never drop a working session (that would disconnect users for a label).
+#[tokio::test]
+async fn editing_only_metadata_leaves_the_live_session_alone() {
+    let mut rig = Rig::new("conn-rename");
+    rig.live_session().await;
+    let port = rig.tunnel_port().expect("a tunnel is open");
+
+    let before = saved_connection("db.internal");
+    let mut after = saved_connection("db.internal");
+    after.name = "Renamed environment".into();
+    after.folder_id = Some("folder-1".into());
+    after.environment = Some("production".into());
+    after.favorite = true;
+    after.tag_ids = vec!["tag-1".into()];
+
+    let closed =
+        close_session_if_retargeted(&rig.id, &before, &after, &rig.pool, &rig.ssh, &rig.cancel)
+            .await;
+
+    assert!(!closed, "a metadata edit is not a retarget");
+    assert!(rig.pool_handle_is_live().await, "the session keeps working");
+    assert_eq!(rig.tunnel_port(), Some(port), "its tunnel stays open");
+    assert!(rig.cancel_handle_present());
+}
+
+/// A saved connection shaped like the ones above, so only target/metadata
+/// differences matter.
+fn saved_connection(host: &str) -> crate::models::Connection {
+    crate::models::Connection {
+        id: "conn-retarget".into(),
+        name: "Local dev".into(),
+        db_type: "postgresql".into(),
+        host: host.into(),
+        port: Some(5432),
+        username: Some("app".into()),
+        database: Some("appdb".into()),
+        folder_id: None,
+        keychain_ref: None,
+        environment: None,
+        favorite: false,
+        ssh_host: Some("jump.internal".into()),
+        ssh_port: Some(22),
+        ssh_user: Some("tunnel".into()),
+        ssh_auth_method: Some("password".into()),
+        ssh_private_key_path: None,
+        ssl_mode: None,
+        ssl_ca_path: None,
+        ssl_cert_path: None,
+        ssl_key_path: None,
+        tag_ids: Vec::new(),
+        use_keychain: true,
+        created_at: "2026-01-01T00:00:00Z".into(),
+        updated_at: "2026-01-01T00:00:00Z".into(),
+    }
+}
+
 /// Criterion: no loopback listener remains reachable after a viewer is closed
 /// or disconnected.
 #[tokio::test]

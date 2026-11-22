@@ -902,6 +902,32 @@ pub const TABLE_EDIT_POSITION_ERROR: &str = "PostgreSQL cannot move or insert a 
 so this edit would apply only part of what was asked. Apply the rename/add/drop/type change first, \
 then move the columns in a second edit (moving columns without renaming them is staged as a table rebuild).";
 
+/// Why a rename cannot be carried by a PostgreSQL table rebuild.
+pub const REBUILD_RENAME_REFUSAL: &str = "A table rebuild cannot apply a column rename: the rebuilt \
+table's primary key, unique/check constraints, indexes, foreign keys and grants are re-created from the \
+live definitions, which still name the old column, so the rename would be dropped and the old name kept. \
+Stage the rename as an edit (ALTER TABLE ... RENAME COLUMN) instead.";
+
+/// Refuse a PostgreSQL rebuild submission that carries a rename.
+///
+/// [`rebuild_script`] copies data with an identity `INSERT INTO tmp (cols)
+/// SELECT cols FROM original`: the *same* name on both sides. A rename
+/// (`renamed_from`) therefore has no place in the script and used to be dropped
+/// silently — with a name-set permutation (`a→b`, `b→a`) the submission even
+/// passed the reorder-only shape check, so the table was rebuilt with the old
+/// names and the user was told nothing. The preserved constraint/index/FK
+/// definitions make honouring the rename here unsafe (they are replayed
+/// verbatim and would still name the old column), so the honest answer is a
+/// refusal that names the edit path; the caller routes it there instead.
+pub fn ensure_rebuild_carries_no_rename(new_columns: &[TableColumn]) -> Result<(), String> {
+    for c in new_columns {
+        if c.renamed_from.as_deref().is_some_and(|from| from != c.name) {
+            return Err(REBUILD_RENAME_REFUSAL.to_string());
+        }
+    }
+    Ok(())
+}
+
 /// Reject an edit that REORDERS existing columns, which `ALTER TABLE` cannot
 /// express.
 ///
@@ -1171,6 +1197,7 @@ pub fn rebuild_script(input: &RebuildInput, new_columns: &[TableColumn]) -> Resu
         validate_object_name(&c.name)?;
         validate_type(&c.type_)?;
     }
+    ensure_rebuild_carries_no_rename(new_columns)?;
     let q = qual(&input.schema, &input.name)?;
     let tmp = qual(&input.schema, &format!("_gridline_rb_{}", input.name))?;
     let mut s = String::new();
@@ -2598,6 +2625,61 @@ mod tests {
             detach < drop && drop < attach,
             "detach before drop before reattach; got: {script}"
         );
+    }
+
+    /// A permutation rename (`a→b`, `b→a`) keeps the column-name SET unchanged,
+    /// so it looks like a pure reorder. The rebuild copies data by identity
+    /// name, so applying it that way kept the old names and dropped both renames
+    /// without a word. The script builder must refuse such a submission instead.
+    #[test]
+    fn rebuild_script_refuses_a_submission_carrying_a_rename() {
+        let input = RebuildInput {
+            schema: "public".into(),
+            name: "t".into(),
+            constraints: vec![],
+            indexes: vec![],
+            fks_out: vec![],
+            fks_in: vec![],
+            grants: vec![],
+            owned_sequences: vec![],
+        };
+        let swapped = vec![
+            TableColumn {
+                name: "b".into(),
+                type_: "text".into(),
+                nullable: true,
+                default: None,
+                is_pk: false,
+                unique: None,
+                renamed_from: Some("a".into()),
+            },
+            TableColumn {
+                name: "a".into(),
+                type_: "text".into(),
+                nullable: true,
+                default: None,
+                is_pk: false,
+                unique: None,
+                renamed_from: Some("b".into()),
+            },
+        ];
+        let err = rebuild_script(&input, &swapped).expect_err("a rebuild cannot carry a rename");
+        assert_eq!(err, REBUILD_RENAME_REFUSAL);
+        assert!(
+            err.contains("rename"),
+            "the refusal must say what it is refusing: {err}"
+        );
+
+        // The same columns with no rename intent stay a plain, expressible
+        // reorder — the refusal is specific to rename intent, not to the shape.
+        let plain = swapped
+            .iter()
+            .map(|c| TableColumn {
+                renamed_from: None,
+                ..c.clone()
+            })
+            .collect::<Vec<_>>();
+        assert!(rebuild_script(&input, &plain).is_ok());
     }
 }
 

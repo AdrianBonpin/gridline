@@ -165,7 +165,20 @@ export function ChangesQueuePanel({
     for (const change of pending) {
       try {
         const payload = buildChangePayload(change);
-        await cmd.executeChange(origin.connectionId, payload, origin);
+        // The origin the BACKEND validates against is the one recorded when this
+        // change was staged, never one recomputed here. Sending
+        // `currentChangeOrigin()` made the comparison the backend performs
+        // (`staged target == stored target`) tautological: the renderer decided
+        // which target a staged write belonged to, which is exactly what the
+        // backend is there to prevent. Fail closed if an item somehow has no
+        // origin — an unowned change is never offered for commit.
+        const stagedOrigin = change.origin;
+        if (!stagedOrigin) {
+          throw new Error(
+            `Cannot commit "${describeChange(change)}": it was staged without a Change Origin, so its target cannot be proven. Revert it and stage the change again.`,
+          );
+        }
+        await cmd.executeChange(stagedOrigin.connectionId, payload, stagedOrigin);
         markChangeCommitted(change.id);
         committedItems.push(change);
         committedCount++;
