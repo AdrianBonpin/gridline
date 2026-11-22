@@ -4,6 +4,9 @@
 --   search_objects: 'users' TABLE hit, 'get*' function hit, empty-needle <= 100
 --   get_object_ddl: users_id_seq -> CREATE SEQUENCE; audit_log -> CREATE FUNCTION
 --   get_object_dependencies: orders -> order_summary VIEW; schema contents non-empty
+--   get_role_privileges: a `read_only` role holding a grant in each object class
+--     (table / routine / schema / database) — created in section 5, which needs a
+--     role that may CREATE ROLE (i.e. run it as a superuser).
 -- Run with:  psql ... -f scripts/seed-pg-test.sql
 
 BEGIN;
@@ -58,6 +61,28 @@ $$ LANGUAGE sql;
 CREATE FUNCTION get_user(uid bigint) RETURNS TABLE(email text, role text) AS $$
     SELECT u.email, u.role FROM users u WHERE u.id = uid;
 $$ LANGUAGE sql STABLE;
+
+-- 5. `read_only` role with one grant per object class.
+-- src-tauri/src/commands/objects.test.rs asserts that the privilege explorer
+-- reports a table, a routine, a schema and a database grant for this role, so
+-- without it that live test depends on state nobody seeded. Idempotent: the
+-- role is only created when absent, and GRANT/REVOKE re-run harmlessly.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'read_only') THEN
+        CREATE ROLE read_only NOLOGIN;
+    END IF;
+END
+$$;
+
+GRANT USAGE ON SCHEMA public TO read_only;
+GRANT SELECT ON public.users TO read_only;
+GRANT EXECUTE ON FUNCTION public.get_user(bigint) TO read_only;
+DO $$
+BEGIN
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO read_only', current_database());
+END
+$$;
 
 COMMIT;
 

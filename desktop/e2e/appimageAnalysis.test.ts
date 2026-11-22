@@ -23,9 +23,15 @@ import {
   TEXT_MUTED,
   blackFrame,
   blankFrame,
+  borderOnlyFrame,
   createFrame,
+  gradientRuleFrame,
+  lightSparsePaintedFrame,
   nearlyBlankFrame,
   paintedFrame,
+  solidBlockFrame,
+  stripeFrame,
+  tinyMulticolourMarkFrame,
 } from "./appimageTestFrames.mjs";
 import { HarnessError } from "./errors.mjs";
 
@@ -58,11 +64,22 @@ describe("analyseFrame", () => {
     expect(frame.meanLuminance).toBeLessThan(0.05);
   });
 
-  it("reports real diversity for a painted dark-themed window", () => {
+  it("reports real diversity and content for a painted dark-themed window", () => {
     const frame = analyseFrame(paintedFrame(WIDTH, HEIGHT));
     expect(frame.distinctColours).toBeGreaterThanOrEqual(DEFAULT_PAINT_THRESHOLDS.minDistinctColours);
-    expect(frame.dominantColourShare).toBeLessThan(DEFAULT_PAINT_THRESHOLDS.maxDominantColourShare);
+    expect(frame.inkPixelRatio).toBeGreaterThanOrEqual(DEFAULT_PAINT_THRESHOLDS.minInkPixelRatio);
+    expect(frame.inkRows).toBeGreaterThanOrEqual(DEFAULT_PAINT_THRESHOLDS.minInkRows);
     expect(frame.brightPixelRatio).toBeGreaterThan(DEFAULT_PAINT_THRESHOLDS.minBrightPixelRatio);
+  });
+
+  it("measures a sparse light-theme window as content on a big background", () => {
+    // The real v0.9.2 AppImage frame in CI: complete UI, but the background
+    // covers ~97% of an empty workspace because the theme follows the OS. The
+    // old "dominant share" rule rejected this, which is why it is gone.
+    const frame = analyseFrame(lightSparsePaintedFrame(WIDTH, HEIGHT));
+    expect(frame.dominantColourShare).toBeGreaterThan(0.9);
+    expect(frame.inkPixelRatio).toBeGreaterThan(DEFAULT_PAINT_THRESHOLDS.minInkPixelRatio);
+    expect(frame.inkRows).toBeGreaterThan(DEFAULT_PAINT_THRESHOLDS.minInkRows);
   });
 
   it("refuses a buffer that cannot cover the claimed dimensions", () => {
@@ -83,7 +100,7 @@ describe("judgePaint — a blank or dark-empty window must fail", () => {
     const verdict = judgePaint(analyseFrame(blankFrame(WIDTH, HEIGHT)));
     expect(verdict.painted).toBe(false);
     expect(verdict.reasons.join("\n")).toMatch(/distinct colour/);
-    expect(verdict.reasons.join("\n")).toMatch(/covers 100\.00%/);
+    expect(verdict.reasons.join("\n")).toMatch(/content/);
     expect(verdict.reasons.join("\n")).toMatch(/bright/);
   });
 
@@ -119,11 +136,40 @@ describe("judgePaint — a blank or dark-empty window must fail", () => {
     expect(verdict.painted).toBe(true);
   });
 
+  it("passes a sparse light-theme window — a real one, not a blank one", () => {
+    // Regression for the false failure that this lane hit on the published
+    // v0.9.2 AppImage: the frame showed the full Gridline home screen, but
+    // #fafafa covered 97.6% of it, so a background-share rule said "unpainted".
+    const verdict = judgePaint(analyseFrame(lightSparsePaintedFrame(WIDTH, HEIGHT)));
+    expect(verdict.painted).toBe(true);
+    expect(verdict.reasons).toEqual([]);
+  });
+
+  it("fails frames that are flat, striped or single-block", () => {
+    // Each decoy is rejected by a different measurement, so no single threshold
+    // is carrying the whole gate: a stripe has pixels but no rows, a small
+    // multicolour mark has colours but no ink share, a solid block has neither
+    // rows nor colours, and a border-only frame has rows but nothing else.
+    const decoys: Array<[string, { pixels: Uint8Array; width: number; height: number }]> = [
+      ["stripe", stripeFrame(WIDTH, HEIGHT)],
+      ["border only", borderOnlyFrame(WIDTH, HEIGHT)],
+      ["solid block", solidBlockFrame(WIDTH, HEIGHT)],
+      ["tiny multicolour mark", tinyMulticolourMarkFrame(WIDTH, HEIGHT)],
+      ["gradient rule", gradientRuleFrame(WIDTH, HEIGHT)],
+    ];
+    for (const [label, frame] of decoys) {
+      const verdict = judgePaint(analyseFrame(frame));
+      expect(verdict.painted, `${label} must not count as painted`).toBe(false);
+      expect(verdict.reasons.length, `${label} must say why`).toBeGreaterThan(0);
+    }
+  });
+
   it("reports the numbers it decided on, so a failure is evidence", () => {
     const frame = analyseFrame(blankFrame(WIDTH, HEIGHT));
     const line = describeFrame(frame);
     expect(line).toContain(`${WIDTH}x${HEIGHT}`);
     expect(line).toContain("distinct colour");
+    expect(line).toContain("content");
     expect(line).toContain("bright");
   });
 

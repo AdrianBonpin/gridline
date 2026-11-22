@@ -75,6 +75,49 @@ describe("packaged AppImage smoke wiring", () => {
     expect(workflow).toMatch(/bun run --filter gridline-desktop e2e:appimage/);
   });
 
+  it("passes every launch an absolute AppImage path", () => {
+    const workflow = read(".github/workflows/appimage-smoke.yml");
+    // `bun run --filter gridline-desktop` runs the smoke with its cwd set to
+    // `desktop/`, while the artifact is downloaded into the repo root. A
+    // repo-root-relative argument resolves to `desktop/dist/...`, which is empty
+    // — that shipped once and made every smoke job fail with "AppImage not
+    // found" before it ever launched the package. Every launch site therefore
+    // has to hand over an absolute path.
+    const launchSites = workflow.match(/appimage="\$PWD\/\$\(ls dist\/\*\.AppImage/g) ?? [];
+    expect(launchSites).toHaveLength(3);
+    expect(workflow).not.toMatch(/\n\s*appimage="\$\(ls dist\/\*\.AppImage/);
+  });
+
+  it("installs the host GL runtime the packaged image relies on", () => {
+    const workflow = read(".github/workflows/appimage-smoke.yml");
+    // The image bundles GTK3 + WebKitGTK but deliberately not libEGL/libGL
+    // (linuxdeploy excludes driver-provided GL), so the host supplies them — as
+    // a desktop install does through libgtk-3-0/libwebkit2gtk-4.1-0. Without
+    // them the app dies at startup with "libEGL.so.1: cannot open shared object
+    // file", which is how this lane first failed after the path was fixed.
+    const ubuntuTooling = workflow.match(/apt-get install -y [^\n]*\n[^\n]*/g) ?? [];
+    expect(ubuntuTooling.length).toBeGreaterThanOrEqual(2);
+    for (const step of ubuntuTooling) {
+      expect(step).toMatch(/libegl1/);
+    }
+    expect(workflow).toContain("libglvnd-egl");
+  });
+
+  it("installs the container's tooling before anything that needs it", () => {
+    const workflow = read(".github/workflows/appimage-smoke.yml");
+    const fedora = workflow.slice(workflow.indexOf("  smoke-fedora:"));
+    // A bare `fedora:latest` has no `unzip`, and oven-sh/setup-bun unpacks its
+    // download with it: setting Bun up first failed the job before the smoke ran.
+    const tools = fedora.indexOf("dnf install");
+    // Anchored on the `uses:` line, not the word: the explanatory comment above
+    // the tools step names the action too.
+    const bun = fedora.indexOf("uses: oven-sh/setup-bun");
+    expect(tools).toBeGreaterThan(-1);
+    expect(bun).toBeGreaterThan(-1);
+    expect(tools).toBeLessThan(bun);
+    expect(fedora.slice(tools, bun)).toMatch(/\bunzip\b/);
+  });
+
   it("hands the AppImage from the release build to this lane", () => {
     const release = read(".github/workflows/release.yml");
     expect(release).toContain("name: appimage-linux-x86_64");
@@ -82,6 +125,16 @@ describe("packaged AppImage smoke wiring", () => {
     expect(release).toMatch(
       /uses: actions\/upload-artifact@[0-9a-f]{40}\b[^\n]*\n\s+with:\n\s+name: appimage-linux-x86_64/,
     );
+  });
+
+  it("falls back to the published asset when the Release run produced none", () => {
+    const workflow = read(".github/workflows/appimage-smoke.yml");
+    // release.yml also runs on the `release: published` event, where `gate` and
+    // `publish` are skipped — so `workflow_run` announces a completed Release run
+    // that has no `appimage-linux-x86_64` artifact. Downloading it unconditionally
+    // failed the resolve job with "no valid artifacts found to download".
+    expect(workflow).toMatch(/if gh run download "\$\{RELEASE_RUN_ID\}" -n appimage-linux-x86_64/);
+    expect(workflow).toContain("falling back to the published release");
   });
 
   it("labels the Fedora run as cross-distribution compatibility only", () => {
