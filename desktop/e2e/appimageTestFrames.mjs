@@ -100,3 +100,99 @@ export function paintedFrame(width = 1200, height = 800) {
 export function toRgbBuffer(frame) {
   return Buffer.from(frame.pixels.buffer, frame.pixels.byteOffset, frame.pixels.byteLength);
 }
+
+/**
+ * A light-theme window that did paint, matching the real v0.9.2 AppImage frame
+ * captured in CI: the app follows the OS theme, so on a light-preference host a
+ * complete UI — search bar, buttons, a connection card — sits on a #fafafa
+ * background that covers ~97.6% of an otherwise empty workspace.
+ *
+ * Its measurements (120 distinct colours, 2.36% ink over 75 of 267 sampled rows)
+ * are the reason the paint gate cannot be "no colour may dominate".
+ */
+export function lightSparsePaintedFrame(width = 1200, height = 800) {
+  const surface = [0xff, 0xff, 0xff];
+  const canvas = [0xfa, 0xfa, 0xfa];
+  const ink = [0x18, 0x18, 0x1b];
+  const muted = [0x6b, 0x6b, 0x74];
+  const border = [0xe4, 0xe4, 0xe7];
+  const accent = [0x25, 0x63, 0xeb];
+  // Rendered text is antialiased, which is where a real frame's colour
+  // diversity comes from (the captured v0.9.2 frame has 120 distinct colours).
+  const inkTones = [ink, [0x3a, 0x3a, 0x42], [0x55, 0x55, 0x5e], [0x71, 0x71, 0x7a], [0x8c, 0x8c, 0x95]];
+  const mutedTones = [muted, [0x8a, 0x8a, 0x94], [0xa4, 0xa4, 0xad], [0xbe, 0xbe, 0xc6], [0xd6, 0xd6, 0xdb]];
+  const toneOf = (tones, x, y) => tones[(x + y * 3) % tones.length];
+
+  return createFrame(width, height, (x, y) => {
+    // Search field: box near the top centre, with placeholder text.
+    if (y > 22 && y < 62 && x > 310 && x < 890) {
+      if (y < 26 || y > 58 || x < 314 || x > 886) return border;
+      if (y > 38 && y < 45 && x > 350 && x < 730 && Math.floor(x / 9) % 3 !== 0) return toneOf(mutedTones, x, y);
+      return surface;
+    }
+    // Page heading "Saved Connections".
+    if (y > 92 && y < 110 && x > 24 && x < 176 && Math.floor(x / 10) % 4 !== 0) return toneOf(inkTones, x, y);
+    // Three pill buttons under the heading.
+    if (y > 130 && y < 162 && ((x > 24 && x < 84) || (x > 106 && x < 194) || (x > 212 && x < 292))) {
+      if (y < 134 || y > 158) return border;
+      if (y > 142 && y < 150 && Math.floor(x / 7) % 4 !== 0) return toneOf(mutedTones, x, y);
+      return surface;
+    }
+    // Accent button, top right.
+    if (y > 88 && y < 122 && x > 1024 && x < 1176) {
+      if (y > 100 && y < 108 && Math.floor(x / 6) % 5 !== 0) return surface;
+      return accent;
+    }
+    // Connection card: title, badge and a path line.
+    if (y > 222 && y < 332 && x > 24 && x < 300) {
+      if (y < 226 || y > 328 || x < 28 || x > 296) return border;
+      if (y > 244 && y < 262 && x > 88 && x < 250 && Math.floor(x / 8) % 5 !== 0) return toneOf(inkTones, x, y);
+      if (y > 266 && y < 280 && x > 88 && x < 150) return [0x6f, 0xd6, 0xa8];
+      if (y > 266 && y < 280 && x > 160 && x < 214) return toneOf(mutedTones, x, y);
+      if (y > 286 && y < 302 && x > 34 && x < 286 && Math.floor(x / 7) % 6 !== 0) return toneOf(mutedTones, x, y);
+      return surface;
+    }
+    return canvas;
+  });
+}
+
+/** A single full-width stripe on an empty page: many pixels, few rows. */
+export function stripeFrame(width = 1200, height = 800) {
+  return createFrame(width, height, (_x, y) => (y >= 395 && y < 405 ? ACCENT : [0xfa, 0xfa, 0xfa]));
+}
+
+/** Only a window border: every row has ink, but there is no content. */
+export function borderOnlyFrame(width = 1200, height = 800) {
+  return createFrame(width, height, (x, y) =>
+    x === 0 || y === 0 || x === width - 1 || y === height - 1 ? BORDER_HOVER : [0xfa, 0xfa, 0xfa],
+  );
+}
+
+/** One solid block in a corner — the "a logo painted, nothing else" case. */
+export function solidBlockFrame(width = 1200, height = 800) {
+  return createFrame(width, height, (x, y) =>
+    x > 40 && x < 240 && y > 40 && y < 140 ? ACCENT : [0xfa, 0xfa, 0xfa],
+  );
+}
+
+/**
+ * Colourful but tiny: ten tones in a small corner mark. This one exists to prove
+ * the ink-share floor on its own — colour diversity alone would pass it.
+ */
+export function tinyMulticolourMarkFrame(width = 1200, height = 800) {
+  const tones = [ACCENT, ACCENT_MUTED, TEXT, TEXT_MUTED, TEXT_DIM, BORDER_HOVER, BORDER, SURFACE, CANVAS, [0x44, 0x44, 0x4c]];
+  return createFrame(width, height, (x, y) =>
+    x > 40 && x < 80 && y > 40 && y < 80 ? tones[(x + y) % tones.length] : [0xfa, 0xfa, 0xfa],
+  );
+}
+
+/**
+ * Plenty of pixels and colours, but only a handful of rows: a gradient rule.
+ * Proves the ink-row floor, which a "share of the window" measure cannot.
+ */
+export function gradientRuleFrame(width = 1200, height = 800) {
+  const tones = [ACCENT, ACCENT_MUTED, BORDER, BORDER_HOVER, SURFACE, TEXT_DIM, TEXT_MUTED, [0x33, 0x55, 0x99], [0x22, 0x44, 0x88], [0x11, 0x33, 0x77]];
+  return createFrame(width, height, (_x, y) =>
+    y >= 396 && y < 404 ? tones[(y + Math.floor(_x / 120)) % tones.length] : [0xfa, 0xfa, 0xfa],
+  );
+}
