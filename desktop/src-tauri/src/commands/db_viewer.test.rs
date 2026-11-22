@@ -82,7 +82,7 @@ async fn hypertables_unavailable_on_plain_pg() {
 // ---------------------------------------------------------------------------
 
 use crate::commands::db_viewer::{
-    execute_change_for_origin, execute_change_inner, get_table_data_inner,
+    execute_change_for_origin, execute_change_inner, execute_staged_change, get_table_data_inner,
 };
 use crate::models::db_viewer::Change;
 use rusqlite::types::Value;
@@ -384,6 +384,175 @@ async fn the_backend_applies_a_change_whose_origin_still_matches() {
     let mut guard = pm.lock().await;
     let rows = sqlite_query(&mut guard, &id, "SELECT COUNT(*) FROM notes");
     assert_eq!(rows, vec![vec![int(1)]]);
+}
+
+// ---------------------------------------------------------------------------
+// The command boundary: the SAVED connection is resolved in the backend and
+// compared with the origin the change was STAGED against
+// ---------------------------------------------------------------------------
+
+fn test_store() -> std::sync::Mutex<crate::store::Store> {
+    let conn = rusqlite::Connection::open_in_memory().expect("in-memory store");
+    crate::store::migrations::run_migrations(&conn).expect("migrations");
+    std::sync::Mutex::new(crate::store::Store::from_connection(conn).expect("test store"))
+}
+
+fn sqlite_input(host: &str) -> crate::models::ConnectionInput {
+    crate::models::ConnectionInput {
+        name: "Demo".into(),
+        db_type: "sqlite".into(),
+        host: host.into(),
+        port: None,
+        username: None,
+        folder_id: None,
+        tag_ids: vec![],
+        password: None,
+        database: Some("main".into()),
+        environment: None,
+        ssh_host: None,
+        ssh_port: None,
+        ssh_user: None,
+        ssh_auth_method: None,
+        ssh_private_key_path: None,
+        ssh_password: None,
+        ssh_passphrase: None,
+        ssl_mode: None,
+        ssl_ca_path: None,
+        ssl_cert_path: None,
+        ssl_key_path: None,
+        use_keychain: false,
+    }
+}
+
+/// The full command path, with no UI in it: a change staged against target A,
+/// then the SAVED connection retargeted to B, is refused by the backend — because
+/// the backend reads the connection from the store itself and compares it with
+/// the origin recorded at staging time.
+///
+/// This is the guarantee that a renderer cannot decide for itself: whatever it
+/// passes as the staged origin is checked against what is actually stored, and a
+/// mismatched target writes nothing.
+#[tokio::test]
+async fn a_change_staged_before_a_retarget_is_refused_by_the_command_boundary() {
+    let store = test_store();
+    let saved =
+        crate::commands::connections::create_connection_inner(&store, sqlite_input("/tmp/app.db"))
+            .expect("saved connection");
+    let id = saved.id.clone();
+
+    // A live session for that id (the handle is what a write would use).
+    let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+    conn.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);")
+        .expect("fixture");
+    let mut manager = ConnectionPoolManager::new();
+    manager.register(&id, DbHandle::sqlite(conn));
+    let pm = tokio::sync::Mutex::new(manager);
+
+    // Staged while the connection pointed at /tmp/app.db.
+    let staged = origin_for(&saved);
+
+    // The user edits the connection: same id, different file.
+    crate::commands::connections::update_connection_inner(
+        &store,
+        id.clone(),
+        sqlite_input("/tmp/other.db"),
+    )
+    .expect("retarget");
+
+    let change = Change::Insert {
+        id: "ch-boundary".into(),
+        schema: "main".into(),
+        table: "notes".into(),
+        data: r#"{"id":1,"body":"must not be written"}"#.into(),
+    };
+    let err = execute_staged_change(&store, &pm, &id, &staged, change)
+        .await
+        .expect_err("the backend must refuse work staged against the old target");
+    assert!(
+        err.contains(crate::db::change_target::CHANGE_ORIGIN_RETARGETED),
+        "the refusal carries the stable code: {err}"
+    );
+    assert!(err.contains("Nothing was written"), "{err}");
+
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        sqlite_query(&mut guard, &id, "SELECT COUNT(*) FROM notes"),
+        vec![vec![int(0)]],
+        "a refused change writes nothing"
+    );
+}
+
+/// The same command path applies the change when the saved connection still
+/// targets what the work was staged against — the refusal is specific.
+#[tokio::test]
+async fn a_change_staged_against_the_current_target_is_applied_by_the_command_boundary() {
+    let store = test_store();
+    let saved =
+        crate::commands::connections::create_connection_inner(&store, sqlite_input("/tmp/app.db"))
+            .expect("saved connection");
+    let id = saved.id.clone();
+
+    let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+    conn.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);")
+        .expect("fixture");
+    let mut manager = ConnectionPoolManager::new();
+    manager.register(&id, DbHandle::sqlite(conn));
+    let pm = tokio::sync::Mutex::new(manager);
+
+    let staged = origin_for(&saved);
+    let change = Change::Insert {
+        id: "ch-boundary-ok".into(),
+        schema: "main".into(),
+        table: "notes".into(),
+        data: r#"{"id":1,"body":"applied"}"#.into(),
+    };
+    execute_staged_change(&store, &pm, &id, &staged, change)
+        .await
+        .expect("an unchanged target applies");
+
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        sqlite_query(&mut guard, &id, "SELECT body FROM notes"),
+        vec![vec![Value::Text("applied".into())]]
+    );
+}
+
+/// An origin for a connection that is not the one the change names is refused
+/// before the store is even consulted for a target match.
+#[tokio::test]
+async fn a_change_whose_origin_names_another_connection_is_refused() {
+    let store = test_store();
+    let saved =
+        crate::commands::connections::create_connection_inner(&store, sqlite_input("/tmp/app.db"))
+            .expect("saved connection");
+    let id = saved.id.clone();
+    let mut manager = ConnectionPoolManager::new();
+    let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+    conn.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);")
+        .expect("fixture");
+    manager.register(&id, DbHandle::sqlite(conn));
+    let pm = tokio::sync::Mutex::new(manager);
+
+    let mut staged = origin_for(&saved);
+    staged.connection_id = "another-connection".into();
+    let change = Change::Insert {
+        id: "ch-other".into(),
+        schema: "main".into(),
+        table: "notes".into(),
+        data: r#"{"id":1,"body":"nope"}"#.into(),
+    };
+    let err = execute_staged_change(&store, &pm, &id, &staged, change)
+        .await
+        .expect_err("a foreign origin must be refused");
+    assert!(
+        err.contains(crate::db::change_target::CHANGE_ORIGIN_RETARGETED),
+        "{err}"
+    );
+    let mut guard = pm.lock().await;
+    assert_eq!(
+        sqlite_query(&mut guard, &id, "SELECT COUNT(*) FROM notes"),
+        vec![vec![int(0)]]
+    );
 }
 
 // ---------------------------------------------------------------------------

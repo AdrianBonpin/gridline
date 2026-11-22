@@ -3444,26 +3444,47 @@ pub async fn execute_change(
     origin: crate::db::change_target::ChangeOrigin,
     state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    // The saved connection is what the origin is validated against. A reused
-    // connection id — retargeted host/database/TLS since the work was staged —
-    // must never redirect a staged write, and the renderer's own refusal is not
-    // authoritative (it can be bypassed, or simply be out of date).
+    execute_staged_change(
+        &state.db_store,
+        &state.pool_manager,
+        &connection_id,
+        &origin,
+        change,
+    )
+    .await
+}
+
+/// Apply one staged change, resolving the connection it belongs to and refusing
+/// the write when the **staging origin** no longer matches the saved connection.
+///
+/// `staged_origin` must be the Change Origin the renderer recorded when the
+/// change was *staged* (`QueueItem.origin`), never one recomputed at commit
+/// time: the whole point of the check is that the backend — not the renderer —
+/// decides whether the connection still points where the work was staged. A
+/// renderer that hands over the current target would make the comparison
+/// tautological, and a reused connection id could then redirect a staged write
+/// even though neither the user nor the UI asked for it.
+///
+/// The saved connection is looked up here rather than trusted from the caller,
+/// so a change can only ever be applied through the configuration the store
+/// currently holds — and only if that configuration is the one it was staged
+/// against. A refusal writes nothing.
+pub(crate) async fn execute_staged_change(
+    store: &std::sync::Mutex<crate::store::Store>,
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    connection_id: &str,
+    staged_origin: &crate::db::change_target::ChangeOrigin,
+    change: Change,
+) -> Result<(), String> {
     let stored = {
-        let store = state.db_store.lock().map_err(|e| e.to_string())?;
+        let store = store.lock().map_err(|e| e.to_string())?;
         let connections = store.get_connections().map_err(|e| e.to_string())?;
         connections
             .into_iter()
             .find(|c| c.id == connection_id)
             .ok_or_else(|| connection_not_found(&connection_id))?
     };
-    execute_change_for_origin(
-        &state.pool_manager,
-        &stored,
-        &connection_id,
-        &origin,
-        change,
-    )
-    .await
+    execute_change_for_origin(pm, &stored, connection_id, staged_origin, change).await
 }
 
 /// Apply one queued change, but only if its Change Origin still matches the saved

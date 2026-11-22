@@ -448,6 +448,104 @@ async fn sqlite_rebuild_op_of_a_rich_table_preserves_its_metadata() {
     );
 }
 
+/// The stored `sql` of one `sqlite_master` object (empty when it has none).
+async fn sqlite_master_sql(
+    pm: &tokio::sync::Mutex<ConnectionPoolManager>,
+    kind: &str,
+    name: &str,
+) -> String {
+    let mut g = pm.lock().await;
+    match g.get("c").unwrap() {
+        DbHandle::Sqlite(conn) => {
+            let conn = conn.lock().await;
+            conn.query_row(
+                "SELECT coalesce(sql, '') FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                rusqlite::params![kind, name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        }
+        _ => panic!("expected a sqlite handle"),
+    }
+}
+
+/// A permutation rename (`a→b`, `b→a`) keeps the column-name SET unchanged, so
+/// it looks exactly like a pure reorder: same names, different order. SQLite's
+/// rebuild CAN carry it — it copies each new column from its `renamed_from`
+/// source and rewrites the stored index/trigger text — but only when the rename
+/// intent arrives as `renamed_from`.
+///
+/// The form used to hand the builder its own rows, which carry the marker
+/// `original_name`; the backend structs read `renamed_from`, so every entry
+/// deserialized as `renamed_from: null` and the copy fell back to an identity
+/// `SELECT`. Both renames were dropped and the table came back as a plain
+/// reorder with no error at all — the forbidden outcome.
+///
+/// This asserts the real outcome, not a payload shape: build the script from the
+/// payload the form now sends, commit it the way the queue does, and read the
+/// table back. Both NAMES move, and each VALUE travels with its column (an
+/// identity copy would swap the names but leave every value where it was).
+#[tokio::test]
+async fn sqlite_rebuild_applies_a_permutation_rename_to_names_and_values() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(
+        &pm,
+        &[
+            "CREATE TABLE \"main\".\"t\" (\"a\" TEXT, \"b\" TEXT)".into(),
+            "CREATE INDEX \"idx_t_a\" ON \"t\"(\"a\")".into(),
+            "INSERT INTO \"main\".\"t\" VALUES ('in-a', 'in-b')".into(),
+        ],
+    )
+    .await;
+
+    // Exactly what `TableForm` stages for a SQLite rebuild: each row converted
+    // through `toSqlColumn` (snake_case fields + `renamed_from`), in the dragged
+    // order, with no `original_name` — the form's marker is not a backend field.
+    let payload = serde_json::json!([
+        { "name": "b", "type": "TEXT", "nullable": true, "default": null,
+          "is_pk": false, "unique": false, "auto_increment": false, "renamed_from": "a" },
+        { "name": "a", "type": "TEXT", "nullable": true, "default": null,
+          "is_pk": false, "unique": false, "auto_increment": false, "renamed_from": "b" }
+    ]);
+    let script = build_rebuild_script_inner(&pm, "c", "main", "t", payload)
+        .await
+        .expect("a swap is expressible as a SQLite rebuild");
+    assert!(
+        script.contains("(\"b\", \"a\") SELECT \"a\", \"b\" FROM \"main\".\"t\""),
+        "the copy must name the source of every new column, not itself: {script}"
+    );
+
+    // Commit it the way the queue does: re-validated against the live shape,
+    // applied in one transaction.
+    crate::commands::db_viewer::execute_change_inner(
+        &pm,
+        "c",
+        crate::models::db_viewer::Change::RebuildTable {
+            id: "rb-permutation".into(),
+            table: "t".into(),
+            sql: script,
+        },
+    )
+    .await
+    .expect("the swap applies");
+
+    let (cols, rows) = sqlite_columns_and_rows(&pm, "t").await;
+    assert_eq!(cols, vec!["b", "a"], "both names moved (the order swapped)");
+    assert_eq!(
+        rows,
+        vec!["in-a|in-b".to_string()],
+        "each value travelled with its column: the new \"b\" holds what \"a\" held \
+         (an identity copy would give in-b|in-a)"
+    );
+    // The index named the old column and follows it, rather than being lost.
+    assert_eq!(sqlite_master_count(&pm, "index", "idx_t_a").await, 1);
+    assert_eq!(
+        sqlite_master_sql(&pm, "index", "idx_t_a").await,
+        "CREATE INDEX \"idx_t_a\" ON \"t\"(\"b\")".to_string(),
+        "the preserved index follows the renamed column"
+    );
+}
+
 #[tokio::test]
 async fn sqlite_rebuild_readiness_answers_for_the_proposed_columns() {
     let pm = pool_with_rich_table().await;

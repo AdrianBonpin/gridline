@@ -124,14 +124,43 @@ describe("GeneralSettingsTab settings export/import", () => {
     await user.click(screen.getByRole("button", { name: /import settings/i }));
 
     await waitFor(() => {
-      expect(mocked.importSettings).toHaveBeenCalledWith(importedJson);
+      expect(mocked.importSettings).toHaveBeenCalledTimes(1);
     });
+    // The validated document is what reaches the backend (never a raw file with
+    // a value the validator already changed).
+    expect(JSON.parse(mocked.importSettings.mock.calls[0][0])).toEqual(
+      JSON.parse(importedJson),
+    );
     expect(mocked.selectFileForGrant).toHaveBeenCalledWith(
       expect.objectContaining({ intent: "read" }),
     );
     expect(mocked.readSettingsFile).toHaveBeenCalledWith("grant-import");
     expect(useNotificationStore.getState().notifications).toContainEqual(
       expect.objectContaining({ type: "success", message: expect.stringMatching(/imported/i) })
+    );
+  });
+
+  it("clamps an out-of-range page size before handing the document to the backend", async () => {
+    // `importSettings` used to receive the raw file text, so the validator's
+    // clamp lived in dead code: a file with `table_page_size: 100000` was
+    // "validated" and then imported verbatim, leaving every browse broken.
+    const user = userEvent.setup();
+    mocked.selectFileForGrant.mockResolvedValue(grant("read", "grant-clamp"));
+    mocked.readSettingsFile.mockResolvedValue(
+      JSON.stringify({
+        schemaVersion: 1,
+        settings: { ...baseSettings, table_page_size: 100000 },
+      }),
+    );
+
+    render(<GeneralSettingsTab />);
+    await user.click(screen.getByRole("button", { name: /import settings/i }));
+
+    await waitFor(() => expect(mocked.importSettings).toHaveBeenCalledTimes(1));
+    const sent = JSON.parse(mocked.importSettings.mock.calls[0][0]);
+    expect(sent.settings.table_page_size).toBe(500);
+    expect(useNotificationStore.getState().notifications).toContainEqual(
+      expect.objectContaining({ type: "success" }),
     );
   });
 

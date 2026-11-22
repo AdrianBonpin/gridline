@@ -568,6 +568,30 @@ describe("ChangesQueuePanel", () => {
     expect(useDbViewerStore.getState().changesQueue[0].status).toBe("pending");
   });
 
+  it("commits each change with the origin recorded at staging time, not one recomputed at commit", async () => {
+    const exec = vi.spyOn(commands, "executeChange").mockResolvedValue(undefined);
+    useDbViewerStore.getState().addChange({
+      type: "insert",
+      schema: "public",
+      table: "t",
+      newData: { a: 1 },
+      description: "Insert row into t",
+    } as any);
+    const staged = useDbViewerStore.getState().changesQueue[0].origin;
+    expect(staged).not.toBeNull();
+
+    render(<ChangesQueuePanel />);
+    fireEvent.click(screen.getByTestId("commit-all"));
+
+    await waitFor(() => expect(exec).toHaveBeenCalledTimes(1));
+    // The backend compares the origin it is GIVEN with the saved connection. A
+    // freshly computed origin would make that comparison tautological — the
+    // renderer would be deciding which target the staged write belongs to. The
+    // request must carry the value captured at staging time.
+    expect(exec.mock.calls[0][2]).toBe(staged);
+    expect(exec.mock.calls[0][2].target).toBe(staged!.target);
+  });
+
   it("applies changes in order, stops at the first failure, and reports the count and the failure", async () => {
     const exec = vi
       .spyOn(commands, "executeChange")

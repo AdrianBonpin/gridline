@@ -116,7 +116,15 @@ export function GeneralSettingsTab() {
         );
         return;
       }
-      await cmd.importSettings(text);
+      // Import the VALIDATED document, not the raw file. Sending `text` threw
+      // the clamp away: a file with `table_page_size: 100000` was validated
+      // (clamped to 500 in `r.settings`) and then imported verbatim, which left
+      // every table browse failing on a page size the backend must reject. The
+      // backend validates/clamps again — it is the boundary — but this side must
+      // not hand it a document it already knows is out of range.
+      await cmd.importSettings(
+        JSON.stringify({ schemaVersion: 1, settings: r.settings }),
+      );
       await load();
       notify("Settings imported", "success");
     } catch (e) {

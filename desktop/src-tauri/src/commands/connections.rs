@@ -86,12 +86,70 @@ pub fn create_connection(
 }
 
 #[tauri::command]
-pub fn update_connection(
-    state: tauri::State<crate::AppState>,
+pub async fn update_connection(
+    state: tauri::State<'_, crate::AppState>,
     id: String,
     input: ConnectionInput,
 ) -> Result<Connection, String> {
-    update_connection_inner(&state.db_store, id, input)
+    update_connection_with_state(&state, id, input).await
+}
+
+/// Save an edit, and close the session it invalidated.
+///
+/// `update_connection_inner` validated and stored a configuration; a live pool
+/// handle for the same id may still be talking to the *previous* one (old host,
+/// port, database or TLS), so every write would keep going through a config that
+/// no longer exists in the store. A retarget therefore tears the session down
+/// exactly like `db_disconnect` (`db::lifecycle::close_session_if_retargeted`),
+/// and the next command reconnects from the saved connection. Metadata-only
+/// edits (name, folder, tags, environment) keep the session.
+pub(crate) async fn update_connection_with_state(
+    state: &crate::AppState,
+    id: String,
+    input: ConnectionInput,
+) -> Result<Connection, String> {
+    update_connection_and_close_stale_session(
+        &state.db_store,
+        &state.pool_manager,
+        &state.ssh_manager,
+        &state.cancel_registry,
+        id,
+        input,
+    )
+    .await
+}
+
+/// [`update_connection_with_state`] with its resources passed explicitly, so the
+/// store write and the session teardown can be exercised together without a
+/// Tauri app handle.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn update_connection_and_close_stale_session(
+    store: &Mutex<Store>,
+    pool_manager: &tokio::sync::Mutex<crate::db::pool::ConnectionPoolManager>,
+    ssh_manager: &Mutex<crate::commands::ssh::SshTunnelManager>,
+    cancel_registry: &crate::cancel::CancelRegistry,
+    id: String,
+    input: ConnectionInput,
+) -> Result<Connection, String> {
+    let before = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        store
+            .get_connections()?
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| format!("Connection not found: {id}"))?
+    };
+    let updated = update_connection_inner(store, id, input)?;
+    crate::db::lifecycle::close_session_if_retargeted(
+        &updated.id,
+        &before,
+        &updated,
+        pool_manager,
+        ssh_manager,
+        cancel_registry,
+    )
+    .await;
+    Ok(updated)
 }
 
 #[tauri::command]

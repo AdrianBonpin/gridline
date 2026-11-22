@@ -8,6 +8,9 @@ import * as objectCrud from "../../../lib/objectCrud";
 
 beforeEach(() => {
   useDbViewerStore.getState().reset();
+  // The form reads the engine off the saved connection; no test may inherit
+  // another's connection (e.g. a SQLite one) and silently change the path taken.
+  useConnectionStore.setState({ connections: [] });
   vi.spyOn(cmd, "buildObjectDdl").mockReset().mockResolvedValue([]);
   vi.spyOn(cmd, "buildRebuildScript").mockReset().mockResolvedValue("");
   vi.spyOn(cmd, "getTableRebuildReadiness").mockReset().mockResolvedValue({ ok: true, reasons: [] });
@@ -325,6 +328,129 @@ describe("TableForm", () => {
         'ALTER TABLE "public"."users" ADD COLUMN "email" text',
       ]);
     });
+  });
+
+  it("a permutation rename is never staged as a set-equal rebuild", async () => {
+    // `id→name` + `name→id` keeps the column-name SET unchanged, so it looks
+    // exactly like a pure reorder. A PostgreSQL rebuild copies data by identity
+    // name, so taking that path dropped both renames and rebuilt the table with
+    // the old names — silently. The edit path applies a rename and refuses a
+    // swap with a reason, so the submission must go there instead.
+    (cmd.getTableColumns as any).mockResolvedValue([liveId, liveName]);
+    (cmd.buildObjectDdl as any).mockRejectedValue(
+      new Error(
+        'Cannot rename to "name": it is still the source of another rename in this submission',
+      ),
+    );
+    renderEdit([
+      { ...snapshot[1], original_name: "id" },
+      { ...snapshot[0], original_name: "name" },
+    ]);
+    await screen.findByLabelText(/SQL/i);
+
+    expect(cmd.buildRebuildScript).not.toHaveBeenCalled();
+    const payloads = editPayloads();
+    expect(payloads.length).toBeGreaterThan(0);
+    expect(payloads[payloads.length - 1].action.op).toBe("edit");
+    expect(payloads[payloads.length - 1].action.columns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "name", renamed_from: "id" }),
+        expect.objectContaining({ name: "id", renamed_from: "name" }),
+      ]),
+    );
+
+    // Staging surfaces the backend's refusal; nothing enters the queue as a
+    // "reorder" that would have thrown the rename away.
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    expect(
+      await screen.findByText(/still the source of another rename/i),
+    ).toBeInTheDocument();
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+  });
+
+  it("asks a SQLite rebuild with the rename intent the backend reads, not the form's marker", async () => {
+    // SQLite's rebuild copies every new column from its `renamed_from` source
+    // (`sqlite_rebuild_copy`) and rewrites the stored index/trigger text, so it
+    // can apply a permutation rename atomically — it must not be routed away
+    // from the rebuild. But the backend structs read `renamed_from`, and the raw
+    // form rows only carry `original_name`: sending them made the copy an
+    // identity `SELECT` that dropped both renames while looking like a plain
+    // reorder. This pins the payload the script builder is given; that a rebuild
+    // built from that shape really swaps names AND values is proven against a
+    // real SQLite by
+    // `commands::objects::tests::sqlite_rebuild_applies_a_permutation_rename_to_names_and_values`.
+    useConnectionStore.setState({
+      connections: [
+        {
+          id: "c1",
+          name: "Local",
+          db_type: "sqlite",
+          host: "/tmp/app.db",
+          port: null,
+          username: null,
+          database: "main",
+          folder_id: null,
+          keychain_ref: null,
+          tag_ids: [],
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+          favorite: false,
+        },
+      ],
+    } as any);
+    (cmd.buildRebuildScript as any).mockResolvedValue(
+      'INSERT INTO "main"."_gl_users_tmp" ("name", "id") SELECT "id", "name" FROM "main"."users"',
+    );
+    renderEdit([
+      { ...snapshot[1], original_name: "id" },
+      { ...snapshot[0], original_name: "name" },
+    ]);
+    await screen.findByLabelText(/SQL/i);
+    await waitFor(() => expect(cmd.buildRebuildScript).toHaveBeenCalled());
+    const [args] = (cmd.buildRebuildScript as any).mock.calls.slice(-1);
+    // Exactly the model the edit path sends (and the one the backend
+    // deserializes): every field emitted, rename intent as `renamed_from`, and
+    // the swapped order preserved.
+    expect(args[3]).toEqual([
+      {
+        name: "name",
+        type: "text",
+        nullable: true,
+        default: null,
+        is_pk: false,
+        unique: false,
+        auto_increment: false,
+        renamed_from: "id",
+      },
+      {
+        name: "id",
+        type: "integer",
+        nullable: false,
+        default: null,
+        is_pk: true,
+        unique: false,
+        auto_increment: false,
+        renamed_from: "name",
+      },
+    ]);
+    // The form's own marker is not a backend field; it must not be the only
+    // thing telling the rebuild about a rename.
+    expect(args[3].every((c: any) => c.original_name === undefined)).toBe(true);
+
+    // Staging goes through the same converted payload (the preview and Stage
+    // are two call sites, and neither may hand the builder the raw rows), and
+    // what it queues really is the rebuild script.
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    await waitFor(() =>
+      expect(useDbViewerStore.getState().changesQueue).toHaveLength(1),
+    );
+    for (const call of (cmd.buildRebuildScript as any).mock.calls) {
+      expect(call[3]).toEqual(args[3]);
+    }
+    expect((cmd.buildRebuildScript as any).mock.calls.length).toBeGreaterThan(1);
+    const queued = useDbViewerStore.getState().changesQueue[0];
+    expect(queued.type).toBe("rebuild_table");
+    expect(queued.sql).toContain('SELECT "id", "name"');
   });
 
   it("stale guard blocks staging when live columns differ", async () => {

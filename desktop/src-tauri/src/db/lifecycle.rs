@@ -189,6 +189,36 @@ pub(crate) async fn teardown_connection(
     cancel_registry.forget(connection_id);
 }
 
+/// Close a live session when an edit moved where writes land.
+///
+/// A saved connection is the target every staged write is validated against, so
+/// the session a pool handle was opened with is only trustworthy while the saved
+/// connection still describes it. Retargeting an id (host, port, user, database,
+/// SSH endpoint or TLS material) without closing the old session left the app
+/// writing through a configuration that `update_connection` had already
+/// replaced — the validated config was not the one in use.
+///
+/// Only a target move closes anything: renaming, refiling, tagging or changing a
+/// connection's environment must not drop a working session (see
+/// [`crate::db::change_target::connection_target_fingerprint`]). Returns whether
+/// the session was closed.
+pub(crate) async fn close_session_if_retargeted(
+    connection_id: &str,
+    before: &crate::models::Connection,
+    after: &crate::models::Connection,
+    pool_manager: &tokio::sync::Mutex<ConnectionPoolManager>,
+    ssh_manager: &Mutex<SshTunnelManager>,
+    cancel_registry: &CancelRegistry,
+) -> bool {
+    if crate::db::change_target::connection_target_fingerprint(before)
+        == crate::db::change_target::connection_target_fingerprint(after)
+    {
+        return false;
+    }
+    teardown_connection(connection_id, pool_manager, ssh_manager, cancel_registry).await;
+    true
+}
+
 /// Lock the tunnel manager, recovering from poisoning.
 ///
 /// A panic while the manager was locked must not turn into a leaked listener:

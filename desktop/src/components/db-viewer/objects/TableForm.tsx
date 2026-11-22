@@ -307,11 +307,47 @@ export function TableForm({
     const action = params.action;
     const mode = form.mode;
 
+    // Does this submission carry rename intent? Only a row that came from a live
+    // column and now has a different name does — see `toSqlColumn`.
+    const carriesRename = action.columns.some(
+        (c) => c.original_name !== undefined && c.original_name !== c.name,
+    );
+
+    // A set-equal column list is the rebuild shape — but only when the rebuild
+    // can actually carry what was asked. A rename keeps the name SET unchanged
+    // (`a→b` with `b→a` is a permutation), so it used to fall through here and
+    // the rebuild's identity copy (`INSERT INTO tmp (b, a) SELECT b, a FROM
+    // original`) silently dropped both renames: the table came back with the old
+    // names and nothing said so. PostgreSQL re-creates the preserved
+    // constraints/indexes/FKs from definitions that still name the old columns,
+    // so a rebuild genuinely cannot carry a rename there — the edit path can
+    // (`ALTER TABLE ... RENAME COLUMN`), and it refuses a swap with a reason
+    // when one pass cannot express it. SQLite's rebuild DOES carry renames (it
+    // copies each new column from its `renamed_from` source and rewrites the
+    // stored index/trigger text), so it keeps the path — provided the payload is
+    // converted (see `rebuildColumns`).
+    const rebuildCanCarryThis = dbType === "sqlite" || !carriesRename;
+
     const isRebuild =
         mode === "edit" &&
         action.old_columns !== undefined &&
+        rebuildCanCarryThis &&
         sameColumnNames(action.columns, action.old_columns) &&
         namesInOrder(action.columns) !== namesInOrder(action.old_columns);
+
+    // The column model a rebuild must be asked with.
+    //
+    // The form's own rows carry rename intent as `original_name`; the backend
+    // structs read `renamed_from`, and only `toSqlColumn` produces it. Sending
+    // the raw rows is what made a SQLite permutation rename a silent no-op: the
+    // script builder received `renamed_from: null` for every column, so its copy
+    // fell back to an identity `SELECT` and the renames were never applied. The
+    // readiness check below already converts this way, and so does the edit
+    // path — the rebuild call was the one place that did not.
+    const rebuildColumns = useMemo(
+        () => action.columns.map((c) => toSqlColumn(c, "edit", dbType)),
+        [action.columns, dbType],
+    );
 
     const [view, setView] = useState<"visual" | "sql">("visual");
     const [preview, setPreview] = useState("");
@@ -438,7 +474,7 @@ export function TableForm({
                   connectionId,
                   params.schema,
                   params.name,
-                  action.columns,
+                  rebuildColumns,
               )
             : cmd.buildObjectDdl(
                   connectionId,
@@ -472,6 +508,8 @@ export function TableForm({
         params.schema,
         params.name,
         createFks,
+        // Stable per column list (`useMemo`), so this cannot loop.
+        rebuildColumns,
     ]);
 
     const patchColumns = (cols: TableFormColumn[]) =>
@@ -545,7 +583,7 @@ export function TableForm({
                     connectionId,
                     params.schema,
                     params.name,
-                    action.columns,
+                    rebuildColumns,
                 );
                 useDbViewerStore.getState().addChange({
                     type: "rebuild_table",

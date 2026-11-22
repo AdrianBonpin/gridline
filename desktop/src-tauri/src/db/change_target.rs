@@ -15,6 +15,13 @@
 //! (`connectionTarget().fingerprint`); [`TARGET_FIELDS`] and
 //! [`connection_target_fingerprint`] must stay in step with it. Values are
 //! trimmed, and an absent value contributes the empty string.
+//!
+//! The origin compared here is the one recorded when the change was **staged**
+//! (`QueueItem.origin`, sent by `ChangesQueuePanel`), never one recomputed at
+//! commit time. Recomputing it from the live connection would compare the saved
+//! connection with itself — tautologically true — and hand the retarget decision
+//! back to the renderer, which is the one answer this module exists to make
+//! impossible (`commands::db_viewer::execute_staged_change`).
 
 use crate::models::Connection;
 use serde::Deserialize;
