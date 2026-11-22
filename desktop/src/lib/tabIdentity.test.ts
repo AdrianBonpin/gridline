@@ -124,6 +124,27 @@ describe("tabDataIsCurrent", () => {
   it("allows a tab with no recorded origin (nothing to contradict)", () => {
     expect(tabDataIsCurrent(null, analytics)).toBe(true);
   });
+
+  it("keeps a SQLite tab current when only the catalog alias label differs", () => {
+    // The built-product regression: a query tab opened before `getDatabases`
+    // resolved recorded the origin with no database label, and the viewer then
+    // reported the SQLite catalog alias `main` — the same file, rendered as a
+    // "stale results" banner on an empty tab.
+    const sqlite = {
+      id: "c3",
+      db_type: "sqlite" as const,
+      host: "",
+      port: null,
+      username: null,
+      database: "/tmp/app-data/demo.db",
+    };
+    const beforeCatalog = changeOriginFor(sqlite, "");
+    const afterCatalog = changeOriginFor(sqlite, "main");
+    expect(tabDataIsCurrent(beforeCatalog, afterCatalog)).toBe(true);
+    // …and a genuinely different SQLite file is still a different database.
+    const otherFile = changeOriginFor({ ...sqlite, database: "/tmp/elsewhere.db" }, "main");
+    expect(outOfOriginReason(beforeCatalog, otherFile)).toContain("elsewhere.db");
+  });
 });
 
 describe("outOfOriginReason", () => {

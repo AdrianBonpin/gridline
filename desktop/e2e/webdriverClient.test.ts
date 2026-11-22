@@ -265,4 +265,45 @@ describe("WebDriverClient interaction surface", () => {
       { type: "keyUp", value: "\uE007" },
     ]);
   });
+
+  it("types into the focused element one code point per key action", async () => {
+    // Monaco's input area is not focusable through the element-targeted route
+    // (WebKit answers "element is not focusable"), and a chord cannot be
+    // expressed by Element Send Keys at all — so typing goes through /actions.
+    const { calls, fetchImpl } = fakeDriver([{ status: 200, body: { value: null } }]);
+    const client = clientFor(fetchImpl);
+    client.sessionId = "s1";
+    await client.typeText("a;");
+    expect(calls[0].url).toBe(`${BASE}/session/s1/actions`);
+    const body = calls[0].body as any;
+    expect(body.actions[0].actions).toEqual([
+      { type: "keyDown", value: "a" },
+      { type: "keyUp", value: "a" },
+      { type: "keyDown", value: ";" },
+      { type: "keyUp", value: ";" },
+    ]);
+  });
+
+  it("holds modifiers around a chord and releases them in order", async () => {
+    const { calls, fetchImpl } = fakeDriver([{ status: 200, body: { value: null } }]);
+    const client = clientFor(fetchImpl);
+    client.sessionId = "s1";
+    await client.pressChord("\uE007", ["\uE009"]);
+    const body = calls[0].body as any;
+    // Control is held across the Enter press: a chord, not two keystrokes.
+    expect(body.actions[0].actions).toEqual([
+      { type: "keyDown", value: "\uE009" },
+      { type: "keyDown", value: "\uE007" },
+      { type: "keyUp", value: "\uE007" },
+      { type: "keyUp", value: "\uE009" },
+    ]);
+  });
+
+  it("sends nothing for empty text", async () => {
+    const { calls, fetchImpl } = fakeDriver([]);
+    const client = clientFor(fetchImpl);
+    client.sessionId = "s1";
+    await client.typeText("");
+    expect(calls).toHaveLength(0);
+  });
 });

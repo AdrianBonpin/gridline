@@ -539,6 +539,68 @@ async fn sqlite_rebuild_guard_accepts_the_demo_tables_it_can_reproduce() {
     }
 }
 
+/// The demo table the desktop E2E rebuild flow edits: dropping the column its
+/// explicit index names is the case the flow asserts must refuse. Pinned here so
+/// the e2e fixture cannot drift back to a column nothing preserved names (which
+/// is what made the refusal assertion unreachable).
+///
+/// Note what is *not* a blocker: a column-level `REFERENCES` or `CHECK` clause
+/// goes away with the column it is declared on, so dropping `product_id`
+/// refuses because of the explicit index — not because of its inline foreign key
+/// — and dropping `unit_price` (named by nothing preserved) is allowed.
+#[tokio::test]
+async fn sqlite_rebuild_guard_refuses_dropping_the_demo_index_column() {
+    let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());
+    sqlite_exec(&pm, &[DEMO_SCHEMA.to_string()]).await;
+
+    let live = get_table_rebuild_readiness_inner(&pm, "c", "main", "order_items", None)
+        .await
+        .unwrap();
+    assert!(live.ok, "the live table is rebuildable: {live:?}");
+
+    // The editor submits the live columns minus the one it dropped.
+    let columns: serde_json::Value = serde_json::json!([
+        { "name": "order_id", "type": "INTEGER", "nullable": false, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+        { "name": "quantity", "type": "INTEGER", "nullable": false, "default": "1", "is_pk": false, "auto_increment": false, "unique": false },
+        { "name": "unit_price", "type": "REAL", "nullable": false, "default": null, "is_pk": false, "auto_increment": false, "unique": false }
+    ]);
+    let refused = get_table_rebuild_readiness_inner(&pm, "c", "main", "order_items", Some(columns))
+        .await
+        .unwrap();
+    assert!(!refused.ok, "dropping product_id must refuse: {refused:?}");
+    let reasons = refused.reasons.join(" | ");
+    assert!(
+        reasons.contains("product_id"),
+        "the refusal names the dropped column: {reasons}"
+    );
+    assert!(
+        reasons.contains("idx_order_items_product_id") && reasons.contains("index"),
+        "the refusal names the preserved index: {reasons}"
+    );
+
+    // Control: `unit_price` is named by nothing preserved, so dropping it is a
+    // rebuild the guard allows — the stale premise the e2e fixture used to
+    // assert a refusal on.
+    let without_unit_price: serde_json::Value = serde_json::json!([
+        { "name": "order_id", "type": "INTEGER", "nullable": false, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+        { "name": "product_id", "type": "INTEGER", "nullable": false, "default": null, "is_pk": true, "auto_increment": false, "unique": false },
+        { "name": "quantity", "type": "INTEGER", "nullable": false, "default": "1", "is_pk": false, "auto_increment": false, "unique": false }
+    ]);
+    let allowed = get_table_rebuild_readiness_inner(
+        &pm,
+        "c",
+        "main",
+        "order_items",
+        Some(without_unit_price),
+    )
+    .await
+    .unwrap();
+    assert!(
+        allowed.ok && allowed.reasons.is_empty(),
+        "dropping an unconstrained column is a faithful rebuild: {allowed:?}"
+    );
+}
+
 #[tokio::test]
 async fn rebuilding_every_demo_table_keeps_its_schema_objects() {
     let pm = tokio::sync::Mutex::new(fresh_pool_with_sqlite());

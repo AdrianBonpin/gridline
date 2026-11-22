@@ -66,10 +66,29 @@ export function newQueryTabSelector() {
   return 'button[aria-label="New query tab"]';
 }
 
-/** Monaco's hidden input area: clicking the editor focuses it, then sendKeys types. */
+/**
+ * Monaco's hidden input area — the element keys are sent to.
+ *
+ * Never *click* this: measured on the built app it is a 1x1 element at
+ * `z-index:-10`, painted behind `.view-lines`, so a W3C element-targeted click
+ * is intercepted by `div.view-line` every time ("element click intercepted").
+ * Focus the editor through {@link queryEditorSurfaceSelector} and type here.
+ */
 export function queryEditorInputSelector() {
   return '[data-testid="query-editor"] textarea.inputarea';
 }
+
+/**
+ * The rendered editor surface — a real hit target, so clicking it focuses Monaco
+ * exactly as a user's click does. `destructiveFlow`/`sqliteRebuildFlow` click
+ * this and then send keys to {@link queryEditorInputSelector}.
+ */
+export function queryEditorSurfaceSelector() {
+  return '[data-testid="query-editor"] .monaco-editor .view-lines';
+}
+
+/** A harmless read the destructive flow runs first, so a result set exists. */
+export const READ_ONLY_SCRIPT = "SELECT count(*) AS n FROM products;";
 
 export function runQuerySelector() {
   return 'button[aria-label="Run query"]';
@@ -89,18 +108,25 @@ export function destructiveDialogConfirmSelector() {
 }
 
 /**
- * Keys the destructive flow sends to the confirmation dialog itself.
+ * The keys the destructive flow sends to the **focused element** — which, while
+ * the confirmation is up, is the button inside it (a `div[role=dialog]` is not
+ * focusable, so keys are pressed globally and land where focus actually is).
  *
  * `\uE00C` is the WebDriver Escape key and must cancel the pending request.
- * `\uE009\uE007` is Control+Enter — the editor's own run shortcut — which must
- * never execute or relocate the pending confirmation.
+ * `\uE009` + `\uE007` is Control+Enter — the editor's own run shortcut — which
+ * must never execute or relocate the pending confirmation.
  */
 export function destructiveDialogEscapeKey() {
-  return "\uE00C";
+  return { modifiers: [], key: "\uE00C" };
 }
 
 export function destructiveDialogRunShortcut() {
-  return "\uE009\uE007";
+  return { modifiers: ["\uE009"], key: "\uE007" };
+}
+
+/** The chord as one string, for messages and fake-driver assertions. */
+export function describeKeys(keys) {
+  return `${keys.modifiers.join("")}${keys.key}`;
 }
 
 export function destructiveDialogCancelSelector() {
@@ -152,6 +178,20 @@ export const REBUILD_CREATED_TABLE = "e2e_rebuild";
 /** Seeded rows the completed rebuild must still show. */
 export const REBUILD_CREATED_CELLS = ["alpha", "beta"];
 
+/**
+ * The column the refusal half makes the editor drop.
+ *
+ * It has to be a column a **preserved object names**, otherwise nothing refuses:
+ * `blockers_for()` only blocks a dropped column that a preserved index, trigger,
+ * constraint, or generated expression uses. The old fixture dropped
+ * `unit_price`, which no index, CHECK, or key names — so `{"ok":true,"reasons":[]}`
+ * was the correct answer and the flow was asserting a refusal that the rebuild
+ * no longer produces (ticket 10 made the rebuild preserve indexes, keys, checks,
+ * and triggers). `product_id` is named by `idx_order_items_product_id` and by its
+ * own `REFERENCES products(id)` foreign key, so dropping it must refuse.
+ */
+export const REBUILD_REFUSED_DROPPED_COLUMN = "product_id";
+
 /** The column the completed rebuild drops, with its seeded value. */
 export const REBUILD_DROPPED_COLUMN = "note";
 export const REBUILD_DROPPED_VALUES = ["first", "second"];
@@ -199,6 +239,7 @@ export function removeColumnSelector() {
 /**
  * Wording any refusal must carry for the demo's rich table: the blocker names
  * come from the backend guard, so the assertion accepts the ones a rebuild of
- * `order_items` would drop rather than pinning one exact sentence.
+ * `order_items` would drop rather than pinning one exact sentence. `index` is
+ * the singular phrasing ("index \"idx_…\" uses column …").
  */
-export const REBUILD_REFUSAL_WORDS = ["CHECK", "FOREIGN KEY", "UNIQUE", "indexes"];
+export const REBUILD_REFUSAL_WORDS = ["CHECK", "FOREIGN KEY", "UNIQUE", "index", "indexes"];

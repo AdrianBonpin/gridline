@@ -847,4 +847,134 @@ describe("TableForm SQLite mode", () => {
       expect((useDbViewerStore.getState().tabs[0].form?.params as any).schema).toBe("main");
     });
   });
+
+  // --- Fail-closed rebuild guard (ticket 08 follow-up) ---
+
+  function sqliteEditTab(columns: any[], oldColumnNames: string[]) {
+    const oldColumns = oldColumnNames.map((name, i) => ({
+      ...columns[i],
+      original_name: name,
+    }));
+    return {
+      id: "t1",
+      form: {
+        kind: "table",
+        params: {
+          schema: "main",
+          name: "order_items",
+          action: { op: "edit", columns, old_columns: oldColumns },
+        },
+        title: "Edit Table",
+        description: "Edit main.order_items",
+        mode: "edit",
+      },
+      title: "Edit Table",
+    } as any;
+  }
+
+  it("sends every required SQLite column field, falsy or not", async () => {
+    // `SqliteColumn` requires `auto_increment` and `unique` (no serde default),
+    // so a payload that omits them for falsy values does not deserialize — the
+    // bug that made this guard fail open in the built app.
+    render(
+      <TableForm
+        connectionId="c1"
+        tab={sqliteEditTab(
+          [
+            { name: "order_id", type: "INTEGER", nullable: false, default: null, is_pk: true, original_name: "order_id" },
+            { name: "product_id", type: "INTEGER", nullable: false, default: null, is_pk: true, original_name: "product_id" },
+          ],
+          ["order_id", "product_id"],
+        )}
+      />,
+    );
+    await waitFor(() => expect(cmd.getTableRebuildReadiness).toHaveBeenCalled());
+
+    const proposed = (cmd.getTableRebuildReadiness as any).mock.calls.at(-1)[3];
+    expect(proposed).toHaveLength(2);
+    for (const column of proposed) {
+      // own properties, not `undefined` defaults: JSON.stringify drops the key
+      // for `undefined`, and the backend then answers "missing field".
+      expect(Object.prototype.hasOwnProperty.call(column, "auto_increment")).toBe(true);
+      expect(Object.prototype.hasOwnProperty.call(column, "unique")).toBe(true);
+      expect(column.auto_increment).toBe(false);
+      expect(column.unique).toBe(false);
+      expect(column).toMatchObject({
+        name: expect.any(String),
+        type: expect.any(String),
+        nullable: expect.any(Boolean),
+        is_pk: expect.any(Boolean),
+      });
+      // What the IPC layer actually puts on the wire.
+      expect(JSON.parse(JSON.stringify(column))).toMatchObject({
+        auto_increment: false,
+        unique: false,
+      });
+    }
+
+    // …and the DDL payload staged through the same projection is complete too.
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    await waitFor(() => expect(cmd.buildObjectDdl).toHaveBeenCalled());
+    const staged = (cmd.buildObjectDdl as any).mock.calls.at(-1)[2].action.columns;
+    for (const column of staged) {
+      expect(JSON.parse(JSON.stringify(column))).toMatchObject({
+        auto_increment: false,
+        unique: false,
+      });
+    }
+  });
+
+  it("a readiness probe that fails is visible and blocks staging", async () => {
+    (cmd.getTableRebuildReadiness as any).mockRejectedValue(
+      new Error("missing field `auto_increment`"),
+    );
+    render(
+      <TableForm
+        connectionId="c1"
+        tab={sqliteEditTab(
+          [
+            { name: "order_id", type: "INTEGER", nullable: false, default: null, is_pk: true, original_name: "order_id" },
+            { name: "quantity", type: "INTEGER", nullable: false, default: null, is_pk: false, original_name: "quantity" },
+          ],
+          ["order_id", "quantity"],
+        )}
+      />,
+    );
+
+    // A guard that could not run is reported, never read as "no refusal".
+    const failure = await screen.findByTestId("rebuild-readiness-error");
+    expect(failure.textContent).toContain("missing field `auto_increment`");
+    expect(screen.queryByTestId("rebuild-refusal")).toBeNull();
+    expect(screen.getByRole("button", { name: "Stage" })).toBeDisabled();
+    // Nothing reached the changes queue.
+    expect(useDbViewerStore.getState().changesQueue).toHaveLength(0);
+  });
+
+  it("holds the submission while the readiness answer is still pending", async () => {
+    let resolve: (value: unknown) => void = () => {};
+    (cmd.getTableRebuildReadiness as any).mockImplementation(
+      () => new Promise((r) => { resolve = r; }),
+    );
+    render(
+      <TableForm
+        connectionId="c1"
+        tab={sqliteEditTab(
+          [
+            { name: "order_id", type: "INTEGER", nullable: false, default: null, is_pk: true, original_name: "order_id" },
+            { name: "note", type: "TEXT", nullable: true, default: null, is_pk: false, original_name: "note" },
+          ],
+          ["order_id", "note"],
+        )}
+      />,
+    );
+    await waitFor(() => expect(cmd.getTableRebuildReadiness).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Stage" })).toBeDisabled();
+
+    // The answer arrives and permits the edit: only now may it be staged.
+    resolve({ ok: true, reasons: [] });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Stage" })).not.toBeDisabled(),
+    );
+    expect(screen.queryByTestId("rebuild-readiness-error")).toBeNull();
+  });
 });

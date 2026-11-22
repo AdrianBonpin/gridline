@@ -54,6 +54,7 @@ setup is needed on a headless Linux box. Useful flags (`bun run e2e:desktop --
 | :--- | :--- | :--- |
 | `--binary <path>` | `src-tauri/target/release/gridline` | binary to launch (`GRIDLINE_E2E_BINARY` also works) |
 | `--flow <name>` | `demo-smoke` | which registered flow to run (`demo-smoke`, `destructive-rerun`, `composite-edit`, `sqlite-rebuild`) |
+| `--list-flows` | — | print every registered flow name (one per line) and exit; no binary, display, or driver needed. CI loops over this, so registering a flow gives it a lane |
 | `--artifacts <dir>` | `e2e-artifacts` | where logs/screenshots are written |
 | `--timeout-ms <ms>` | `30000` | per-step budget |
 | `--port` / `--native-port` | `4444` / `4445` | driver ports |
@@ -75,12 +76,17 @@ A SQLite rebuild either completes as one change or changes nothing, and the flow
 proves both halves against the built product:
 
 1. **Refused before mutation.** The demo's `order_items` carries a composite
-   primary key, a CHECK, foreign keys, and an explicit index — every one of which
-   the current rebuild script would drop. Dropping a column (the editor's
-   `[aria-label="Remove column"]`) forces a rebuild, so the editor must show its
-   refusal banner (`[data-testid="rebuild-refusal"]`) naming a blocker, keep
-   `[data-testid="table-form-stage"]` **disabled**, and leave the changes queue
-   empty.
+   primary key, a CHECK, foreign keys, and an explicit index. The rebuild script
+   now preserves all of them, so a refusal only happens when the edit itself
+   breaks a preserved object: the flow drops `product_id` — named by
+   `idx_order_items_product_id` — through the editor's
+   `[aria-label="Remove column"]`, and the editor must show its refusal banner
+   (`[data-testid="rebuild-refusal"]`) naming that index *and the dropped
+   column*, keep `[data-testid="table-form-stage"]` **disabled**, and leave the
+   changes queue empty. Dropping a column nothing preserved names (`unit_price`)
+   is a rebuild the guard legitimately allows, so it cannot be the fixture — the
+   backend test `sqlite_rebuild_guard_refuses_dropping_the_demo_index_column`
+   pins both halves.
 2. **Completed atomically.** The flow creates its own rebuildable table through
    the query workspace (`CREATE TABLE e2e_rebuild (id INTEGER PRIMARY KEY, label
    TEXT NOT NULL, note TEXT)` plus two seeded rows; the `CREATE` goes through the
@@ -142,24 +148,31 @@ e2e: PASS the built app rendered the seeded demo rows
 
 1. `home: Gridline Demo (SQLite) card visible` / `home: open the demo database`
 2. `workspace: open an ad-hoc query tab` — the tab bar's *Query* button.
-3. `editor: type a destructive script` — `DELETE FROM products;` typed through
-   Monaco's hidden input area (`[data-testid="query-editor"] textarea.inputarea`),
-   which is the element the editor listens on. The editor is clicked first for
-   focus.
-4. `run: initial Run requires confirmation` — the `Destructive Query` dialog
+3. `reader: type a harmless read` / `run: the read executes without a
+   confirmation` — `SELECT count(*) AS n FROM products;` runs first, because the
+   toolbar (and with it the re-run control) only mounts for a tab that holds a
+   result set (`DbViewerScreen` renders `TableControls` behind
+   `activeTab?.data`). Waiting for `button[aria-label="Re-run query"]` here is
+   what makes the re-run assertion below reachable instead of asserting on a
+   control that cannot exist yet; a read that prompts for confirmation fails.
+4. `editor: type a destructive script` — `DELETE FROM products;` is typed as
+   real keystrokes into the focused editor, after clicking the rendered editor
+   surface. Monaco's hidden input area is never clicked and never the target of
+   element-scoped keys — see "Never click Monaco's input area" below.
+5. `run: initial Run requires confirmation` — the `Destructive Query` dialog
    (`[data-testid="destructive-query-dialog"]`) must appear.
-5. `run: cancel leaves the script unexecuted` — cancelling closes the dialog.
-6. `rerun: toolbar re-run requires confirmation again` — the toolbar's re-run
+6. `run: cancel leaves the script unexecuted` — cancelling closes the dialog.
+7. `rerun: toolbar re-run requires confirmation again` — the toolbar's re-run
    control (`button[aria-label="Re-run query"]`) must raise the *same* dialog.
    This is the assertion the flow exists for.
-7. `keyboard: the run shortcut cannot execute the pending confirmation` —
-   Control+Enter (`\uE009\uE007`) is sent to the **dialog**, and the dialog must
-   still be there afterwards. Focus trapped inside the modal is what makes this
-   a real-window assertion: the keystroke reached the confirmation, not the
-   editor behind it, and it neither executed the script nor replaced the
-   pending request with a different one.
-8. `keyboard: Escape cancels the pending confirmation` — Escape (`\uE00C`) sent
-   to the dialog must close it, leaving the script unexecuted.
+8. `keyboard: the run shortcut cannot execute the pending confirmation` —
+   Control+Enter (`\uE009` held, then `\uE007`) is pressed as a real **chord** on
+   the focused element, and the dialog must still be there afterwards. The modal
+   moves focus to its Cancel button when it opens, so a focused keystroke lands
+   inside the confirmation, not in the editor behind it: it neither executed the
+   script nor replaced the pending request with a different one.
+9. `keyboard: Escape cancels the pending confirmation` — Escape (`\uE00C`)
+   pressed on the focused element must close it, leaving the script unexecuted.
 
 Every confirmation is cancelled, so the script never executes; each run also
 gets a pristine app-data directory. If any entry point executes without the
@@ -297,6 +310,25 @@ diagnostic, `2` = mount/FUSE problem.
 
 ## Failure evidence (WebDriver lane)
 
+### Never click Monaco's input area
+
+Monaco listens on a hidden `textarea.inputarea`, but that element is a **1x1
+pixel target at `z-index:-10` painted behind `.view-lines`**. Measured on the
+built app: its rect is `{x:406, y:76, w:1, h:1}` and the hit target at its
+center is `div.view-line`, so a W3C element-targeted click is answered with
+`element click intercepted` on every attempt — a flow that clicks it can never
+pass. Element-scoped keys (`POST /element/{id}/value`) are refused for the same
+element too: WebKit answers `element not interactable: Element is not focusable`.
+
+So both editor flows click the rendered surface
+(`[data-testid="query-editor"] .monaco-editor .view-lines`, a real hit target,
+which is also what a user clicks) and then type through the W3C actions endpoint
+(`WebDriverClient.typeText`), which sends real keystrokes to the focused
+element. Keyboard chords go through the same endpoint
+(`WebDriverClient.pressChord`), because element-scoped keys cannot hold a
+modifier across a second key. Both flows' fakes reject a click on the input area
+and reject typing without editor focus, so a regression fails in unit tests too.
+
 Every run gets a fresh app-data directory inside the artifacts folder
 (`XDG_DATA_HOME=<artifacts>/app-data` on Linux), so the demo database and local
 store are created by the app itself on each run.
@@ -314,6 +346,15 @@ On failure the job keeps, under `e2e-artifacts/`:
 
 A failed launch, a missing window, or absent grid content exits non-zero, so the
 job fails. CI uploads the folder with `if: failure()`.
+
+## CI lane
+
+`.github/workflows/ci.yml` (`desktop-e2e`) runs **every registered flow**, not a
+hand-written subset: it asks the harness for the registry
+(`bun desktop/e2e/run.mjs --list-flows`), launches the app once per flow with its
+own artifacts folder (`e2e-artifacts/<flow>`), and fails the job if any flow
+fails while still running the rest — so one red flow cannot hide the others.
+An empty registry fails the step rather than looping zero times.
 
 ## Environment knobs
 

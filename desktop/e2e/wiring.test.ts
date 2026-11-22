@@ -70,6 +70,28 @@ describe("desktop E2E wiring", () => {
     expect(ci).toMatch(/xvfb-run[^\n]*e2e/);
   });
 
+  it("runs every registered flow, not a hand-written subset", () => {
+    const ci = read(".github/workflows/ci.yml");
+    // The flow list comes from the harness registry (`FLOWS`), the same source
+    // of truth as the runner table, so registering a flow gives it a lane.
+    expect(ci).toContain("bun desktop/e2e/run.mjs --list-flows");
+    expect(ci).toMatch(/for flow in \$\{flows\}/);
+    expect(ci).toMatch(/--flow "\$\{flow\}"/);
+    // An empty registry must fail the job instead of looping zero times.
+    expect(ci).toMatch(/refusing to pass CI/);
+
+    // No flow may be named individually: `composite-edit` and `sqlite-rebuild`
+    // had no lane at all when the job invoked two flows by hand.
+    for (const name of [
+      "demo-smoke",
+      "destructive-rerun",
+      "composite-edit",
+      "sqlite-rebuild",
+    ]) {
+      expect(ci).not.toMatch(new RegExp(`--flow\\s+"?${name}`));
+    }
+  });
+
   it("retains launch logs and screenshots when the job fails", () => {
     const ci = read(".github/workflows/ci.yml");
     // Pinned to a commit SHA, like every other action (scripts/check-workflows.sh).

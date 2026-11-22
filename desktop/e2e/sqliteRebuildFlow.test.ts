@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { HarnessError } from "./errors.mjs";
 import {
+  COMPOSITE_TABLE_COLUMNS,
   REBUILD_CREATED_CELLS,
+  REBUILD_REFUSED_DROPPED_COLUMN,
   REBUILD_REFUSED_TABLE,
   changesQueueSelector,
   commitAllSelector,
@@ -11,6 +13,7 @@ import {
   gridSelector,
   newQueryTabSelector,
   queryEditorInputSelector,
+  queryEditorSurfaceSelector,
   rebuildRefusalSelector,
   removeColumnSelector,
   runQuerySelector,
@@ -51,6 +54,8 @@ function fakeDriver({
     },
     gridCells: [],
     clicks: [],
+    removedIndices: [],
+    editorFocused: false,
   };
 
   const element = (kind) => ({ elementId: kind, kind });
@@ -64,6 +69,7 @@ function fakeDriver({
       if (selector === connectionCardSelector()) return element("card");
       if (selector === newQueryTabSelector()) return element("new-query");
       if (selector === queryEditorInputSelector()) return element("editor");
+      if (selector === queryEditorSurfaceSelector()) return element("editor-surface");
       if (selector === runQuerySelector()) return element("run");
       if (selector === destructiveDialogSelector()) {
         return state.dialogOpen ? element("dialog") : null;
@@ -126,7 +132,17 @@ function fakeDriver({
     },
     async click(el) {
       state.clicks.push(el.kind);
+      if (el.kind === "editor") {
+        // What WebKitWebDriver answers for Monaco's hidden input area: a 1x1
+        // element painted behind `.view-lines`, so the click is intercepted.
+        throw new HarnessError(
+          "element click intercepted: div.view-line (POST /session/…/element/editor/click)",
+        );
+      }
       switch (el.kind) {
+        case "editor-surface":
+          state.editorFocused = true;
+          break;
         case "options-refused":
           state.menuTable = REBUILD_REFUSED_TABLE;
           break;
@@ -137,6 +153,7 @@ function fakeDriver({
           state.openEditor = editedTable();
           break;
         case "remove":
+          state.removedIndices.push(el.index);
           state.columns[state.openEditor] -= 1;
           // A broken guard might stage a change for a table it just refused.
           if (
@@ -170,8 +187,10 @@ function fakeDriver({
           break;
       }
     },
-    async sendKeys(el, text) {
-      if (el.kind !== "editor") throw new Error("typed outside the query editor");
+    async typeText(text) {
+      // Real keystrokes go to the focused element; the flow focuses the editor
+      // surface first, so this is only reachable with the editor focused.
+      if (!state.editorFocused) throw new Error("typed without focusing the query editor");
       state.typedSql = text;
     },
   };
@@ -193,10 +212,17 @@ function fakeDriver({
 
 const fast = { sleep: async () => {}, intervalMs: 1 };
 
+/**
+ * What the guard actually answers for this fixture: the dropped column is named
+ * by a preserved object, so the refusal is about *this* edit.
+ */
+const REFUSAL =
+  'index "idx_order_items_product_id" uses column "product_id", which this rebuild drops';
+
 describe("runSqliteRebuildFlow", () => {
   it("passes when the rich table is refused and the plain table rebuilds", async () => {
     const driver = fakeDriver({
-      refusal: "the table declares a CHECK constraint, which a rebuild would drop",
+      refusal: REFUSAL,
     });
 
     const result = await runSqliteRebuildFlow(driver, fast);
@@ -205,13 +231,48 @@ describe("runSqliteRebuildFlow", () => {
     expect(names).toContain("refusal: nothing was staged");
     expect(names).toContain("grid: the rebuilt table still shows every row");
     // the refusal really came from the editor, not from a queue error
-    expect(result.evidence[0]).toContain("CHECK constraint");
+    expect(result.evidence[0]).toContain("product_id");
     expect(result.matchedCells).toEqual(REBUILD_CREATED_CELLS);
     expect(result.passMessage).toContain("refused before staging");
     // the completed rebuild dropped the column and kept both rows
     expect(driver.state.pending).toBe(0);
     expect(driver.state.typedSql).toContain("CREATE TABLE e2e_rebuild");
     expect(driver.state.gridCells).not.toContain("first");
+  });
+
+  it("drops the column a preserved object names, not just the last one", async () => {
+    // `unit_price` is named by no index, CHECK, or key, so dropping it is a
+    // rebuild the guard legitimately allows — the old fixture asserted a refusal
+    // that cannot happen. The fixture drops `product_id` (the explicit index and
+    // its own foreign key both name it).
+    const driver = fakeDriver({
+      refusal: REFUSAL,
+    });
+
+    await runSqliteRebuildFlow(driver, fast);
+
+    const expectedIndex = COMPOSITE_TABLE_COLUMNS.indexOf(REBUILD_REFUSED_DROPPED_COLUMN);
+    expect(expectedIndex).toBeGreaterThanOrEqual(0);
+    expect(expectedIndex).not.toBe(COMPOSITE_TABLE_COLUMNS.length - 1);
+    // The first remove click is the refused half, the second the completed one.
+    expect(driver.state.removedIndices[0]).toBe(expectedIndex);
+  });
+
+  it("never clicks Monaco's hidden input area", async () => {
+    // The fake rejects a click on `textarea.inputarea` exactly as
+    // WebKitWebDriver does, so a reintroduced click fails here instead of only
+    // in the built-product lane.
+    const driver = fakeDriver({ refusal: REFUSAL });
+    await runSqliteRebuildFlow(driver, fast);
+    expect(driver.state.clicks).not.toContain("editor");
+    expect(driver.state.clicks).toContain("editor-surface");
+  });
+
+  it("fails when the refusal does not name the dropped column", async () => {
+    const driver = fakeDriver({ refusal: "the table declares a CHECK constraint" });
+    await expect(runSqliteRebuildFlow(driver, fast)).rejects.toThrow(
+      /does not name the dropped column/,
+    );
   });
 
   it("fails when the editor does not surface the refusal", async () => {
@@ -240,7 +301,7 @@ describe("runSqliteRebuildFlow", () => {
 
   it("fails when the completed rebuild loses a row", async () => {
     const driver = fakeDriver({
-      refusal: "the table declares a CHECK constraint, which a rebuild would drop",
+      refusal: REFUSAL,
       commitLosesRows: true,
     });
     await expect(

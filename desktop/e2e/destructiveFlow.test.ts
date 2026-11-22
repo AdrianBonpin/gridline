@@ -2,14 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import { HarnessError } from "./errors.mjs";
 import {
   DEMO_CONNECTION_NAME,
+  READ_ONLY_SCRIPT,
   connectionCardSelector,
   destructiveDialogCancelSelector,
   destructiveDialogConfirmSelector,
+  describeKeys,
   destructiveDialogEscapeKey,
   destructiveDialogRunShortcut,
   destructiveDialogSelector,
   newQueryTabSelector,
   queryEditorInputSelector,
+  queryEditorSurfaceSelector,
   rerunQuerySelector,
   runQuerySelector,
 } from "./expectations.mjs";
@@ -21,6 +24,7 @@ import {
 const CARD = connectionCardSelector();
 const NEW_QUERY = newQueryTabSelector();
 const EDITOR = queryEditorInputSelector();
+const EDITOR_SURFACE = queryEditorSurfaceSelector();
 const RUN = runQuerySelector();
 const RERUN = rerunQuerySelector();
 const DIALOG = destructiveDialogSelector();
@@ -28,6 +32,11 @@ const CANCEL = destructiveDialogCancelSelector();
 const CONFIRM = destructiveDialogConfirmSelector();
 const ESCAPE = destructiveDialogEscapeKey();
 const RUN_SHORTCUT = destructiveDialogRunShortcut();
+const ESCAPE_KEY = describeKeys(ESCAPE);
+const RUN_SHORTCUT_KEYS = describeKeys(RUN_SHORTCUT);
+
+/** The statement the built app asks about: anything data-modifying. */
+const DESTRUCTIVE = /\b(DELETE|UPDATE|INSERT|DROP|ALTER|TRUNCATE|CREATE|REPLACE)\b/i;
 
 function fakeClock() {
   let clock = 0;
@@ -42,9 +51,20 @@ function fakeClock() {
 const flush = () => Promise.resolve();
 
 /**
- * Stand-in for the real webview: the confirmation dialog materializes only
- * after a Run/Re-run click, and only while it has not been cancelled, exactly
- * like `DestructiveQueryDialog` (which returns `null` while closed).
+ * Stand-in for the real webview.
+ *
+ * It models the three facts the flow depends on, all of them measured on the
+ * built app rather than assumed:
+ *
+ * - the confirmation dialog materializes only after a Run/Re-run click on a
+ *   script the guard considers destructive, and only while it has not been
+ *   cancelled (`DestructiveQueryDialog` returns `null` while closed);
+ * - the toolbar's re-run control only exists once the tab holds a result set
+ *   (`DbViewerScreen` renders `TableControls` behind `activeTab?.data`), so a
+ *   read has to run before the re-run assertion is reachable;
+ * - clicking Monaco's hidden `textarea.inputarea` is *intercepted* by
+ *   `div.view-line` (1x1 target at `z-index:-10`), so this fake fails the same
+ *   way the real driver does if the flow ever clicks it again.
  */
 function fakeDriver(
   options: {
@@ -53,6 +73,8 @@ function fakeDriver(
     shortcutConsumesDialog?: boolean;
     /** Simulates a dialog that ignores Escape. */
     ignoresEscape?: boolean;
+    /** Simulates a viewer that never mounts the result toolbar. */
+    toolbarNeverMounts?: boolean;
   } = {},
 ) {
   const clicks: string[] = [];
@@ -62,9 +84,17 @@ function fakeDriver(
     dialogNeverOpensFor = null,
     shortcutConsumesDialog = false,
     ignoresEscape = false,
+    toolbarNeverMounts = false,
   } = options;
-  let dialogOpen = false;
-  let editorReady = false;
+  const state = {
+    editorReady: false,
+    dialogOpen: false,
+    /** The script the editor currently holds (the flow types in two parts). */
+    script: "",
+    /** A run has returned a result set, so the toolbar is mounted. */
+    hasData: false,
+  };
+  const destructive = () => DESTRUCTIVE.test(state.script);
 
   return {
     async findElement(selector: string) {
@@ -75,48 +105,66 @@ function fakeDriver(
         case NEW_QUERY:
           return found("new-query");
         case EDITOR:
-          return editorReady ? found("editor") : null;
+          return state.editorReady ? found("editor") : null;
+        case EDITOR_SURFACE:
+          return state.editorReady ? found("editor-surface") : null;
         case RUN:
           return found("run");
         case RERUN:
-          return found("rerun");
+          return state.hasData && !toolbarNeverMounts ? found("rerun") : null;
         case DIALOG:
-          return dialogOpen ? found("dialog") : null;
+          return state.dialogOpen ? found("dialog") : null;
         case CANCEL:
-          return dialogOpen ? found("dialog-cancel") : null;
+          return state.dialogOpen ? found("dialog-cancel") : null;
         case CONFIRM:
-          return dialogOpen ? found("confirm") : null;
+          return state.dialogOpen ? found("confirm") : null;
         default:
           return null;
       }
     },
-    async sendKeys(element: { elementId: string }, text: string) {
-      if (element.elementId === "dialog") {
-        // Keys sent to the modal go to the modal: Escape cancels it, and the
-        // editor's run shortcut reaches the editor not at all.
-        dialogKeys.push(text);
-        if (text === ESCAPE && !ignoresEscape) dialogOpen = false;
-        if (text === RUN_SHORTCUT && shortcutConsumesDialog) dialogOpen = false;
-        return;
+    // Real keystrokes go to whatever holds focus. With the confirmation up,
+    // that is inside the modal: Escape cancels it, and the editor's run shortcut
+    // reaches the editor not at all.
+    async pressChord(key: string, modifiers: string[] = []) {
+      dialogKeys.push(`${modifiers.join("")}${key}`);
+      if (`${modifiers.join("")}${key}` === ESCAPE_KEY && !ignoresEscape) {
+        state.dialogOpen = false;
       }
+      if (`${modifiers.join("")}${key}` === RUN_SHORTCUT_KEYS && shortcutConsumesDialog) {
+        state.dialogOpen = false;
+      }
+    },
+    async typeText(text: string) {
+      if (!state.editorReady) throw new HarnessError("typed outside the query editor");
       typed.push(text);
-      editorReady = true;
+      state.script += text;
     },
     async click(element: { elementId: string }) {
       clicks.push(element.elementId);
+      if (element.elementId === "editor") {
+        // What WebKitWebDriver answers for Monaco's hidden input area.
+        throw new HarnessError(
+          "element click intercepted: div.view-line (POST /session/…/element/editor/click)",
+        );
+      }
       if (element.elementId === "new-query") {
         // The editor mounts once the query tab opens.
         await Promise.resolve();
-        editorReady = true;
+        state.editorReady = true;
       }
-      if (element.elementId === "run" && dialogNeverOpensFor !== "run") {
-        dialogOpen = true;
+      if (element.elementId === "run") {
+        if (destructive()) {
+          if (dialogNeverOpensFor !== "run") state.dialogOpen = true;
+        } else {
+          // A read returns rows: the tab now has a result set.
+          state.hasData = true;
+        }
       }
       if (element.elementId === "rerun" && dialogNeverOpensFor !== "rerun") {
-        dialogOpen = true;
+        state.dialogOpen = true;
       }
       if (element.elementId === "dialog-cancel") {
-        dialogOpen = false;
+        state.dialogOpen = false;
       }
     },
     async elementText() {
@@ -135,11 +183,12 @@ function fakeDriver(
     clicks,
     typed,
     dialogKeys,
+    state,
     get dialogOpen() {
-      return dialogOpen;
+      return state.dialogOpen;
     },
     closeDialog() {
-      dialogOpen = false;
+      state.dialogOpen = false;
     },
   };
 }
@@ -163,11 +212,15 @@ describe("runDestructiveRerunFlow", () => {
     const result = await runDestructiveRerunFlow(driver, flowOptions);
     await flush();
 
-    expect(driver.typed).toEqual([DESTRUCTIVE_SCRIPT]);
+    // The read is typed and run first, then the destructive statement is added,
+    // so both entry points are exercised on a tab that has a result set.
+    expect(driver.typed).toEqual([READ_ONLY_SCRIPT, ` ${DESTRUCTIVE_SCRIPT}`]);
     expect(driver.clicks).toEqual([
       "card",
       "new-query",
-      "editor",
+      "editor-surface",
+      "run",
+      "editor-surface",
       "run",
       "dialog-cancel",
       "rerun",
@@ -180,12 +233,13 @@ describe("runDestructiveRerunFlow", () => {
     ]);
     expect(result.passMessage).toMatch(/both execution entry points/);
     // The keys went to the modal, never to the editor.
-    expect(driver.dialogKeys).toEqual([RUN_SHORTCUT, ESCAPE]);
-    expect(driver.typed).toEqual([DESTRUCTIVE_SCRIPT]);
+    expect(driver.dialogKeys).toEqual([RUN_SHORTCUT_KEYS, ESCAPE_KEY]);
     expect(result.steps.map((step) => step.name)).toEqual([
       `home: ${DEMO_CONNECTION_NAME} card visible`,
       "home: open the demo database",
       "workspace: open an ad-hoc query tab",
+      "reader: type a harmless read",
+      "run: the read executes without a confirmation",
       "editor: type a destructive script",
       "run: initial Run requires confirmation",
       "run: cancel leaves the script unexecuted",
@@ -193,6 +247,28 @@ describe("runDestructiveRerunFlow", () => {
       "keyboard: the run shortcut cannot execute the pending confirmation",
       "keyboard: Escape cancels the pending confirmation",
     ]);
+  });
+
+  it("never clicks Monaco's hidden input area", async () => {
+    // The fake rejects a click on `textarea.inputarea` exactly as
+    // WebKitWebDriver does, so a reintroduced click fails here instead of only
+    // in the built-product lane.
+    const driver = fakeDriver();
+    const result = await runDestructiveRerunFlow(driver, options());
+    expect(result.confirmedEntryPoints).toEqual(["initial Run", "toolbar re-run"]);
+    expect(driver.clicks).not.toContain("editor");
+    expect(driver.clicks.filter((id) => id === "editor-surface")).toHaveLength(2);
+  });
+
+  it("runs a read first, so the re-run control it asserts on actually mounts", async () => {
+    // Without a result set the toolbar is not rendered at all; the flow has to
+    // create that state instead of asserting on a control that cannot exist.
+    const driver = fakeDriver({ toolbarNeverMounts: true });
+    await expect(runDestructiveRerunFlow(driver, { ...options(), timeoutMs: 300 })).rejects.toThrow(
+      /Re-run query.*never rendered|result toolbar/,
+    );
+    // It fails at the read step, before claiming anything about re-running.
+    expect(driver.state.hasData).toBe(true);
   });
 
   it("fails when a keyboard shortcut consumes the pending confirmation", async () => {
@@ -236,7 +312,7 @@ describe("runDestructiveRerunFlow", () => {
 
   it("reports a missing editor instead of typing into nothing", async () => {
     const driver = fakeDriver();
-    driver.sendKeys = vi.fn(async () => {
+    driver.typeText = vi.fn(async () => {
       throw new HarnessError("no editor");
     });
     driver.findElement = (async (selector: string) => {

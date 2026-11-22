@@ -1,5 +1,6 @@
 import {
   DEMO_CONNECTION_NAME,
+  READ_ONLY_SCRIPT,
   connectionCardSelector,
   destructiveDialogCancelSelector,
   destructiveDialogEscapeKey,
@@ -7,6 +8,7 @@ import {
   destructiveDialogSelector,
   newQueryTabSelector,
   queryEditorInputSelector,
+  queryEditorSurfaceSelector,
   rerunQuerySelector,
   runQuerySelector,
 } from "./expectations.mjs";
@@ -25,9 +27,51 @@ export const DEFAULT_INTERVAL_MS = 250;
  */
 export const DESTRUCTIVE_SCRIPT = "DELETE FROM products;";
 
+/**
+ * Focus the query editor and type into it.
+ *
+ * Three measured facts drive this helper:
+ *
+ * 1. Monaco's real input is a 1x1 `textarea.inputarea` at `z-index:-10`, painted
+ *    *behind* `.view-lines`. An element-targeted click on it is intercepted by
+ *    `div.view-line` on every attempt (W3C: "element click intercepted"), so the
+ *    harness must never click it.
+ * 2. Element-targeted keys (`/element/{id}/value`) are refused too — WebKit
+ *    answers "element not interactable: Element is not focusable" for that same
+ *    hidden textarea.
+ * 3. Typing into the *focused* element works, which is what a user does.
+ *
+ * So: click the rendered editor surface (a real hit target) to focus Monaco,
+ * then send real keystrokes to the focused element.
+ */
+async function typeInEditor(driver, text, waitForElementFn, poll, label) {
+  await waitForElementFn(driver, queryEditorInputSelector(), {
+    ...poll,
+    label: label ?? "query editor",
+  });
+  const surface = await waitForElementFn(driver, queryEditorSurfaceSelector(), {
+    ...poll,
+    label: "query editor surface",
+  });
+  await driver.click(surface);
+  await driver.typeText(text);
+}
+
+export { typeInEditor };
+
+/**
+ * The real clock.
+ *
+ * `run.mjs` injects only the budget (`timeoutMs`/`intervalMs`), never a clock, so
+ * a flow that calls `time.sleep(...)` directly needs a working default: the unit
+ * fakes always supply one, which is how the missing default went unnoticed until
+ * the built-product lane reached that step.
+ */
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function clock(options) {
   return {
-    sleep: options.sleep,
+    sleep: options.sleep ?? defaultSleep,
     now: options.now,
     intervalMs: options.intervalMs ?? DEFAULT_INTERVAL_MS,
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -75,8 +119,11 @@ export function waitForAbsent(driver, selector, options) {
  * `run.mjs` supplies the real WebDriver transport.
  */
 export async function runDestructiveRerunFlow(driver, options = {}) {
-  const { connectionName = DEMO_CONNECTION_NAME, script = DESTRUCTIVE_SCRIPT } =
-    options;
+  const {
+    connectionName = DEMO_CONNECTION_NAME,
+    script = DESTRUCTIVE_SCRIPT,
+    readScript = READ_ONLY_SCRIPT,
+  } = options;
   const time = clock(options);
   /** @type {Array<{name: string, durationMs: number}>} */
   const steps = [];
@@ -112,19 +159,24 @@ export async function runDestructiveRerunFlow(driver, options = {}) {
   }
 
   /**
-   * Require the open confirmation to survive a key sent to it.
+   * Require the open confirmation to survive a key sent while it is focused.
    *
    * A keyboard shortcut must not execute or relocate a pending confirmation, so
-   * the dialog has to be exactly where it was afterwards. The poll interval is
-   * waited out first: a click/shortcut that consumed the confirmation renders
-   * it away asynchronously, so an immediate check could read the stale dialog.
+   * the dialog has to be exactly where it was afterwards. The keys are pressed
+   * on the focused element (not element-targeted: the modal is a `div` and is
+   * not focusable — the button inside it holds focus), which is exactly what a
+   * user's keystroke is. The poll interval is waited out first: a shortcut that
+   * consumed the confirmation renders it away asynchronously, so an immediate
+   * check could read the stale dialog.
    */
-  async function keepDialogOpen(entryPoint, key, label) {
-    const dialog = await waitForElement(driver, destructiveDialogSelector(), {
+  async function keepDialogOpen(entryPoint, keys, label) {
+    await waitForElement(driver, destructiveDialogSelector(), {
       ...poll,
       label: `${entryPoint} confirmation dialog`,
     });
-    await driver.sendKeys(dialog, key);
+    // Pressed globally: the keys land on whatever holds focus, which — with the
+    // confirmation up — must be inside the modal, never the editor behind it.
+    await driver.pressChord(keys.key, keys.modifiers);
     await time.sleep(time.intervalMs);
     const stillOpen = await driver.findElement(destructiveDialogSelector());
     if (!stillOpen) {
@@ -137,11 +189,11 @@ export async function runDestructiveRerunFlow(driver, options = {}) {
 
   /** Cancel the open confirmation with Escape and require it to close. */
   async function escapeFor(entryPoint) {
-    const dialog = await waitForElement(driver, destructiveDialogSelector(), {
+    await waitForElement(driver, destructiveDialogSelector(), {
       ...poll,
       label: `${entryPoint} confirmation dialog`,
     });
-    await driver.sendKeys(dialog, destructiveDialogEscapeKey());
+    await driver.pressChord(destructiveDialogEscapeKey().key);
     await waitForAbsent(driver, destructiveDialogSelector(), {
       ...poll,
       label: `Escape should cancel the ${entryPoint} pending confirmation`,
@@ -178,15 +230,39 @@ export async function runDestructiveRerunFlow(driver, options = {}) {
     );
     await driver.click(newQuery);
 
-    await step("editor: type a destructive script", async () => {
-      const input = await waitForElement(driver, queryEditorInputSelector(), {
+    // A result set has to exist before the toolbar — and with it the re-run
+    // control — mounts (`DbViewerScreen` renders `TableControls` only for a tab
+    // with data). A harmless read runs first, so the re-run assertion below is
+    // reachable instead of silently skipping over a control that is not there.
+    await step("reader: type a harmless read", () =>
+      typeInEditor(driver, readScript, waitForElement, poll),
+    );
+    await step("run: the read executes without a confirmation", async () => {
+      const run = await waitForElement(driver, runQuerySelector(), {
         ...poll,
-        label: "query editor",
+        label: "Run query button",
       });
-      // Monaco listens on its hidden input area; clicking focuses it first.
-      await driver.click(input);
-      await driver.sendKeys(input, script);
+      await driver.click(run);
+      // The re-run control only renders once the tab holds a result set, so
+      // waiting for it proves the run completed and the toolbar is mounted.
+      await waitForElement(driver, rerunQuerySelector(), {
+        ...poll,
+        label: "the result toolbar (Re-run query) after a successful read",
+      });
+      if (await driver.findElement(destructiveDialogSelector())) {
+        throw new HarnessError(
+          "a read-only script asked for destructive confirmation: only " +
+            "data-modifying statements may prompt",
+        );
+      }
     });
+
+    // The destructive statement is typed after the read, so the editor holds a
+    // script the guard must stop — and the tab keeps its result set, which is
+    // what makes the toolbar re-run reachable.
+    await step("editor: type a destructive script", () =>
+      typeInEditor(driver, ` ${script}`, waitForElement, poll),
+    );
 
     await step("run: initial Run requires confirmation", async () => {
       await confirmFor("initial Run", runQuerySelector());

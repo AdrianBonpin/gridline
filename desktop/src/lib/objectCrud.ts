@@ -229,7 +229,9 @@ export function initialCrudParams(
             ? (item.columnMeta ?? []).map((c) => ({
                 name: c.name, type: c.type, nullable: c.nullable,
                 default: c.default ?? null, is_pk: c.is_pk,
-                unique: c.unique, auto_increment: c.auto_increment,
+                // Explicit booleans: the backend column models are strict, so an
+                // omitted field is a deserialization error, not `false`.
+                unique: c.unique === true, auto_increment: c.auto_increment === true,
                 original_name: c.name,
               }))
             : [],
