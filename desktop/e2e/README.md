@@ -228,8 +228,17 @@ nothing).
 bun run e2e:appimage -- --appimage ./Gridline_0.8.4_amd64.AppImage
 
 # what it needs on Linux
-sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2
+sudo apt-get install -y xvfb xdotool x11-utils imagemagick libfuse2 \
+  libegl1 libgles2 libgl1
 ```
+
+The GL packages are not optional. The packaged image bundles GTK3 and WebKitGTK
+but **not** `libEGL`/`libGL`: linuxdeploy excludes driver-provided GL libraries on
+purpose, and the `.deb` declares the same host contract (`Depends:
+libwebkit2gtk-4.1-0, libgtk-3-0`), which a desktop install satisfies through its
+graphics stack. A bare runner has no GL stack at all, and the app then dies at
+startup with `libEGL.so.1: cannot open shared object file` — which the lane
+reports as a missing shared library, not as a paint failure.
 
 It is **not** registered in `FLOWS`/`FLOW_RUNNERS` — that registry is the
 WebDriver flows, driven by `tauri-driver` and a WebDriver session. Adding this
@@ -242,13 +251,20 @@ lane there would make `preflight` claim a driver it never uses.
    title and size come from `desktop/src-tauri/tauri.conf.json` (±48px, so a
    decoration difference does not fail a correct build). A window that never
    appears, never becomes `IsViewable`, or is the wrong size fails.
-2. **Painted content, by colour diversity and bright pixels.** Gridline is
+2. **Painted content, measured against the background.** Gridline is
    dark-themed (`#0A0A0B` canvas), so "mostly black" is the healthy state and a
    naive black-pixel check would false-fail every correct build. A frame passes
-   only when it has at least 8 distinct colour buckets, no single colour covering
-   more than 90% of the window, and at least 0.15% bright pixels. A uniform dark
-   frame and a pure-black frame both fail — with the measured numbers in the
-   failure message.
+   only when it has at least 8 distinct colour buckets, at least 0.4% of its
+   pixels are content rather than the dominant background colour, that content
+   spans at least 8 sampled rows, and at least 0.15% of pixels are bright. A
+   uniform frame, a single stripe, a solid block and a border-only frame all fail
+   — with the measured numbers in the failure message.
+
+   There is deliberately **no** ceiling on how much of the window one colour may
+   cover. The theme follows the OS, so the real v0.9.2 AppImage on a
+   light-preference host renders the complete home screen with `#fafafa` covering
+   97.64% of an empty workspace; a share ceiling rejected that painted frame as
+   "blank". Content, not background share, is the discriminator.
 3. **No known-fatal renderer/web-process diagnostics.** A crashed or
    unstartable `WebKitWebProcess`, a WebKit sandbox (`bwrap`) failure, a GTK/X
    fatal, a Rust panic, a signal death, or a missing shared library fails the
@@ -284,7 +300,7 @@ closer to a user session and is therefore informational rather than blocking.
 | :--- | :--- | :--- |
 | nightly `schedule` | latest **published** release's AppImage | yes |
 | `workflow_dispatch` | a named release tag, or the latest published release | yes |
-| `workflow_run` after **Release** | the `appimage-linux-x86_64` artifact that run built | yes |
+| `workflow_run` after **Release** | the `appimage-linux-x86_64` artifact that run built, falling back to the published asset for that run's tag | yes |
 
 Each trigger also runs the pristine (informational) variant and a Fedora
 container variant. **The Fedora run is cross-distribution compatibility coverage,
