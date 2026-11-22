@@ -7,9 +7,9 @@
 **Seams:** Built-product seam: catches workflow gating and post-build verification; final notarization confirmation still requires the real release job.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/102
-**Status:** ready
+**Status:** done
 
-- [ ] Missing signing or notarization credentials fail the release job.
-- [ ] The built application and disk image are verified after signing and stapling.
-- [ ] Verification failure prevents upload.
-- [ ] The published security claim matches what the pipeline guarantees.
+- [x] Missing signing or notarization credentials fail the release job.
+- [x] The built application and disk image are verified after signing and stapling.
+- [x] Verification failure prevents upload.
+- [x] The published security claim matches what the pipeline guarantees.

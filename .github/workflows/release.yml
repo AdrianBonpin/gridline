@@ -18,17 +18,24 @@ name: Release
 #   * ref/tag metadata reaches shell steps through environment variables and is
 #     compared as data — never interpolated into a `run:` body, a jq program or
 #     a rendered template body,
-#   * `scripts/check-workflows.sh` asserts all of the above (run it in CI).
+#   * `scripts/check-workflows.sh` asserts all of the above (run it in CI),
+#   * macOS FAILS CLOSED: absent Apple signing/notarization credentials stop the
+#     macOS jobs before anything is built, and the signed .app/.dmg are verified
+#     before any macOS asset is uploaded (ticket 45).
 # Release refs (tag + `prod`) protection, immutability and required checks are
 # repository settings, not files: see AGENTS.md "Release ref protection".
 #
-# SIGNING STATUS: this is the ACTIVE release path. macOS is Developer-ID
-# signed + notarized in CI when the Apple secrets below are configured (see
-# README "macOS signing & notarization"). When the secrets are absent the mac
-# jobs still build, but ad-hoc signed / unnotarized. Linux/Windows installers
-# remain unsigned.
+# SIGNING STATUS: this is the ACTIVE release path, and macOS builds are NOT
+# allowed to be ad-hoc signed. A macOS release requires all seven secrets below;
+# `scripts/require-macos-signing-credentials.sh` fails the job when any is
+# missing, `scripts/verify-macos-artifacts.sh` proves the Developer ID identity,
+# hardened runtime, stapled ticket, Gatekeeper assessment and DMG notarization
+# before the DMGs are uploaded. There is deliberately no ad-hoc/unnotarized
+# fallback: an unsigned macOS build must fail the release rather than ship under
+# the "Developer-ID signed and notarized" claim in README and SECURITY.md.
+# Linux/Windows installers remain unsigned.
 #
-# Required secrets for signed + notarized macOS builds:
+# Required secrets for signed + notarized macOS builds (all seven, no fallback):
 #   APPLE_CERTIFICATE           base64 of the Developer ID Application .p12
 #   APPLE_CERTIFICATE_PASSWORD  password for that .p12
 #   APPLE_SIGNING_IDENTITY      "Developer ID Application: Name (TEAMID)"
@@ -105,27 +112,33 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      # ---- Apple signing setup (macOS only, skipped when secrets absent) ---
-      - name: Detect Apple signing secrets
-        id: apple
+      # ---- Apple signing setup (macOS only) --------------------------------
+      # Fail closed, before a single file is compiled: a macOS release without
+      # working Developer ID + notarization credentials must not produce an
+      # artifact at all. The rule lives in a script so it is asserted by
+      # scripts/check-workflows.sh (all seven names, no value ever printed).
+      - name: Require Apple signing and notarization secrets
+        if: startsWith(matrix.platform, 'macos')
         shell: bash
-        # Secret via env, never through `${{ }}` inside the script body.
+        # Secrets via env, never through `${{ }}` inside the script body.
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: |
-          if [ -n "${APPLE_CERTIFICATE:-}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::APPLE_CERTIFICATE not set — macOS build will be ad-hoc signed and NOT notarized."
-          fi
+          set -euo pipefail
+          "${GITHUB_WORKSPACE}/scripts/require-macos-signing-credentials.sh"
 
       # The bundled pg/mariadb tools are re-signed in their own steps below, so
       # the identity must be in a keychain BEFORE those steps run. tauri-action
       # is deliberately NOT given APPLE_CERTIFICATE (only the identity), so it
       # does not create a second keychain.
       - name: Import Apple Developer ID certificate
-        if: startsWith(matrix.platform, 'macos') && steps.apple.outputs.enabled == 'true'
+        if: startsWith(matrix.platform, 'macos')
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -145,10 +158,16 @@ jobs:
           EXISTING="$(security list-keychain -d user | tr -d ' \"')"
           security list-keychain -d user -s "$KEYCHAIN" $EXISTING
           rm -f "$RUNNER_TEMP/cert.p12"
-          security find-identity -v -p codesigning
+          # The imported certificate must actually provide the identity we sign
+          # with — a stale/expired .p12 would otherwise only fail much later.
+          security find-identity -v -p codesigning | tee "$RUNNER_TEMP/identities.txt"
+          if ! grep -qF "$APPLE_SIGNING_IDENTITY" "$RUNNER_TEMP/identities.txt"; then
+            echo "::error::the imported certificate does not provide APPLE_SIGNING_IDENTITY; the macOS build could only be ad-hoc signed" >&2
+            exit 1
+          fi
 
       - name: Prepare notarization credentials
-        if: startsWith(matrix.platform, 'macos') && steps.apple.outputs.enabled == 'true'
+        if: startsWith(matrix.platform, 'macos')
         shell: bash
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -168,6 +187,23 @@ jobs:
             echo "APPLE_API_ISSUER=${APPLE_API_ISSUER}"
             echo "APPLE_API_KEY_PATH=${KEY_PATH}"
           } >> "$GITHUB_ENV"
+          # Prove the credentials are ACCEPTED now, not after a 40-minute build
+          # and a failed notarization. A transient network error is retried;
+          # a rejected key fails the job here.
+          attempt=1
+          while :; do
+            if xcrun notarytool history --key "$KEY_PATH" \
+              --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" >/dev/null; then
+              echo "notarization credentials accepted by App Store Connect"
+              break
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::App Store Connect rejected the notarization credentials (APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_CONTENT)" >&2
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep 15
+          done
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -496,7 +532,12 @@ jobs:
           set -euo pipefail
           "${GITHUB_WORKSPACE}/scripts/verify-bundled-tools.sh"
 
+      # Non-macOS installers have nothing to verify, so each is built and
+      # uploaded in one step. macOS deliberately does NOT use this step (see the
+      # `if:` below): its bundles are built without uploading, verified, and only
+      # then uploaded.
       - name: Build and upload to GitHub Release
+        if: ${{ !startsWith(matrix.platform, 'macos') }}
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -524,70 +565,114 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-      # tauri-action notarizes + staples the .app but NOT the .dmg wrapping it,
-      # so Gatekeeper rejects the downloaded DMG as "Unnotarized Developer ID"
-      # even though the app inside is fine. Submit the DMG to the same notary
-      # service, staple the ticket, and replace the uploaded asset.
-      #
-      # Assets are replaced via the release ID rather than `gh release upload`:
-      # the GitHub releases/tags endpoint returns 404 for drafts, so uploading
-      # by tag cannot work while the release is still a draft.
-      - name: Notarize and staple the DMGs
-        if: startsWith(matrix.platform, 'macos') && steps.apple.outputs.enabled == 'true'
+      # ---- macOS: build, verify, then upload -------------------------------
+      # The macOS bundle is built WITHOUT uploading (no tagName/releaseName), so
+      # no macOS asset can reach the release before it has been verified. The
+      # verifier checks the Developer ID identity (not the ad-hoc
+      # `signingIdentity "-"` fallback), the hardened runtime, the stapled
+      # ticket and Gatekeeper's assessment, then notarizes + staples + validates
+      # the disk image, and prints the assets it accepted. Only those are
+      # uploaded below, so a signing, notarization or verification failure fails
+      # the job with nothing published (ticket 45).
+      - name: Clear stale macOS bundle output
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          # rust-cache restores `target/`, including bundle output from an earlier
+          # release. Only this build's artifacts may be verified and uploaded, so
+          # drop any previous bundle instead of trusting it (a stale
+          # `.app.tar.gz` keeps its name across versions).
+          rm -rf "${GITHUB_WORKSPACE}"/desktop/src-tauri/target/*/release/bundle
+
+      - name: Build macOS bundles (no release upload)
+        if: startsWith(matrix.platform, 'macos')
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        with:
+          projectPath: desktop
+          args: ${{ matrix.args }}
+          # No tagName/releaseName/releaseId on purpose: this invocation only
+          # builds. Uploading is the separate, post-verification step below.
+
+      - name: Verify signed and notarized macOS artifacts
+        id: verify_macos
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        env:
+          # Runner/target via env: no `${{ }}` expression is interpolated into
+          # the shell body (the same rule that applies to tag metadata).
+          MACOS_BUILD_ARGS: ${{ matrix.args }}
+        run: |
+          set -euo pipefail
+          # `matrix.args` is `--target <triple>`: the verifier needs the triple.
+          set -- $MACOS_BUILD_ARGS
+          if [ "$#" -ne 2 ] || [ "$1" != "--target" ]; then
+            echo "::error::unexpected macOS build args: ${MACOS_BUILD_ARGS}" >&2
+            exit 1
+          fi
+          TRIPLE="$2"
+          ASSETS="$("${GITHUB_WORKSPACE}/scripts/verify-macos-artifacts.sh" --target "$TRIPLE")"
+          if [ -z "$ASSETS" ]; then
+            echo "::error::the macOS verifier accepted nothing, so nothing may be uploaded" >&2
+            exit 1
+          fi
+          printf '%s\n' "$ASSETS"
+          {
+            echo "assets<<GRIDLINE_VERIFIED_ASSETS"
+            printf '%s\n' "$ASSETS"
+            echo "GRIDLINE_VERIFIED_ASSETS"
+          } >> "$GITHUB_OUTPUT"
+
+      # Uploads exactly the paths the verifier printed: the asset list IS the
+      # verification result, so a file that was not verified cannot be uploaded.
+      - name: Upload verified macOS installers
+        if: startsWith(matrix.platform, 'macos')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERIFIED_ASSETS: ${{ steps.verify_macos.outputs.assets }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          dmgs=(desktop/src-tauri/target/*/release/bundle/dmg/*.dmg)
-          if [ ${#dmgs[@]} -eq 0 ]; then
-            echo "no DMG produced" >&2
+          if [ -z "${VERIFIED_ASSETS:-}" ]; then
+            echo "::error::no verified macOS assets to upload" >&2
             exit 1
           fi
-          # The tag is matched in the shell, not inside the jq program: release
-          # metadata is data and must never become query text.
-          REL_ID=""
-          while IFS=$'\t' read -r rel_tag rel_id; do
-            if [ "$rel_tag" = "$RELEASE_TAG" ]; then
-              REL_ID="$rel_id"
-              break
-            fi
-          done < <(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq '.[] | "\(.tag_name)\t\(.id)"')
-          if [ -z "$REL_ID" ]; then
-            echo "could not resolve a release id for ${RELEASE_TAG}" >&2
-            exit 1
-          fi
-          for dmg in "${dmgs[@]}"; do
-            name=$(basename "$dmg")
-            echo ">> notarizing $name (this can take a few minutes)"
-            xcrun notarytool submit "$dmg" \
-              --key "$APPLE_API_KEY_PATH" \
-              --key-id "$APPLE_API_KEY" \
-              --issuer "$APPLE_API_ISSUER" \
-              --wait
-            # Apple's ticket delivery (api.apple-cloudkit.com) intermittently
-            # answers "The network connection was lost" (exit 68) and the
-            # staple fails even though notarization was ACCEPTED — that cost
-            # v0.8.4's Intel job a full rebuild. Stapling is idempotent, so
-            # retry a bounded number of times before failing the job.
-            stapled=0
-            for attempt in 1 2 3 4 5; do
-              if xcrun stapler staple "$dmg" && xcrun stapler validate "$dmg"; then
-                stapled=1
-                break
+          # Draft releases are not served by /releases/tags/<tag> (404), so
+          # resolve the release by listing and create the draft when no other
+          # matrix job has yet. The tag is compared as data in the shell, never
+          # spliced into the jq program.
+          resolve_release() {
+            local rel_tag rel_id
+            while IFS=$'\t' read -r rel_tag rel_id; do
+              if [ "$rel_tag" = "$RELEASE_TAG" ]; then
+                printf '%s\n' "$rel_id"
+                return 0
               fi
-              echo "stapler attempt ${attempt} failed; retrying in 20s" >&2
-              sleep 20
-            done
-            if [ "$stapled" -ne 1 ]; then
-              echo "could not staple ${name} after 5 attempts" >&2
+            done < <(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[] | "\(.tag_name)\t\(.id)"')
+            return 0
+          }
+          REL_ID="$(resolve_release)"
+          if [ -z "$REL_ID" ]; then
+            echo ">> no release for ${RELEASE_TAG} yet; creating the draft"
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
+              -f "tag_name=${RELEASE_TAG}" \
+              -f "name=Gridline ${RELEASE_TAG}" \
+              -F draft=true >/dev/null ||
+              echo ">> draft creation did not succeed; re-resolving (another matrix job may own it)"
+            REL_ID="$(resolve_release)"
+          fi
+          if [ -z "$REL_ID" ]; then
+            echo "::error::could not resolve or create a release for ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+            if [ ! -f "$asset" ]; then
+              echo "::error::verified asset is gone: ${asset}" >&2
               exit 1
             fi
-            # Replace the copy tauri-action uploaded, which carries no DMG ticket.
-            # Same rule: the asset name is compared as data, never spliced into
-            # the jq program (the name contains the release version).
+            name="$(basename "$asset")"
             old=""
             while IFS=$'\t' read -r asset_name asset_id; do
               if [ "$asset_name" = "$name" ]; then
@@ -599,15 +684,15 @@ jobs:
             if [ -n "$old" ]; then
               gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${old}"
             fi
-            echo ">> re-uploading stapled $name"
+            echo ">> uploading verified ${name}"
             curl -fsS -X POST \
               -H "Authorization: token ${GH_TOKEN}" \
               -H "Content-Type: application/octet-stream" \
-              --data-binary "@${dmg}" \
+              --data-binary "@${asset}" \
               "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets?name=${name}"
             echo
-          done
-          echo "all DMGs notarized and stapled"
+          done <<< "$VERIFIED_ASSETS"
+          echo "verified macOS artifacts uploaded"
 
   # After the installers are uploaded, refresh the Homebrew cask in the
   # AdrianBonpin/homebrew-gridline tap: hash the freshly-published DMGs,
