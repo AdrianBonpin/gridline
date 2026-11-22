@@ -38,7 +38,6 @@ export async function updateTag(id: string, input: TagInput): Promise<Tag> { ret
 export async function getSettings(): Promise<Settings> { return invoke<Settings>("get_settings"); }
 export async function updateSetting(key: string, value: string): Promise<void> { return invoke<void>("update_setting", { key, value }); }
 export async function importConnections(json: string): Promise<ImportResult> { return invoke<ImportResult>("import_connections", { json }); }
-export async function exportConnections(): Promise<string> { return invoke<string>("export_connections"); }
 export async function testConnection(input: ConnectionInput): Promise<ConnectionTestResult> {
   return invoke<ConnectionTestResult>("test_connection", { config: input });
 }
@@ -386,6 +385,45 @@ export async function exportSettingsToFile(fileGrant: string): Promise<string> {
  */
 export async function readSettingsFile(fileGrant: string): Promise<string> {
   return invoke<string>("read_settings_file", { fileGrant });
+}
+
+/**
+ * Export connections into the file a File Grant authorized.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (write intent) and is
+ * consumed by this call. The transfer document is rendered in Rust and
+ * published atomically to the granted path; the renderer never names one, so a
+ * bare path authorizes nothing.
+ */
+export async function exportConnectionsToFile(fileGrant: string): Promise<string> {
+  return invoke<string>("export_connections_to_file", { fileGrant });
+}
+
+/**
+ * Read a connection transfer file through a File Grant.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (read intent) and is
+ * consumed by this call. The returned text goes to {@link importConnections},
+ * which validates it exactly as before.
+ */
+export async function readConnectionsFile(fileGrant: string): Promise<string> {
+  return invoke<string>("read_connections_file", { fileGrant });
+}
+
+/**
+ * Publish bytes the renderer produced (a rendered schema image) to the file a
+ * File Grant authorized.
+ *
+ * `fileGrant` is the id from {@link selectFileForGrant} (write intent) and is
+ * consumed by this call: the destination is the grant's, never an argument. The
+ * backend writes it atomically, so a failed save leaves an existing file
+ * intact.
+ */
+export async function saveGrantedBytes(
+  fileGrant: string,
+  bytes: Uint8Array,
+): Promise<string> {
+  return invoke<string>("save_granted_bytes", { fileGrant, bytes });
 }
 
 export async function importSettings(json: string): Promise<void> {

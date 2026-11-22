@@ -59,7 +59,12 @@ pub fn run() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_fs::init())
+        // No `plugin-fs`: the renderer performs no filesystem call of its own.
+        // Every file read/write goes through a Rust command that consumes a
+        // File Grant (backup, restore, sync, data import, streamed export,
+        // settings, connection transfer, schema image). With the plugin
+        // unregistered there is no renderer fs IPC surface to scope at all —
+        // see `capabilities/default.json` and ADR 0002.
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_keyring_store::init())
         // OS "open with" paths are queued here before the webview exists.
@@ -186,7 +191,6 @@ pub fn run() {
             settings::get_settings,
             settings::update_setting,
             import_export::import_connections,
-            import_export::export_connections,
             commands::test_connection::test_connection,
             commands::test_connection::create_sqlite_database,
             db_viewer::db_connect,
@@ -256,6 +260,9 @@ pub fn run() {
             settings::import_settings,
             settings::export_settings_to_file,
             settings::read_settings_file,
+            commands::file_io::export_connections_to_file,
+            commands::file_io::read_connections_file,
+            commands::file_io::save_granted_bytes,
             schema_graph::get_schema_graph,
             schema_diff::compare_schemas,
             query::execute_query,

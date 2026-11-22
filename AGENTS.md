@@ -323,7 +323,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | Environment filter | ✅ | Select in Filters dropdown: All / Production / Staging / Development / None (unassigned); counts toward active badge |
 | Global search (Cmd+K) | ✅ | Connection URL detection auto-fills new-connection form; shows results from ALL folders as if at root (folder scope bypassed while searching); breadcrumb shows "Showing Search Results" with Clear button; **Esc while the search is focused clears the query, exits search mode and blurs** |
 | Connection name editing | ✅ | Name field in GeneralTab edit form |
-| Import/Export connections (JSON) | ✅ | Bulk import with validation, skipped-record reporting |
+| Import/Export connections (JSON) | ✅ | Bulk import with validation, skipped-record reporting. Both directions are authorized by a Rust File Grant (`commands/file_io.rs`: `export_connections_to_file` / `read_connections_file`) — the renderer never names a path and the `fs` plugin/capability is gone |
 | Bulk select + delete connections/folders | ✅ | Checkbox selection with confirmation dialog |
 | Drag-and-drop connections to folders | ✅ | Optimistic update with atomic snapshot rollback (race-condition hardened) |
 | Inline tag creation | ✅ | "Create first tag" inline form (name + color) in SearchableTagPicker empty state |

@@ -54,7 +54,6 @@ vi.mock("../../lib/commands", () => ({
   updateTag: vi.fn().mockResolvedValue({}),
   deleteTag: vi.fn().mockResolvedValue(undefined),
   importConnections: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, skippedRecords: [] }),
-  exportConnections: vi.fn().mockResolvedValue(""),
 }));
 
 const mockFolders = [
