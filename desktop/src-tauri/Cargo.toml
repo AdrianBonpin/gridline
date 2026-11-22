@@ -62,7 +62,7 @@ hmac = "0.12"
 base64 = "0.22"
 deadpool-postgres = { version = "0.14" }
 indexmap = { version = "2", features = ["serde"] }
-tauri-plugin-keyring-store = { version = "0.2.0", default-features = false }
+tauri-plugin-keyring-store = { version = "0.3.2", default-features = false }
 tokio-postgres-rustls = "0.12"
 # rustls: ring-only crypto provider (no aws-lc-rs / cmake C build); tls12 needed for Postgres
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
