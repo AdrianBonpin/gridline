@@ -175,6 +175,28 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# 2b. Every Bun install comes from the pinned version file.
+# --------------------------------------------------------------------------
+# `.bun-version` + `www/package.json` `packageManager` decide which Bun writes the
+# lockfiles (local, CI) and which one reads them on the website deploy. A workflow
+# that installs `latest` can pass with a lockfile format the deploy's Bun cannot
+# parse — that shipped once (d9cc842): CI green, deploy dead with "Unknown lockfile
+# version". `scripts/check-lockfiles.sh` asserts the three versions agree; this
+# asserts no workflow escapes the pin.
+bun_pins_ok=1
+for wf in "${workflows[@]}"; do
+  setups="$(grep -c 'uses:[[:space:]]*oven-sh/setup-bun@' "$wf" 2>/dev/null || true)"
+  [ "${setups:-0}" = "0" ] && continue
+  pinned="$(grep -c 'bun-version-file:[[:space:]]*\.bun-version' "$wf" 2>/dev/null || true)"
+  if [ "$pinned" != "$setups" ]; then
+    fail "$wf installs Bun ${setups} time(s) but pins from .bun-version ${pinned} time(s); add 'with: bun-version-file: .bun-version' so CI and the deploy parse the same lockfile format"
+    bun_pins_ok=0
+  fi
+done
+[ "$bun_pins_ok" = "1" ] &&
+  pass "every workflow installs Bun from the pinned .bun-version"
+
+# --------------------------------------------------------------------------
 # 3. Least-privilege tokens: default-deny, per-job grants.
 # --------------------------------------------------------------------------
 if grep -q 'write-all' "${workflows[@]}" 2>/dev/null; then
