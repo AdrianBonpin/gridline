@@ -19,6 +19,13 @@
 #      scratch copy succeeds. A manifest edited without regenerating its lockfile
 #      fails here, on the pull request, instead of in a release build or on the
 #      website deploy.
+#   3. The Bun that writes the lockfiles and the Bun that reads them are the same
+#      version (`.bun-version`, `www/package.json` `packageManager`, and this
+#      runner's `bun`). Bun's text lockfile gained `lockfileVersion: 2` in 1.4, and
+#      a 1.3 binary rejects it outright: "Unknown lockfile version" / "lockfile
+#      had changes, but lockfile is frozen". That shipped once (d9cc842) and took
+#      the website deploy down while CI stayed green, because CI resolved `bun`
+#      from `latest` rather than from the pinned version the deploy honours.
 #
 # Nothing in the working tree is modified: both installs run in throwaway copies.
 #
@@ -73,7 +80,45 @@ done
   pass "both lockfiles are text bun.lock files (root and standalone www), so Dependabot can update them"
 
 # --------------------------------------------------------------------------
-# 2. Each lockfile describes its manifest(s) — a frozen install succeeds.
+# 2. The pinned Bun, the deploying Bun and this runner's Bun agree.
+# --------------------------------------------------------------------------
+# `www/package.json` `packageManager` is what the Railpack/Dokploy build reads to
+# choose the Bun that runs `bun install --frozen-lockfile`; `.bun-version` is what
+# every workflow installs. They must name the same version, and this check must run
+# on the same *minor* — a lockfile format change is a minor-version event, so a
+# patch difference is harmless while a minor difference is the deploy outage.
+runtime_ok=1
+if [ ! -f .bun-version ]; then
+  fail "missing .bun-version (the workflows and the website deploy must install the same Bun)"
+  runtime_ok=0
+else
+  pinned="$(tr -d '[:space:]' < .bun-version)"
+  case "$pinned" in
+    [0-9]*.[0-9]*.[0-9]*) : ;;
+    *)
+      fail ".bun-version must hold a plain X.Y.Z version, got '$pinned'"
+      runtime_ok=0
+      ;;
+  esac
+
+  declared="$(sed -n 's/^[[:space:]]*"packageManager":[[:space:]]*"bun@\([^"]*\)".*/\1/p' www/package.json)"
+  if [ "$declared" != "$pinned" ]; then
+    fail "www/package.json packageManager is 'bun@${declared:-<unset>}' but .bun-version is '$pinned'; the website deploy installs the packageManager version, so a mismatch means the deploy parses a lockfile written by a different Bun (a lockfile-format change reads as 'Unknown lockfile version')"
+    runtime_ok=0
+  fi
+
+  running="$(bun --version 2>/dev/null | tr -d '[:space:]')"
+  if [ "${running%%.*}" != "${pinned%%.*}" ] ||
+    [ "$(printf '%s' "$running" | cut -d. -f2)" != "$(printf '%s' "$pinned" | cut -d. -f2)" ]; then
+    fail "this runner's bun is '$running' but .bun-version pins '$pinned'; run the check with the pinned Bun (CI installs it from .bun-version via oven-sh/setup-bun), otherwise the lockfile is verified with an unrelated parser"
+    runtime_ok=0
+  fi
+fi
+[ "$runtime_ok" = "1" ] &&
+  pass "the pinned Bun (.bun-version) matches the website's packageManager and this runner's bun (minor version)"
+
+# --------------------------------------------------------------------------
+# 3. Each lockfile describes its manifest(s) — a frozen install succeeds.
 # --------------------------------------------------------------------------
 # frozen_install <label> <copy-root> <fix hint>
 frozen_install() {
