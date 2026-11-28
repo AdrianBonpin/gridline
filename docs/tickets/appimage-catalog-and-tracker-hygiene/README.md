@@ -22,3 +22,4 @@
 Two pull requests carry the code, as the spec requires: `01` alone, because removing a webview-supplied file path deserves a review that can judge the grant boundary without unrelated diffs, and `02`, `03`, `04` and `05` together as internal hygiene with no security surface. `06` is external actions and produces no pull request. `07` is documentation and lands once everything else has merged.
 
 The initial frontier is `01, 02, 04, 05, 06` — five tickets with no shared module that can run concurrently in separate worktrees.
+**Spec state:** done
