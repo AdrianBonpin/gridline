@@ -11,7 +11,7 @@
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/154
 **Tracker state:** ready
-**Status:** ready
+**Status:** in_progress
 
 - [ ] One declared rule exists per known settings key, and it is the single source of validity for both writes and read-backs.
 - [ ] A write of an unknown key is refused with the key named.

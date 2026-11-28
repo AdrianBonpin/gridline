@@ -11,7 +11,7 @@
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/155
 **Tracker state:** ready
-**Status:** ready
+**Status:** in_progress
 
 - [ ] Before launch the harness removes its own application-data locations, resolved strictly beneath the artifacts directory.
 - [ ] The harness refuses to proceed, with a clear message, when those locations do not resolve beneath the artifacts directory.

@@ -12,7 +12,7 @@
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/153
 **Tracker state:** ready
-**Status:** ready
+**Status:** in_progress
 
 - [ ] The create-database operation accepts only a File Grant identifier; no path supplied by the webview can reach it.
 - [ ] The destination is chosen in the operating system's save dialog, brokered by the backend rather than opened by the webview.

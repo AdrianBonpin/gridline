@@ -10,7 +10,7 @@
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/157
 **Tracker state:** ready
-**Status:** ready
+**Status:** in_progress
 
 - [ ] The catalog pull request is re-tested against the current release.
 - [ ] The outcome is recorded — merged and the listing reachable, or the new failure quoted in full.

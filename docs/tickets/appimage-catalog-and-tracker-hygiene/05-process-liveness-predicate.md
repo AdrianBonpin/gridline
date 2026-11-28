@@ -12,7 +12,7 @@
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/156
 **Tracker state:** ready
-**Status:** ready
+**Status:** in_progress
 
 - [ ] A single shared predicate decides process liveness; the two verbatim copies no longer exist.
 - [ ] A process that has exited but is not yet reaped reads as not running on Unix.
