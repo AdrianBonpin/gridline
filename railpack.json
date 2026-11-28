@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "staticfile",
+  "steps": {
+    "build": {
+      "commands": [
+        "...",
+        {
+          "cmd": "sh -c 'mise install-into bun@$(cat .bun-version) /railpack/bun'",
+          "customName": "install Bun from .bun-version"
+        },
+        {
+          "cmd": "mise install-into node@22 /railpack/node",
+          "customName": "install Node 22"
+        },
+        { "path": "/railpack/bun/bin" },
+        { "path": "/railpack/bun" },
+        { "path": "/railpack/node/bin" },
+        { "path": "/railpack/node" },
+        {
+          "cmd": "bun install --frozen-lockfile",
+          "customName": "install workspace dependencies"
+        },
+        { "cmd": "bun run build:www", "customName": "build the website" }
+      ]
+    }
+  },
+  "deploy": {
+    "inputs": [
+      { "step": "packages:caddy", "include": ["/railpack/caddy"] },
+      { "step": "build", "include": ["Caddyfile", "www/dist"] }
+    ],
+    "variables": {
+      "TZ": "UTC"
+    }
+  }
+}

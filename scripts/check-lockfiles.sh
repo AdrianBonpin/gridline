@@ -4,9 +4,15 @@
 #
 # Gridline resolves its JavaScript dependencies twice:
 #
-#   * the workspace        -> root `bun.lock` (root, `desktop/`, `www/` manifests)
-#   * the standalone site  -> `www/bun.lock`, which is what the Railpack/Dokploy
-#                             build of `www/` actually resolves
+#   * the workspace        -> root `bun.lock` (root, `desktop/`, `www/` manifests).
+#                             This is the graph the website deploy installs: the
+#                             deploy builds from the repository root and runs
+#                             `bun install --frozen-lockfile` there.
+#   * the standalone site  -> `www/bun.lock`, used when `www/` is installed on its
+#                             own (an isolated build of the site package). The
+#                             deploy does not consume it, but it stays checked:
+#                             it is a real, Dependabot-updated graph, and an
+#                             isolated build must reproduce what it declares.
 #
 # `.github/dependabot.yml` keeps both current, but Dependabot updates exactly one
 # lockfile per entry and only understands the text `bun.lock` format. This check
@@ -26,6 +32,9 @@
 #      had changes, but lockfile is frozen". That shipped once (d9cc842) and took
 #      the website deploy down while CI stayed green, because CI resolved `bun`
 #      from `latest` rather than from the pinned version the deploy honours.
+#      `.bun-version` is now what both the workflows and the deploy's build step
+#      install; `packageManager` is what an isolated `www/` install honours, so the
+#      two must agree or one of the two builds parses the other's lockfile.
 #
 # Nothing in the working tree is modified: both installs run in throwaway copies.
 #
@@ -80,13 +89,14 @@ done
   pass "both lockfiles are text bun.lock files (root and standalone www), so Dependabot can update them"
 
 # --------------------------------------------------------------------------
-# 2. The pinned Bun, the deploying Bun and this runner's Bun agree.
+# 2. The pinned Bun, the isolated-install Bun and this runner's Bun agree.
 # --------------------------------------------------------------------------
-# `www/package.json` `packageManager` is what the Railpack/Dokploy build reads to
-# choose the Bun that runs `bun install --frozen-lockfile`; `.bun-version` is what
-# every workflow installs. They must name the same version, and this check must run
-# on the same *minor* — a lockfile format change is a minor-version event, so a
-# patch difference is harmless while a minor difference is the deploy outage.
+# The website deploy's build step installs Bun from `.bun-version` (see the root
+# `railpack.json`), and every workflow installs that same version. `packageManager`
+# in `www/package.json` is what an isolated `bun install` inside `www/` honours.
+# They must name the same version, and this check must run on the same *minor* —
+# a lockfile format change is a minor-version event, so a patch difference is
+# harmless while a minor difference is what breaks a build.
 runtime_ok=1
 if [ ! -f .bun-version ]; then
   fail "missing .bun-version (the workflows and the website deploy must install the same Bun)"
@@ -103,7 +113,7 @@ else
 
   declared="$(sed -n 's/^[[:space:]]*"packageManager":[[:space:]]*"bun@\([^"]*\)".*/\1/p' www/package.json)"
   if [ "$declared" != "$pinned" ]; then
-    fail "www/package.json packageManager is 'bun@${declared:-<unset>}' but .bun-version is '$pinned'; the website deploy installs the packageManager version, so a mismatch means the deploy parses a lockfile written by a different Bun (a lockfile-format change reads as 'Unknown lockfile version')"
+    fail "www/package.json packageManager is 'bun@${declared:-<unset>}' but .bun-version is '$pinned'; the deploy's build step and every workflow install .bun-version while an isolated 'bun install' in www/ honours packageManager, so a mismatch means one of those builds parses a lockfile written by a different Bun (a lockfile-format change reads as 'Unknown lockfile version')"
     runtime_ok=0
   fi
 
@@ -161,7 +171,7 @@ if [ -f www/package.json ] && [ -f www/bun.lock ]; then
   mkdir -p "$scratch/www"
   cp www/package.json www/bun.lock "$scratch/www/"
   frozen_install "standalone website lockfile (www/bun.lock)" "$scratch/www" \
-    "regenerate it with the documented procedure (AGENTS.md, 'Website (www/) deps') and commit www/bun.lock alongside the root bun.lock" ||
+    "regenerate it with the documented procedure (AGENTS.md, 'Website (www/) deps') and commit www/bun.lock alongside the root bun.lock; it is what an isolated build of www/ installs" ||
     www_ok=0
 else
   fail "missing www/package.json or www/bun.lock"

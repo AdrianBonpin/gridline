@@ -5,8 +5,8 @@ which runs three audits on every pull request:
 
 | Tree | Lockfile | Audit |
 | :--- | :--- | :--- |
-| Desktop + website workspace (Bun) | `bun.lock` | `bun audit` |
-| Website standalone (Railpack/Dokploy build) | `www/bun.lock` | `bun audit` in an isolated install of `www/package.json` |
+| Desktop + website workspace (Bun) | `bun.lock` | `bun audit` — this is also the graph the website deploy installs (the site is built from the repository root) |
+| Website standalone (an isolated `www/` build) | `www/bun.lock` | `bun audit` in an isolated install of `www/package.json` |
 | Rust backend | `desktop/src-tauri/Cargo.lock` | `cargo audit` |
 
 The check **fails** when an advisory is reported that is not listed below, so a new

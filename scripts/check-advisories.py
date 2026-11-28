@@ -3,10 +3,11 @@
 
 Three trees are audited, because Gridline ships three resolved dependency graphs:
 
-  * the Bun workspace (``bun.lock``)                  -> ``bun audit``
-  * the standalone website install (``www/bun.lock``,
-    which is what the Railpack/Dokploy build consumes) -> ``bun audit``
-  * the Tauri backend (``desktop/src-tauri/Cargo.lock``) -> ``cargo audit``
+  * the Bun workspace (``bun.lock``), which is also the graph the website
+    deploy installs (it builds from the repository root)  -> ``bun audit``
+  * the standalone website install (``www/bun.lock``, used when
+    ``www/`` is installed on its own)                     -> ``bun audit``
+  * the Tauri backend (``desktop/src-tauri/Cargo.lock``)  -> ``cargo audit``
 
 Every finding must match an entry in ``docs/security/dependency-exceptions.md``
 (advisory id + ecosystem + package). The check fails when:
@@ -197,7 +198,7 @@ def audit_workspace() -> list[dict]:
 
 
 def audit_standalone_website() -> list[dict]:
-    """Audit www/bun.lock on its own, the way the deployed build resolves it."""
+    """Audit www/bun.lock on its own, the way an isolated `www/` build resolves it."""
     manifest = REPO_ROOT / "www" / "package.json"
     lockfile = REPO_ROOT / "www" / "bun.lock"
     for required in (manifest, lockfile):

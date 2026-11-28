@@ -1,0 +1,9 @@
+# Static root for Railpack's staticfile provider (the website deploy).
+# The site is built from the repository root into www/dist; see railpack.json
+# and AGENTS.md ("The website deploy builds from the repository root").
+root: www/dist
+
+# This is a multi-page site with its own 404 page, not a single-page app:
+# an unmatched path must be a real 404 (Caddy rewrites it to /404.html and
+# serves the site's 404 page) instead of falling back to the home page.
+index_fallback: false

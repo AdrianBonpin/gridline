@@ -4,10 +4,14 @@
 # because Dependabot updates exactly the lockfile in `directory`:
 #
 #   /                   bun  -> the workspace `bun.lock` (root manifest,
-#                               `desktop/` and `www/` workspace manifests)
-#   /www                bun  -> the STANDALONE `www/bun.lock`, which is what the
-#                               Railpack/Dokploy build of the website resolves
-#                               (see AGENTS.md "Website (www/) deps")
+#                               `desktop/` and `www/` workspace manifests). This
+#                               is the graph the website deploy installs: it
+#                               builds from the repository root.
+#   /www                bun  -> the STANDALONE `www/bun.lock`, used when `www/` is
+#                               installed on its own (an isolated site build). It
+#                               is no longer a deploy input — see AGENTS.md
+#                               "The website deploy builds from the repository
+#                               root"
 #   /desktop/src-tauri  cargo -> `Cargo.lock` for the Rust backend
 #
 # Coverage notes (verified, not assumed):
@@ -81,7 +85,8 @@ updates:
         patterns: ['*']
         update-types: ['major']
 
-  # Standalone website install -> `www/bun.lock` (the deployed build's graph).
+  # Standalone website install -> `www/bun.lock` (an isolated `www/` build, not the
+  # deployed one: the deploy installs the workspace `bun.lock` from the root).
   - package-ecosystem: 'bun'
     directory: '/www'
     schedule:
