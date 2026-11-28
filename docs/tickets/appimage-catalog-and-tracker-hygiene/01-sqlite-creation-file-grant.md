@@ -24,4 +24,4 @@
 - [x] The form displays the created destination and continues to a connection.
 - [x] The selected destination is never written to a log or diagnostic output.
 - [x] Tests cover refusal of a renderer-supplied path, each of the four grant failures, cancellation, an existing destination, and successful creation.
-- [ ] The pull-request description states that opening an *existing* SQLite database still accepts a webview-named path and that this ticket does not change that.
+- [x] The pull-request description states that opening an *existing* SQLite database still accepts a webview-named path and that this ticket does not change that. — satisfied by the "⚠️ #115 closes database *creation* only" section of PR #160.

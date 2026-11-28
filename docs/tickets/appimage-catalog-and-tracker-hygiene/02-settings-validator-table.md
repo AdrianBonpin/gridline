@@ -21,4 +21,4 @@
 - [x] Read-back normalises an out-of-range stored value to a valid one and never errors.
 - [x] The one-off command-layer check for a single key is replaced by the shared rule.
 - [x] Tests cover an unknown key, the boundary values of every ranged key, a malformed value, and read-back normalisation of a value a previous build could have stored.
-- [ ] The pull-request description cites the ADR recording that unknown keys are refused rather than skipped.
+- [x] The pull-request description cites the ADR recording that unknown keys are refused rather than skipped. — PR #160 cites `docs/adr/0003-strict-settings-validation.md` in the #02 evidence section.
