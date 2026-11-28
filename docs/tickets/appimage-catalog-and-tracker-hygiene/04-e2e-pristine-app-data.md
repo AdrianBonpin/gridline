@@ -10,7 +10,7 @@
 - The harness run contract, observed by running a registered flow twice into one artifacts directory — catches a second run seeding its own database and store, the pristine guarantee actually holding, a fixture surviving reuse after a killed run, and the harness refusing an artifacts path it cannot safely scope; misses real packaged-AppImage behaviour, which is a different lane.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/155
-**Tracker state:** in_progress
+**Tracker state:** done
 **Status:** done
 
 - [x] Before launch the harness removes its own application-data locations, resolved strictly beneath the artifacts directory.
