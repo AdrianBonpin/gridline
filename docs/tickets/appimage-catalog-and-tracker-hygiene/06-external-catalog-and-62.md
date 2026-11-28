@@ -9,7 +9,7 @@
 **Seams:** None — these are external actions with no code seam. Verification is the catalog's own reported test result and the text of the posted comment.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/157
-**Tracker state:** in_progress
+**Tracker state:** done
 **Status:** done
 
 - [x] The catalog pull request is re-tested against the current release. — `/retest` posted; `Test` run 46122257331 re-ran and its own comment names `Gridline_0.9.2_amd64.AppImage` from v0.9.2.
