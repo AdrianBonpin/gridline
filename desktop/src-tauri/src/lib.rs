@@ -10,6 +10,11 @@ mod file_grant;
 mod job;
 mod keychain_acl;
 mod models;
+// Test-only support: the single Process Liveness predicate shared by the job
+// and backup cancellation tests (see the module docs for why it exists and why
+// the loopback Port Reachability helper in `db/lifecycle.test.rs` is unrelated).
+#[cfg(test)]
+mod process_state;
 mod session_credential;
 mod store;
 
