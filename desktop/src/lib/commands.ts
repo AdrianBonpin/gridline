@@ -42,10 +42,15 @@ export async function testConnection(input: ConnectionInput): Promise<Connection
   return invoke<ConnectionTestResult>("test_connection", { config: input });
 }
 
-/** Create a new SQLite database file. Explicit user action only: testing a
- *  SQLite connection never creates the file. */
-export async function createSqliteDatabase(path: string): Promise<void> {
-  return invoke<void>("create_sqlite_database", { path });
+/** Create a new SQLite database file at the destination the user chose.
+ *
+ *  Explicit user action only: testing a SQLite connection never creates the
+ *  file. `fileGrant` is the id from {@link selectFileForGrant} (write intent);
+ *  the destination is the grant's, never an argument, so the renderer cannot
+ *  name the file that is created. The grant is consumed by this call, and the
+ *  created destination comes back as display metadata. */
+export async function createSqliteDatabase(fileGrant: string): Promise<string> {
+  return invoke<string>("create_sqlite_database", { fileGrant });
 }
 
 // ─── Keychain ──────────────────────────────────────────────────

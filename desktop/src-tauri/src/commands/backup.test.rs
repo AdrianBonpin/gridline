@@ -1,4 +1,5 @@
 use super::*;
+use crate::process_state::{process_is_running, wait_for_pid, wait_until_dead};
 
 // ------------------------------------------------------------------
 // build_args_for_test  (unit tests for arg construction logic)
@@ -3962,38 +3963,6 @@ fn job_temp_dir(tag: &str) -> std::path::PathBuf {
 }
 
 #[cfg(unix)]
-fn pid_alive(pid: u32) -> bool {
-    // SAFETY: signal 0 performs the existence/permission check only.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-}
-
-#[cfg(unix)]
-fn wait_for_pid(path: &std::path::Path, timeout: std::time::Duration) -> Option<u32> {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if let Ok(pid) = text.trim().parse::<u32>() {
-                return Some(pid);
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    None
-}
-
-#[cfg(unix)]
-fn wait_until_dead(pid: u32, timeout: std::time::Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        if !pid_alive(pid) {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    !pid_alive(pid)
-}
-
-#[cfg(unix)]
 fn pg_dump_options(file_path: &std::path::Path) -> BackupOptions {
     BackupOptions {
         format: "custom".into(),
@@ -4056,7 +4025,10 @@ fn cancelling_a_pg_dump_terminates_its_process_tree() {
     let handle = std::thread::spawn(move || run_pg_dump_managed(&runner, &conn, &options, &tools));
 
     let helper = wait_for_pid(&pid_file, std::time::Duration::from_secs(5)).expect("helper pid");
-    assert!(pid_alive(helper), "the dump helper should be running");
+    assert!(
+        process_is_running(helper),
+        "the dump helper should be running"
+    );
 
     let started = std::time::Instant::now();
     job.cancel();

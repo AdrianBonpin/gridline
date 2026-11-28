@@ -5,6 +5,7 @@
 //! are observations of the operating system rather than of our own bookkeeping.
 
 use super::*;
+use crate::process_state::{process_is_running, wait_for_pid, wait_until_dead};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -32,40 +33,6 @@ fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
     perms.set_mode(0o755);
     std::fs::set_permissions(&path, perms).unwrap();
     path
-}
-
-/// Whether a pid still exists. `kill(pid, 0)` succeeds for a live process and
-/// for a zombie, which is why callers poll with [`wait_until_dead`].
-#[cfg(unix)]
-fn pid_alive(pid: u32) -> bool {
-    // SAFETY: signal 0 performs the existence/permission check only.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-}
-
-#[cfg(unix)]
-fn wait_for_pid(path: &Path, timeout: Duration) -> Option<u32> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if let Ok(pid) = text.trim().parse::<u32>() {
-                return Some(pid);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    None
-}
-
-#[cfg(unix)]
-fn wait_until_dead(pid: u32, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if !pid_alive(pid) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    !pid_alive(pid)
 }
 
 fn cmd(program: &Path) -> Command {
@@ -159,7 +126,10 @@ fn cancel_terminates_the_child_process_tree() {
     let handle = std::thread::spawn(move || run_managed(&runner_job, cmd(&script), None));
 
     let grandchild = wait_for_pid(&pid_file, Duration::from_secs(5)).expect("grandchild pid");
-    assert!(pid_alive(grandchild), "the grandchild should be running");
+    assert!(
+        process_is_running(grandchild),
+        "the grandchild should be running"
+    );
 
     job.cancel();
     let outcome = handle.join().unwrap();
@@ -499,7 +469,7 @@ fn cancelling_one_job_leaves_another_running() {
     assert!(registry.cancel("j1"));
     assert!(matches!(h1.join().unwrap(), Err(JobError::Cancelled)));
     assert!(!second.is_cancelled(), "sibling job must keep running");
-    assert!(second.child_pids().iter().any(|p| pid_alive(*p)));
+    assert!(second.child_pids().iter().any(|p| process_is_running(*p)));
 
     second.cancel();
     assert!(matches!(h2.join().unwrap(), Err(JobError::Cancelled)));

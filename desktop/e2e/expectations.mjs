@@ -197,13 +197,22 @@ export const REBUILD_DROPPED_COLUMN = "note";
 export const REBUILD_DROPPED_VALUES = ["first", "second"];
 
 /**
- * Create + seed the rebuild fixture through the query workspace. Two statements
- * in one run: the app stages schema work through `execute_query`/`Ddl`, and a
+ * Create + seed the rebuild fixture through the query workspace.
+ *
+ * The script removes the table before creating it, so a second run over the same
+ * app-data directory seeds from scratch instead of failing on "table already
+ * exists": a run killed after this fixture was created leaves it behind (an
+ * artifacts directory kept for debugging, or one deliberately reused), and a
+ * fixture must not be the reason a flow cannot run again. `IF EXISTS` keeps the
+ * removal harmless on a pristine directory, and it is the harness's own table —
+ * the script still never touches demo data. Two further statements follow in the
+ * same run: the app stages schema work through `execute_query`/`Ddl`, and a
  * `CREATE TABLE` reaching the database is what makes the table appear in the
- * tree. The script never touches demo data.
+ * tree.
  */
 export function rebuildFixtureScript() {
   return (
+    `DROP TABLE IF EXISTS ${REBUILD_CREATED_TABLE}; ` +
     `CREATE TABLE ${REBUILD_CREATED_TABLE} (` +
     "id INTEGER PRIMARY KEY, label TEXT NOT NULL, note TEXT); " +
     `INSERT INTO ${REBUILD_CREATED_TABLE} (id, label, note) VALUES ` +

@@ -1,5 +1,5 @@
-use crate::commands::db_viewer::MAX_TABLE_PAGE_SIZE;
 use crate::models::Settings;
+use crate::store::settings_schema;
 use crate::store::Store;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -9,51 +9,15 @@ pub fn get_settings_inner(state: &Mutex<Store>) -> Result<Settings, String> {
     store.get_settings()
 }
 
+/// Write one setting.
+///
+/// Validation is not repeated here: `Store::update_setting` judges every key
+/// against the one declared rule table (`store::settings_schema`, ADR 0003), so
+/// the command layer holds no range of its own and a caller that bypasses this
+/// layer is governed identically.
 pub fn update_setting_inner(state: &Mutex<Store>, key: &str, value: &str) -> Result<(), String> {
-    // `table_page_size` is the one setting whose value reaches a `LIMIT`, and the
-    // browse path REJECTS a page size outside the grid's range instead of
-    // substituting another window (`db_viewer::page_window`). A value that got
-    // past this sink would therefore break every table browse, so the range is
-    // enforced here too — not only when a settings file is imported.
-    if key == "table_page_size" {
-        let size: i64 = value
-            .trim()
-            .parse()
-            .map_err(|_| format!("table_page_size must be an integer, got {value:?}"))?;
-        if !(1..=MAX_TABLE_PAGE_SIZE).contains(&size) {
-            return Err(page_size_error(size));
-        }
-    }
     let store = state.lock().map_err(|e| e.to_string())?;
     store.update_setting(key, value)
-}
-
-/// Why a page size is not one the browse path could use.
-fn page_size_error(size: i64) -> String {
-    format!("table_page_size {size} must be between 1 and {MAX_TABLE_PAGE_SIZE}")
-}
-
-/// Validate an imported settings document, in place, before anything is stored.
-///
-/// A settings file is untrusted input that arrives through a File Grant, and the
-/// renderer that reads it is not the boundary: its own clamp was computed and
-/// then discarded (the raw file text was forwarded, never the validated
-/// document), so importing `table_page_size: 100000` stored 100000 and made
-/// every subsequent browse fail. The backend clamps/refuses here so the stored
-/// value is always one the browse path accepts, whichever client sent it.
-///
-/// A value that names no page (`<= 0`) is refused rather than salvaged; an
-/// oversized one is clamped to the largest page the grid offers, because an
-/// imported document states a preference ("as many rows as you can show") and
-/// clamping keeps the app usable instead of failing the whole import.
-pub(crate) fn validate_imported_settings(settings: &mut Settings) -> Result<(), String> {
-    if settings.table_page_size <= 0 {
-        return Err(page_size_error(settings.table_page_size));
-    }
-    if settings.table_page_size > MAX_TABLE_PAGE_SIZE {
-        settings.table_page_size = MAX_TABLE_PAGE_SIZE;
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -73,48 +37,6 @@ pub fn update_setting(
 // ---------------------------------------------------------------------------
 // Settings export / import (v0.7.8)
 // ---------------------------------------------------------------------------
-
-/// Flatten a `Settings` struct into the store's key/value map. Keys and value
-/// formats must round-trip through `Store::get_settings` (e.g. a `None`
-/// `default_folder_id` is stored as the literal `"null"` sentinel, which
-/// `get_settings` filters back to `None`).
-fn settings_to_kv(s: &crate::models::Settings) -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    m.insert(
-        "confirm_before_delete".into(),
-        s.confirm_before_delete.to_string(),
-    );
-    if let Some(f) = &s.default_folder_id {
-        m.insert("default_folder_id".into(), f.clone());
-    } else {
-        m.insert("default_folder_id".into(), "null".into());
-    }
-    m.insert("theme".into(), s.theme.clone());
-    m.insert("font_size".into(), s.font_size.clone());
-    m.insert("accent_color".into(), s.accent_color.clone());
-    m.insert(
-        "table_refresh_rate".into(),
-        s.table_refresh_rate.to_string(),
-    );
-    m.insert("table_page_size".into(), s.table_page_size.to_string());
-    m.insert("editor_font_size".into(), s.editor_font_size.to_string());
-    m.insert("editor_font_family".into(), s.editor_font_family.clone());
-    m.insert("editor_word_wrap".into(), s.editor_word_wrap.clone());
-    m.insert("editor_minimap".into(), s.editor_minimap.to_string());
-    m.insert("editor_tab_size".into(), s.editor_tab_size.to_string());
-    if let Some(o) = &s.tag_order {
-        m.insert("tag_order".into(), o.clone());
-    }
-    m.insert(
-        "default_ports".into(),
-        serde_json::to_string(&s.default_ports).unwrap_or_default(),
-    );
-    m.insert(
-        "shortcuts".into(),
-        serde_json::to_string(&s.shortcuts).unwrap_or_default(),
-    );
-    m
-}
 
 /// The JSON document an exported settings file contains.
 fn settings_export_json(store: &Mutex<Store>) -> Result<String, String> {
@@ -137,12 +59,76 @@ pub fn import_settings(json: String, state: tauri::State<crate::AppState>) -> Re
 }
 
 fn import_settings_text(store: &Mutex<Store>, json: &str) -> Result<(), String> {
-    let mut env: crate::models::settings::SettingsExport =
-        serde_json::from_str(json).map_err(|e| format!("invalid settings file: {e}"))?;
-    validate_imported_settings(&mut env.settings)?;
-    let map = settings_to_kv(&env.settings);
+    let map = settings_document_to_map(json)?;
     let store = store.lock().map_err(|e| e.to_string())?;
     store.apply_settings(&map)
+}
+
+/// Judge a whole settings document, and return the key/value map to apply.
+///
+/// A settings file is untrusted input, and the store's rule table is the only
+/// judge of a settings value (ADR 0003, `store::settings_schema`). This function
+/// therefore holds the document's **envelope** and nothing else — it parses the
+/// file, then hands the `settings` object to
+/// [`settings_schema::check_document`], which owns every rule the document is
+/// held to (each entry against its key's rule, and every declared key present).
+/// Nothing here decides what a valid setting is.
+///
+/// Three things follow, and the previous per-field handling satisfied none of
+/// them:
+///
+/// - The **document's own keys** are judged, not the fields of the typed
+///   `Settings` struct. serde drops a key the struct does not declare, so
+///   validating the deserialised struct let a file carrying a setting nothing
+///   reads import silently; the table refuses it by name instead.
+/// - **Every** entry is judged before any is written, and **every** refusal is
+///   reported — not the first — so a user correcting a file sees all of its
+///   problems at once instead of one per attempt.
+/// - An out-of-range value is **refused rather than clamped**: a settings file
+///   states what the user wants, and silently changing it hides the disagreement.
+///
+/// Nothing is applied unless the whole document is accepted: `Store::apply_settings`
+/// is reached only with a map that already passed every rule.
+fn settings_document_to_map(json: &str) -> Result<HashMap<String, String>, String> {
+    let document: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("invalid settings file: {e}"))?;
+    if document
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+        .is_none()
+    {
+        return Err(
+            "invalid settings file: schemaVersion is missing or is not a whole number".to_string(),
+        );
+    }
+    let settings = document
+        .get("settings")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "invalid settings file: it has no settings object".to_string())?;
+
+    settings_schema::check_document(settings).map_err(|refused| import_refusal_report(&refused))
+}
+
+/// The refusal a settings import reports: the count, then one line per key.
+///
+/// Every offending key is named because the user edits the file and retries; a
+/// report of one problem per attempt would turn that into guesswork. The lines
+/// are newline-separated so the settings page can show them as written.
+fn import_refusal_report(refused: &[settings_schema::SettingRefused]) -> String {
+    let mut report = format!(
+        "invalid settings file: {} {} refused, so nothing was imported",
+        refused.len(),
+        if refused.len() == 1 {
+            "entry was"
+        } else {
+            "entries were"
+        },
+    );
+    for refusal in refused {
+        report.push_str("\n- ");
+        report.push_str(&refusal.to_string());
+    }
+    report
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +169,8 @@ pub(crate) fn export_settings_to_granted_path(
 /// Read a settings file through a **read-intent** grant.
 ///
 /// The file must be a regular file within the size cap; the renderer receives its
-/// text, which it validates before applying (`import_settings`).
+/// text and forwards it to `import_settings`, where the store's rule table judges
+/// every entry and refuses the whole document if any of it is invalid.
 pub(crate) fn read_settings_from_granted_path(
     grants: &crate::file_grant::FileGrantStore,
     grant_id: &str,
@@ -392,50 +379,220 @@ mod tests {
         assert_eq!(store.get_settings().unwrap().accent_color, "#EF4444");
     }
 
-    // ── An imported page size must stay inside the range browse accepts ──
+    // ── A settings import is judged as a whole, by the store's rules ─────
+    //
+    // A settings file is untrusted input, and ADR 0003 makes the store the only
+    // judge of a settings value. So a document is judged entry by entry, every
+    // offending key is reported, and a refused file leaves settings untouched.
 
-    /// A settings file with one `table_page_size` value, in the exported shape.
-    fn settings_file(page_size: i64) -> String {
-        let env = crate::models::settings::SettingsExport {
-            schema_version: 1,
-            settings: crate::models::Settings {
-                confirm_before_delete: true,
-                default_folder_id: None,
-                theme: "dark".into(),
-                font_size: "medium".into(),
-                default_ports: HashMap::new(),
-                tag_order: None,
-                table_refresh_rate: 0,
-                table_page_size: page_size,
-                shortcuts: HashMap::new(),
-                accent_color: "#2563EB".into(),
-                editor_font_size: 14,
-                editor_font_family: "Menlo".into(),
-                editor_word_wrap: "off".into(),
-                editor_minimap: false,
-                editor_tab_size: 2,
-            },
-        };
-        serde_json::to_string(&env).unwrap()
+    /// The settings a valid document carries: every key set away from its
+    /// default, so "imports completely" is observable key by key.
+    fn imported_settings() -> crate::models::Settings {
+        let mut ports = HashMap::new();
+        ports.insert("postgresql".to_string(), Some(6543));
+        let mut shortcuts = HashMap::new();
+        shortcuts.insert("open_command_palette".to_string(), "Cmd+K".to_string());
+        crate::models::Settings {
+            confirm_before_delete: false,
+            default_folder_id: Some("folder-1".into()),
+            theme: "light".into(),
+            font_size: "large".into(),
+            default_ports: ports,
+            tag_order: Some("[\"b\",\"a\"]".into()),
+            table_refresh_rate: 5000,
+            table_page_size: 500,
+            shortcuts,
+            accent_color: "#EF4444".into(),
+            editor_font_size: 22,
+            editor_font_family: "JetBrains Mono".into(),
+            editor_word_wrap: "on".into(),
+            editor_minimap: true,
+            editor_tab_size: 8,
+        }
     }
 
-    /// The regression: importing an oversized page size used to store it verbatim,
-    /// after which `page_window` rejected every table browse with
-    /// "page size 100000 must be between 1 and 500" — the app was broken by a
-    /// settings import. The stored value must be one browse accepts.
+    /// A settings file in the exported shape, carrying `settings`.
+    fn settings_file(settings: crate::models::Settings) -> String {
+        serde_json::to_string(&crate::models::settings::SettingsExport {
+            schema_version: 1,
+            settings,
+        })
+        .unwrap()
+    }
+
+    /// The same document as a mutable value, so a test can inject exactly the
+    /// defect it argues about and leave every other entry valid.
+    fn settings_doc() -> serde_json::Value {
+        serde_json::from_str(&settings_file(imported_settings())).unwrap()
+    }
+
+    fn doc_text(doc: &serde_json::Value) -> String {
+        serde_json::to_string(doc).unwrap()
+    }
+
+    /// What the store holds, read back through the command the interface uses.
+    /// "Unchanged" is compared, never inferred from the refusal. Going through a
+    /// `serde_json::Value` sorts the object keys, so a `HashMap` whose iteration
+    /// order varies cannot make an unchanged settings set look changed.
+    fn snapshot(store: &Mutex<Store>) -> String {
+        let settings = serde_json::to_value(get_settings_inner(store).unwrap()).unwrap();
+        serde_json::to_string(&settings).unwrap()
+    }
+
+    /// A valid file imports completely: every key it carries reaches the store.
     #[test]
-    fn importing_an_oversized_page_size_leaves_a_usable_page_size() {
+    fn a_valid_document_imports_completely() {
         let st = state();
-        import_settings_text(&st, &settings_file(100_000)).unwrap();
+        import_settings_text(&st, &settings_file(imported_settings())).unwrap();
 
         let stored = get_settings_inner(&st).unwrap();
-        assert_eq!(stored.table_page_size, MAX_TABLE_PAGE_SIZE);
-        // Browse works afterwards: the stored size is inside the accepted window.
+        assert!(!stored.confirm_before_delete);
+        assert_eq!(stored.default_folder_id.as_deref(), Some("folder-1"));
+        assert_eq!(stored.theme, "light");
+        assert_eq!(stored.font_size, "large");
+        assert_eq!(stored.default_ports.get("postgresql"), Some(&Some(6543)));
+        assert_eq!(stored.tag_order.as_deref(), Some("[\"b\",\"a\"]"));
+        assert_eq!(stored.table_refresh_rate, 5000);
+        assert_eq!(stored.table_page_size, 500);
+        assert_eq!(
+            stored.shortcuts.get("open_command_palette"),
+            Some(&"Cmd+K".to_string())
+        );
+        assert_eq!(stored.accent_color, "#EF4444");
+        assert_eq!(stored.editor_font_size, 22);
+        assert_eq!(stored.editor_font_family, "JetBrains Mono");
+        assert_eq!(stored.editor_word_wrap, "on");
+        assert!(stored.editor_minimap);
+        assert_eq!(stored.editor_tab_size, 8);
+        // The regression that started this: a stored page size browse accepts.
         assert_eq!(
             crate::commands::db_viewer::page_window(Some(1), Some(stored.table_page_size)),
-            Ok((1, 500, 0)),
-            "a table browse must still be possible after the import"
+            Ok((1, 500, 0))
         );
+    }
+
+    /// An exported document imports into an identical settings set: the store form
+    /// a document is judged as is the store form it is written as, key for key.
+    #[test]
+    fn an_exported_document_round_trips_into_identical_settings() {
+        let source = state();
+        import_settings_text(&source, &settings_file(imported_settings())).unwrap();
+        let exported = settings_export_json(&source).unwrap();
+
+        let fresh = state();
+        import_settings_text(&fresh, &exported).unwrap();
+        assert_eq!(snapshot(&fresh), snapshot(&source));
+    }
+
+    /// A wholly invalid file imports none of itself.
+    #[test]
+    fn a_wholly_invalid_document_is_refused_and_changes_nothing() {
+        let st = state();
+        update_setting_inner(&st, "theme", "light").unwrap();
+        let before = snapshot(&st);
+
+        let mut doc = settings_doc();
+        let settings = doc["settings"].as_object_mut().unwrap();
+        settings.insert("theme".into(), "purple".into());
+        settings.insert("font_size".into(), 12.into());
+        settings.insert("accent_color".into(), "blue".into());
+
+        let err = import_settings_text(&st, &doc_text(&doc))
+            .expect_err("a wholly invalid file must be refused");
+        for key in ["theme", "font_size", "accent_color"] {
+            assert!(err.contains(key), "the report must name {key}: {err}");
+        }
+        assert_eq!(
+            snapshot(&st),
+            before,
+            "a refused import must change nothing"
+        );
+    }
+
+    /// One bad entry is enough to refuse the file — and only that entry is at
+    /// fault, so the rest of the document is valid but must not be applied.
+    #[test]
+    fn a_document_with_exactly_one_invalid_entry_is_refused_and_changes_nothing() {
+        let st = state();
+        update_setting_inner(&st, "editor_tab_size", "4").unwrap();
+        let before = snapshot(&st);
+
+        let mut doc = settings_doc();
+        doc["settings"]["editor_tab_size"] = 9.into();
+
+        let err = import_settings_text(&st, &doc_text(&doc))
+            .expect_err("one invalid entry must refuse the file");
+        assert!(err.contains("editor_tab_size"), "got: {err}");
+        assert!(err.contains("between 2 and 8"), "got: {err}");
+        assert_eq!(
+            snapshot(&st),
+            before,
+            "a refused import must change nothing"
+        );
+    }
+
+    /// The document's own keys are judged, not the fields of the typed struct:
+    /// serde drops a key `Settings` does not declare, so a validator that only
+    /// looked at the struct would import this file happily and silently.
+    #[test]
+    fn an_unknown_key_is_refused_by_name() {
+        let st = state();
+        let before = snapshot(&st);
+
+        let mut doc = settings_doc();
+        doc["settings"]["future_setting"] = true.into();
+        let text = doc_text(&doc);
+        assert!(
+            serde_json::from_str::<crate::models::settings::SettingsExport>(&text).is_ok(),
+            "the typed settings struct silently drops keys it does not declare"
+        );
+
+        let err = import_settings_text(&st, &text)
+            .expect_err("a key this build does not know must be refused");
+        assert!(err.contains("future_setting"), "got: {err}");
+        assert_eq!(
+            snapshot(&st),
+            before,
+            "a refused import must change nothing"
+        );
+    }
+
+    /// `check_document` collects every refusal instead of stopping at the first,
+    /// so one report names all three offending keys at once.
+    #[test]
+    fn the_report_names_every_offending_key() {
+        let st = state();
+        let mut doc = settings_doc();
+        let settings = doc["settings"].as_object_mut().unwrap();
+        settings.insert("table_page_size".into(), 100_000.into());
+        settings.insert("theme".into(), "purple".into());
+        settings.insert("future_setting".into(), true.into());
+
+        let err = import_settings_text(&st, &doc_text(&doc)).expect_err("three bad entries");
+        for key in ["table_page_size", "theme", "future_setting"] {
+            assert!(err.contains(key), "the report must name {key}: {err}");
+        }
+        assert!(err.contains("3 entries were refused"), "got: {err}");
+    }
+
+    /// An out-of-range value is refused, never clamped: the settings file says
+    /// what the user wants, and silently changing it hides the disagreement.
+    #[test]
+    fn an_out_of_range_value_is_refused_rather_than_clamped() {
+        let out_of_range = crate::commands::db_viewer::MAX_TABLE_PAGE_SIZE + 1;
+        for bad in [out_of_range, 100_000] {
+            let st = state();
+            update_setting_inner(&st, "table_page_size", "100").unwrap();
+            let before = snapshot(&st);
+
+            let mut doc = settings_doc();
+            doc["settings"]["table_page_size"] = bad.into();
+            let err = import_settings_text(&st, &doc_text(&doc))
+                .expect_err("an out-of-range page size must be refused, not clamped");
+            assert!(err.contains("table_page_size"), "got: {err}");
+            assert!(err.contains(&bad.to_string()), "got: {err}");
+            assert_eq!(snapshot(&st), before, "nothing may be stored");
+        }
     }
 
     /// A page size that names no page cannot be salvaged into one: it is refused,
@@ -446,7 +603,9 @@ mod tests {
         update_setting_inner(&st, "table_page_size", "100").unwrap();
 
         for bad in [0, -50] {
-            let err = import_settings_text(&st, &settings_file(bad))
+            let mut settings = imported_settings();
+            settings.table_page_size = bad;
+            let err = import_settings_text(&st, &settings_file(settings))
                 .expect_err("a non-positive page size must be refused");
             assert!(err.contains("table_page_size"), "got: {err}");
             assert!(err.contains(&bad.to_string()), "got: {err}");
@@ -463,9 +622,54 @@ mod tests {
     fn importing_an_in_range_page_size_is_kept() {
         for size in [1, 500] {
             let st = state();
-            import_settings_text(&st, &settings_file(size)).unwrap();
+            let mut settings = imported_settings();
+            settings.table_page_size = size;
+            import_settings_text(&st, &settings_file(settings)).unwrap();
             assert_eq!(get_settings_inner(&st).unwrap().table_page_size, size);
         }
+    }
+
+    /// A document that omits a key this build knows would leave that setting
+    /// neither the file's nor the previous one's — the half-changed state the
+    /// whole-file refusal exists to prevent.
+    #[test]
+    fn a_document_missing_a_declared_key_is_refused() {
+        let st = state();
+        let before = snapshot(&st);
+
+        let mut doc = settings_doc();
+        doc["settings"].as_object_mut().unwrap().remove("theme");
+
+        let err = import_settings_text(&st, &doc_text(&doc))
+            .expect_err("an incomplete document must be refused");
+        assert!(err.contains("theme"), "got: {err}");
+        assert!(err.contains("missing"), "got: {err}");
+        assert_eq!(
+            snapshot(&st),
+            before,
+            "a refused import must change nothing"
+        );
+    }
+
+    /// A file that is not a settings document is refused before anything is read
+    /// out of it.
+    #[test]
+    fn a_file_that_is_not_a_settings_document_is_refused() {
+        for bad in ["not json", "[]", "null", "{}", "{\"schemaVersion\":1}"] {
+            let st = state();
+            let before = snapshot(&st);
+            let err = import_settings_text(&st, bad).expect_err("not a settings file");
+            assert!(err.starts_with("invalid settings file"), "{bad}: {err}");
+            assert_eq!(snapshot(&st), before, "{bad} must change nothing");
+        }
+
+        let mut doc = settings_doc();
+        doc.as_object_mut().unwrap().remove("schemaVersion");
+        let standalone = state();
+        let before = snapshot(&standalone);
+        let err = import_settings_text(&standalone, &doc_text(&doc)).expect_err("no schemaVersion");
+        assert!(err.contains("schemaVersion"), "got: {err}");
+        assert_eq!(snapshot(&standalone), before, "nothing may be stored");
     }
 
     /// The same range holds for a direct setting write: the renderer is not the

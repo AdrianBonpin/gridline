@@ -1,9 +1,9 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HarnessError } from "./errors.mjs";
-import { createRunArtifacts, decodePngBase64 } from "./artifacts.mjs";
+import { createRunArtifacts, decodePngBase64, removeHarnessState } from "./artifacts.mjs";
 
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUg==";
 const pngBytes = Buffer.from(PNG_BASE64, "base64");
@@ -20,6 +20,110 @@ afterEach(() => {
   while (tempDirs.length) {
     rmSync(tempDirs.pop()!, { recursive: true, force: true });
   }
+});
+
+/** Seed a file inside `dir`, which is what a previous run leaves behind. */
+function seed(dir: string, name: string, contents = "stale") {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, name), contents);
+}
+
+describe("removeHarnessState", () => {
+  it("removes only the app-data locations the plan configures", () => {
+    const dir = tempDir();
+    const appData = join(dir, "app-data");
+    const home = join(dir, "home");
+    seed(appData, "gridline-demo.sqlite", "a previous run's demo database");
+    seed(home, "store.sqlite", "a previous run's local store");
+    writeFileSync(join(dir, "launch.log"), "previous run\n");
+
+    const removed = removeHarnessState({
+      artifactsDir: dir,
+      env: { XDG_DATA_HOME: appData, HOME: home },
+    });
+
+    expect(removed.map((location) => location.path)).toEqual([appData, home]);
+    expect(existsSync(appData)).toBe(false);
+    expect(existsSync(home)).toBe(false);
+    // The artifacts directory and everything else in it are untouched.
+    expect(existsSync(dir)).toBe(true);
+    expect(readFileSync(join(dir, "launch.log"), "utf8")).toBe("previous run\n");
+  });
+
+  it("removes the Windows local-app-data location the plan configures", () => {
+    const dir = tempDir();
+    const appData = join(dir, "app-data");
+    seed(appData, "gridline-demo.sqlite");
+
+    expect(removeHarnessState({ artifactsDir: dir, env: { APPDATA: appData } })).toEqual([
+      { key: "APPDATA", path: appData },
+    ]);
+    expect(existsSync(appData)).toBe(false);
+  });
+
+  it("prunes nothing the harness did not configure", () => {
+    const dir = tempDir();
+    seed(join(dir, "app-data"), "keep.sqlite");
+
+    expect(removeHarnessState({ artifactsDir: dir, env: {} })).toEqual([]);
+    expect(existsSync(join(dir, "app-data", "keep.sqlite"))).toBe(true);
+  });
+
+  it("refuses a location outside the artifacts directory and deletes nothing", () => {
+    const dir = tempDir();
+    const elsewhere = tempDir();
+    const outside = join(elsewhere, "app-data");
+    const appData = join(dir, "app-data");
+    seed(outside, "keep.sqlite", "not the harness's to delete");
+    seed(appData, "gridline-demo.sqlite");
+
+    // Every location is resolved before anything is removed, so the in-scope
+    // app-data directory survives too rather than being half-applied.
+    expect(() =>
+      removeHarnessState({
+        artifactsDir: dir,
+        env: { XDG_DATA_HOME: outside, HOME: appData },
+      }),
+    ).toThrowError(HarnessError);
+    expect(() =>
+      removeHarnessState({
+        artifactsDir: dir,
+        env: { XDG_DATA_HOME: outside, HOME: appData },
+      }),
+    ).toThrowError(/does not resolve beneath the artifacts directory/);
+    expect(() =>
+      removeHarnessState({
+        artifactsDir: dir,
+        env: { XDG_DATA_HOME: outside, HOME: appData },
+      }),
+    ).toThrowError(new RegExp(outside.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    expect(readFileSync(join(outside, "keep.sqlite"), "utf8")).toBe(
+      "not the harness's to delete",
+    );
+    expect(existsSync(join(appData, "gridline-demo.sqlite"))).toBe(true);
+  });
+
+  it("refuses a location that climbs out of the artifacts directory", () => {
+    const dir = tempDir();
+    const escaped = join(dir, "..", `${basename(dir)}-escaped`);
+    seed(escaped, "keep.sqlite", "escaped");
+
+    expect(() =>
+      removeHarnessState({ artifactsDir: dir, env: { HOME: escaped } }),
+    ).toThrowError(/does not resolve beneath the artifacts directory/);
+    expect(readFileSync(join(escaped, "keep.sqlite"), "utf8")).toBe("escaped");
+    rmSync(escaped, { recursive: true, force: true });
+  });
+
+  it("never removes the artifacts directory itself", () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "keep.txt"), "keep");
+
+    expect(() => removeHarnessState({ artifactsDir: dir, env: { HOME: dir } })).toThrowError(
+      /the artifacts directory itself/,
+    );
+    expect(readFileSync(join(dir, "keep.txt"), "utf8")).toBe("keep");
+  });
 });
 
 function fakeClient(overrides: Record<string, unknown> = {}) {
