@@ -12,13 +12,16 @@
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/156
 **Tracker state:** in_progress
-**Status:** in_progress
+**Status:** done
 
-- [ ] A single shared predicate decides process liveness; the two verbatim copies no longer exist.
-- [ ] A process that has exited but is not yet reaped reads as not running on Unix.
-- [ ] A process that is running reads as alive, including one that is alive and not exiting.
-- [ ] The predicate has defined behaviour on Windows and the cross-platform test matrix exercises it.
-- [ ] Cancellation tests that wait for a process to die no longer depend on an init process to reap orphans.
-- [ ] The port-reachability helper is unchanged, and the reason it is unrelated is recorded where the predicate is defined.
-- [ ] A test asserts that a deliberately created zombie reads as not running.
+- [x] A single shared predicate decides process liveness; the two verbatim copies no longer exist.
+- [x] A process that has exited but is not yet reaped reads as not running on Unix.
+- [x] A process that is running reads as alive, including one that is alive and not exiting.
+- [x] The predicate has defined behaviour on Windows and the cross-platform test matrix exercises it.
+- [x] Cancellation tests that wait for a process to die no longer depend on an init process to reap orphans.
+- [x] The port-reachability helper is unchanged, and the reason it is unrelated is recorded where the predicate is defined.
+- [x] A test asserts that a deliberately created zombie reads as not running.
 - [ ] The closing comment on the issue states the corrected cause and records that the loopback tests spawn no child processes.
+
+> The last criterion is the orchestrator's, not this ticket's: it is delivered by the
+> closing comment carried by the pull request, so it is left unticked here.
