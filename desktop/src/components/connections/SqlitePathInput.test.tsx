@@ -176,6 +176,46 @@ describe("SqlitePathInput", () => {
     },
   );
 
+  it("refuses to open a second save dialog while one is pending", async () => {
+    const user = userEvent.setup();
+    selectFileForGrant.mockResolvedValue(grant("grant-stale", "/chosen/stale.db"));
+    createSqliteDatabase.mockRejectedValueOnce(
+      grantRejection("expired", "the selection is no longer usable."),
+    );
+    const onChange = vi.fn();
+    render(<SqlitePathInput value="/chosen" onChange={onChange} />);
+
+    await user.click(screen.getByRole("button", { name: /create database/i }));
+    await screen.findByRole("alert");
+
+    // The recovery action asks for a fresh selection that never settles, which is
+    // exactly the window in which a second native dialog could be opened.
+    let settleSelection: (value: unknown) => void = () => {};
+    selectFileForGrant.mockClear();
+    createSqliteDatabase.mockClear();
+    selectFileForGrant.mockImplementation(
+      () =>
+        new Promise((resolveSelection) => {
+          settleSelection = resolveSelection;
+        }),
+    );
+
+    const retry = screen.getByRole("button", { name: /choose file again/i });
+    await user.click(retry);
+    await waitFor(() => expect(selectFileForGrant).toHaveBeenCalledTimes(1));
+    expect(retry).toBeDisabled();
+
+    // Clicking it again while the first dialog is pending opens nothing.
+    await user.click(retry);
+    expect(selectFileForGrant).toHaveBeenCalledTimes(1);
+
+    // Cancelling the pending selection leaves nothing to report and re-enables it.
+    settleSelection(null);
+    await waitFor(() => expect(retry).not.toBeDisabled());
+    expect(createSqliteDatabase).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("reports an ordinary creation failure and keeps the path unchanged", async () => {
     const user = userEvent.setup();
     selectFileForGrant.mockResolvedValue(grant("grant-existing", "/chosen/keep.db"));

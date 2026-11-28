@@ -640,7 +640,7 @@ impl Store {
     /// the store directly is governed by the same rule, and a key the table does
     /// not know is refused rather than stored (ADR 0003).
     pub fn update_setting(&self, key: &str, value: &str) -> Result<(), String> {
-        settings_schema::check(key, value).map_err(|e| e.to_string())?;
+        settings_schema::check_stored_text(key, value).map_err(|e| e.to_string())?;
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -660,7 +660,7 @@ impl Store {
         &self,
         map: &std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
-        settings_schema::check_batch(map.iter()).map_err(|e| e.to_string())?;
+        settings_schema::check_stored_batch(map.iter()).map_err(|e| e.to_string())?;
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
         for (k, v) in map.iter() {

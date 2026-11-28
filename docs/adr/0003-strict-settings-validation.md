@@ -27,6 +27,11 @@ Read-back never errors: a stored value that no longer satisfies its rule is norm
 
 **Easier.** Adding a setting means adding one table entry. Every consumer — IPC, import, read-back, and any future caller holding the store directly — is governed by the same rule, so the drift that produced this decision cannot recur by omission. The store's contents are trustworthy by construction rather than by convention.
 
-**Harder.** A settings file exported by a newer build is refused by an older build instead of importing what it recognises. Users who copy settings between machines running different versions will meet an error where they previously got a partial import. That is the accepted cost: a silent partial import leaves a settings set that is neither the old one nor the new one, and the user has no way to tell which.
+**Harder.** A settings file crosses between builds only when both declare the same set of keys, and it is refused in **both** directions when they do not:
+
+- A file exported by a **newer** build is refused by an older build, because it carries a key the older table does not declare.
+- A file exported by an **older** build is refused by a newer build, because it omits a key the newer table declares. The table requires a document to carry every key it declares: importing only what the file does happen to know would leave the omitted settings neither the file's nor the previous one's.
+
+Only the first direction was anticipated when this decision was taken; the second follows from the same rule, and it is recorded here rather than left implicit. Users who copy settings between machines running different versions will meet an error where they previously got a partial import. That is the accepted cost: a silent partial import leaves a settings set that is neither the old one nor the new one, and the user has no way to tell which.
 
 **Committed to.** Every new setting arrives with an explicit validity rule and a test for it. There is no "accept anything" escape hatch, and the alternative — skip-and-report on import — would have to reverse this decision rather than extend it.

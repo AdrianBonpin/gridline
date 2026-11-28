@@ -53,15 +53,29 @@ function captureDisplayScreenshot({ dir, display, spawnSyncImpl, notes }) {
 export const HARNESS_STATE_ENV_KEYS = ["XDG_DATA_HOME", "HOME", "APPDATA"];
 
 /**
- * Resolve one harness-owned location strictly beneath the artifacts root.
+ * The two facts that define the application-state locations this harness owns:
+ * the artifacts root every one of them must resolve beneath, and the environment
+ * naming them. They only ever travel together — a scope is not useful holding one
+ * of the two — so they are passed as one value.
+ *
+ * @typedef {{artifactsDir: string, env?: Record<string, string | undefined | null>}}
+ *   HarnessStateScope
+ */
+
+/**
+ * Resolve one harness-owned location strictly beneath the scope's artifacts root.
  *
  * Deletion is the destructive half of this harness, so it is only ever allowed
  * on a directory it created: anything that resolves outside the artifacts
  * directory — a `..` segment, another directory entirely — is refused with the
  * path named rather than removed.
+ *
+ * @param {HarnessStateScope} scope
+ * @param {string} location
+ * @param {string} [key]
  */
-export function resolveOwnedLocation({ artifactsDir, location, key = "location" }) {
-  const root = resolve(artifactsDir);
+export function resolveOwnedLocation(scope, location, key = "location") {
+  const root = resolve(scope.artifactsDir);
   const target = resolve(String(location));
   const beneath = relative(root, target);
   const escapes =
@@ -88,13 +102,15 @@ export function resolveOwnedLocation({ artifactsDir, location, key = "location" 
  * The application-state locations a plan configures, resolved strictly beneath
  * the artifacts directory. Every location is resolved before any is returned,
  * so an unscopable one refuses the whole run instead of deleting the rest first.
+ *
+ * @param {HarnessStateScope} scope
  */
-export function planHarnessStateRemoval({ artifactsDir, env = {} }) {
+export function planHarnessStateRemoval(scope) {
   const locations = [];
   for (const key of HARNESS_STATE_ENV_KEYS) {
-    const value = env?.[key];
+    const value = scope.env?.[key];
     if (!value) continue;
-    locations.push({ key, path: resolveOwnedLocation({ artifactsDir, location: value, key }) });
+    locations.push({ key, path: resolveOwnedLocation(scope, value, key) });
   }
   return locations;
 }
@@ -107,9 +123,12 @@ export function planHarnessStateRemoval({ artifactsDir, env = {} }) {
  * everything else in it — logs, screenshots, reports — are never removed, which
  * is what makes re-running a flow into the same directory useful: reproducing a
  * CI failure locally does not require deleting the directory by hand.
+ *
+ * @param {HarnessStateScope} scope
+ * @param {{remove?: typeof rmSync}} [options]
  */
-export function removeHarnessState({ artifactsDir, env = {}, remove = rmSync }) {
-  const locations = planHarnessStateRemoval({ artifactsDir, env });
+export function removeHarnessState(scope, { remove = rmSync } = {}) {
+  const locations = planHarnessStateRemoval(scope);
   for (const location of locations) {
     remove(location.path, { recursive: true, force: true });
   }

@@ -67,7 +67,7 @@ _Avoid_: liveness, reachability, alive
 - An **Execution Entry Point** may execute one or more SQL statements.
 - An SSH connection requires **SSH Host Trust** before authentication.
 - A **Catalog Listing** is derived from one release asset and indexes AppImage-format compatibility only; it is not evidence about a distribution.
-- A **Pristine App-Data** directory contains nothing from any previous end-to-end run.
+- **Pristine App-Data** is a guarantee about an end-to-end run's application-data directory: that directory holds nothing from any previous run.
 - **Port Reachability** and **Process Liveness** answer different questions, share no code, and never substitute for one another.
 
 ## Flagged ambiguities

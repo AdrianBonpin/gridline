@@ -10,8 +10,10 @@
 //! returned all of them unmodified.
 //!
 //! So: [`SETTING_RULES`] is the only place a settings key's validity is decided,
-//! and it governs writes ([`check`]), bulk writes ([`check_batch`]) and read-back
-//! ([`read_back`]). Two properties follow, and both are deliberate:
+//! and it governs writes ([`check_stored_text`]), bulk writes
+//! ([`check_stored_batch`]), a settings-file import judged as a whole
+//! ([`check_document`]) and read-back ([`read_back`]). Two properties follow, and
+//! both are deliberate:
 //!
 //! - A key the table does not know is **refused**, naming the key. The store
 //!   refuses what it cannot validate rather than storing it for nothing to read.
@@ -75,9 +77,9 @@ pub(crate) enum Rule {
     Boolean,
     /// `#RGB`, `#RRGGBB` or `#RRGGBBAA`.
     HexColor,
-    /// Free text of at most `max_len` characters. Used only where the valid set
-    /// is not known at compile time (a stored folder id).
-    Text { max_len: usize },
+    /// Free text of at most [`TEXT_MAX_LEN`] characters. Used only where the
+    /// valid set is not known at compile time (a stored folder id).
+    Text,
     /// A JSON array of non-empty strings.
     StringArray,
     /// A JSON object whose values are all strings.
@@ -127,9 +129,7 @@ pub(crate) const SETTING_RULES: &[SettingRule] = &[
         // A folder id comes from the store, so the valid set is not known at
         // compile time. The shape that is knowable is bounded: empty (the
         // dropdown's "None") or an id, never an arbitrary length of text.
-        rule: Rule::Text {
-            max_len: TEXT_MAX_LEN,
-        },
+        rule: Rule::Text,
         // `null` is the sentinel the first release already stored for "unset".
         nullable: true,
         default: NULL_SENTINEL,
@@ -225,6 +225,21 @@ impl SettingRefused {
             detail: detail.into(),
         }
     }
+
+    /// The refusal for a key [`SETTING_RULES`] does not declare. A direct write
+    /// and an imported document entry are refused with this same wording: one
+    /// table decides what a setting is, so one sentence says a key is not one.
+    fn unknown_key(key: &str) -> Self {
+        Self::new(
+            key,
+            "is not a setting this build knows, so it cannot be validated",
+        )
+    }
+
+    /// The refusal for a key the table declares that a document does not carry.
+    fn absent_from_document(key: &str) -> Self {
+        Self::new(key, "is missing from the file, so nothing was imported")
+    }
 }
 
 impl fmt::Display for SettingRefused {
@@ -238,34 +253,81 @@ pub(crate) fn rule_for(key: &str) -> Option<&'static SettingRule> {
     SETTING_RULES.iter().find(|rule| rule.key == key)
 }
 
-/// Judge one write. An unknown key is refused, naming it.
-pub(crate) fn check(key: &str, value: &str) -> Result<(), SettingRefused> {
-    let rule = rule_for(key).ok_or_else(|| {
-        SettingRefused::new(
-            key,
-            "is not a setting this build knows, so it cannot be validated",
-        )
-    })?;
-    if rule.nullable && value == NULL_SENTINEL {
+/// Judge one stored value written under `key`.
+///
+/// Takes the key and the **text the store would hold** (not a JSON value — that
+/// is [`check_document_entry`]), and returns the keyed refusal
+/// ([`SettingRefused`]) when the text does not satisfy the key's rule. An
+/// unknown key is refused, naming it.
+pub(crate) fn check_stored_text(key: &str, text: &str) -> Result<(), SettingRefused> {
+    let rule = rule_for(key).ok_or_else(|| SettingRefused::unknown_key(key))?;
+    if rule.nullable && text == NULL_SENTINEL {
         return Ok(());
     }
-    validate(rule, value).map_err(|detail| SettingRefused::new(key, detail))
+    judge_against_rule(rule, text).map_err(|detail| SettingRefused::new(key, detail))
 }
 
-/// Judge a whole batch — every entry is checked before the caller writes any of
-/// it, so a caller that applies the batch only on `Ok` leaves settings untouched
-/// instead of half-updated (ADR 0003). This is the seam a settings-file import
-/// uses; the ranges stay declared here rather than in the importer.
-pub(crate) fn check_batch<K, V, I>(entries: I) -> Result<(), SettingRefused>
+/// Judge a whole batch of stored values — every entry is checked before the
+/// caller writes any of it, so a caller that applies the batch only on `Ok`
+/// leaves settings untouched instead of half-updated (ADR 0003).
+///
+/// The caller is `Store::apply_settings`, the multi-key write. A settings-file
+/// **import** is a different seam: it judges a document, whose completeness and
+/// unknown keys are rules of their own ([`check_document`]).
+pub(crate) fn check_stored_batch<K, V, I>(entries: I) -> Result<(), SettingRefused>
 where
     K: AsRef<str>,
     V: AsRef<str>,
     I: IntoIterator<Item = (K, V)>,
 {
     for (key, value) in entries {
-        check(key.as_ref(), value.as_ref())?;
+        check_stored_text(key.as_ref(), value.as_ref())?;
     }
     Ok(())
+}
+
+/// Judge a whole settings document — the `settings` object of an imported file —
+/// and return the store-form text to write, keyed by setting.
+///
+/// Two rules hold at the document level, and they are declared **here**, beside
+/// the table, rather than by a caller: they are properties of a document, not of
+/// any one value, and a caller that re-derived them would be deciding validity
+/// outside the table (ADR 0003).
+///
+/// - **Every key the table declares must be present.** A file exported by an
+///   older build omits keys this build declares, and importing what it
+///   recognises would leave those settings neither the file's nor the previous
+///   one's — exactly the half-changed state a whole-document refusal prevents.
+///   (The mirror case, a file from a newer build, is refused by the entry rule
+///   below, because it carries a key the table does not declare.)
+/// - **Every present entry must satisfy its key's rule**, exactly as a direct
+///   write does; a key the table does not declare is refused by name.
+///
+/// Returns every refusal, not the first, so a user correcting a file sees all of
+/// its problems at once. Nothing may be written unless this returned `Ok`.
+pub(crate) fn check_document(
+    entries: &serde_json::Map<String, serde_json::Value>,
+) -> Result<HashMap<String, String>, Vec<SettingRefused>> {
+    let mut refusals = Vec::new();
+    let mut stored = HashMap::new();
+    for (key, value) in entries {
+        match check_document_entry(key, value) {
+            Ok(text) => {
+                stored.insert(key.clone(), text);
+            }
+            Err(refusal) => refusals.push(refusal),
+        }
+    }
+    for rule in SETTING_RULES {
+        if !entries.contains_key(rule.key) {
+            refusals.push(SettingRefused::absent_from_document(rule.key));
+        }
+    }
+    if refusals.is_empty() {
+        Ok(stored)
+    } else {
+        Err(refusals)
+    }
 }
 
 /// Judge one entry of an imported settings document, returning the store-form
@@ -283,12 +345,7 @@ pub(crate) fn check_document_entry(
     key: &str,
     value: &serde_json::Value,
 ) -> Result<String, SettingRefused> {
-    let rule = rule_for(key).ok_or_else(|| {
-        SettingRefused::new(
-            key,
-            "is not a setting this build knows, so it cannot be validated",
-        )
-    })?;
+    let rule = rule_for(key).ok_or_else(|| SettingRefused::unknown_key(key))?;
     if value.is_null() {
         return if rule.nullable {
             Ok(NULL_SENTINEL.to_string())
@@ -300,7 +357,7 @@ pub(crate) fn check_document_entry(
         };
     }
     let stored = stored_form(rule, value).map_err(|detail| SettingRefused::new(key, detail))?;
-    check(key, &stored)?;
+    check_stored_text(key, &stored)?;
     Ok(stored)
 }
 
@@ -312,7 +369,7 @@ pub(crate) fn check_document_entry(
 fn stored_form(rule: &SettingRule, value: &serde_json::Value) -> Result<String, String> {
     let expected = |what: &str| format!("value {value} is not valid: must be {what}");
     match rule.rule {
-        Rule::Enum(_) | Rule::HexColor | Rule::Text { .. } => value
+        Rule::Enum(_) | Rule::HexColor | Rule::Text => value
             .as_str()
             .map(str::to_string)
             .ok_or_else(|| expected("a string")),
@@ -349,16 +406,13 @@ pub(crate) fn read_back(map: &HashMap<String, String>, key: &str) -> String {
 }
 
 /// Read a numeric key back as an integer.
+///
+/// Read-back has already normalised the value into one the key's rule accepts, so
+/// an integer key parses. Asking an integer of a key whose rule is not numeric is
+/// a caller error rather than a bad stored value; it reads as `0` instead of
+/// panicking the interface, and no rule the table declares today can reach it.
 pub(crate) fn read_back_int(map: &HashMap<String, String>, key: &str) -> i64 {
-    let normalised = read_back(map, key);
-    if let Ok(n) = normalised.trim().parse::<i64>() {
-        return n;
-    }
-    // Unreachable while read-back returns a valid integer; kept so a future rule
-    // with a non-numeric default still cannot make read-back panic.
-    rule_for(key)
-        .and_then(|rule| rule.default.parse::<i64>().ok())
-        .unwrap_or(0)
+    read_back(map, key).trim().parse::<i64>().unwrap_or(0)
 }
 
 /// Read a boolean key back.
@@ -382,7 +436,11 @@ pub(crate) fn read_back_optional(map: &HashMap<String, String>, key: &str) -> Op
 
 /// The reason a value does not satisfy its rule, phrased to complete
 /// "settings key \"x\" ……". `Ok(())` means the value is valid.
-fn validate(rule: &SettingRule, value: &str) -> Result<(), String> {
+///
+/// Takes a declared [`SettingRule`] and the **store-form text** a value would be
+/// written as, and returns the unkeyed reason it is refused; the caller adds the
+/// key ([`check_stored_text`]).
+fn judge_against_rule(rule: &SettingRule, value: &str) -> Result<(), String> {
     match rule.rule {
         Rule::Enum(allowed) => {
             if allowed.contains(&value) {
@@ -421,45 +479,48 @@ fn validate(rule: &SettingRule, value: &str) -> Result<(), String> {
                 ))
             }
         }
-        Rule::Text { max_len } => {
-            if value.chars().count() <= max_len {
+        Rule::Text => {
+            if value.chars().count() <= TEXT_MAX_LEN {
                 Ok(())
             } else {
                 Err(format!(
-                    "value is too long: must be at most {max_len} characters"
+                    "value is too long: must be at most {TEXT_MAX_LEN} characters"
                 ))
             }
         }
-        Rule::StringArray => {
-            let parsed = serde_json::from_str::<serde_json::Value>(value).map_err(|_| {
-                "is not valid: must be a JSON array of non-empty strings".to_string()
-            })?;
-            let items = parsed.as_array().ok_or_else(|| {
-                "is not valid: must be a JSON array of non-empty strings".to_string()
-            })?;
-            if items
-                .iter()
-                .all(|item| item.as_str().is_some_and(|s| !s.is_empty()))
-            {
-                Ok(())
-            } else {
-                Err("is not valid: must be a JSON array of non-empty strings".to_string())
-            }
-        }
-        Rule::StringMap => {
-            let parsed = serde_json::from_str::<serde_json::Value>(value).map_err(|_| {
-                "is not valid: must be a JSON object whose values are strings".to_string()
-            })?;
-            let object = parsed.as_object().ok_or_else(|| {
-                "is not valid: must be a JSON object whose values are strings".to_string()
-            })?;
-            if object.values().all(|item| item.is_string()) {
-                Ok(())
-            } else {
-                Err("is not valid: must be a JSON object whose values are strings".to_string())
-            }
-        }
-        Rule::Ports => validate_ports(value),
+        Rule::StringArray => judge_string_array(value),
+        Rule::StringMap => judge_string_map(value),
+        Rule::Ports => judge_ports(value),
+    }
+}
+
+/// A JSON array of non-empty strings — the shape `tag_order` is stored as.
+fn judge_string_array(value: &str) -> Result<(), String> {
+    const EXPECTED: &str = "is not valid: must be a JSON array of non-empty strings";
+    let parsed =
+        serde_json::from_str::<serde_json::Value>(value).map_err(|_| EXPECTED.to_string())?;
+    let items = parsed.as_array().ok_or_else(|| EXPECTED.to_string())?;
+    if items
+        .iter()
+        .all(|item| item.as_str().is_some_and(|s| !s.is_empty()))
+    {
+        Ok(())
+    } else {
+        Err(EXPECTED.to_string())
+    }
+}
+
+/// A JSON object whose values are all strings — the shape `shortcuts` is stored
+/// as.
+fn judge_string_map(value: &str) -> Result<(), String> {
+    const EXPECTED: &str = "is not valid: must be a JSON object whose values are strings";
+    let parsed =
+        serde_json::from_str::<serde_json::Value>(value).map_err(|_| EXPECTED.to_string())?;
+    let object = parsed.as_object().ok_or_else(|| EXPECTED.to_string())?;
+    if object.values().all(|item| item.is_string()) {
+        Ok(())
+    } else {
+        Err(EXPECTED.to_string())
     }
 }
 
@@ -467,19 +528,15 @@ fn validate(rule: &SettingRule, value: &str) -> Result<(), String> {
 ///
 /// The key set is checked as well as the values because a port stored under a
 /// type nothing recognises is a value nothing will ever read.
-fn validate_ports(value: &str) -> Result<(), String> {
-    let parsed = serde_json::from_str::<serde_json::Value>(value).map_err(|_| {
+fn judge_ports(value: &str) -> Result<(), String> {
+    let expected = || {
         format!(
             "is not valid: must be a JSON object mapping {} to a port between {PORT_MIN} and {PORT_MAX}, or null",
             PORT_DB_TYPES.join(", ")
         )
-    })?;
-    let object = parsed.as_object().ok_or_else(|| {
-        format!(
-            "is not valid: must be a JSON object mapping {} to a port between {PORT_MIN} and {PORT_MAX}, or null",
-            PORT_DB_TYPES.join(", ")
-        )
-    })?;
+    };
+    let parsed = serde_json::from_str::<serde_json::Value>(value).map_err(|_| expected())?;
+    let object = parsed.as_object().ok_or_else(expected)?;
     for (db_type, port) in object {
         if !PORT_DB_TYPES.contains(&db_type.as_str()) {
             return Err(format!(
@@ -507,7 +564,7 @@ fn normalise(rule: &SettingRule, stored: &str) -> String {
     if rule.nullable && stored == NULL_SENTINEL {
         return NULL_SENTINEL.to_string();
     }
-    if validate(rule, stored).is_ok() {
+    if judge_against_rule(rule, stored).is_ok() {
         return stored.to_string();
     }
     // Salvage what can be salvaged: an integer outside its range keeps its
@@ -582,7 +639,7 @@ mod tests {
     fn every_declared_default_satisfies_its_own_rule() {
         for rule in SETTING_RULES {
             assert!(
-                check(rule.key, rule.default).is_ok(),
+                check_stored_text(rule.key, rule.default).is_ok(),
                 "the declared default for {} does not satisfy its own rule",
                 rule.key
             );
@@ -591,7 +648,7 @@ mod tests {
 
     #[test]
     fn an_unknown_key_is_refused_naming_the_key() {
-        let err = check("no_such_setting", "1").expect_err("unknown key");
+        let err = check_stored_text("no_such_setting", "1").expect_err("unknown key");
         assert_eq!(err.key, "no_such_setting");
         assert!(err.to_string().contains("\"no_such_setting\""), "{err}");
         assert!(rule_for("no_such_setting").is_none());
@@ -621,7 +678,7 @@ mod tests {
                 let map = map_of(&[(rule.key, stored)]);
                 let normalised = read_back(&map, rule.key);
                 assert!(
-                    check(rule.key, &normalised).is_ok(),
+                    check_stored_text(rule.key, &normalised).is_ok(),
                     "{} read back {normalised:?} from {stored:?}, which its own rule refuses",
                     rule.key
                 );
@@ -634,10 +691,10 @@ mod tests {
         let map = map_of(&[("default_folder_id", "null"), ("tag_order", "null")]);
         assert_eq!(read_back_optional(&map, "default_folder_id"), None);
         assert_eq!(read_back_optional(&map, "tag_order"), None);
-        assert!(check("default_folder_id", "null").is_ok());
-        assert!(check("tag_order", "null").is_ok());
+        assert!(check_stored_text("default_folder_id", "null").is_ok());
+        assert!(check_stored_text("tag_order", "null").is_ok());
         // A non-nullable key treats the literal "null" as just another bad value.
-        assert!(check("theme", "null").is_err());
+        assert!(check_stored_text("theme", "null").is_err());
     }
 
     #[test]
@@ -652,20 +709,22 @@ mod tests {
     #[test]
     fn a_batch_is_judged_entry_by_entry_and_refuses_the_first_bad_one() {
         let ok = map_of(&[("theme", "light"), ("editor_tab_size", "4")]);
-        assert!(check_batch(ok.iter()).is_ok());
+        assert!(check_stored_batch(ok.iter()).is_ok());
 
         let bad = map_of(&[("theme", "light"), ("table_page_size", "0")]);
-        let err = check_batch(bad.iter()).expect_err("one bad entry refuses the batch");
+        let err = check_stored_batch(bad.iter()).expect_err("one bad entry refuses the batch");
         assert_eq!(err.key, "table_page_size");
         assert!(err.to_string().contains("between 1 and 500"), "{err}");
     }
 
     #[test]
     fn ports_are_judged_by_type_and_range() {
-        assert!(check("default_ports", "{}").is_ok());
-        assert!(check("default_ports", "{\"postgresql\":5432,\"sqlite\":null}").is_ok());
-        assert!(check("default_ports", "{\"postgresql\":1}").is_ok());
-        assert!(check("default_ports", "{\"postgresql\":65535}").is_ok());
+        assert!(check_stored_text("default_ports", "{}").is_ok());
+        assert!(
+            check_stored_text("default_ports", "{\"postgresql\":5432,\"sqlite\":null}").is_ok()
+        );
+        assert!(check_stored_text("default_ports", "{\"postgresql\":1}").is_ok());
+        assert!(check_stored_text("default_ports", "{\"postgresql\":65535}").is_ok());
         for bad in [
             "{\"postgresql\":0}",
             "{\"postgresql\":65536}",
@@ -677,7 +736,7 @@ mod tests {
             "5432",
         ] {
             assert!(
-                check("default_ports", bad).is_err(),
+                check_stored_text("default_ports", bad).is_err(),
                 "default_ports={bad} must be refused"
             );
         }
@@ -686,10 +745,10 @@ mod tests {
     #[test]
     fn hex_colours_are_judged_by_shape() {
         for good in ["#2563EB", "#2563eb", "#ABC", "#2563EBFF"] {
-            assert!(check("accent_color", good).is_ok(), "{good}");
+            assert!(check_stored_text("accent_color", good).is_ok(), "{good}");
         }
         for bad in ["2563EB", "#2563E", "#12345", "#GGGGGG", "#"] {
-            assert!(check("accent_color", bad).is_err(), "{bad}");
+            assert!(check_stored_text("accent_color", bad).is_err(), "{bad}");
         }
     }
 
@@ -726,7 +785,7 @@ mod tests {
                 "{key}"
             );
             assert!(
-                check(key, stored).is_ok(),
+                check_stored_text(key, stored).is_ok(),
                 "{key} stores text its rule refuses"
             );
         }
@@ -758,5 +817,106 @@ mod tests {
             let err = check_document_entry(key, &value).expect_err("wrong shape");
             assert_eq!(err.key, key, "{value}");
         }
+    }
+
+    /// A document carrying every key the table declares, in the shape an export
+    /// writes: most entries are strings, and the structured keys are objects.
+    fn complete_document() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({
+            "theme": "light",
+            "font_size": "large",
+            "accent_color": "#EF4444",
+            "default_folder_id": null,
+            "confirm_before_delete": false,
+            "table_refresh_rate": 5000,
+            "table_page_size": 500,
+            "default_ports": {"postgresql": 6543, "sqlite": null},
+            "tag_order": null,
+            "shortcuts": {"open_command_palette": "Cmd+K"},
+            "editor_font_size": 22,
+            "editor_font_family": "JetBrains Mono",
+            "editor_word_wrap": "on",
+            "editor_minimap": true,
+            "editor_tab_size": 8,
+        })
+        .as_object()
+        .cloned()
+        .expect("the fixture is an object")
+    }
+
+    // ── Documents (the rules a whole imported file is held to) ──
+
+    /// A complete, valid document is accepted, and every entry comes back in the
+    /// text the store writes it as.
+    #[test]
+    fn a_complete_document_is_accepted_and_returns_the_store_form_of_every_entry() {
+        let entries = complete_document();
+        // The fixture must name exactly the declared keys, or the tests below
+        // would be arguing about a document the table does not describe.
+        assert_eq!(entries.len(), SETTING_RULES.len());
+        for rule in SETTING_RULES {
+            assert!(entries.contains_key(rule.key), "{} is absent", rule.key);
+        }
+
+        let stored = check_document(&entries).expect("a complete, valid document is accepted");
+        assert_eq!(stored.len(), SETTING_RULES.len());
+        assert_eq!(stored["theme"], "light");
+        assert_eq!(stored["table_page_size"], "500");
+        assert_eq!(stored["default_folder_id"], NULL_SENTINEL);
+        assert_eq!(stored["tag_order"], NULL_SENTINEL);
+        assert_eq!(
+            stored["default_ports"],
+            "{\"postgresql\":6543,\"sqlite\":null}"
+        );
+        assert_eq!(stored["shortcuts"], "{\"open_command_palette\":\"Cmd+K\"}");
+    }
+
+    /// A key the table declares but the document omits is refused by name: a file
+    /// from an *older* build carries no entry for a key this build added, so it is
+    /// refused rather than imported for the keys it happens to know.
+    #[test]
+    fn a_document_omitting_a_declared_key_is_refused_by_name() {
+        let mut entries = complete_document();
+        entries.remove("theme");
+
+        let refused = check_document(&entries).expect_err("an incomplete document is refused");
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert_eq!(refused[0].key, "theme");
+        assert!(refused[0].to_string().contains("missing"), "{refused:?}");
+    }
+
+    /// Every refusal is reported, not the first: the user edits the file and
+    /// retries, so one problem per attempt would be guesswork.
+    #[test]
+    fn a_document_reports_every_refusal_not_the_first() {
+        let mut entries = complete_document();
+        entries.insert("editor_tab_size".into(), serde_json::json!(9));
+        entries.insert("future_setting".into(), serde_json::json!(true));
+        entries.remove("theme");
+
+        let refused = check_document(&entries).expect_err("three defects");
+        let keys: Vec<&str> = refused.iter().map(|refusal| refusal.key.as_str()).collect();
+        for key in ["editor_tab_size", "future_setting", "theme"] {
+            assert!(keys.contains(&key), "{key} must be reported: {keys:?}");
+        }
+        assert_eq!(refused.len(), 3, "{keys:?}");
+    }
+
+    /// Free text is bounded by the one length the table declares.
+    #[test]
+    fn free_text_is_bounded_by_the_declared_length() {
+        assert!(check_stored_text("default_folder_id", &"a".repeat(TEXT_MAX_LEN)).is_ok());
+        let err = check_stored_text("default_folder_id", &"a".repeat(TEXT_MAX_LEN + 1))
+            .expect_err("too long");
+        assert!(err.to_string().contains("too long"), "{err}");
+    }
+
+    /// Asking an integer of a key whose rule is not numeric is a caller error, and
+    /// reads as `0` instead of panicking the interface. No rule the table declares
+    /// today can reach it, which is why it is pinned rather than exercised.
+    #[test]
+    fn asking_an_integer_of_a_non_numeric_key_reads_zero() {
+        let map = map_of(&[("theme", "system")]);
+        assert_eq!(read_back_int(&map, "theme"), 0);
     }
 }
