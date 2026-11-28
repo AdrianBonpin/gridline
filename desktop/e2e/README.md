@@ -346,8 +346,17 @@ modifier across a second key. Both flows' fakes reject a click on the input area
 and reject typing without editor focus, so a regression fails in unit tests too.
 
 Every run gets a fresh app-data directory inside the artifacts folder
-(`XDG_DATA_HOME=<artifacts>/app-data` on Linux), so the demo database and local
-store are created by the app itself on each run.
+(`XDG_DATA_HOME=<artifacts>/app-data` on Linux, `APPDATA=<artifacts>/app-data` on
+Windows; the AppImage lane also pins `HOME=<artifacts>/home`), so the demo
+database and local store are created by the app itself on each run.
+
+That guarantee is enforced, not assumed: before launching, the harness removes
+those app-data locations and nothing else. Running a flow twice into the same
+`--artifacts` directory therefore behaves the same both times — reproducing a CI
+failure locally does not require deleting the directory first — while the
+artifacts directory itself is never removed. A location that does not resolve
+strictly beneath the artifacts directory refuses the run with the path named,
+instead of deleting something the harness did not create.
 
 On failure the job keeps, under `e2e-artifacts/`:
 

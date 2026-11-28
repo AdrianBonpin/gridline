@@ -11,12 +11,14 @@ import {
   DEMO_TABLE,
   DEMO_TABLE_CELLS,
   REBUILD_DROPPED_COLUMN,
+  REBUILD_CREATED_TABLE,
   REBUILD_REFUSED_DROPPED_COLUMN,
   cellEditorSelector,
   changesQueueSelector,
   commitAllSelector,
   connectionCardSelector,
   gridSelector,
+  rebuildFixtureScript,
   rowCellSelector,
   tableTreeItemSelector,
 } from "./expectations.mjs";
@@ -161,5 +163,21 @@ describe("SQLite rebuild flow expectations", () => {
     expect(
       new RegExp(`ON ${COMPOSITE_TABLE}\\(${REBUILD_DROPPED_COLUMN}\\)`).test(schema),
     ).toBe(false);
+  });
+
+  it("makes its own table re-creatable so a reused app-data directory cannot wedge the flow", () => {
+    // A run killed after the fixture table was created leaves it behind (an
+    // artifacts directory preserved for debugging, or one reused by hand). The
+    // fixture therefore removes the table before creating it, so a second run
+    // over the same directory seeds from scratch instead of failing on
+    // "table already exists".
+    const script = rebuildFixtureScript();
+    const drop = `DROP TABLE IF EXISTS ${REBUILD_CREATED_TABLE};`;
+    const create = `CREATE TABLE ${REBUILD_CREATED_TABLE} (`;
+    expect(script.startsWith(drop)).toBe(true);
+    expect(script.indexOf(drop)).toBeLessThan(script.indexOf(create));
+    // Nothing but the harness's own table is ever dropped.
+    expect(script.match(/DROP TABLE/g)).toHaveLength(1);
+    expect(script).not.toMatch(/DROP TABLE (?!IF EXISTS)/);
   });
 });
