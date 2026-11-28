@@ -11,13 +11,13 @@
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/158
 **Tracker state:** blocked
-**Status:** ready
+**Status:** done
 
-- [ ] A settings import validates every entry before applying any of them.
-- [ ] A file containing an unknown key or an invalid value is refused as a whole, and the report names each offending key.
-- [ ] Settings are unchanged after a refused import.
-- [ ] A valid file imports completely, every accepted key reaching the same rule the store enforces on a direct write.
-- [ ] The import validator no longer restates numeric ranges the store declares; it consults the shared rules.
-- [ ] An import refuses rather than clamps a value that is out of range.
-- [ ] Tests cover a wholly invalid file, a file with exactly one invalid entry, and a valid file, asserting untouched settings in the first two.
-- [ ] The settings page surfaces the refusal with the offending keys visible, and offers no partial-import affordance.
+- [x] A settings import validates every entry before applying any of them.
+- [x] A file containing an unknown key or an invalid value is refused as a whole, and the report names each offending key.
+- [x] Settings are unchanged after a refused import.
+- [x] A valid file imports completely, every accepted key reaching the same rule the store enforces on a direct write.
+- [x] The import validator no longer restates numeric ranges the store declares; it consults the shared rules.
+- [x] An import refuses rather than clamps a value that is out of range.
+- [x] Tests cover a wholly invalid file, a file with exactly one invalid entry, and a valid file, asserting untouched settings in the first two.
+- [x] The settings page surfaces the refusal with the offending keys visible, and offers no partial-import affordance.

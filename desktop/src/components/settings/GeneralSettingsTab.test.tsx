@@ -140,28 +140,71 @@ describe("GeneralSettingsTab settings export/import", () => {
     );
   });
 
-  it("clamps an out-of-range page size before handing the document to the backend", async () => {
-    // `importSettings` used to receive the raw file text, so the validator's
-    // clamp lived in dead code: a file with `table_page_size: 100000` was
-    // "validated" and then imported verbatim, leaving every browse broken.
+  // The store judges every entry and refuses the file as a whole (`store::settings_schema`,
+  // ADR 0003), naming each offending key. The interface must show that refusal with the
+  // keys visible and import nothing — there is no "import the valid parts" path.
+  const refusal = (keys: string[]) =>
+    [
+      `invalid settings file: ${keys.length} ${keys.length === 1 ? "entry was" : "entries were"} refused, so nothing was imported`,
+      ...keys.map((key) => `- settings key "${key}" value is not valid`),
+    ].join("\n");
+
+  it("refuses an out-of-range page size instead of clamping it", async () => {
+    // This used to be clamped here and the clamped document imported. The store
+    // declares the range, so it - not the renderer - refuses the value.
     const user = userEvent.setup();
-    mocked.selectFileForGrant.mockResolvedValue(grant("read", "grant-clamp"));
+    mocked.selectFileForGrant.mockResolvedValue(grant("read", "grant-refused"));
     mocked.readSettingsFile.mockResolvedValue(
       JSON.stringify({
         schemaVersion: 1,
         settings: { ...baseSettings, table_page_size: 100000 },
       }),
     );
+    mocked.importSettings.mockRejectedValueOnce(refusal(["table_page_size"]));
 
     render(<GeneralSettingsTab />);
     await user.click(screen.getByRole("button", { name: /import settings/i }));
 
     await waitFor(() => expect(mocked.importSettings).toHaveBeenCalledTimes(1));
     const sent = JSON.parse(mocked.importSettings.mock.calls[0][0]);
-    expect(sent.settings.table_page_size).toBe(500);
+    expect(sent.settings.table_page_size, "the file must reach the store as written").toBe(100000);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("table_page_size");
     expect(useNotificationStore.getState().notifications).toContainEqual(
-      expect.objectContaining({ type: "success" }),
+      expect.objectContaining({ type: "error", message: expect.stringMatching(/refused/i) }),
     );
+    expect(useNotificationStore.getState().notifications.some((n) => n.type === "success")).toBe(false);
+    // Nothing was applied, so nothing is reloaded and no success can be shown.
+    expect(mocked.getSettings).not.toHaveBeenCalled();
+    // No partial-import affordance: one Import button, and no other way forward.
+    expect(screen.getAllByRole("button", { name: /import settings/i })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /valid|partial/i })).toBeNull();
+  });
+
+  it("shows every offending key the store refused, including one it does not know", async () => {
+    const user = userEvent.setup();
+    const keys = ["future_setting", "theme"];
+    mocked.selectFileForGrant.mockResolvedValue(grant("read", "grant-refusal"));
+    mocked.readSettingsFile.mockResolvedValue(
+      JSON.stringify({
+        schemaVersion: 1,
+        settings: { ...baseSettings, theme: "purple", future_setting: true },
+      }),
+    );
+    mocked.importSettings.mockRejectedValueOnce(refusal(keys));
+
+    render(<GeneralSettingsTab />);
+    await user.click(screen.getByRole("button", { name: /import settings/i }));
+
+    const alert = await screen.findByRole("alert");
+    for (const key of keys) expect(alert).toHaveTextContent(key);
+
+    // A key this build does not know must survive to the store: filtering it out
+    // here is what let an unknown setting import silently.
+    const sent = JSON.parse(mocked.importSettings.mock.calls[0][0]);
+    expect(sent.settings).toHaveProperty("future_setting", true);
+    expect(useNotificationStore.getState().notifications.some((n) => n.type === "success")).toBe(false);
   });
 
   it("surfaces an error toast when importing an invalid settings file", async () => {
@@ -172,6 +215,7 @@ describe("GeneralSettingsTab settings export/import", () => {
     });
     mocked.selectFileForGrant.mockResolvedValue(grant("read", "grant-bad"));
     mocked.readSettingsFile.mockResolvedValue(invalidJson);
+    mocked.importSettings.mockRejectedValueOnce(refusal(["theme"]));
 
     render(<GeneralSettingsTab />);
     await user.click(screen.getByRole("button", { name: /import settings/i }));
