@@ -26,10 +26,6 @@
     }
   },
   "deploy": {
-    "inputs": [
-      { "step": "packages:caddy", "include": ["/railpack/caddy"] },
-      { "step": "build", "include": ["Caddyfile", "www/dist"] }
-    ],
     "variables": {
       "TZ": "UTC"
     }
