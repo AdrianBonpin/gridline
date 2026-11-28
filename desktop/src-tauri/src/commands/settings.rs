@@ -9,21 +9,13 @@ pub fn get_settings_inner(state: &Mutex<Store>) -> Result<Settings, String> {
     store.get_settings()
 }
 
+/// Write one setting.
+///
+/// Validation is not repeated here: `Store::update_setting` judges every key
+/// against the one declared rule table (`store::settings_schema`, ADR 0003), so
+/// the command layer holds no range of its own and a caller that bypasses this
+/// layer is governed identically.
 pub fn update_setting_inner(state: &Mutex<Store>, key: &str, value: &str) -> Result<(), String> {
-    // `table_page_size` is the one setting whose value reaches a `LIMIT`, and the
-    // browse path REJECTS a page size outside the grid's range instead of
-    // substituting another window (`db_viewer::page_window`). A value that got
-    // past this sink would therefore break every table browse, so the range is
-    // enforced here too — not only when a settings file is imported.
-    if key == "table_page_size" {
-        let size: i64 = value
-            .trim()
-            .parse()
-            .map_err(|_| format!("table_page_size must be an integer, got {value:?}"))?;
-        if !(1..=MAX_TABLE_PAGE_SIZE).contains(&size) {
-            return Err(page_size_error(size));
-        }
-    }
     let store = state.lock().map_err(|e| e.to_string())?;
     store.update_setting(key, value)
 }
