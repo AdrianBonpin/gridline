@@ -237,6 +237,9 @@ describe("runSqliteRebuildFlow", () => {
     // the completed rebuild dropped the column and kept both rows
     expect(driver.state.pending).toBe(0);
     expect(driver.state.typedSql).toContain("CREATE TABLE e2e_rebuild");
+    // The fixture removes its own table first, so the same app-data directory can
+    // be run again after a killed run (a `CREATE TABLE` alone would fail there).
+    expect(driver.state.typedSql).toMatch(/^DROP TABLE IF EXISTS e2e_rebuild;/);
     expect(driver.state.gridCells).not.toContain("first");
   });
 

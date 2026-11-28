@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_DISPLAY_SIZE,
   DEFAULT_PAINT_TIMEOUT_MS,
@@ -98,7 +98,7 @@ function fakeApp({ log = "", exited = false, exitCode = null } = {}) {
 }
 
 function plan(overrides: Record<string, unknown> = {}) {
-  return {
+  const merged = {
     help: false,
     platform: LINUX,
     appimage: APPIMAGE,
@@ -112,9 +112,21 @@ function plan(overrides: Record<string, unknown> = {}) {
     display: ":99",
     displaySize: DEFAULT_DISPLAY_SIZE,
     reexecUnderXvfb: false,
-    appEnv: { XDG_DATA_HOME: "/tmp/artifacts/app-data", HOME: "/tmp/artifacts/home" },
     ...overrides,
   };
+  // The env follows the plan, exactly as `planAppimageRun` derives it, so a test
+  // that redirects the artifacts dir redirects the app's state with it.
+  return (
+    "appEnv" in overrides
+      ? merged
+      : {
+          ...merged,
+          appEnv: {
+            XDG_DATA_HOME: join(String(merged.artifactsDir), "app-data"),
+            HOME: join(String(merged.artifactsDir), "home"),
+          },
+        }
+  );
 }
 
 let artifactsDir: string;
@@ -310,7 +322,7 @@ describe("executeAppimageSmoke", () => {
     // The packaged artifact is what launched — never an inner binary.
     expect(state.launched.command).toBe(APPIMAGE);
     expect(state.launched.args).toEqual([]);
-    expect(state.launched.env.XDG_DATA_HOME).toBe("/tmp/artifacts/app-data");
+    expect(state.launched.env.XDG_DATA_HOME).toBe(join(artifactsDir, "app-data"));
     expect(state.stopped).toBe(true);
     expect(readFileSync(join(artifactsDir, "summary.txt"), "utf8")).toMatch(/PASS/);
     expect(readFileSync(join(artifactsDir, "launch.log"), "utf8")).toContain("Gridline started");
@@ -437,5 +449,60 @@ describe("executeAppimageSmoke", () => {
     expect(result.exitCode).toBe(1);
     expect(result.outcome.status).toBe("paint");
     expect(result.outcome.details.join("\n")).toMatch(/no frame could be captured/);
+  });
+});
+
+describe("executeAppimageSmoke pristine app data", () => {
+  it("removes the app-data and home directories it configures before launch", async () => {
+    const appData = join(artifactsDir, "app-data");
+    const home = join(artifactsDir, "home");
+    mkdirSync(appData, { recursive: true });
+    writeFileSync(join(appData, "gridline-demo.sqlite"), "a previous run's demo database");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, ".cache"), "a previous run's home");
+
+    const { runCommand } = fakeTools({
+      windows: [windowAt()],
+      frame: toRgbBuffer(paintedFrame()),
+    });
+    const { spawnApp: spawn, state } = fakeApp({ log: "Gridline started\n" });
+    const launchedFrom: Array<{ appData: boolean; home: boolean }> = [];
+    const spawnApp = (options) => {
+      launchedFrom.push({ appData: existsSync(appData), home: existsSync(home) });
+      return spawn(options);
+    };
+
+    const result = await executeAppimageSmoke(plan({ artifactsDir }), {
+      runCommand,
+      spawnApp,
+      log: () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(state.launched.command).toBe(APPIMAGE);
+    expect(launchedFrom).toEqual([{ appData: false, home: false }]);
+  });
+
+  it("refuses to launch when a configured location escapes the artifacts directory", async () => {
+    const outside = join(mkdtempSync(join(tmpdir(), "gridline-appimage-outside-")), "app-data");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "keep.sqlite"), "not the harness's to delete");
+
+    const { runCommand } = fakeTools({ windows: [windowAt()], frame: toRgbBuffer(paintedFrame()) });
+    const spawnApp = vi.fn(() => fakeApp({}).spawnApp);
+    const result = await executeAppimageSmoke(
+      plan({ artifactsDir, appEnv: { XDG_DATA_HOME: outside } }),
+      { runCommand, spawnApp, log: () => {} },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(spawnApp).not.toHaveBeenCalled();
+    expect(readFileSync(join(outside, "keep.sqlite"), "utf8")).toBe(
+      "not the harness's to delete",
+    );
+    expect(readFileSync(join(artifactsDir, "failure.txt"), "utf8")).toMatch(
+      /does not resolve beneath the artifacts directory/,
+    );
+    rmSync(join(outside, ".."), { recursive: true, force: true });
   });
 });

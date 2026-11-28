@@ -41,6 +41,7 @@ import {
   parseXwininfo,
   selectWindow,
 } from "./appimageWindow.mjs";
+import { removeHarnessState } from "./artifacts.mjs";
 import { HarnessError, errorMessage } from "./errors.mjs";
 
 export const DEFAULT_TIMEOUT_MS = 90_000;
@@ -498,6 +499,16 @@ export async function executeAppimageSmoke(plan, dependencies = {}) {
   let captureNote = null;
 
   try {
+    // Same guarantee as the WebDriver lane: a reused artifacts directory starts
+    // with no application state from an earlier run, so the app creates the demo
+    // database and store itself. `appEnv` is what this lane configures (app-data
+    // and home), and each location must resolve strictly beneath the artifacts
+    // directory — otherwise nothing is deleted and the smoke refuses to run.
+    const pruned = removeHarnessState({ artifactsDir: plan.artifactsDir, env: plan.appEnv });
+    for (const location of pruned) {
+      log(`appimage: pristine ${location.key} (removed ${location.path})`);
+    }
+
     app = spawnApp({
       command: plan.appimage,
       args: plan.launch.args,
