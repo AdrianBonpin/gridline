@@ -9,7 +9,7 @@
 **Seams:** None — documentation. Verification is the version-consistency suite staying green and the section reading correctly against what actually merged.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/159
-**Tracker state:** blocked
+**Tracker state:** done
 **Status:** done
 
 - [ ] A development section exists above the queue, using the state the roadmap's legend already declares but which previously had no section.
