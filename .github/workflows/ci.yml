@@ -139,19 +139,21 @@ jobs:
         run: bun install --frozen-lockfile
 
       # Both Bun lockfiles must describe their manifests: the workspace
-      # `bun.lock` (root + desktop + www) and the standalone `www/bun.lock` that
-      # the Railpack/Dokploy website build resolves. Dependabot updates each of
+      # `bun.lock` (root + desktop + www, and the graph the website deploy
+      # installs from the repository root) and the standalone `www/bun.lock` an
+      # isolated `www/` build uses. Dependabot updates each of
       # them from its own `.github/dependabot.yml` entry, so a manifest edited
-      # without its lockfile has to fail here rather than at release/deploy time
+      # without its lockfile has to fail here rather than at release/build time
       # (ticket 48). See scripts/check-lockfiles.sh.
       - name: Verify both Bun lockfiles are in sync with their manifests
         run: ./scripts/check-lockfiles.sh
 
       # Dependency advisories are a gate, not a report: scripts/check-advisories.py
-      # audits both Bun lockfiles (workspace + the standalone website install) and
-      # the Rust lockfile, and fails on any advisory that is not either fixed or
-      # covered by a reviewed, dated entry in docs/security/dependency-exceptions.md.
-      # It sits in this job so the existing required `checks` status enforces it.
+      # audits both Bun lockfiles (the workspace one the website deploy installs,
+      # and the standalone `www` install) and the Rust lockfile, and fails on any
+      # advisory that is not either fixed or covered by a reviewed, dated entry in
+      # docs/security/dependency-exceptions.md. It sits in this job so the existing
+      # required `checks` status enforces it.
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 

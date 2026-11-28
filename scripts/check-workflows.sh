@@ -1327,8 +1327,9 @@ fi
 # Dependency updates are only automated if Dependabot is told about every graph
 # Gridline resolves. Those entries are not otherwise observable (a missing one
 # just means silent staleness), so they are asserted here: one entry per
-# lockfile — the workspace `bun.lock`, the standalone `www/bun.lock` the website
-# deploy resolves, and `desktop/src-tauri/Cargo.lock`.
+# lockfile — the workspace `bun.lock` (the graph the website deploy installs;
+# it builds from the repository root), the standalone `www/bun.lock` an isolated
+# `www/` build uses, and `desktop/src-tauri/Cargo.lock`.
 dep_ok=1
 dependabot=".github/dependabot.yml"
 lockfile_script="scripts/check-lockfiles.sh"
