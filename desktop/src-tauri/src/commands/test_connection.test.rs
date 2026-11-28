@@ -1,6 +1,10 @@
 use super::*;
 use crate::commands::ssh::{Ssh2Backend, SshTunnelManager};
 use crate::db::pool::DbConfig;
+use crate::file_grant::{
+    FileFilter, FileGrantStore, FileIntent, FilePicker, PickRequest, PickedFile, CODE_CONSUMED,
+    CODE_EXPIRED, CODE_INVALID, CODE_WRONG_INTENT,
+};
 use std::sync::Arc;
 
 /// SSH backend for tests that never reach a real SSH server: host trust is
@@ -207,6 +211,255 @@ fn sqlite_create_requires_a_directory_that_exists() {
     let dir = temp_dir("sqlite-create-nodir");
     let path = dir.join("nested").join("new.db");
     assert!(create_sqlite_database_at(path.to_str().unwrap()).is_err());
+    assert!(!path.exists());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Creating a database consumes a Write File Grant
+//
+// A path is not authorization (see `GLOSSARY.md` → File Grant): the destination
+// is whatever the backend brokered native dialog produced, and the create
+// command can only be reached with the grant id that selection issued.
+// ---------------------------------------------------------------------------
+
+/// A grant store whose clock the test advances, so expiry is proven rather than
+/// inferred.
+fn advancing_grants() -> (
+    FileGrantStore,
+    std::sync::Arc<std::sync::Mutex<std::time::Duration>>,
+) {
+    let base = std::time::Instant::now();
+    let offset = std::sync::Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
+    let clock_offset = offset.clone();
+    let store = FileGrantStore::with_clock(
+        crate::file_grant::GRANT_TTL,
+        Box::new(move || base + *clock_offset.lock().unwrap()),
+    );
+    (store, offset)
+}
+
+/// The picker reports that the user closed the dialog without choosing.
+struct CancellingPicker;
+
+impl FilePicker for CancellingPicker {
+    fn pick(&self, _request: &PickRequest) -> Result<Option<PickedFile>, String> {
+        Ok(None)
+    }
+}
+
+/// Every refusal must also say what the user can do about it; the recovery
+/// action is choosing the file again.
+fn assert_recovery_is_named(err: &str) {
+    assert!(
+        err.contains("Choose the file again"),
+        "the refusal must name its recovery action, got: {err}"
+    );
+}
+
+#[test]
+fn sqlite_create_refuses_a_renderer_supplied_path() {
+    let grants = FileGrantStore::new();
+    let dir = temp_dir("sqlite-create-bare-path");
+    let path = dir.join("bare.db");
+
+    let err = create_sqlite_database_from_grant(&grants, path.to_str().unwrap())
+        .expect_err("a path is not a grant and authorizes nothing");
+    assert!(
+        err.starts_with(CODE_INVALID),
+        "the refusal must name the grant state, got: {err}"
+    );
+    assert_recovery_is_named(&err);
+    assert!(!path.exists(), "nothing may be created at a bare path");
+
+    // The empty string is not a grant either.
+    let empty = create_sqlite_database_from_grant(&grants, "").expect_err("empty id");
+    assert!(empty.starts_with(CODE_INVALID), "got: {empty}");
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        0,
+        "the directory stays empty"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn sqlite_create_refuses_an_unknown_grant() {
+    let grants = FileGrantStore::new();
+    let dir = temp_dir("sqlite-create-unknown");
+
+    let err = create_sqlite_database_from_grant(&grants, "not-a-grant-id")
+        .expect_err("an id the store never issued authorizes nothing");
+    assert!(err.starts_with(CODE_INVALID), "got: {err}");
+    assert_recovery_is_named(&err);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn sqlite_create_refuses_an_expired_grant() {
+    let (grants, offset) = advancing_grants();
+    let dir = temp_dir("sqlite-create-expired");
+    let path = dir.join("expired.db");
+    let grant = grants.mint(path.clone(), FileIntent::Write);
+
+    *offset.lock().unwrap() = crate::file_grant::GRANT_TTL + std::time::Duration::from_secs(1);
+
+    let err = create_sqlite_database_from_grant(&grants, &grant.id)
+        .expect_err("an expired selection authorizes nothing");
+    assert!(err.starts_with(CODE_EXPIRED), "got: {err}");
+    assert_recovery_is_named(&err);
+    assert!(!path.exists(), "nothing may be created");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn sqlite_create_refuses_a_grant_minted_for_a_different_intent() {
+    let grants = FileGrantStore::new();
+    let dir = temp_dir("sqlite-create-read-grant");
+    let path = dir.join("read-grant.db");
+    let grant = grants.mint(path.clone(), FileIntent::Read);
+
+    let err = create_sqlite_database_from_grant(&grants, &grant.id)
+        .expect_err("a read selection must not authorize a write");
+    assert!(err.starts_with(CODE_WRONG_INTENT), "got: {err}");
+    assert_recovery_is_named(&err);
+    assert!(!path.exists());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn sqlite_create_consumes_the_grant_so_a_replay_is_refused() {
+    let grants = FileGrantStore::new();
+    let dir = temp_dir("sqlite-create-replay");
+    let path = dir.join("once.db");
+    let grant = grants.mint(path.clone(), FileIntent::Write);
+
+    create_sqlite_database_from_grant(&grants, &grant.id).expect("the granted creation succeeds");
+
+    let err = create_sqlite_database_from_grant(&grants, &grant.id)
+        .expect_err("a selection is single-use");
+    assert!(err.starts_with(CODE_CONSUMED), "got: {err}");
+    assert_recovery_is_named(&err);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn sqlite_create_refusals_are_distinguishable_from_one_another() {
+    let (grants, offset) = advancing_grants();
+    let dir = temp_dir("sqlite-create-distinct");
+
+    let expired = grants.mint(dir.join("expired.db"), FileIntent::Write);
+    *offset.lock().unwrap() = crate::file_grant::GRANT_TTL + std::time::Duration::from_secs(1);
+    let wrong_intent = grants.mint(dir.join("wrong-intent.db"), FileIntent::Read);
+    let consumed = grants.mint(dir.join("consumed.db"), FileIntent::Write);
+    create_sqlite_database_from_grant(&grants, &consumed.id).expect("first use succeeds");
+
+    let messages = [
+        create_sqlite_database_from_grant(&grants, "unknown").unwrap_err(),
+        create_sqlite_database_from_grant(&grants, &expired.id).unwrap_err(),
+        create_sqlite_database_from_grant(&grants, &wrong_intent.id).unwrap_err(),
+        create_sqlite_database_from_grant(&grants, &consumed.id).unwrap_err(),
+    ];
+
+    for (i, a) in messages.iter().enumerate() {
+        for b in messages.iter().skip(i + 1) {
+            assert_ne!(a, b, "each refusal must be distinguishable: {a}");
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_cancelled_selection_creates_nothing() {
+    let grants = FileGrantStore::new();
+    let dir = temp_dir("sqlite-create-cancelled");
+    let request = PickRequest {
+        intent: FileIntent::Write,
+        title: "Create SQLite database".into(),
+        default_name: Some("new.db".into()),
+        filters: vec![FileFilter {
+            name: "SQLite database".into(),
+            extensions: vec!["db".into()],
+        }],
+    };
+
+    let picked = crate::file_grant::grant_selection(&grants, &CancellingPicker, &request)
+        .expect("closing the dialog is not an error");
+    assert!(picked.is_none(), "a cancelled dialog issues no grant");
+    assert_eq!(grants.active_grants(), 0, "nothing was minted");
+
+    // With no selection there is no id to present, and the empty string — the
+    // only thing a cancelled flow can hand over — authorizes nothing.
+    let err = create_sqlite_database_from_grant(&grants, "").unwrap_err();
+    assert!(err.starts_with(CODE_INVALID), "got: {err}");
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        0,
+        "a cancelled action leaves no side effect"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_write_grant_creates_a_real_database_at_the_selected_destination() {
+    let grants = FileGrantStore::new();
+    let dir = temp_dir("sqlite-create-granted");
+    let path = dir.join("granted.db");
+    let grant = grants.mint(path.clone(), FileIntent::Write);
+
+    let created =
+        create_sqlite_database_from_grant(&grants, &grant.id).expect("creation must succeed");
+
+    assert_eq!(
+        created,
+        path.to_string_lossy(),
+        "the created path is reported"
+    );
+    assert!(path.exists(), "the database file exists");
+    assert!(
+        !std::fs::read(&path).unwrap().is_empty(),
+        "a real database, not an empty placeholder"
+    );
+    let probe = test_sqlite_connection(&sqlite_config(&path));
+    assert!(probe.ok, "the created database must connect: {probe:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_write_grant_still_refuses_an_existing_destination() {
+    let grants = FileGrantStore::new();
+    let dir = temp_dir("sqlite-create-granted-existing");
+    let path = dir.join("keep.db");
+    std::fs::write(&path, b"precious bytes").unwrap();
+    let grant = grants.mint(path.clone(), FileIntent::Write);
+
+    let err = create_sqlite_database_from_grant(&grants, &grant.id).unwrap_err();
+    assert!(
+        err.to_lowercase().contains("exist"),
+        "error must explain the refusal: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"precious bytes",
+        "an existing file is never truncated or replaced"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_write_grant_still_refuses_a_missing_parent_directory() {
+    let grants = FileGrantStore::new();
+    let dir = temp_dir("sqlite-create-granted-nodir");
+    let path = dir.join("nested").join("new.db");
+    let grant = grants.mint(path.clone(), FileIntent::Write);
+
+    let err = create_sqlite_database_from_grant(&grants, &grant.id)
+        .expect_err("creation does not build directory trees");
+    assert!(
+        err.contains("directory does not exist"),
+        "error must explain the refusal: {err}"
+    );
     assert!(!path.exists());
     std::fs::remove_dir_all(&dir).ok();
 }
