@@ -10,7 +10,7 @@
 - The settings store's import boundary — catches a wholly invalid file, a partially invalid file, and a valid file, and asserts settings are unchanged in the first two cases; misses whether the interface surfaces the report legibly, which the settings page component covers.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/158
-**Tracker state:** blocked
+**Tracker state:** done
 **Status:** done
 
 - [x] A settings import validates every entry before applying any of them.
