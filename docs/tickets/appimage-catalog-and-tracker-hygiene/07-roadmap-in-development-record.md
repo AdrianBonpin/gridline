@@ -10,7 +10,7 @@
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/159
 **Tracker state:** blocked
-**Status:** ready
+**Status:** done
 
 - [ ] A development section exists above the queue, using the state the roadmap's legend already declares but which previously had no section.
 - [ ] It records the four fixes as merged but not yet released, naming each issue.
