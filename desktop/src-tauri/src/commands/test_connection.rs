@@ -497,10 +497,38 @@ pub fn create_sqlite_database_at(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Tauri command to create a new SQLite database file (explicit user action).
+/// Create a new SQLite database file at the destination a **write** File Grant
+/// authorized, returning that destination (display metadata only).
+///
+/// The path is resolved from the grant and nowhere else: a raw renderer-supplied
+/// path, an empty string, an unknown id, an expired selection, a selection minted
+/// for another intent, and a replayed id all fail closed with the specific
+/// `file-grant-*` state and create nothing (`GLOSSARY.md` → File Grant).
+pub fn create_sqlite_database_from_grant(
+    grants: &crate::file_grant::FileGrantStore,
+    grant_id: &str,
+) -> Result<String, String> {
+    let path = crate::file_grant::consume_granted_path(
+        grants,
+        grant_id,
+        crate::file_grant::FileIntent::Write,
+    )?;
+    create_sqlite_database_at(&path)?;
+    Ok(path)
+}
+
+/// Tauri command to create a new SQLite database file at the destination the
+/// user chose in the operating system's save dialog.
+///
+/// `file_grant` is the id from `select_file_for_grant` (write intent) and is
+/// consumed by this call; the destination is the grant's, never an argument, so
+/// the webview cannot name the file it creates.
 #[tauri::command]
-pub fn create_sqlite_database(path: String) -> Result<(), String> {
-    create_sqlite_database_at(&path)
+pub fn create_sqlite_database(
+    file_grant: String,
+    state: State<'_, crate::AppState>,
+) -> Result<String, String> {
+    create_sqlite_database_from_grant(&state.file_grants, &file_grant)
 }
 
 /// Test a Redis connection using the `redis` crate.
