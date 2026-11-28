@@ -10,7 +10,7 @@
 - The settings store boundary — catches an unknown key, each known key's range, a malformed value, and read-back normalisation of a bad stored value; misses whether the interface offers only valid options, and misses a caller that holds the store's raw connection directly.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/154
-**Tracker state:** ready
+**Tracker state:** in_progress
 **Status:** in_progress
 
 - [ ] One declared rule exists per known settings key, and it is the single source of validity for both writes and read-backs.

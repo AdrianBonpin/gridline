@@ -11,7 +11,7 @@
 - The connections form — catches that the form requests a grant instead of opening its own dialog and that the created destination reaches the path field; misses everything downstream. The real native dialog is not drivable, so no seam observes it.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/153
-**Tracker state:** ready
+**Tracker state:** in_progress
 **Status:** in_progress
 
 - [ ] The create-database operation accepts only a File Grant identifier; no path supplied by the webview can reach it.

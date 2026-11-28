@@ -11,7 +11,7 @@
 - The existing cancellation tests, which are the behaviour that was flaky — they catch the observable symptom end to end; they miss why the platform reaped or did not reap.
 
 **Tracker:** https://github.com/AdrianBonpin/gridline/issues/156
-**Tracker state:** ready
+**Tracker state:** in_progress
 **Status:** in_progress
 
 - [ ] A single shared predicate decides process liveness; the two verbatim copies no longer exist.
