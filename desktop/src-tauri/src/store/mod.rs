@@ -1,5 +1,6 @@
 pub mod migrations;
 pub mod permissions;
+pub(crate) mod settings_schema;
 
 use rusqlite::params;
 use rusqlite::Connection as SqliteConnection;
@@ -54,16 +55,6 @@ pub struct SavedQueryRow {
 const MAX_NAME_LEN: usize = 200;
 const MAX_FOLDER_LEN: usize = 100;
 const MAX_QUERY_TEXT_LEN: usize = 1_048_576; // 1 MB
-
-const ALLOWED_EDITOR_FONTS: &[&str] = &[
-    "Space Mono",
-    "Fira Code",
-    "Menlo",
-    "Monaco",
-    "Consolas",
-    "JetBrains Mono",
-    "monospace",
-];
 
 impl Store {
     /// Wrap an already-opened connection as a store.
@@ -615,87 +606,41 @@ impl Store {
         for r in rows.filter_map(|r| r.ok()) {
             map.insert(r.0, r.1);
         }
-        let theme = map
-            .get("theme")
-            .cloned()
-            .unwrap_or_else(|| "system".to_string());
-        let font_size = map
-            .get("font_size")
-            .cloned()
-            .unwrap_or_else(|| "medium".to_string());
-        let confirm = map
-            .get("confirm_before_delete")
-            .map(|v| v == "true")
-            .unwrap_or(true);
-        let default_folder_id = map
-            .get("default_folder_id")
-            .filter(|v| v.as_str() != "null")
-            .cloned();
-        let mut default_ports = HashMap::new();
-        default_ports.insert("postgresql".to_string(), Some(5432i64));
-        default_ports.insert("mysql".to_string(), Some(3306i64));
-        default_ports.insert("redis".to_string(), Some(6379i64));
-        default_ports.insert("sqlite".to_string(), None);
-        if let Some(ports_json) = map.get("default_ports") {
-            if let Ok(parsed) = serde_json::from_str::<HashMap<String, Option<i64>>>(ports_json) {
-                default_ports = parsed;
-            }
-        }
-        let editor_font_size = map
-            .get("editor_font_size")
-            .and_then(|v| v.parse::<i64>().ok())
-            .map(|v| v.clamp(8, 24))
-            .unwrap_or(13);
-        let editor_font_family = map
-            .get("editor_font_family")
-            .cloned()
-            .filter(|v| ALLOWED_EDITOR_FONTS.contains(&v.as_str()))
-            .unwrap_or_else(|| "Space Mono".to_string());
-        let editor_word_wrap = match map.get("editor_word_wrap").map(|v| v.as_str()) {
-            Some("on") => "on".to_string(),
-            _ => "off".to_string(),
-        };
-        let editor_minimap = map
-            .get("editor_minimap")
-            .map(|v| v == "true")
-            .unwrap_or(false);
-        let editor_tab_size = map
-            .get("editor_tab_size")
-            .and_then(|v| v.parse::<i64>().ok())
-            .map(|v| v.clamp(2, 8))
-            .unwrap_or(4);
+        // Every value below goes through the declared rule table, which is the
+        // single source of validity: a value an older build wrote that no longer
+        // satisfies its rule is normalised here, so read-back never errors.
+        let ports_json = settings_schema::read_back(&map, "default_ports");
+        let default_ports: HashMap<String, Option<i64>> =
+            serde_json::from_str(&ports_json).unwrap_or_default();
+        let shortcuts_json = settings_schema::read_back(&map, "shortcuts");
+        let shortcuts: HashMap<String, String> =
+            serde_json::from_str(&shortcuts_json).unwrap_or_default();
         Ok(Settings {
-            confirm_before_delete: confirm,
-            default_folder_id,
-            theme,
-            font_size,
+            confirm_before_delete: settings_schema::read_back_bool(&map, "confirm_before_delete"),
+            default_folder_id: settings_schema::read_back_optional(&map, "default_folder_id"),
+            theme: settings_schema::read_back(&map, "theme"),
+            font_size: settings_schema::read_back(&map, "font_size"),
             default_ports,
-            tag_order: map.get("tag_order").cloned(),
-            table_refresh_rate: map
-                .get("table_refresh_rate")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0),
-            table_page_size: map
-                .get("table_page_size")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(50),
-            shortcuts: map
-                .get("shortcuts")
-                .and_then(|v| serde_json::from_str(v).ok())
-                .unwrap_or_default(),
-            accent_color: map
-                .get("accent_color")
-                .cloned()
-                .unwrap_or_else(|| "#2563EB".to_string()),
-            editor_font_size,
-            editor_font_family,
-            editor_word_wrap,
-            editor_minimap,
-            editor_tab_size,
+            tag_order: settings_schema::read_back_optional(&map, "tag_order"),
+            table_refresh_rate: settings_schema::read_back_int(&map, "table_refresh_rate"),
+            table_page_size: settings_schema::read_back_int(&map, "table_page_size"),
+            shortcuts,
+            accent_color: settings_schema::read_back(&map, "accent_color"),
+            editor_font_size: settings_schema::read_back_int(&map, "editor_font_size"),
+            editor_font_family: settings_schema::read_back(&map, "editor_font_family"),
+            editor_word_wrap: settings_schema::read_back(&map, "editor_word_wrap"),
+            editor_minimap: settings_schema::read_back_bool(&map, "editor_minimap"),
+            editor_tab_size: settings_schema::read_back_int(&map, "editor_tab_size"),
         })
     }
 
+    /// Write one setting, judged by the declared rule table.
+    ///
+    /// The store is the boundary, not the IPC layer: a future caller that reaches
+    /// the store directly is governed by the same rule, and a key the table does
+    /// not know is refused rather than stored (ADR 0003).
     pub fn update_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        settings_schema::check(key, value).map_err(|e| e.to_string())?;
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -706,10 +651,16 @@ impl Store {
     }
 
     /// Bulk-write settings keys in one transaction (used by settings import).
+    ///
+    /// Every entry is judged before the transaction opens, so a batch with one bad
+    /// entry stores none of them — a half-applied settings set is neither the old
+    /// one nor the new one and the user cannot tell which (ADR 0003). The rules
+    /// stay declared in [`settings_schema`], never re-stated by the caller.
     pub fn apply_settings(
         &self,
         map: &std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
+        settings_schema::check_batch(map.iter()).map_err(|e| e.to_string())?;
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
         for (k, v) in map.iter() {
@@ -1905,8 +1856,10 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
         let store = Store::from_connection(conn).expect("test store");
-        store.update_setting("editor_font_size", "999").unwrap();
-        store.update_setting("editor_tab_size", "1").unwrap();
+        // Stored by a build that clamped on read only: the write path now refuses
+        // these, so they are planted directly to exercise read-back.
+        put_stored_setting(&store, "editor_font_size", "999");
+        put_stored_setting(&store, "editor_tab_size", "1");
         store.update_setting("editor_minimap", "true").unwrap();
         let s = store.get_settings().unwrap();
         assert_eq!(s.editor_font_size, 24, "font_size clamps to 24");
@@ -1919,11 +1872,9 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::store::migrations::run_migrations(&conn).unwrap();
         let store = Store::from_connection(conn).expect("test store");
-        store.update_setting("editor_font_size", "abc").unwrap();
-        store
-            .update_setting("editor_font_family", "Comic Sans")
-            .unwrap();
-        store.update_setting("editor_word_wrap", "weird").unwrap();
+        put_stored_setting(&store, "editor_font_size", "abc");
+        put_stored_setting(&store, "editor_font_family", "Comic Sans");
+        put_stored_setting(&store, "editor_word_wrap", "weird");
         let s = store.get_settings().unwrap();
         assert_eq!(s.editor_font_size, 13, "garbage -> default");
         assert_eq!(
@@ -1931,6 +1882,282 @@ mod tests {
             "disallowed font -> default"
         );
         assert_eq!(s.editor_word_wrap, "off", "invalid wrap -> default");
+    }
+
+    // ── One declared validity rule per settings key (ADR 0003) ────────
+
+    /// Store a value the way a previous build could have: straight into the row,
+    /// bypassing the write path that now refuses it. Read-back must still cope.
+    fn put_stored_setting(store: &Store, key: &str, value: &str) {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .unwrap();
+    }
+
+    fn stored_setting_count(store: &Store, key: &str) -> i64 {
+        let conn = store.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// The raw stored text for a key, if a row exists.
+    fn stored_setting_value(store: &Store, key: &str) -> Option<String> {
+        let conn = store.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    /// Every value the settings interface can produce, as `(key, value)` pairs.
+    /// Kept independent of the validator table on purpose: the table must cover
+    /// what the interface writes, not the other way round.
+    const INTERFACE_WRITES: &[(&str, &str)] = &[
+        ("theme", "dark"),
+        ("theme", "light"),
+        ("theme", "system"),
+        ("font_size", "small"),
+        ("font_size", "medium"),
+        ("font_size", "large"),
+        ("accent_color", "#2563EB"),
+        ("accent_color", "#22C55E"),
+        // "None" in the default-folder dropdown, and a real folder id.
+        ("default_folder_id", ""),
+        ("default_folder_id", "4d1a2f8e-0b7c-4b3e-9c1d-2f6a8b0c9e11"),
+        ("confirm_before_delete", "true"),
+        ("confirm_before_delete", "false"),
+        ("table_refresh_rate", "0"),
+        ("table_refresh_rate", "300000"),
+        ("table_page_size", "50"),
+        ("table_page_size", "500"),
+        (
+            "default_ports",
+            "{\"postgresql\":5432,\"mysql\":3306,\"sqlite\":null,\"redis\":6379}",
+        ),
+        // A cleared port field in the advanced tab.
+        ("default_ports", "{\"postgresql\":null}"),
+        ("tag_order", "[\"tag-b\",\"tag-a\"]"),
+        ("shortcuts", "{\"open_command_palette\":\"Meta+K\"}"),
+        ("editor_font_size", "8"),
+        ("editor_font_size", "24"),
+        ("editor_font_family", "Space Mono"),
+        ("editor_font_family", "Fira Code"),
+        ("editor_font_family", "monospace"),
+        ("editor_word_wrap", "off"),
+        ("editor_word_wrap", "on"),
+        ("editor_minimap", "true"),
+        ("editor_minimap", "false"),
+        ("editor_tab_size", "2"),
+        ("editor_tab_size", "8"),
+    ];
+
+    /// Every key the store knows, with the inclusive bounds of its range where it
+    /// has one. The bounds are the ones the interface offers (a page size of 500,
+    /// an editor font size of 24, …) and are written out here deliberately.
+    const RANGED_KEYS: &[(&str, i64, i64)] = &[
+        ("table_page_size", 1, 500),
+        ("table_refresh_rate", 0, 300000),
+        ("editor_font_size", 8, 24),
+        ("editor_tab_size", 2, 8),
+    ];
+
+    #[test]
+    fn every_setting_the_interface_writes_has_a_rule_that_accepts_it() {
+        let store = fresh_store();
+        for (key, value) in INTERFACE_WRITES {
+            assert!(
+                store.update_setting(key, value).is_ok(),
+                "the interface writes {key}={value:?}, so a rule must accept it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_write_of_an_unknown_key_is_refused_with_the_key_named() {
+        let store = fresh_store();
+        for key in ["theme_extra", "Theme", "table_page_sizes", ""] {
+            let err = store
+                .update_setting(key, "anything")
+                .expect_err("an unknown key must not be stored");
+            assert!(
+                err.contains(&format!("{key:?}")) || (key.is_empty() && err.contains("\"\"")),
+                "the refusal must name the key {key:?}: {err}"
+            );
+            assert_eq!(
+                stored_setting_count(&store, key),
+                0,
+                "an unknown key must not be persisted"
+            );
+        }
+    }
+
+    #[test]
+    fn the_boundaries_of_every_ranged_key_are_accepted_and_their_neighbours_refused() {
+        for (key, min, max) in RANGED_KEYS {
+            let store = fresh_store();
+            for good in [*min, *max] {
+                store
+                    .update_setting(key, &good.to_string())
+                    .unwrap_or_else(|e| {
+                        panic!("{key}={good} is the boundary and must be accepted: {e}")
+                    });
+            }
+            for bad in [min - 1, max + 1] {
+                let err = store
+                    .update_setting(key, &bad.to_string())
+                    .expect_err("a value outside the range must be refused");
+                assert!(err.contains(key), "the refusal must name {key}: {err}");
+                assert!(
+                    err.contains(&min.to_string()) && err.contains(&max.to_string()),
+                    "the refusal must state the valid range {min}..={max}: {err}"
+                );
+            }
+            assert_eq!(
+                stored_setting_value(&store, key),
+                Some(max.to_string()),
+                "a refused write must leave the last valid value in place"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_values_are_refused_rather_than_stored() {
+        let malformed: &[(&str, &str)] = &[
+            ("table_page_size", "ten"),
+            ("table_page_size", "12.5"),
+            ("table_page_size", ""),
+            ("table_refresh_rate", "soon"),
+            ("editor_font_size", "abc"),
+            ("editor_tab_size", "1.5"),
+            ("theme", "purple"),
+            ("font_size", "huge"),
+            ("accent_color", "blue"),
+            ("accent_color", "#12345"),
+            ("confirm_before_delete", "yes"),
+            ("editor_minimap", "1"),
+            ("editor_word_wrap", "weird"),
+            ("editor_font_family", "Comic Sans"),
+            ("default_ports", "not json"),
+            ("default_ports", "{\"postgresql\":70000}"),
+            ("default_ports", "{\"postgresql\":\"5432\"}"),
+            ("default_ports", "[]"),
+            ("shortcuts", "not json"),
+            ("shortcuts", "[]"),
+            ("tag_order", "{\"tag\":1}"),
+            ("tag_order", "[1,2]"),
+        ];
+        for (key, value) in malformed {
+            let store = fresh_store();
+            let err = match store.update_setting(key, value) {
+                Ok(()) => panic!("{key}={value:?} must be refused"),
+                Err(e) => e,
+            };
+            assert!(err.contains(key), "the refusal must name {key}: {err}");
+            assert_eq!(
+                stored_setting_count(&store, key),
+                0,
+                "a malformed value must not be stored"
+            );
+        }
+    }
+
+    #[test]
+    fn read_back_normalises_what_a_previous_build_could_have_stored() {
+        let store = fresh_store();
+        let old_values: &[(&str, &str)] = &[
+            ("table_page_size", "100000"),
+            ("table_refresh_rate", "-1"),
+            ("editor_font_size", "999"),
+            ("editor_tab_size", "1"),
+            ("editor_font_family", "Comic Sans"),
+            ("editor_word_wrap", "weird"),
+            ("editor_minimap", "1"),
+            ("theme", "purple"),
+            ("font_size", "huge"),
+            ("accent_color", "chartreuse"),
+            ("confirm_before_delete", "yes"),
+            ("default_ports", "not json"),
+            ("shortcuts", "[]"),
+            ("tag_order", "oops"),
+            ("default_folder_id", "null"),
+        ];
+        for (key, value) in old_values {
+            put_stored_setting(&store, key, value);
+        }
+
+        let s = store
+            .get_settings()
+            .expect("read-back must never error on a stored value it did not write");
+        assert_eq!(s.table_page_size, 500);
+        assert_eq!(s.table_refresh_rate, 0);
+        assert_eq!(s.editor_font_size, 24);
+        assert_eq!(s.editor_tab_size, 2);
+        assert_eq!(s.editor_font_family, "Space Mono");
+        assert_eq!(s.editor_word_wrap, "off");
+        assert!(!s.editor_minimap);
+        assert_eq!(s.theme, "system");
+        assert_eq!(s.font_size, "medium");
+        assert_eq!(s.accent_color, "#2563EB");
+        assert!(s.confirm_before_delete);
+        assert_eq!(s.default_ports.get("postgresql"), Some(&Some(5432)));
+        assert!(s.shortcuts.is_empty());
+        assert_eq!(s.tag_order, None);
+        assert_eq!(s.default_folder_id, None);
+
+        // A stored value that cannot be salvaged becomes the declared default
+        // rather than an error or empty output.
+        let unsalvageable = fresh_store();
+        put_stored_setting(&unsalvageable, "table_page_size", "not a number");
+        put_stored_setting(&unsalvageable, "editor_tab_size", "");
+        let s = unsalvageable.get_settings().unwrap();
+        assert_eq!(s.table_page_size, 50);
+        assert_eq!(s.editor_tab_size, 4);
+    }
+
+    #[test]
+    fn read_back_keeps_a_stored_value_that_still_satisfies_its_rule() {
+        let store = fresh_store();
+        put_stored_setting(&store, "table_page_size", "200");
+        put_stored_setting(&store, "theme", "light");
+        let s = store.get_settings().unwrap();
+        assert_eq!(s.table_page_size, 200);
+        assert_eq!(s.theme, "light");
+    }
+
+    #[test]
+    fn a_bulk_write_validates_every_entry_before_writing_any_of_them() {
+        let store = fresh_store();
+        store.update_setting("theme", "dark").unwrap();
+
+        let mut batch = HashMap::new();
+        batch.insert("theme".to_string(), "light".to_string());
+        batch.insert("table_page_size".to_string(), "100000".to_string());
+        let err = store
+            .apply_settings(&batch)
+            .expect_err("an invalid entry must reject the whole batch");
+        assert!(err.contains("table_page_size"), "{err}");
+        assert_eq!(
+            store.get_settings().unwrap().theme,
+            "dark",
+            "a refused batch must apply none of its entries"
+        );
+
+        let mut unknown = HashMap::new();
+        unknown.insert("not_a_setting".to_string(), "1".to_string());
+        let err = store
+            .apply_settings(&unknown)
+            .expect_err("an unknown key must reject the whole batch");
+        assert!(err.contains("not_a_setting"), "{err}");
     }
 
     fn trust_record(host: &str, port: u16, seed: u8) -> crate::models::HostTrustRecord {
