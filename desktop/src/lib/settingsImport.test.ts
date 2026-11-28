@@ -1,64 +1,60 @@
 import { describe, it, expect } from "vitest";
 import { validateSettingsExport } from "./settingsImport";
-import type { Settings } from "./types";
 
-const good: Settings = {
+const good = {
   confirm_before_delete: true, default_folder_id: null, theme: "dark", font_size: "medium",
   default_ports: { postgresql: 5432 }, tag_order: null, table_refresh_rate: 5, table_page_size: 50,
   shortcuts: { open_command_palette: "Cmd+K" }, accent_color: "#2563EB",
   editor_font_size: 14, editor_font_family: "Menlo", editor_word_wrap: "off", editor_minimap: true, editor_tab_size: 2,
 };
 
+const doc = (settings: Record<string, unknown>) => ({ schemaVersion: 1, settings });
+
+// The store holds the one validity rule per settings key (`store::settings_schema`,
+// ADR 0003) and refuses a file as a whole, naming every offending key. The renderer
+// cannot call that table, so this module must judge no value at all: every rule it
+// restates here is a rule that can drift from the one the store enforces.
 describe("validateSettingsExport", () => {
-  it("accepts a well-formed object", () => {
-    const r = validateSettingsExport({ schemaVersion: 1, settings: good });
+  it("accepts a settings document and hands it on untouched", () => {
+    const input = doc({ ...good });
+    const r = validateSettingsExport(input);
     expect(r.ok).toBe(true);
+    if (r.ok) expect(r.document).toEqual(input);
   });
 
-  it("rejects an invalid theme", () => {
-    const r = validateSettingsExport({ schemaVersion: 1, settings: { ...good, theme: "purple" as never } });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.errors.some((e) => e.field === "theme")).toBe(true);
-  });
-
-  it("clamps editor_font_size to [8,24]", () => {
-    const r = validateSettingsExport({ schemaVersion: 1, settings: { ...good, editor_font_size: 999 } });
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.settings.editor_font_size).toBe(24);
-  });
-
-  it("tolerates unknown keys (version skew)", () => {
-    const r = validateSettingsExport({ schemaVersion: 99, settings: { ...good, futureField: true } } as never);
-    expect(r.ok).toBe(true);
-  });
-
-  // The backend rejects a page size outside 1..=500 (`commands/db_viewer.rs`),
-  // so an imported value it would reject must never reach the settings store:
-  // the grid would ask for a window every browse fails to satisfy.
-  it("clamps table_page_size into the range the backend accepts", () => {
-    for (const [given, expected] of [
-      [100_000, 500],
-      [501, 500],
-      [500, 500],
-      [50, 50],
-      [1, 1],
-    ] as const) {
-      const r = validateSettingsExport({ schemaVersion: 1, settings: { ...good, table_page_size: given } });
-      expect(r.ok, `page size ${given} must import`).toBe(true);
-      if (r.ok) expect(r.settings.table_page_size).toBe(expected);
+  it("refuses no value the store might accept: an out-of-range number is passed on", () => {
+    const r = validateSettingsExport(doc({ ...good, table_page_size: 100_000, editor_font_size: 999 }));
+    expect(r.ok, "the store refuses this, not the renderer").toBe(true);
+    if (r.ok) {
+      // Neither clamped: the store must see the file as written to refuse it.
+      expect(r.document.settings.table_page_size).toBe(100_000);
+      expect(r.document.settings.editor_font_size).toBe(999);
     }
   });
 
-  it("still rejects a non-positive table_page_size", () => {
-    for (const bad of [0, -50]) {
-      const r = validateSettingsExport({ schemaVersion: 1, settings: { ...good, table_page_size: bad } });
-      expect(r.ok, `page size ${bad} must be refused`).toBe(false);
-      if (!r.ok) expect(r.errors.some((e) => e.field === "table_page_size")).toBe(true);
-    }
+  it("refuses no value the store might accept: an unknown enum member is passed on", () => {
+    // `theme: "purple"` and a non-positive page size used to be rejected here
+    // against copies of the store's list and range.
+    expect(validateSettingsExport(doc({ ...good, theme: "purple" })).ok).toBe(true);
+    expect(validateSettingsExport(doc({ ...good, table_page_size: -50 })).ok).toBe(true);
   });
 
-  it("requires a non-negative table_refresh_rate", () => {
-    const r = validateSettingsExport({ schemaVersion: 1, settings: { ...good, table_refresh_rate: -1 } });
-    expect(r.ok).toBe(false);
+  it("keeps a key this build does not know, so the store can refuse it by name", () => {
+    const r = validateSettingsExport(doc({ ...good, future_setting: true }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.document.settings).toHaveProperty("future_setting", true);
+  });
+
+  it("refuses a file that is not a settings document", () => {
+    for (const input of [null, undefined, "settings", 42, [], ["settings"]]) {
+      expect(validateSettingsExport(input).ok, String(input)).toBe(false);
+    }
+
+    const missing = validateSettingsExport({ schemaVersion: 1 });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.errors.some((e) => e.field === "settings")).toBe(true);
+
+    const notAnObject = validateSettingsExport({ schemaVersion: 1, settings: "nope" });
+    expect(notAnObject.ok).toBe(false);
   });
 });

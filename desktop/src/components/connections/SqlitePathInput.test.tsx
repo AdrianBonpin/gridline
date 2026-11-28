@@ -1,8 +1,10 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { SqlitePathInput } from "./SqlitePathInput";
+import { FILE_GRANT_CODES, FILE_GRANT_STATE } from "../../lib/fileGrant";
+import type { FileGrant, FileGrantErrorKind } from "../../lib/fileGrant";
 
 function StatefulInput(props: Omit<React.ComponentProps<typeof SqlitePathInput>, "onChange"> & {
   onChange?: (value: string) => void;
@@ -22,6 +24,7 @@ function StatefulInput(props: Omit<React.ComponentProps<typeof SqlitePathInput>,
 
 const open = vi.hoisted(() => vi.fn());
 const save = vi.hoisted(() => vi.fn());
+const selectFileForGrant = vi.hoisted(() => vi.fn());
 const createSqliteDatabase = vi.hoisted(() => vi.fn());
 const notify = vi.hoisted(() => vi.fn());
 
@@ -31,6 +34,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 vi.mock("../../lib/commands", () => ({
+  selectFileForGrant: (...args: unknown[]) => selectFileForGrant(...args),
   createSqliteDatabase: (...args: unknown[]) => createSqliteDatabase(...args),
 }));
 
@@ -38,6 +42,21 @@ vi.mock("../../stores/notificationStore", () => ({
   useNotificationStore: (selector: (s: { notify: typeof notify }) => unknown) =>
     selector({ notify }),
 }));
+
+/** What the backend hands back for a write selection: an id, plus display-only path. */
+function grant(id: string, path: string): FileGrant {
+  return {
+    id,
+    path,
+    displayName: path.split("/").pop() ?? path,
+    intent: "write",
+    expiresInSeconds: 300,
+  };
+}
+
+function grantRejection(kind: FileGrantErrorKind, message: string): Error {
+  return new Error(`${FILE_GRANT_CODES[kind]}: ${message}`);
+}
 
 describe("SqlitePathInput", () => {
   beforeEach(() => {
@@ -73,50 +92,126 @@ describe("SqlitePathInput", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("creates a database only through the explicit Create database action", async () => {
+  it("asks the backend for a write grant instead of opening a save dialog itself", async () => {
     const user = userEvent.setup();
-    save.mockResolvedValue("/chosen/new.db");
-    createSqliteDatabase.mockResolvedValue(undefined);
+    selectFileForGrant.mockResolvedValue(grant("grant-new", "/chosen/new.db"));
+    createSqliteDatabase.mockResolvedValue("/chosen/new.db");
+    const onChange = vi.fn();
+    render(<SqlitePathInput value="/chosen/mytyped.db" onChange={onChange} />);
+
+    await user.click(screen.getByRole("button", { name: /create database/i }));
+
+    await waitFor(() => expect(selectFileForGrant).toHaveBeenCalledTimes(1));
+    const request = selectFileForGrant.mock.calls[0][0] as Record<string, unknown>;
+    expect(request.intent).toBe("write");
+    // The request carries no destination: the webview only names the operation.
+    expect(request).not.toHaveProperty("path");
+    expect(request).not.toHaveProperty("defaultPath");
+    expect(request.defaultName).toBe("mytyped.db");
+    // The renderer never opens its own save dialog for this flow.
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("creates the database with the grant identifier and shows the created destination", async () => {
+    const user = userEvent.setup();
+    selectFileForGrant.mockResolvedValue(grant("grant-new", "/chosen/new.db"));
+    createSqliteDatabase.mockResolvedValue("/chosen/new.db");
     const onChange = vi.fn();
     render(<SqlitePathInput value="/chosen" onChange={onChange} />);
 
     await user.click(screen.getByRole("button", { name: /create database/i }));
 
-    expect(save).toHaveBeenCalledWith(
-      expect.objectContaining({ defaultPath: "/chosen" }),
-    );
-    expect(createSqliteDatabase).toHaveBeenCalledWith("/chosen/new.db");
-    expect(onChange).toHaveBeenCalledWith("/chosen/new.db");
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith("/chosen/new.db"));
+    // The identifier authorizes; the path is not an argument anywhere.
+    expect(createSqliteDatabase).toHaveBeenCalledWith("grant-new");
     expect(notify).toHaveBeenCalledWith(
-      expect.stringMatching(/created/i),
+      expect.stringMatching(/created sqlite database at \/chosen\/new\.db/i),
       "success",
     );
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("reports a creation failure and keeps the path unchanged", async () => {
+  it("creates nothing and reports nothing when the selection is cancelled", async () => {
     const user = userEvent.setup();
-    save.mockResolvedValue("/chosen/new.db");
-    createSqliteDatabase.mockRejectedValue(new Error("permission denied"));
+    selectFileForGrant.mockResolvedValue(null);
     const onChange = vi.fn();
     render(<SqlitePathInput value="/chosen" onChange={onChange} />);
 
     await user.click(screen.getByRole("button", { name: /create database/i }));
 
+    await waitFor(() => expect(selectFileForGrant).toHaveBeenCalledTimes(1));
+    expect(createSqliteDatabase).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith(
-      expect.stringMatching(/permission denied/),
-      "error",
-    );
+    expect(notify).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("does not create anything when the create dialog is cancelled", async () => {
+  it.each(["expired", "consumed", "wrong-intent", "invalid"] as FileGrantErrorKind[])(
+    "shows the %s selection state with a recovery action that picks the file again",
+    async (kind) => {
+      const user = userEvent.setup();
+      selectFileForGrant.mockResolvedValue(grant("grant-stale", "/chosen/stale.db"));
+      createSqliteDatabase.mockRejectedValueOnce(
+        grantRejection(kind, "the selection is no longer usable."),
+      );
+      const onChange = vi.fn();
+      render(<SqlitePathInput value="/chosen" onChange={onChange} />);
+
+      await user.click(screen.getByRole("button", { name: /create database/i }));
+
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(FILE_GRANT_STATE[kind].title);
+      expect(onChange).not.toHaveBeenCalled();
+
+      // The recovery action asks for a fresh selection and completes the job.
+      selectFileForGrant.mockClear();
+      selectFileForGrant.mockResolvedValue(grant("grant-fresh", "/chosen/fresh.db"));
+      createSqliteDatabase.mockResolvedValue("/chosen/fresh.db");
+      await user.click(screen.getByRole("button", { name: /choose file again/i }));
+
+      await waitFor(() => expect(onChange).toHaveBeenCalledWith("/chosen/fresh.db"));
+      expect(selectFileForGrant).toHaveBeenCalledTimes(1);
+      expect(createSqliteDatabase).toHaveBeenLastCalledWith("grant-fresh");
+      expect(screen.queryByRole("alert")).toBeNull();
+    },
+  );
+
+  it("reports an ordinary creation failure and keeps the path unchanged", async () => {
     const user = userEvent.setup();
-    save.mockResolvedValue(null);
+    selectFileForGrant.mockResolvedValue(grant("grant-existing", "/chosen/keep.db"));
+    createSqliteDatabase.mockRejectedValue(
+      new Error("a file already exists at /chosen/keep.db; refusing to overwrite it"),
+    );
     const onChange = vi.fn();
     render(<SqlitePathInput value="/chosen" onChange={onChange} />);
 
     await user.click(screen.getByRole("button", { name: /create database/i }));
 
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringMatching(/already exists/i),
+        "error",
+      ),
+    );
+    expect(onChange).not.toHaveBeenCalled();
+    // Not a grant rejection, so no grant recovery panel is shown.
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("reports a dialog failure without creating anything", async () => {
+    const user = userEvent.setup();
+    selectFileForGrant.mockRejectedValue(new Error("the file dialog could not be shown"));
+    const onChange = vi.fn();
+    render(<SqlitePathInput value="/chosen" onChange={onChange} />);
+
+    await user.click(screen.getByRole("button", { name: /create database/i }));
+
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringMatching(/file dialog could not be shown/i),
+        "error",
+      ),
+    );
     expect(createSqliteDatabase).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
   });

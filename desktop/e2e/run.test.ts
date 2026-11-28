@@ -1,6 +1,24 @@
-import { describe, expect, it, vi } from "vitest";
-import { HarnessError } from "./errors.mjs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createRunArtifacts } from "./artifacts.mjs";
+import { HarnessError, errorMessage } from "./errors.mjs";
 import { executeRun, main, reexecCommand } from "./run.mjs";
+
+const tempDirs: string[] = [];
+
+function tempDir() {
+  const dir = mkdtempSync(join(tmpdir(), "gridline-e2e-run-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  while (tempDirs.length) {
+    rmSync(tempDirs.pop()!, { recursive: true, force: true });
+  }
+});
 
 function plan(overrides: Record<string, unknown> = {}) {
   return {
@@ -218,6 +236,76 @@ describe("executeRun", () => {
     expect(result.exitCode).toBe(1);
     expect(artifacts.captureFailure).toHaveBeenCalledWith(
       expect.objectContaining({ client: null }),
+    );
+  });
+});
+
+describe("executeRun pristine app data", () => {
+  it("starts every run into the same artifacts directory from a pristine app-data directory", async () => {
+    const artifactsDir = tempDir();
+    const appData = join(artifactsDir, "app-data");
+    const inherited: boolean[] = [];
+    const spawnDriver = async () => {
+      inherited.push(existsSync(appData));
+      return fakeDriver();
+    };
+    // What the real app does on launch: seed the demo database and local store.
+    const flow = async () => {
+      mkdirSync(appData, { recursive: true });
+      writeFileSync(join(appData, "gridline-demo.sqlite"), "seeded by the app");
+      return { steps: [{ name: "home: demo card visible", durationMs: 1 }] };
+    };
+    const runPlan = plan({ artifactsDir, driverEnv: { XDG_DATA_HOME: appData } });
+    const dependencies = {
+      spawnDriver,
+      clientFor: () => fakeClient(),
+      flows: { "demo-smoke": flow },
+      log: () => {},
+    };
+
+    for (let run = 0; run < 2; run += 1) {
+      const result = await executeRun(runPlan, dependencies);
+      expect(result.exitCode).toBe(0);
+      // The app's own state remains after the run, as evidence...
+      expect(readFileSync(join(appData, "gridline-demo.sqlite"), "utf8")).toBe(
+        "seeded by the app",
+      );
+      // ...and a leftover from it is not what the next run starts from.
+      writeFileSync(join(appData, "leftover-from-a-killed-run.sqlite"), "stale");
+    }
+
+    // Neither launch saw an app-data directory at all.
+    expect(inherited).toEqual([false, false]);
+  });
+
+  it("refuses to launch when a configured location escapes the artifacts directory", async () => {
+    const artifactsDir = tempDir();
+    const outside = join(tempDir(), "app-data");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "keep.sqlite"), "not the harness's to delete");
+    const spawnDriver = vi.fn(async () => fakeDriver());
+
+    const result = await executeRun(
+      plan({ artifactsDir, driverEnv: { XDG_DATA_HOME: outside } }),
+      {
+        createArtifacts: ({ dir }: { dir: string }) =>
+          createRunArtifacts({ dir, spawnSyncImpl: (() => ({ status: 1 })) as never }),
+        spawnDriver,
+        clientFor: () => fakeClient(),
+        flows: { "demo-smoke": vi.fn() },
+        log: () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(errorMessage(result.error)).toMatch(/does not resolve beneath the artifacts directory/);
+    expect(spawnDriver).not.toHaveBeenCalled();
+    expect(readFileSync(join(outside, "keep.sqlite"), "utf8")).toBe(
+      "not the harness's to delete",
+    );
+    // The refusal is reported like any other harness failure, not swallowed.
+    expect(readFileSync(join(artifactsDir, "failure.txt"), "utf8")).toMatch(
+      /does not resolve beneath the artifacts directory/,
     );
   });
 });

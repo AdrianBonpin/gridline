@@ -40,6 +40,9 @@ export function GeneralSettingsTab() {
   const notify = useNotificationStore((s) => s.notify);
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  // The store's refusal (or the local "not a settings file" failure), kept visible
+  // with every offending key named for as long as the user needs it.
+  const [importError, setImportError] = useState<string | null>(null);
 
   if (!settings) return null;
 
@@ -93,6 +96,7 @@ export function GeneralSettingsTab() {
   };
 
   const handleImport = async () => {
+    setImportError(null);
     try {
       const picked = await cmd.selectFileForGrant({
         intent: "read",
@@ -105,30 +109,28 @@ export function GeneralSettingsTab() {
       try {
         parsed = JSON.parse(text);
       } catch {
-        notify("Invalid settings: file is not valid JSON", "error");
-        return;
+        throw new Error("Invalid settings: the file is not valid JSON");
       }
       const r = validateSettingsExport(parsed);
       if (!r.ok) {
-        notify(
-          `Invalid settings: ${r.errors.map((e) => e.field).join(", ")}`,
-          "error",
+        throw new Error(
+          `Invalid settings: ${r.errors.map((e) => `${e.field} (${e.message})`).join(", ")}`,
         );
-        return;
       }
-      // Import the VALIDATED document, not the raw file. Sending `text` threw
-      // the clamp away: a file with `table_page_size: 100000` was validated
-      // (clamped to 500 in `r.settings`) and then imported verbatim, which left
-      // every table browse failing on a page size the backend must reject. The
-      // backend validates/clamps again — it is the boundary — but this side must
-      // not hand it a document it already knows is out of range.
-      await cmd.importSettings(
-        JSON.stringify({ schemaVersion: 1, settings: r.settings }),
-      );
+      // The store judges every entry against its one rule table (ADR 0003) and
+      // refuses the whole file, naming each offending key. It receives the document
+      // exactly as written: nothing is clamped, rewritten, or filtered here, so a
+      // key or a value this build cannot accept reaches the store that can say so.
+      await cmd.importSettings(JSON.stringify(r.document));
       await load();
       notify("Settings imported", "success");
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e), "error");
+      const message = e instanceof Error ? e.message : String(e);
+      setImportError(message);
+      // The toast carries the headline; the panel below keeps the per-key detail
+      // visible. There is no "import the valid entries" path: a refused file
+      // applies nothing, and the only way forward is a corrected file.
+      notify(message.split("\n")[0], "error");
     }
   };
 
@@ -235,6 +237,14 @@ export function GeneralSettingsTab() {
               Import settings
             </button>
           </SettingsRow>
+          {importError && (
+            <div
+              role="alert"
+              className="whitespace-pre-line rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300"
+            >
+              {importError}
+            </div>
+          )}
         </div>
       </section>
 

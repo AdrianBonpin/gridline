@@ -11,7 +11,7 @@
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { createRunArtifacts } from "./artifacts.mjs";
+import { createRunArtifacts, removeHarnessState } from "./artifacts.mjs";
 import { errorMessage } from "./errors.mjs";
 import { describeMatchedValues, describeRenderedCells } from "./gridContent.mjs";
 import { FLOWS, planRun } from "./preflight.mjs";
@@ -60,6 +60,18 @@ export async function executeRun(plan, dependencies = {}) {
   let driver = null;
   let client = null;
   try {
+    // An artifacts directory may be reused (`--artifacts e2e-artifacts/<flow>`
+    // again after a CI failure, or one kept for debugging), so the application
+    // state this run configures is removed before launch: the demo database and
+    // local store are always created by the app, never inherited from the last
+    // run. Only locations that resolve strictly beneath the artifacts directory
+    // are removed, and the artifacts directory itself never is — an unscopable
+    // path refuses the run instead of deleting anything.
+    const pruned = removeHarnessState({ artifactsDir: plan.artifactsDir, env: plan.driverEnv });
+    for (const location of pruned) {
+      log(`e2e: pristine ${location.key} (removed ${location.path})`);
+    }
+
     driver = await spawnDriver({
       port: plan.port,
       nativePort: plan.nativePort,

@@ -1,6 +1,6 @@
 import { spawnSync as nodeSpawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { HarnessError, errorMessage } from "./errors.mjs";
 
 /**
@@ -36,6 +36,84 @@ function captureDisplayScreenshot({ dir, display, spawnSyncImpl, notes }) {
     return null;
   }
   return target;
+}
+
+/**
+ * Environment keys whose values name application state **this harness owns**,
+ * because the run plans below point them inside the artifacts directory:
+ *
+ * - `XDG_DATA_HOME` / `APPDATA` — the app-data directory holding the demo
+ *   database and the local SQLite store;
+ * - `HOME` — the home directory the packaged AppImage lane gives the app
+ *   (its config and cache fall back to `$HOME`).
+ *
+ * Only values a plan sets itself are pruned. The inherited `HOME` of the
+ * developer or CI runner is never in that set, so it is never touched.
+ */
+export const HARNESS_STATE_ENV_KEYS = ["XDG_DATA_HOME", "HOME", "APPDATA"];
+
+/**
+ * Resolve one harness-owned location strictly beneath the artifacts root.
+ *
+ * Deletion is the destructive half of this harness, so it is only ever allowed
+ * on a directory it created: anything that resolves outside the artifacts
+ * directory — a `..` segment, another directory entirely — is refused with the
+ * path named rather than removed.
+ */
+export function resolveOwnedLocation({ artifactsDir, location, key = "location" }) {
+  const root = resolve(artifactsDir);
+  const target = resolve(String(location));
+  const beneath = relative(root, target);
+  const escapes =
+    beneath === "" || // the artifacts directory itself
+    isAbsolute(beneath) || // a different root entirely
+    beneath === ".." ||
+    beneath.startsWith(`..${sep}`);
+  if (!escapes) return target;
+  if (beneath === "") {
+    throw new HarnessError(
+      `refusing to delete ${key} at ${target}: it is the artifacts directory itself. ` +
+        "The harness only removes the app-data directories it configures inside it, " +
+        "never the artifacts directory.",
+    );
+  }
+  throw new HarnessError(
+    `refusing to delete ${key} at ${target}: it does not resolve beneath the artifacts ` +
+      `directory ${root}. The harness only removes directories it created inside that ` +
+      "directory, and will not proceed while a configured location points elsewhere.",
+  );
+}
+
+/**
+ * The application-state locations a plan configures, resolved strictly beneath
+ * the artifacts directory. Every location is resolved before any is returned,
+ * so an unscopable one refuses the whole run instead of deleting the rest first.
+ */
+export function planHarnessStateRemoval({ artifactsDir, env = {} }) {
+  const locations = [];
+  for (const key of HARNESS_STATE_ENV_KEYS) {
+    const value = env?.[key];
+    if (!value) continue;
+    locations.push({ key, path: resolveOwnedLocation({ artifactsDir, location: value, key }) });
+  }
+  return locations;
+}
+
+/**
+ * Remove the application state a previous run left behind, so the run about to
+ * start creates the demo database and local store itself.
+ *
+ * Returns the removed locations (key + path). The artifacts directory and
+ * everything else in it — logs, screenshots, reports — are never removed, which
+ * is what makes re-running a flow into the same directory useful: reproducing a
+ * CI failure locally does not require deleting the directory by hand.
+ */
+export function removeHarnessState({ artifactsDir, env = {}, remove = rmSync }) {
+  const locations = planHarnessStateRemoval({ artifactsDir, env });
+  for (const location of locations) {
+    remove(location.path, { recursive: true, force: true });
+  }
+  return locations;
 }
 
 /**
