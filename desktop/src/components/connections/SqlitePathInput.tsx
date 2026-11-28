@@ -32,6 +32,9 @@ function suggestedFileName(value: string): string {
 export function SqlitePathInput({ value, onChange }: SqlitePathInputProps) {
   const notify = useNotificationStore((s) => s.notify);
   const [grantError, setGrantError] = useState<FileGrantErrorKind | null>(null);
+  // One native save dialog at a time: the create button and the "Choose file
+  // again" retry are both disabled while a selection is pending, so a second
+  // dialog can never be opened over the first.
   const [creating, setCreating] = useState(false);
 
   // Choosing an *existing* database is still a plain path pick: opening one is
@@ -54,7 +57,6 @@ export function SqlitePathInput({ value, onChange }: SqlitePathInputProps) {
   // metadata plus an opaque id, and hands only the id back. Nothing here can
   // name the file that gets created (`GLOSSARY.md` → File Grant).
   const handleCreate = async () => {
-    setGrantError(null);
     setCreating(true);
     try {
       const picked = await selectFileForGrant({
@@ -63,7 +65,11 @@ export function SqlitePathInput({ value, onChange }: SqlitePathInputProps) {
         defaultName: suggestedFileName(value),
         filters: SQLITE_FILTERS,
       });
-      if (!picked) return; // cancelled: nothing was authorized, nothing to report
+      // Cancelled: nothing was authorized and nothing was reported, so the
+      // recovery state (if any) stands rather than disappearing unexplained.
+      if (!picked) return;
+      // A fresh selection replaces whatever the previous one left behind.
+      setGrantError(null);
       const created = await createSqliteDatabase(picked.id);
       onChange(created);
       notify(`Created SQLite database at ${created}`, "success");
@@ -75,6 +81,9 @@ export function SqlitePathInput({ value, onChange }: SqlitePathInputProps) {
         setGrantError(kind);
         return;
       }
+      // Any other failure is not a selection problem, so a recovery panel
+      // claiming one would be wrong.
+      setGrantError(null);
       const message =
         fileGrantErrorMessage(e) ?? (e instanceof Error ? e.message : String(e));
       notify(`Failed to create database: ${message}`, "error");
@@ -133,7 +142,8 @@ export function SqlitePathInput({ value, onChange }: SqlitePathInputProps) {
             onClick={() => {
               void handleCreate();
             }}
-            className="shrink-0 rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] font-medium text-amber-200 hover:bg-amber-500/10 transition-colors cursor-pointer"
+            disabled={creating}
+            className="shrink-0 rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] font-medium text-amber-200 hover:bg-amber-500/10 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-default"
           >
             Choose file again
           </button>

@@ -459,7 +459,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 | More keyboard shortcuts | ❌ | Only 2 configurable actions |
 | Editor settings | ✅ | Five options wired to the settings store + live Monaco `updateOptions` |
 | SSH key management | ❌ | Only path inputs, no key file reading |
-| Settings export/import | ✅ | Export/import settings (theme, accent, editor options, page sizes, defaults) as a JSON file (v0.7.8) |
+| Settings export/import | ✅ | Export/import settings (theme, accent, editor options, page sizes, defaults) as a JSON file (v0.7.8). Import is judged as a **whole document** against the store's declared rule table: an unknown key, an out-of-range value or a missing declared key refuses the file **instead of applying part of it**, every offending key is named, and a refused import leaves settings untouched ([ADR 0003](./docs/adr/0003-strict-settings-validation.md)) |
 
 ### Demo & Onboarding
 | Feature | Status | Details |
@@ -482,6 +482,7 @@ Planned work is prioritized in the [Project Roadmap](./ROADMAP.md) (source of tr
 - [Project Roadmap](./ROADMAP.md) — source of truth for planned work (in-development, next-up, queue, shipped)
 - [Security Policy](./SECURITY.md) — how to report a vulnerability **privately** (never in a public issue)
 - [ADR 0002: Production CSP and webview capabilities](./docs/adr/0002-production-csp-and-webview-capabilities.md) — the packaged content security policy, every webview permission and why it is granted, and the development-mode gap
+- [ADR 0003: Settings are validated by one table at the store, and unknown keys are refused](./docs/adr/0003-strict-settings-validation.md) — the one declared rule table that governs settings writes, imports and read-back, why an unknown key is refused rather than skipped, and which settings-file versions are therefore incompatible in each direction
 - [Architectural Spec: v0.7.0 connection-screen revamp](./docs/superpowers/specs/2026-08-04-architectural-spec.md) — current in-flight work
 - [Tauri 2.0 Documentation](https://tauri.app/develop/)
 - [sqlx Documentation](https://docs.rs/sqlx)

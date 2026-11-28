@@ -67,13 +67,20 @@ fn import_settings_text(store: &Mutex<Store>, json: &str) -> Result<(), String> 
 /// Judge a whole settings document, and return the key/value map to apply.
 ///
 /// A settings file is untrusted input, and the store's rule table is the only
-/// judge of a settings value (ADR 0003, `store::settings_schema`). Three things
-/// follow, and the previous per-field handling satisfied none of them:
+/// judge of a settings value (ADR 0003, `store::settings_schema`). This function
+/// therefore holds the document's **envelope** and nothing else — it parses the
+/// file, then hands the `settings` object to
+/// [`settings_schema::check_document`], which owns every rule the document is
+/// held to (each entry against its key's rule, and every declared key present).
+/// Nothing here decides what a valid setting is.
+///
+/// Three things follow, and the previous per-field handling satisfied none of
+/// them:
 ///
 /// - The **document's own keys** are judged, not the fields of the typed
 ///   `Settings` struct. serde drops a key the struct does not declare, so
 ///   validating the deserialised struct let a file carrying a setting nothing
-///   reads import silently; `store::settings_schema` refuses it by name instead.
+///   reads import silently; the table refuses it by name instead.
 /// - **Every** entry is judged before any is written, and **every** refusal is
 ///   reported — not the first — so a user correcting a file sees all of its
 ///   problems at once instead of one per attempt.
@@ -99,31 +106,7 @@ fn settings_document_to_map(json: &str) -> Result<HashMap<String, String>, Strin
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| "invalid settings file: it has no settings object".to_string())?;
 
-    let mut refused: Vec<settings_schema::SettingRefused> = Vec::new();
-    let mut map = HashMap::new();
-    for (key, value) in settings {
-        match settings_schema::check_document_entry(key, value) {
-            Ok(stored) => {
-                map.insert(key.clone(), stored);
-            }
-            Err(refusal) => refused.push(refusal),
-        }
-    }
-    // A key this build knows but the file omits would leave that setting neither
-    // the file's nor the previous one's — the half-changed state a whole-file
-    // refusal exists to prevent.
-    for rule in settings_schema::SETTING_RULES {
-        if !settings.contains_key(rule.key) {
-            refused.push(settings_schema::SettingRefused {
-                key: rule.key.to_string(),
-                detail: "is missing from the file, so nothing was imported".to_string(),
-            });
-        }
-    }
-    if !refused.is_empty() {
-        return Err(import_refusal_report(&refused));
-    }
-    Ok(map)
+    settings_schema::check_document(settings).map_err(|refused| import_refusal_report(&refused))
 }
 
 /// The refusal a settings import reports: the count, then one line per key.
@@ -574,8 +557,8 @@ mod tests {
         );
     }
 
-    /// The report names every offending key, not the first one `check_batch`
-    /// would have stopped at.
+    /// `check_document` collects every refusal instead of stopping at the first,
+    /// so one report names all three offending keys at once.
     #[test]
     fn the_report_names_every_offending_key() {
         let st = state();
