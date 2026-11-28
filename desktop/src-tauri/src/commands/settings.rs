@@ -557,8 +557,8 @@ mod tests {
         );
     }
 
-    /// The report names every offending key, not the first one `check_batch`
-    /// would have stopped at.
+    /// `check_document` collects every refusal instead of stopping at the first,
+    /// so one report names all three offending keys at once.
     #[test]
     fn the_report_names_every_offending_key() {
         let st = state();
