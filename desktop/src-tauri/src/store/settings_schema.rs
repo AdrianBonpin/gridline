@@ -268,6 +268,69 @@ where
     Ok(())
 }
 
+/// Judge one entry of an imported settings document, returning the store-form
+/// text the entry is written as.
+///
+/// A file is JSON while the store holds text, so an entry has to be converted
+/// before its declared rule can judge it — and that conversion belongs beside the
+/// rule kinds, not in the importer. Keeping it here is what lets the importer
+/// hold **no** value shape, range or allowlist of its own: it asks this module
+/// about each key and writes only what came back `Ok`, so a file and a direct
+/// write are judged by the same table and cannot drift apart.
+///
+/// A key the table does not know is refused here exactly as a direct write is.
+pub(crate) fn check_document_entry(
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<String, SettingRefused> {
+    let rule = rule_for(key).ok_or_else(|| {
+        SettingRefused::new(
+            key,
+            "is not a setting this build knows, so it cannot be validated",
+        )
+    })?;
+    if value.is_null() {
+        return if rule.nullable {
+            Ok(NULL_SENTINEL.to_string())
+        } else {
+            Err(SettingRefused::new(
+                key,
+                "value null is not valid: this key cannot be unset",
+            ))
+        };
+    }
+    let stored = stored_form(rule, value).map_err(|detail| SettingRefused::new(key, detail))?;
+    check(key, &stored)?;
+    Ok(stored)
+}
+
+/// The text a document value is stored as, decided by the key's declared rule.
+///
+/// A structured value is stored as its compact JSON text, while a string is
+/// already the stored text — a key whose stored form is JSON is exported as a
+/// JSON string holding that text, so both shapes reach the same rule.
+fn stored_form(rule: &SettingRule, value: &serde_json::Value) -> Result<String, String> {
+    let expected = |what: &str| format!("value {value} is not valid: must be {what}");
+    match rule.rule {
+        Rule::Enum(_) | Rule::HexColor | Rule::Text { .. } => value
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| expected("a string")),
+        Rule::Integer { .. } => value
+            .as_i64()
+            .map(|n| n.to_string())
+            .ok_or_else(|| expected("a whole number")),
+        Rule::Boolean => value
+            .as_bool()
+            .map(|b| b.to_string())
+            .ok_or_else(|| expected("true or false")),
+        Rule::StringArray | Rule::StringMap | Rule::Ports => match value {
+            serde_json::Value::String(text) => Ok(text.clone()),
+            structured => Ok(structured.to_string()),
+        },
+    }
+}
+
 /// Read a value back, normalised into one that satisfies the key's rule.
 ///
 /// This never fails and never returns the invalid text: an integer outside its
@@ -627,6 +690,73 @@ mod tests {
         }
         for bad in ["2563EB", "#2563E", "#12345", "#GGGGGG", "#"] {
             assert!(check("accent_color", bad).is_err(), "{bad}");
+        }
+    }
+
+    // ── Document entries (a settings file is JSON, the store holds text) ──
+
+    /// A document entry is judged by the same rule as a direct write, and the
+    /// text it would be stored as is what the rule judged.
+    #[test]
+    fn a_document_entry_is_judged_by_the_rule_of_its_key() {
+        let cases = [
+            ("theme", serde_json::json!("light"), "light"),
+            ("table_page_size", serde_json::json!(500), "500"),
+            ("confirm_before_delete", serde_json::json!(false), "false"),
+            ("accent_color", serde_json::json!("#EF4444"), "#EF4444"),
+            ("default_folder_id", serde_json::json!(null), NULL_SENTINEL),
+            (
+                "default_ports",
+                serde_json::json!({"postgresql": 6543}),
+                "{\"postgresql\":6543}",
+            ),
+            ("shortcuts", serde_json::json!({"a": "b"}), "{\"a\":\"b\"}"),
+            // A key whose stored form is JSON is exported as a string holding
+            // that text, so the string itself is the stored form.
+            (
+                "tag_order",
+                serde_json::json!("[\"b\",\"a\"]"),
+                "[\"b\",\"a\"]",
+            ),
+        ];
+        for (key, value, stored) in cases {
+            assert_eq!(
+                check_document_entry(key, &value),
+                Ok(stored.to_string()),
+                "{key}"
+            );
+            assert!(
+                check(key, stored).is_ok(),
+                "{key} stores text its rule refuses"
+            );
+        }
+    }
+
+    /// The whole point of judging a document rather than a deserialised struct:
+    /// a key the table does not know is refused and named, never skipped.
+    #[test]
+    fn a_document_entry_for_an_unknown_key_is_refused_by_name() {
+        let err = check_document_entry("future_setting", &serde_json::json!(true))
+            .expect_err("unknown key");
+        assert_eq!(err.key, "future_setting");
+        assert!(err.to_string().contains("\"future_setting\""), "{err}");
+    }
+
+    /// A value of the wrong JSON shape is refused naming the key, with the shape
+    /// the rule needs — never converted into something the rule might accept.
+    #[test]
+    fn a_document_entry_of_the_wrong_shape_is_refused_by_name() {
+        let cases = [
+            ("theme", serde_json::json!(5)),
+            ("table_page_size", serde_json::json!("500")),
+            ("table_page_size", serde_json::json!(50.5)),
+            ("confirm_before_delete", serde_json::json!(1)),
+            ("theme", serde_json::json!(null)),
+            ("accent_color", serde_json::json!(["#fff"])),
+        ];
+        for (key, value) in cases {
+            let err = check_document_entry(key, &value).expect_err("wrong shape");
+            assert_eq!(err.key, key, "{value}");
         }
     }
 }
